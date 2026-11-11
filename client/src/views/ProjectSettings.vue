@@ -1,0 +1,1006 @@
+<script setup>
+import ModelSelector from '@/components/ai_settings/ModelSelector.vue'
+import MCPServerListEditor from '@/components/project_settings/MCPServerListEditor.vue'
+import TraefikRulesPanel from '@/components/traefik/TraefikRulesPanel.vue'
+import ProjectDependenciesEditor from '@/components/project_settings/ProjectDependenciesEditor.vue'
+</script>
+
+<template>
+  <div class="w-full h-full container" v-if="settings">
+    <div class="w-full h-full flex gap-0">
+      <!-- Desktop Sidebar -->
+      <aside class="hidden @md:flex w-64 bg-base-200 border-r border-base-100 flex-col">
+        <div class="p-6 border-b border-base-100">
+          <h1 class="text-lg font-bold text-base-content">{{ project.project_name }}</h1>
+          <p class="text-xs text-base-content/60 mt-1">Project Settings</p>
+        </div>
+
+        <nav class="flex-1 overflow-y-auto p-4 space-y-2">
+          <button
+            v-for="item in visibleNavItems"
+            :key="item.id"
+            @click="activeTab = item.id"
+            :class="[
+              'w-full text-left px-4 py-3 rounded-lg transition-colors duration-200',
+              'flex items-center gap-3',
+              activeTab === item.id
+                ? 'bg-primary text-primary-content font-medium'
+                : 'text-base-content/70 hover:bg-base-300 hover:text-base-content'
+            ]"
+          >
+            <i :class="`fa-solid ${item.icon} w-4 text-center`"></i>
+            <span class="text-sm">{{ item.label }}</span>
+          </button>
+        </nav>
+
+        <!-- Desktop Footer Actions -->
+        <div class="p-4 border-t border-base-100 space-y-2">
+          <button
+            @click="reloadSettings"
+            class="w-full btn btn-sm btn-ghost justify-start gap-2"
+          >
+            <i class="fa-solid fa-arrow-rotate-right text-xs"></i>
+            <span>Reload</span>
+          </button>
+          <button
+            @click="saveSettings"
+            class="w-full btn btn-sm btn-primary justify-start gap-2"
+          >
+            <i class="fa-solid fa-floppy-disk text-xs"></i>
+            <span>Save Changes</span>
+          </button>
+        </div>
+      </aside>
+
+      <!-- Mobile Drawer -->
+      <div class="drawer @md:hidden w-full">
+        <input id="project-settings-drawer" type="checkbox" class="drawer-toggle" v-model="drawerOpen" />
+        <div class="drawer-content flex flex-col w-full h-full overflow-auto">
+          <!-- Mobile Header with Menu Button -->
+          <div class="border-b border-base-100 px-4 py-4 bg-base-100 flex items-center justify-between">
+            <label for="project-settings-drawer" class="btn btn-ghost btn-sm btn-circle">
+              <i class="fa-solid fa-bars text-lg"></i>
+            </label>
+            <h2 class="text-lg font-bold text-base-content flex-1 ml-4">
+              {{ getActiveLabel() }}
+            </h2>
+          </div>
+
+          <!-- Mobile Main Content -->
+          <div class="flex-1 overflow-y-auto p-4">
+            <div v-if="activeTab === 'general'">
+              <div class="font-bold mb-4">Project</div>
+              <div class="flex flex-col gap-4">
+                <div>
+                  <label class="label-text block mb-2">Project name</label>
+                  <input v-model="settings.project_name" type="text" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">The display name of your project.</div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Project icon</label>
+                  <div class="flex gap-2 items-center">
+                    <input v-model="settings.project_icon" type="text" class="input input-bordered flex-1" />
+                    <img :src="settings.project_icon" alt="Icon" class="w-8 h-8 rounded-full" />
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Project path</label>
+                  <input v-model="settings.project_path" type="text" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">Absolute path: {{ settings.abs_project_path }}</div>
+                  <div class="text-xs text-base-content/60">Project location: {{ settings.codx_path }}</div>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.project_wiki" type="checkbox" class="toggle" />
+                    <span>Generate project's wiki</span>
+                  </label>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.wiki_auto_update" type="checkbox" class="toggle" />
+                    <span>Update wiki in the background</span>
+                  </label>
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Changes are queued and applied after the project stays quiet, so editing does not refresh the docs constantly.
+                  </div>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="label-text block mb-2">Quiet period (seconds)</label>
+                    <input v-model.number="settings.wiki_update_debounce_seconds" type="number" min="5" class="input input-bordered w-full" />
+                  </div>
+                  <div>
+                    <label class="label-text block mb-2">Maximum delay (seconds)</label>
+                    <input v-model.number="settings.wiki_update_max_delay_seconds" type="number" min="30" class="input input-bordered w-full" />
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.wiki_assistant_enabled" type="checkbox" class="toggle" />
+                    <span>Enable the documentation AI assistant</span>
+                  </label>
+                </div>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label class="label-text flex items-center gap-2">
+                      <input v-model="settings.wiki_search_children" type="checkbox" class="toggle" />
+                      <span>Search child project docs</span>
+                    </label>
+                    <div class="text-xs text-base-content/60 mt-1">Include child wikis in search and the assistant.</div>
+                  </div>
+                  <div>
+                    <label class="label-text block mb-2">Child search depth</label>
+                    <input v-model.number="settings.wiki_search_depth" type="number" min="0" max="10" class="input input-bordered w-full" />
+                    <div class="text-xs text-base-content/60 mt-1">How many child levels to traverse.</div>
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Wiki path</label>
+                  <input v-model="settings.project_wiki_path" type="text" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">Project's wiki folder.</div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Dependencies</label>
+                  <ProjectDependenciesEditor v-model="settings.project_dependencies" />
+                </div>
+              </div>
+            </div>
+
+            <div v-if="activeTab === 'git'">
+              <div class="font-bold mb-4">Commit author</div>
+              <div class="flex flex-col gap-4">
+                <div>
+                  <label class="label-text block mb-2">User name</label>
+                  <input v-model="globalGit.username" type="text" placeholder="codx-junior" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">Author name used for commits created by codx-junior.</div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Email</label>
+                  <input v-model="globalGit.email" type="email" placeholder="codx-junior@localhost" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">Author email used for commits created by codx-junior.</div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Access Token</label>
+                  <input v-model="globalGit.git_access_token" type="text" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">Personal Access Token.</div>
+                </div>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="font-bold mb-4">Local PR branches</div>
+              <div class="flex flex-col gap-4">
+                <div>
+                  <label class="label-text block mb-2">PR branch prefix</label>
+                  <input v-model="settings.git_pr_branch_prefix" type="text" placeholder="codx-junior" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Prefix used when codx-junior generates PR branch names, e.g. <code>codx-junior/fix-login-timeout</code>.
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Worktrees path</label>
+                  <input v-model="settings.git_worktrees_path" type="text" :placeholder="defaultWorktreesPath" class="input input-bordered w-full" />
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Folder where PR worktrees are created. Absolute when it starts with <code>/</code>, otherwise relative to the project path.
+                  </div>
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Leave empty to use the default: <code>{{ defaultWorktreesPath }}</code>
+                  </div>
+                </div>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="font-bold mb-4">Project branches</div>
+              <div class="flex flex-col gap-2">
+                <div class="text-xs text-base-content/60">Project branches are copies of the project's files to allow working in parallel</div>
+                <button @click="addBranch" class="btn btn-sm btn-ghost justify-start">
+                  <i class="fa-solid fa-plus"></i>
+                  Add branch
+                </button>
+                <div v-for="(branch, index) in settings.project_branches" :key="index" class="flex gap-2 items-center">
+                  <button @click="removeBranch(index)" class="btn btn-xs btn-error">
+                    <i class="fa-solid fa-minus"></i>
+                  </button>
+                  <input v-model="settings.project_branches[index]" type="text" class="input input-bordered input-xs flex-1" />
+                </div>
+              </div>
+            </div>
+
+            <div v-if="activeTab === 'ai'">
+              <div class="font-bold mb-4">AI Models</div>
+              <div class="flex flex-col gap-4">
+                <div>
+                  <label class="label-text block mb-2">Wiki model</label>
+                  <ModelSelector v-model="settings.wiki_model" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Embeddings model</label>
+                  <ModelSelector v-model="settings.embeddings_model" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Knowledge search</label>
+                  <ModelSelector v-model="settings.rag_model" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Reasoning model</label>
+                  <ModelSelector v-model="settings.llm_model" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Image generation model</label>
+                  <ModelSelector v-model="settings.image_generation_model" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Image vision model</label>
+                  <ModelSelector v-model="settings.image_vision_model" />
+                </div>
+              </div>
+            </div>
+
+            <div v-if="activeTab === 'mcp'">
+              <MCPServerListEditor v-model="settings.mcp_servers" />
+            </div>
+
+            <div v-if="activeTab === 'knowledge'">
+              <div class="font-bold mb-4">Knowledge</div>
+              <div class="flex flex-col gap-4">
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.use_knowledge" type="checkbox" class="toggle" />
+                    <span>Use knowledge</span>
+                  </label>
+                  <div class="text-xs text-base-content/60 mt-1">Enable/Disable context enhancement with project files.</div>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.knowledge_generate_training_dataset" type="checkbox" class="toggle" />
+                    <span>Training datasets</span>
+                  </label>
+                  <div class="text-xs text-base-content/60 mt-1">Enable/Disable generating training datasets for this project.</div>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.watching" type="checkbox" class="toggle" />
+                    <span>Watching</span>
+                  </label>
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="text-sm font-semibold">Context Settings</div>
+                <div class="text-xs text-base-content/60 bg-base-300 p-3 rounded">
+                  RAG engine search settings for context enhancement. Scoring knowledge helps finding the best resources to enrich AI context.
+                  <ul class="pl-4 mt-2">
+                    <li><strong>RAG distance (0-1):</strong> Filters after reading from RAG engine</li>
+                    <li><strong>AI score (0-1):</strong> Post filter using AI to return a score based on how much value will add this document to the context</li>
+                  </ul>
+                </div>
+
+                <div>
+                  <label class="label-text block mb-2">RAG distance</label>
+                  <input v-model="settings.knowledge_context_rag_distance" type="text" class="input input-bordered w-full" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Cutoff Relevance score</label>
+                  <input v-model="settings.knowledge_context_cutoff_relevance_score" type="text" class="input input-bordered w-full" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Document count</label>
+                  <input v-model="settings.knowledge_search_document_count" type="text" class="input input-bordered w-full" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">HNSW M</label>
+                  <input v-model="settings.knowledge_hnsw_M" type="text" class="input input-bordered w-full" />
+                </div>
+
+                <div class="divider"></div>
+
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.knowledge_query_subprojects" type="checkbox" class="toggle" />
+                    <span>Query subprojects</span>
+                  </label>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.knowledge_enrich_documents" type="checkbox" class="toggle" />
+                    <span>Enrich documents</span>
+                  </label>
+                </div>
+                <div>
+                  <label class="label-text flex items-center gap-2">
+                    <input v-model="settings.knowledge_extract_document_tags" type="checkbox" class="toggle" />
+                    <span>Extract document tags</span>
+                  </label>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">External folders</label>
+                  <input v-model="settings.knowledge_external_folders" type="text" class="input input-bordered w-full" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">File ignore</label>
+                  <input v-model="settings.knowledge_file_ignore" type="text" class="input input-bordered w-full" />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Search type</label>
+                  <input v-model="settings.knowledge_search_type" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+            </div>
+
+            <div v-if="activeTab === 'traefik' && isAdmin">
+              <TraefikRulesPanel
+                scope="project"
+                :project-id="settings.project_id"
+                :project-name="settings.project_name"
+                v-model:rules="settings.traefik_rules"
+              />
+            </div>
+
+            <div v-if="activeTab === 'miscellaneous'">
+              <div class="font-bold mb-4">Miscellaneous</div>
+              <div>
+                <label class="label-text flex items-center gap-2">
+                  <input v-model="settings.save_mentions" type="checkbox" class="toggle" />
+                  <span>Save file mentions as tasks</span>
+                </label>
+                <div class="text-xs text-base-content/60 mt-1">Enable/Disable saving file mentions as tasks in the "mentions" board.</div>
+              </div>
+            </div>
+
+            <div v-if="activeTab === 'danger'">
+              <div class="text-xl text-error font-bold mb-4">Danger Zone</div>
+              <button class="btn btn-error w-full" @click="toggleConfirmDelete">
+                <div class="flex gap-2" v-if="confirmDelete">
+                  Confirm delete? <span class="hover:underline">YES</span> / <span class="hover:underline" @click.stop="confirmDelete = false">NO</span>
+                </div>
+                <div v-else>
+                  <i class="fa-solid fa-trash"></i>
+                  Delete project
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Mobile Footer Actions -->
+          <div class="border-t border-base-100 px-4 py-3 bg-base-100 flex gap-2">
+            <button
+              @click="reloadSettings"
+              class="btn btn-sm btn-ghost btn-circle"
+              title="Reload"
+            >
+              <i class="fa-solid fa-arrow-rotate-right text-sm"></i>
+            </button>
+            <button
+              @click="saveSettings"
+              class="btn btn-sm btn-primary flex-1"
+            >
+              <i class="fa-solid fa-floppy-disk text-xs"></i>
+              <span>Save</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Mobile Drawer Sidebar -->
+        <div class="drawer-side z-40">
+          <label for="project-settings-drawer" class="drawer-overlay"></label>
+          <aside class="w-64 bg-base-200 border-r border-base-100 flex flex-col h-full">
+            <div class="p-6 border-b border-base-100">
+              <h1 class="text-lg font-bold text-base-content">{{ project.project_name }}</h1>
+              <p class="text-xs text-base-content/60 mt-1">Settings</p>
+            </div>
+
+            <nav class="flex-1 overflow-y-auto p-4 space-y-2">
+              <button
+                v-for="item in visibleNavItems"
+                :key="item.id"
+                @click="selectTab(item.id)"
+                :class="[
+                  'w-full text-left px-4 py-3 rounded-lg transition-colors duration-200',
+                  'flex items-center gap-3',
+                  activeTab === item.id
+                    ? 'bg-primary text-primary-content font-medium'
+                    : 'text-base-content/70 hover:bg-base-300 hover:text-base-content'
+                ]"
+              >
+                <i :class="`fa-solid ${item.icon} w-4 text-center`"></i>
+                <span class="text-sm">{{ item.label }}</span>
+              </button>
+            </nav>
+          </aside>
+        </div>
+      </div>
+
+      <!-- Desktop Main Content -->
+      <main class="hidden @md:flex flex-1 flex-col overflow-hidden">
+        <!-- Tab Navigation (visible when there's enough space) -->
+        <div class="hidden @lg:flex border-b border-base-100 bg-base-100">
+          <div class="flex-1 flex items-center overflow-x-auto px-8">
+            <button
+              v-for="item in visibleNavItems"
+              :key="item.id"
+              @click="activeTab = item.id"
+              :class="[
+                'px-4 py-4 text-sm font-medium transition-colors duration-200 whitespace-nowrap',
+                'border-b-2 -mb-0.5',
+                activeTab === item.id
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/60 hover:text-base-content'
+              ]"
+            >
+              <i :class="`fa-solid ${item.icon} mr-2`"></i>
+              {{ item.label }}
+            </button>
+          </div>
+          <div class="flex items-center px-8 gap-2 border-l border-base-100">
+            <button
+              @click="reloadSettings"
+              class="btn btn-ghost btn-sm btn-circle"
+              title="Reload"
+            >
+              <i class="fa-solid fa-arrow-rotate-right text-sm"></i>
+            </button>
+            <button
+              @click="saveSettings"
+              class="btn btn-primary btn-sm"
+            >
+              <i class="fa-solid fa-floppy-disk text-xs"></i>
+              <span>Save</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="border-b border-base-100 px-8 py-4 bg-base-100 @lg:hidden">
+          <h2 class="text-2xl font-bold text-base-content">
+            {{ getActiveLabel() }}
+          </h2>
+          <p class="text-sm text-base-content/60 mt-1">{{ getActiveDescription() }}</p>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-8">
+          <div v-if="activeTab === 'general'">
+            <div class="font-bold mb-4 text-lg">Project</div>
+            <div class="space-y-6 mb-8">
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Project name</label>
+                  <p class="text-xs text-base-content/60">The display name of your project.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.project_name" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Project icon</label>
+                  <p class="text-xs text-base-content/60">Icon URL for your project.</p>
+                </div>
+                <div class="w-96 flex gap-3 items-center">
+                  <input v-model="settings.project_icon" type="text" class="input input-bordered flex-1" />
+                  <img :src="settings.project_icon" alt="Icon" class="w-10 h-10 rounded-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Project path</label>
+                  <p class="text-xs text-base-content/60">Absolute path: {{ settings.abs_project_path }}</p>
+                  <p class="text-xs text-base-content/60">Project location: {{ settings.codx_path }}</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.project_path" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Generate wiki</label>
+                  <p class="text-xs text-base-content/60">Enable automatic wiki generation for this project.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.project_wiki" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Wiki path</label>
+                  <p class="text-xs text-base-content/60">Project's wiki folder.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.project_wiki_path" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Dependencies</label>
+                  <p class="text-xs text-base-content/60">
+                    Projects searched together with this one. Their knowledge, wiki and files
+                    are included in every search.
+                  </p>
+                </div>
+                <div class="w-96">
+                  <ProjectDependenciesEditor v-model="settings.project_dependencies" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeTab === 'git'">
+            <div class="font-bold mb-4 text-lg">Commit author</div>
+            <div class="space-y-6">
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">User name</label>
+                  <p class="text-xs text-base-content/60">Author name used for commits created by codx-junior.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="globalGit.username" type="text" placeholder="codx-junior" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Email</label>
+                  <p class="text-xs text-base-content/60">Author email used for commits created by codx-junior.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="globalGit.email" type="email" placeholder="codx-junior@localhost" class="input input-bordered w-full" />
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="font-bold mb-4 text-lg">Local PR branches</div>
+            <div class="space-y-6">
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">PR branch prefix</label>
+                  <p class="text-xs text-base-content/60">
+                    Prefix used when codx-junior generates PR branch names, e.g. <code>codx-junior/fix-login-timeout</code>.
+                    Leave empty to use the default <code>codx-junior</code>.
+                  </p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.git_pr_branch_prefix" type="text" placeholder="codx-junior" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Worktrees path</label>
+                  <p class="text-xs text-base-content/60">
+                    Folder where PR worktrees are created. Absolute when it starts with <code>/</code>, otherwise relative to the project path.
+                  </p>
+                  <p class="text-xs text-base-content/60 mt-1">
+                    Leave empty to use the default: <code>{{ defaultWorktreesPath }}</code>
+                  </p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.git_worktrees_path" type="text" :placeholder="defaultWorktreesPath" class="input input-bordered w-full" />
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="font-bold mb-4 text-lg">Project branches</div>
+            <div class="space-y-4">
+              <p class="text-xs text-base-content/60">Project branches are copies of the project's files to allow working in parallel</p>
+              <button @click="addBranch" class="btn btn-sm btn-outline">
+                <i class="fa-solid fa-plus"></i>
+                Add branch
+              </button>
+              <div v-for="(branch, index) in settings.project_branches" :key="index" class="flex gap-3 items-center">
+                <button @click="removeBranch(index)" class="btn btn-sm btn-error">
+                  <i class="fa-solid fa-minus"></i>
+                </button>
+                <input v-model="settings.project_branches[index]" type="text" class="input input-bordered flex-1" />
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeTab === 'ai'">
+            <div class="space-y-6">
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Wiki model</label>
+                  <p class="text-xs text-base-content/60">Model used for wiki generation.</p>
+                </div>
+                <div class="w-96">
+                  <ModelSelector v-model="settings.wiki_model" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Embeddings model</label>
+                  <p class="text-xs text-base-content/60">Model for generating document embeddings.</p>
+                </div>
+                <div class="w-96">
+                  <ModelSelector v-model="settings.embeddings_model" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Knowledge search</label>
+                  <p class="text-xs text-base-content/60">RAG model for knowledge retrieval.</p>
+                </div>
+                <div class="w-96">
+                  <ModelSelector v-model="settings.rag_model" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Reasoning model</label>
+                  <p class="text-xs text-base-content/60">Main LLM for reasoning and generation.</p>
+                </div>
+                <div class="w-96">
+                  <ModelSelector v-model="settings.llm_model" />
+                </div>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="font-bold mb-4 text-lg">Image Models</div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Image generation model</label>
+                  <p class="text-xs text-base-content/60">Model for generating images from text prompts (e.g., DALL-E 3).</p>
+                </div>
+                <div class="w-96">
+                  <ModelSelector v-model="settings.image_generation_model" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Image vision model</label>
+                  <p class="text-xs text-base-content/60">Model for analyzing and describing images (e.g., GPT-4 Vision).</p>
+                </div>
+                <div class="w-96">
+                  <ModelSelector v-model="settings.image_vision_model" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeTab === 'mcp'">
+            <MCPServerListEditor v-model="settings.mcp_servers" />
+          </div>
+
+          <div v-if="activeTab === 'knowledge'">
+            <div class="space-y-6">
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Use knowledge</label>
+                  <p class="text-xs text-base-content/60">Enable/Disable context enhancement with project files.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.use_knowledge" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Training datasets</label>
+                  <p class="text-xs text-base-content/60">Enable/Disable generating training datasets for this project.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_generate_training_dataset" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Watching</label>
+                  <p class="text-xs text-base-content/60">Monitor project files for changes.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.watching" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="bg-base-200 p-6 rounded-lg">
+                <h3 class="font-semibold mb-3">Context Settings</h3>
+                <p class="text-xs text-base-content/60 mb-3">RAG engine search settings for context enhancement. Scoring knowledge helps finding the best resources to enrich AI context.</p>
+                <ul class="text-xs text-base-content/60 space-y-2 pl-4">
+                  <li><strong>RAG distance (0-1):</strong> Filters after reading from RAG engine</li>
+                  <li><strong>AI score (0-1):</strong> Post filter using AI to return a score based on how much value will add this document to the context</li>
+                </ul>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">RAG distance</label>
+                  <p class="text-xs text-base-content/60">Distance threshold (0-1)</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_context_rag_distance" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Cutoff Relevance score</label>
+                  <p class="text-xs text-base-content/60">Relevance score threshold (0-1)</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_context_cutoff_relevance_score" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Document count</label>
+                  <p class="text-xs text-base-content/60">Number of documents to retrieve</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_search_document_count" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">HNSW M</label>
+                  <p class="text-xs text-base-content/60">HNSW algorithm parameter</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_hnsw_M" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="divider"></div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Query subprojects</label>
+                  <p class="text-xs text-base-content/60">Include subproject knowledge in search.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_query_subprojects" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Enrich documents</label>
+                  <p class="text-xs text-base-content/60">Enhance documents with additional metadata.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_enrich_documents" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Extract document tags</label>
+                  <p class="text-xs text-base-content/60">Automatically extract tags from documents.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_extract_document_tags" type="checkbox" class="toggle" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">External folders</label>
+                  <p class="text-xs text-base-content/60">Comma-separated list of external folders to index.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_external_folders" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">File ignore patterns</label>
+                  <p class="text-xs text-base-content/60">Patterns for files to exclude from knowledge.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_file_ignore" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Search type</label>
+                  <p class="text-xs text-base-content/60">Knowledge search algorithm.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.knowledge_search_type" type="text" class="input input-bordered w-full" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeTab === 'traefik' && isAdmin">
+            <TraefikRulesPanel
+              scope="project"
+              :project-id="settings.project_id"
+              :project-name="settings.project_name"
+              v-model:rules="settings.traefik_rules"
+            />
+          </div>
+
+          <div v-if="activeTab === 'miscellaneous'">
+            <div class="space-y-6">
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Save file mentions as tasks</label>
+                  <p class="text-xs text-base-content/60">Enable/Disable saving file mentions as tasks in the "mentions" board.</p>
+                </div>
+                <div class="w-96">
+                  <input v-model="settings.save_mentions" type="checkbox" class="toggle" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="activeTab === 'danger'">
+            <div class="bg-error/10 border border-error rounded-lg p-6">
+              <h3 class="text-lg font-bold text-error mb-4">Delete Project</h3>
+              <p class="text-sm text-base-content/70 mb-6">This action cannot be undone. Please be certain before deleting.</p>
+              <button class="btn btn-error" @click="toggleConfirmDelete">
+                <div class="flex gap-2" v-if="confirmDelete">
+                  Confirm delete? <span class="hover:underline cursor-pointer">YES</span> / <span class="hover:underline cursor-pointer" @click.stop="confirmDelete = false">NO</span>
+                </div>
+                <div v-else>
+                  <i class="fa-solid fa-trash"></i>
+                  Delete project
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</template>
+
+<script>
+export default {
+  components: {
+    MCPServerListEditor
+  },
+  data() {
+    return {
+      activeTab: 'general',
+      settings: null,
+      globalGit: { username: '', email: '' },
+      confirmDelete: false,
+      drawerOpen: false,
+      navItems: [
+        { id: 'general', label: 'General', icon: 'fa-sliders' },
+        { id: 'git', label: 'Git', icon: 'fa-code-branch' },
+        { id: 'ai', label: 'AI Models', icon: 'fa-brain' },
+        { id: 'mcp', label: 'MCP Servers', icon: 'fa-server' },
+        { id: 'knowledge', label: 'Knowledge', icon: 'fa-lightbulb' },
+        { id: 'traefik', label: 'Traefik', icon: 'fa-route' },
+        { id: 'miscellaneous', label: 'Miscellaneous', icon: 'fa-ellipsis' },
+        { id: 'danger', label: 'Danger Zone', icon: 'fa-exclamation-triangle' }
+      ]
+    }
+  },
+  mounted() {
+    this.reloadSettings()
+  },
+  computed: {
+    project() {
+      return this.$project
+    },
+    isAdmin() {
+      return Boolean(
+        this.$users?.isAdmin ||
+        this.$storex?.api?.permissions?.isAdmin
+      )
+    },
+    visibleNavItems() {
+      // The Traefik endpoints are admin-only; project admins still see the
+      // rest of the project settings but not a tab that would return 403.
+      return (this.navItems || []).filter(item => item.id !== 'traefik' || this.isAdmin)
+    },
+    defaultWorktreesPath() {
+      const repoPath = (this.settings?.abs_project_path || this.project?.abs_project_path || '').replace(/\/+$/, '')
+      const index = repoPath.lastIndexOf('/')
+      if (index <= 0) {
+        return repoPath ? `${repoPath}-worktrees` : ''
+      }
+      return `${repoPath.substring(0, index)}/${repoPath.substring(index + 1)}-worktrees`
+    }
+  },
+  watch: {
+    project() {
+      this.reloadSettings()
+    }
+  },
+  methods: {
+    async reloadSettings() {
+      this.settings = await this.$project?.$api.settings.read()
+      if (this.settings && !this.settings.mcp_servers) {
+        this.settings.mcp_servers = []
+      }
+      if (this.settings && !Array.isArray(this.settings.traefik_rules)) {
+        this.settings.traefik_rules = []
+      }
+      if (this.settings && this.settings.git_pr_branch_prefix === undefined) {
+        this.settings.git_pr_branch_prefix = ''
+      }
+      if (this.settings && this.settings.git_worktrees_path === undefined) {
+        this.settings.git_worktrees_path = ''
+      }
+      await this.loadGlobalGitSettings()
+      this.confirmDelete = false
+    },
+    async loadGlobalGitSettings() {
+      let git = {}
+      try {
+        git = await this.$storex.api.settings.global.section('git')
+      } catch (ex) {
+        console.error('Error loading global git settings', ex)
+      }
+      this.globalGit = {
+        ...(git || {}),
+        username: git?.username || '',
+        email: git?.email || ''
+      }
+    },
+    async saveGlobalGitSettings() {
+      if (!this.globalGit) {
+        return
+      }
+      await this.$storex.api.settings.global.saveSection('git', this.globalGit)
+    },
+    async saveSettings() {
+      await this.$project.$api.settings.save(this.settings)
+      await this.saveGlobalGitSettings()
+      await this.reloadSettings()
+      this.$ui.addNotification({ text: 'Settings saved successfully' })
+    },
+    toggleConfirmDelete() {
+      if (this.confirmDelete) {
+        this.$emit('delete')
+      } else {
+        this.confirmDelete = true
+      }
+    },
+    selectTab(tabId) {
+      this.activeTab = tabId
+      this.drawerOpen = false
+    },
+    getActiveLabel() {
+      return this.navItems.find(item => item.id === this.activeTab)?.label || 'Settings'
+    },
+    getActiveDescription() {
+      const descriptions = {
+        general: 'Configure project name, path and wiki',
+        git: 'Configure commit author, PR branches and worktrees',
+        ai: 'Select AI models for different project tasks',
+        mcp: 'Configure Model Context Protocol servers',
+        knowledge: 'Configure knowledge base and RAG settings',
+        traefik: 'Manage this project\'s Traefik routes. Rules are stored with the project.',
+        miscellaneous: 'Other project settings and preferences',
+        danger: 'Irreversible actions for this project'
+      }
+      return descriptions[this.activeTab] || ''
+    },
+    addBranch() {
+      if (!this.settings.project_branches) {
+        this.settings.project_branches = []
+      }
+      this.settings.project_branches.push('')
+    },
+    removeBranch(index) {
+      this.settings.project_branches.splice(index, 1)
+    }
+  }
+}
+</script>

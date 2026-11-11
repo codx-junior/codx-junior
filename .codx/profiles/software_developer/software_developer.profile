@@ -1,0 +1,83 @@
+{
+  "name": "software_developer",
+  "url": "",
+  "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=software_developer",
+  "description": "Software developer profile. It will participate in any action producing code.",
+  "category": "project",
+  "file_match": "",
+  "content": null,
+  "parsed_content": null,
+  "path": "/home/codx-junior-projects/codx-junior/.codx/profiles/software_developer/software_developer.profile",
+  "profiles": [
+    "biblio",
+    "git",
+    "file_editor"
+  ],
+  "team": [],
+  "llm_model": "",
+  "use_knowledge": true,
+  "user": {
+    "username": "",
+    "email": "",
+    "avatar": "",
+    "theme": "dim",
+    "projects": [],
+    "role": "user",
+    "companies": [],
+    "language": "auto",
+    "workspace_mode": "auto",
+    "token": "",
+    "disabled": false,
+    "github": "",
+    "apps": [],
+    "api_key": "",
+    "env": {},
+    "wallet": {
+      "wallet_id": "f781d36e-65d6-4106-9a4c-609e3b16787c",
+      "name": "Default Wallet",
+      "balance_cxjcoins": 0.0,
+      "spending_limits": [],
+      "transactions": [],
+      "created_at": "2026-08-13T10:12:51.310151",
+      "updated_at": "2026-08-13T10:12:51.310161",
+      "enabled": true
+    },
+    "github_admin": false,
+    "github_only": false,
+    "token_limit_rules": [],
+    "token_limit_requests": [],
+    "is_company_mode": false,
+    "company_ids": []
+  },
+  "tools": [
+    "project_search",
+    "project_read_file",
+    "project_structure",
+    "generate_tasks_tool",
+    "create_task",
+    "get_file_last_version",
+    "project_grep",
+    "project_glob",
+    "project_changes",
+    "search_codx"
+  ],
+  "tags": [],
+  "api_settings": {
+    "active": false,
+    "model_name": null,
+    "description": null
+  },
+  "guardrails": {
+    "enabled": false,
+    "scope": null,
+    "scope_keywords": [],
+    "scope_similarity_threshold": 0.35,
+    "allowed_tools": [],
+    "refusal_message": "I can only answer questions within my configured scope.",
+    "risk_threshold": 10.0,
+    "use_llm_classifier": false
+  },
+  "chat_mode": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "chat_id": "82074be7-909e-4ba5-9ade-594a122d21e8"
+}

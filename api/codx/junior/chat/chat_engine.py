@@ -1,0 +1,3660 @@
+import asyncio
+import json
+import logging
+import os
+import re
+import time
+import uuid
+import base64
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from json import JSONDecodeError
+from typing import List, Tuple, Optional, Dict, Any, Set
+
+from langchain.messages import (
+    AIMessage,
+    HumanMessage,
+)
+
+from langchain_core.documents import Document
+
+from engine.agent_runtime import AgentRunContext
+
+from codx.junior.ai import AI
+from codx.junior.ai.cancellation import CancellationToken, CancelledError, CANCELLATION_REGISTRY
+from codx.junior.chat_manager import ChatManager
+from codx.junior.chat.chat_event_bridge import ChatEventBridge
+from codx.junior.chat.chat_tool_memory import build_tool_memory_section
+from codx.junior.chat.turn_store import (
+    TurnCancellationWatcher,
+    get_turn_store,
+    repair_incomplete_messages,
+)
+from codx.junior.chat.chat_prompt_builder import (
+    CONVERSATION_GUARDRAIL_SYSTEM_PROMPT,
+    ChatPromptBuilder,
+    concat_content,
+    new_chat_message,
+)
+from codx.junior.context import AICodeGenerator
+from codx.junior.db import Chat, Message, ChatHistoryEntry, ChatAttachment
+from codx.junior.model.agent import AgentRunResult
+from codx.junior.project.project_discover import (
+    find_project_by_id,
+    get_project_dependencies,
+)
+from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_ai_search import KnowledgeAISearch
+from codx.junior.knowledge.knowledge_ai_search_message import build_search_message
+from codx.junior.organizer import ChatOrganizer
+from codx.junior.orchestration import constants as ORCHESTRATION
+from codx.junior.profiles.profile_manager import ProfileManager
+from codx.junior.profiling.profiler import profile_function
+from codx.junior.settings import CODXJuniorSettings
+from codx.junior.utils.chat_utils import ChatUtils, QueryMentions
+from codx.junior.utils.utils import document_to_code_block
+from codx.junior.model.model import CodxUser, Profile
+from codx.junior.chat.chat_knowledge import ChatKnowledge
+from codx.junior.analytics import Analytics
+
+from codx.junior.globals import (
+  LANGUAGE_PARSER_MAPPING,
+)
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+# Chat mode constants
+CHAT_MODE_TASK = "task"
+CHAT_MODE_TUTORIAL = "tutorial"
+CHAT_MODE_VIBE = "vibe"
+TASK_ITEM_SEARCH = "search"
+TASK_ITEM_ANALYSIS = "analysis"
+
+# Profile knowledge tools are granted PER RUN by the agent (it is the only
+# component that knows the user's permissions), so they are NEVER inherited
+# from the profile definition: a profile saved with them must not hand
+# `profile_learning` to every user of the project.
+PROFILE_MANAGED_TOOLS = {
+    "profile_learning",
+    "profile_knowledge",
+    "profile_knowledge_search",
+}
+
+# Discovery is atlas-only: `project_grep`, `project_glob`, `project_search`
+# and `project_structure` are not registered as tools anymore, so
+# `_ensure_investigation_tools` only completes the change/context tools here.
+REQUIRED_INVESTIGATION_TOOLS = (
+    "project_changes",
+    "search_codx",
+)
+
+# Internal AI request header used to declare the profiles taking part in the
+# turn. It is consumed by SmolAgent (which strips it before reaching the
+# provider) and is what makes the agent inject the profile knowledge tools.
+PROFILES_HEADER = "profiles"
+
+# Auxiliary-summary bounds.
+#
+# ``_generate_chat_description`` runs an extra LLM call after EVERY chat turn.
+# Sending the whole transcript to obtain a 5-line summary made long chats slower
+# and more expensive on every interaction without improving the summary, so the
+# transcript is bounded to the most recent messages (and each message to a
+# reasonable size). The name suggestion of an ``auto_initialize`` chat uses the
+# same bounded history instead of the full assembled prompt.
+CHAT_DESCRIPTION_MAX_MESSAGES = 24
+CHAT_DESCRIPTION_MAX_MESSAGE_CHARS = 3000
+CHAT_INIT_MAX_MESSAGES = 6
+
+def _is_refine(mode) -> bool:
+    return mode in [CHAT_MODE_TASK, CHAT_MODE_TUTORIAL] 
+
+# Prompt used to auto-initialize an auto_initialize chat's metadata.
+#
+# Only the chat NAME is suggested here: the board/column destination is decided
+# by the chat organization process (codx.junior.organizer), which validates the
+# result against the project's real boards/columns (tasks/kanban.json) and falls
+# back to an LLM decision engine when no confident match is found.
+CHAT_INIT_PROMPT = """
+Based on the conversation below, suggest a name for this chat.
+Return a JSON object with this key (omit it if you cannot determine a good value):
+  - "name": a short, descriptive title for this chat (max 8 words)
+
+Return ONLY a valid JSON object, no extra text.
+Example: {"name": "Fix login bug"}
+"""
+
+class ChatEngine:
+    """
+    Core engine for managing chat interactions with AI models.
+
+    Handles message processing, knowledge search, context building,
+    and AI response generation for various chat modes.
+
+    Integrates comprehensive analytics tracking for chat sessions, token usage,
+    and tool executions to enable full request-response traceability.
+
+    CHANGED: Tool and run-lifecycle events emitted by the agent runtime are
+    ASSOCIATED with the assistant response message (``tool_events`` /
+    ``lifecycle_events`` typed lists) via :class:`ChatEventBridge`. The
+    response message is created BEFORE the AI call and passed to the bridge.
+
+    CRASH-SAFETY: the bridge persists the response message on EVERY event
+    change (merge-safe ``add_message``/``update_message``), and the engine
+    persists it immediately on error and cancellation paths, so as much
+    information as possible survives a crash or kill mid-run. Because the
+    bridge may have already inserted the response message, the engine uses
+    :meth:`_append_message_if_missing` to avoid duplicating it in memory.
+
+    ADDED — streamed-chunk crash-safety: the streaming callback
+    (``send_message_event``) calls :meth:`ChatEventBridge.maybe_persist_stream`
+    on every flush, persisting partial streamed content at most once per
+    throttle interval. A hard kill loses at most a few seconds of text.
+
+    ADDED — hidden reasoning crash-safety: intermediate reasoning messages
+    produced during the AI call are persisted IMMEDIATELY via
+    :meth:`ChatEventBridge.persist_message` instead of waiting for the
+    end-of-turn chat save.
+
+    ADDED — turn project scope: the current USER message may declare its own
+    ``project_id`` (like ``Chat.project_id``). When set, that project becomes
+    the MAIN project of the turn and the engine switches its context to it
+    before processing (see :meth:`_resolve_turn_project_id`).
+
+    ADDED — response project scope: the assistant response message is stamped
+    with the ACTIVE project of the turn (``self.settings.project_id`` once the
+    engine switched its context to the turn project), so every response states
+    the project it was produced in.
+
+    ADDED — team profiles: active profiles may declare a ``team`` (a list of
+    profile names) with the profiles the model can USE IN NEW TASKS. Team
+    members are NOT composed into the system prompt and are NOT activated; they
+    are appended as a ``### TEAM`` table (name + short description) right after
+    the profile composition (see :meth:`_build_team_system_section`).
+
+    ADDED — profile knowledge tools: the profiles taking part in the turn are
+    declared in the internal ``profiles`` AI request header (see
+    :meth:`_build_ai_headers`). :class:`SmolAgent` consumes it (stripping it
+    before reaching the provider) and injects ``profile_knowledge_search`` for
+    every user plus ``profile_learning`` only for users allowed to teach the
+    profiles. Those tools are therefore NEVER inherited from the profile
+    definition (see :data:`PROFILE_MANAGED_TOOLS`).
+
+    ADDED — tool memory: the tool events already persisted on the previous
+    turns (``Message.tool_events``) are distilled into a ``<session_memory>``
+    block appended to the conversation history of the next turn (see
+    :mod:`codx.junior.chat.chat_tool_memory`). Deduplicated results, the index
+    of already inspected files and stale markers are sent back to the model so
+    it does not re-run the same reads/searches on every interaction.
+
+    COST TRACKING: the AI call returns a typed :class:`AgentRunResult`. Its
+    ``cost.iteration_cost_cxjcoins`` (every LLM round plus any tool cost) is
+    registered on the response message (``Message.cost``) so ``ChatManager``
+    accumulates it into ``Chat.cost`` — the value compared against
+    ``Chat.estimation_cost``. The full breakdown is stored on
+    ``Message.cost_info`` and streamed to clients via ``message-event``.
+
+
+    flowchart TD
+        A[User Message] --> B{Chat Mode?}
+        B -->|vibe| C[AI Search Context]
+        B -->|search| C
+        C --> D[Build Context]
+        B -->|task| E[Refine Document]
+        B -->|chat| G[Standard Chat]
+        D --> G
+        E --> H{Add parent messages?}
+        G --> H
+        H -->|ignore_parent_knowledge=False| H1[Prepend parent messages]
+        H -->|ignore_parent_knowledge=True| H2[Skip parent messages]
+        H1 --> H3[Record Chat Session Start]
+        H2 --> H3
+        H3 --> I[Create response_message]
+        I --> J[ChatEventBridge - persists on every event]
+        J --> K[AI Response - returns AgentRunResult]
+        K -->|cost| K1[Register cost + cost_info on response message]
+        K -->|stream flush| K5[Throttled persist of partial content]
+        K -->|hidden reasoning| K6[persist_message - immediate]
+        K -->|tool events| K3[Events on response_message persisted + streamed]
+        K -->|model param error| K7[Catch + inform user]
+        K -->|error/cancel| K4[bridge.publish - error persisted immediately]
+        K1 --> L[Record Chat Session End]
+        L --> M[Return Chat + Documents]
+    """
+
+    def __init__(
+        self,
+        settings: CODXJuniorSettings,
+        event_manager,
+        user: CodxUser = None
+    ) -> None:
+        """
+        Initialize the ChatEngine with project settings, event manager, and optional user.
+
+        :param settings: The current project's settings.
+        :param event_manager: Event manager for emitting chat/search events.
+        :param user: Optional authenticated user for the session.
+        """
+        self.settings = settings
+        self.event_manager = event_manager
+        self.knowledge = Knowledge(settings=settings)
+        self.chat_knowledge = ChatKnowledge(
+            settings=settings,
+            event_manager=event_manager
+        )
+        self.user = user
+        # ADDED: Initialize analytics instance for chat session tracking
+        self.analytics = Analytics()
+        # ADDED: Extracted prompt/message building into a dedicated builder.
+        self.prompt_builder = ChatPromptBuilder(
+            get_chat_manager=self.get_chat_manager,
+            get_chat_analysis_parents=self.get_chat_analysis_parents,
+        )
+
+    def get_profile_manager(self) -> ProfileManager:
+        """Return a ProfileManager instance for the current settings."""
+        return ProfileManager(settings=self.settings)
+
+    def get_chat_manager(self, project_id: str = None) -> ChatManager:
+        """
+        Return a ChatManager, optionally scoped to a specific project.
+
+        :param project_id: Optional project ID to scope the manager.
+        :return: A ChatManager instance.
+        """
+        if not project_id:
+            return ChatManager(settings=self.settings)
+        return ChatManager(settings=find_project_by_id(project_id=project_id))
+
+    @contextmanager
+    def chat_action(self, chat: Chat, event: str):
+        """
+        Context manager that emits start/done/error events around a chat action.
+
+        :param chat: The chat being processed.
+        :param event: Human-readable event name for logging and notifications.
+        """
+        self.event_manager.chat_event(chat=chat, message=f"{event} starting")
+        logger.info("Start chat %s", chat.name)
+        try:
+            yield
+        except OSError as ex:
+            self.event_manager.chat_event(
+                chat=chat,
+                message=f"{event} error: {ex}",
+                event_type="error"
+            )
+            logger.exception("Chat %s %s error: %s", chat.name, event, ex)
+        finally:
+            self.event_manager.chat_event(
+                chat=chat,
+                message=f"{event} done",
+                event_type="done"
+            )
+            logger.info("Chat done %s", chat.name)
+
+    # -------------------------------------------------------------------------
+    # Helper: new message factory
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _new_chat_message(role: str, content: str = "") -> Message:
+        """
+        Create a new Message with a generated doc_id.
+
+        :param role: The message role ('user', 'assistant', etc.).
+        :param content: Optional initial content string.
+        :return: A new Message instance.
+        """
+        return new_chat_message(role=role, content=content)
+
+    # -------------------------------------------------------------------------
+    # Helper: append message avoiding duplicates (ADDED for crash-safety)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _append_message_if_missing(chat: Chat, message: Message) -> None:
+        """
+        Append *message* to ``chat.messages`` only if not already present.
+
+        Needed because the :class:`ChatEventBridge` persists (and may append)
+        the response message BEFORE the turn finishes; a blind append would
+        duplicate it. Lookup is by ``doc_id``.
+
+        :param chat: The chat to append to.
+        :param message: The message to append.
+        """
+        if any(m.doc_id == message.doc_id for m in chat.messages):
+            logger.debug(
+                "Message '%s' already present in chat '%s', skipping append",
+                message.doc_id,
+                chat.doc_id,
+            )
+            return
+        chat.messages.append(message)
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve chat mode flags
+    # -------------------------------------------------------------------------
+    def _resolve_chat_mode_flags(
+        self,
+        chat: Chat,
+        chat_mode: Optional[str],
+        task_item: Optional[str]
+    ) -> Dict[str, Any]:
+        """
+        Resolve boolean flags that drive branching logic from the chat mode and task item.
+
+        The former ``agent`` mode is no longer special: the ``AGENT_DONE_WORD``
+        recursion was removed, so a chat with ``mode="agent"`` runs exactly like
+        ``mode="chat"`` (a single turn, no iteration).
+
+        :param chat: The current chat object.
+        :param chat_mode: Explicit mode override (may be None).
+        :param task_item: Task item from the latest user message.
+        :return: Dict with keys: chat_mode, is_refine, is_vibe, is_search,
+                 needs_pre_search.
+        """
+        resolved_mode = chat_mode or chat.mode or "chat"
+        is_refine: bool = _is_refine(resolved_mode)
+        is_vibe: bool = resolved_mode == CHAT_MODE_VIBE
+        is_search: bool = task_item == TASK_ITEM_SEARCH
+        needs_pre_search: bool = False # Deprecatred, use tools
+
+        logger.info(
+            "Resolved chat mode flags: mode=%s is_refine=%s "
+            "is_vibe=%s is_search=%s needs_pre_search=%s",
+            resolved_mode, is_refine, is_vibe, is_search, needs_pre_search
+        )
+
+        return {
+            "chat_mode": resolved_mode,
+            "is_refine": is_refine,
+            "is_vibe": is_vibe,
+            "is_search": is_search,
+            "needs_pre_search": needs_pre_search,
+        }
+
+    # -------------------------------------------------------------------------
+    # Helper: collect all files referenced across visible messages
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _collect_files_from_visible_messages(
+        valid_messages: List[Message],
+        chat_base_files: List[str]
+    ) -> List[str]:
+        """
+        Collect and deduplicate all file references from visible (non-hidden,
+        non-improvement) messages plus the chat-level base file list.
+
+        This ensures that files attached to *any* prior message are included in
+        the working context, not just those on the most recent user message.
+
+        flowchart TD
+            A[chat.file_list] --> D[Union]
+            B[Each visible message .files] --> D
+            C[Deduplicate] --> E[Sorted list]
+            D --> C
+
+        :param valid_messages: All non-hidden, non-improvement messages for the turn.
+        :param chat_base_files: Files already present on ``chat.file_list``.
+        :return: Deduplicated, sorted list of file paths.
+        """
+        all_files: Set[str] = set(chat_base_files)
+        for message in valid_messages:
+            if message.files:
+                all_files.update(message.files)
+        # Sort for deterministic ordering
+        return sorted(all_files)
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve linked (nested) profiles (ADDED)
+    # -------------------------------------------------------------------------
+    def _resolve_linked_profiles(self, profiles: List[Profile]) -> List[Profile]:
+        """
+        Expand a list of profiles with the profiles they link to.
+
+        Each :class:`Profile` may reference other profiles by name in its
+        ``profiles`` property. Linked profiles can themselves link to more
+        profiles, so the graph is expanded **recursively** and deduplicated
+        (first occurrence wins, order preserved).
+
+        This guarantees that the content, tools and agents (profile names) of
+        every linked profile participate when processing a chat. Resolution is
+        delegated to :class:`ProfileManager` (the same logic used for file
+        profiles) and is best-effort: on failure the original list is returned
+        so a chat is never blocked by a profile-resolution error.
+
+        :param profiles: Profiles referenced directly by the chat/mentions.
+        :return: The input profiles plus all their (recursively) linked profiles.
+        """
+        if not profiles:
+            return profiles
+        try:
+            resolved = self.get_profile_manager().reduce_linked_profiles(
+                profiles=profiles
+            )
+            logger.info(
+                "Resolved %d profile(s) to %d after expanding linked profiles: %s",
+                len(profiles),
+                len(resolved),
+                [p.name for p in resolved],
+            )
+            return resolved
+        except Exception as ex:
+            logger.exception(
+                "Failed to resolve linked profiles, using %d base profile(s): %s",
+                len(profiles),
+                ex,
+            )
+            return profiles
+
+    # -------------------------------------------------------------------------
+    # Helper: build the TEAM section of the system prompt (ADDED)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _build_team_system_section(team_profiles: List[Profile]) -> str:
+        """
+        Render the TEAM section appended AFTER the profile composition.
+
+        ``team`` is a profile property listing profile NAMES the model can use
+        in NEW tasks (like ``profiles`` lists linked profiles). Team members are
+        NOT active in this turn: their content, tools and model are not applied,
+        they are only offered as a table (name + short description) so the model
+        knows who can take what kind of work and can hand it off instead of
+        impersonating them.
+
+        flowchart TD
+            A[Active profiles .team] --> B[ProfileManager.get_team_profiles]
+            B --> C{Any member?}
+            C -->|No| D[No section]
+            C -->|Yes| E[Markdown table: profile | description]
+            E --> F[Appended after the profile composition]
+
+        :param team_profiles: Resolved team profiles (see
+                              :meth:`ProfileManager.get_team_profiles`).
+        :return: Markdown section, or an empty string when there is no team.
+        """
+        if not team_profiles:
+            return ""
+
+        lines = [
+            "### TEAM",
+            "Profiles you can use in NEW tasks. They are NOT active in this turn: "
+            "never answer on their behalf. When a request belongs to one of them, "
+            "say so and ask the user to run that task with the profile "
+            "(@profile_name).",
+            "",
+            "| Profile | Description |",
+            "| --- | --- |",
+        ]
+        for profile in team_profiles:
+            description = ProfileManager.profile_short_description(profile=profile)
+            # Keep the table well formed.
+            description = description.replace("|", "\\|")
+            lines.append(f"| `{profile.name}` | {description} |")
+        return "\n".join(lines)
+
+    # -------------------------------------------------------------------------
+    # Helper: strip profile-managed tools inherited from the definition (ADDED)
+    # -------------------------------------------------------------------------
+    def _strip_inherited_profile_tools(self, chat_tools: List[str]) -> List[str]:
+        """
+        Drop the profile knowledge tools inherited from the profile definitions.
+
+        ``profile_knowledge_search`` and ``profile_learning`` are granted PER RUN
+        by the agent (:class:`SmolAgent`), which is the only component that knows
+        whether the current user may teach the profiles. When they are unioned
+        here from ``Profile.tools``:
+
+        * a profile saved earlier with ``profile_learning`` would expose a
+          write-capable tool to users WITHOUT knowledge administration rights,
+        * the agent's permission gate would be bypassed.
+
+        Both tools keep working: the agent re-adds them per run from the
+        ``profiles`` request header.
+
+        :param chat_tools: Tool names collected from the active profiles.
+        :return: The tool names without the profile-managed ones.
+        """
+        inherited_profile_tools = [
+            tool_name for tool_name in chat_tools
+            if tool_name in PROFILE_MANAGED_TOOLS
+        ]
+        if not inherited_profile_tools:
+            return chat_tools
+
+        logger.info(
+            "Ignoring profile knowledge tools inherited from the profile "
+            "definition (granted per run by the agent): %s",
+            inherited_profile_tools,
+        )
+        return [
+            tool_name for tool_name in chat_tools
+            if tool_name not in PROFILE_MANAGED_TOOLS
+        ]
+
+    def _ensure_investigation_tools(
+        self, chat_tools: List[str], settings: Any = None
+    ) -> List[str]:
+        """
+        Add the read-only investigation tools to a file-reading profile.
+
+        A profile's ``tools`` list is an allowlist, not a suggestion: a tool
+        that is registered but absent from the list is invisible to the model.
+        Profiles saved before the atlas tools existed therefore forced the
+        agent to page through files and use semantic search for exact symbols.
+
+        The tools added here are all read-only, so completing the allowlist
+        cannot grant a write capability. Profiles that cannot read project
+        files are left untouched.
+
+        Args:
+            chat_tools: Tool names collected from the active profiles.
+
+        Returns:
+            The same list plus any missing investigation tools.
+        """
+        if "project_read_file" not in chat_tools:
+            return chat_tools
+
+        # Discovery is atlas-only: the atlas tools replace the removed
+        # grep/glob/search/file-tree tools, so a profile that can read project
+        # files always gets them (otherwise it could not search at all).
+        try:
+            from codx.junior.atlas.constants import ATLAS_TOOL_NAMES, atlas_enabled
+        except Exception:  # pragma: no cover - constants are dependency free
+            ATLAS_TOOL_NAMES = ()
+            atlas_enabled = lambda _settings: False  # type: ignore
+
+        result = list(chat_tools)
+        if settings is not None and atlas_enabled(settings):
+            required = tuple(ATLAS_TOOL_NAMES) + ("project_changes", "search_codx")
+        else:
+            required = REQUIRED_INVESTIGATION_TOOLS
+
+        missing = [
+            tool_name for tool_name in required
+            if tool_name not in result
+        ]
+        if not missing:
+            return result
+
+        logger.info(
+            "Profile tool allowlist can read files but is missing %s; "
+            "adding the read-only investigation tools",
+            missing,
+        )
+        return result + missing
+
+    # -------------------------------------------------------------------------
+    # Helper: build the AI request headers (ADDED profiles header)
+    # -------------------------------------------------------------------------
+    def _build_ai_headers(
+        self,
+        chat: Chat,
+        chat_mode: str,
+        is_vibe: bool,
+        query_mentions: QueryMentions,
+        chat_tools: List[str],
+        chat_profile_names: List[str]
+    ) -> Dict[str, str]:
+        """
+        Build the HTTP-style headers forwarded to the AI provider.
+
+        Besides the analytics ``tags``, the headers declare the profiles taking
+        part in the turn through the internal ``profiles`` entry:
+
+        * it is CONSUMED by :class:`SmolAgent`, which strips it before reaching
+          the provider (it never leaks into the request),
+        * it is what makes the agent inject the profile knowledge tools:
+          ``profile_knowledge_search`` for every user and ``profile_learning``
+          only for users allowed to teach the profiles (project admin, project
+          knowledge admin or codx-junior admin).
+
+        Without it the agent receives no profile list and injects no profile
+        tool at all, so profiles can neither recall nor store what they learn.
+
+        :param chat: The chat being processed (for tag context).
+        :param chat_mode: Resolved chat mode.
+        :param is_vibe: Whether the turn runs in vibe mode.
+        :param query_mentions: Resolved mentions (profile names go into the tags).
+        :param chat_tools: Tool names available to the model.
+        :param chat_profile_names: Profiles taking part in the turn.
+        :return: Header dict for the AI request.
+        """
+        tags = [f"{chat.mode}"] + [p.name for p in query_mentions.profiles]
+        if is_vibe:
+            tags.append(CHAT_MODE_VIBE)
+
+        # Orchestration back-references: a run main task is the supervisor, a
+        # run step card is a worker, and a delegated subagent is a worker too.
+        # The internal header is consumed by SmolAgent (never sent to the
+        # provider) and makes it inject the right toolset: the orchestrator
+        # controls a run, workers get a baseline of project tools and never
+        # the orchestrator itself (no recursive planning).
+        orchestration_role: Optional[str] = None
+        if getattr(chat, "run_step_id", None):
+            orchestration_role = "worker"
+        elif getattr(chat, "mode", "") == ORCHESTRATION.CHAT_MODE_DELEGATE:
+            orchestration_role = "worker"
+        elif getattr(chat, "run_id", None):
+            orchestration_role = "supervisor"
+
+        if getattr(chat, "run_id", None):
+            tags.append(f"run:{chat.run_id}")
+        if getattr(chat, "run_step_id", None):
+            tags.append(f"step:{chat.run_step_id}")
+
+        headers: Dict[str, str] = {
+            "tags": ",".join(list(set(tags + chat_tools + chat_profile_names)))
+        }
+        if chat_profile_names:
+            headers[PROFILES_HEADER] = ",".join(chat_profile_names)
+        if orchestration_role:
+            orchestration_info = {
+                "run_id": getattr(chat, "run_id", None) or "",
+                "step_id": getattr(chat, "run_step_id", None) or "",
+                "role": orchestration_role,
+            }
+            headers[ORCHESTRATION.ORCHESTRATION_HEADER] = json.dumps(
+                orchestration_info
+            )
+            logger.info(
+                "Declaring orchestration role '%s' for chat '%s' (run=%s step=%s)",
+                orchestration_role,
+                chat.id,
+                orchestration_info["run_id"],
+                orchestration_info["step_id"],
+            )
+        return headers
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve profiles, model and tools
+    # -------------------------------------------------------------------------
+    def _resolve_profiles_and_model(
+        self,
+        chat: Chat,
+        query_mentions: QueryMentions,
+        chat_files: List[str],
+        is_refine: bool
+    ) -> Dict[str, Any]:
+        """
+        Derive the active profiles, LLM model, tool list, and profile content string
+        from the query mentions and chat state.
+
+        CHANGED: the mentioned profiles are first expanded with their **linked
+        profiles** (the ``profiles`` property, recursively) so that the content,
+        tools and agents of every linked profile are applied to the process.
+
+        ADDED — team: after the profile composition a ``### TEAM`` section is
+        appended with the profiles the model can use in NEW tasks (the ``team``
+        property of the active profiles). Team members are neither composed into
+        the prompt nor activated: they only appear as a name/description table,
+        resolved by :meth:`ProfileManager.get_team_profiles`. Profiles already
+        active in the turn are not offered again.
+
+        CHANGED — profile tools: the profile knowledge tools are stripped from
+        the collected tools (see :meth:`_strip_inherited_profile_tools`) because
+        they are granted PER RUN by the agent, which is the only component that
+        knows whether the user may teach the profiles.
+
+        Profiles are sorted by name and their content is formatted to be passed
+        as part of the AI system prompt, including the current date/time.
+
+        flowchart TD
+            A[Query mentions profiles] --> A1[Expand linked profiles - recursive]
+            A1 --> A2[Resolve team profiles - not composed]
+            A2 --> B{Any profiles?}
+            B -->|Yes| C[Sort profiles by name]
+            C --> D[Build system prompt content]
+            D --> D1[Append TEAM table after the composition]
+            D1 --> E[Collect tools from all profiles]
+            E --> E1[Strip agent-managed profile tools]
+            E1 --> F{Profile has model?}
+            F -->|Yes| G[Set chat_model from profile]
+            F -->|No| H[Keep existing model]
+            B -->|No| I{Any chat_files?}
+            I -->|Yes| J[Set default profile content]
+            I -->|No| K[Empty profile content]
+
+        :param chat: The current chat object.
+        :param query_mentions: Resolved mentions from the user query.
+        :param chat_files: List of files attached to the chat.
+        :param is_refine: Whether we are in task/refine mode.
+        :return: Dict with keys: chat_profiles_system_content, chat_profile_names,
+                 chat_team_names, chat_model, chat_tools, is_refine.
+        """
+        # Resolve nested/linked profiles: each profile may reference other
+        # profiles by name through its ``profiles`` property. Expand recursively
+        # and deduplicate so every linked profile — with its content, tools and
+        # agents — participates in the process.
+        all_profiles = self._resolve_linked_profiles(query_mentions.profiles)
+        chat_profiles_system_content = ""
+        chat_profile_names: List[str] = []
+        chat_team_names: List[str] = []
+        chat_model: Optional[str] = chat.llm_model
+        chat_tools: List[str] = []
+
+        if all_profiles:
+            # Sort profiles by name for consistent ordering
+            sorted_profiles = sorted(all_profiles, key=lambda p: p.name)
+            
+            profile_blocks = []
+            for profile in sorted_profiles:
+                block = f"### PROFILE: {profile.name}\n"
+                block += profile.parsed_content
+                profile_blocks.append(block)
+            
+            chat_profiles_system_content = "\n\n".join(profile_blocks)
+            chat_profile_names = [profile.name for profile in sorted_profiles]
+
+            # ADDED: TEAM section — the profiles the model can use in NEW tasks.
+            # Appended AFTER the profile composition and built only from the
+            # ``team`` property of the active profiles. Team members are NOT
+            # composed into the prompt and are NOT activated (their content,
+            # tools and model do not apply to this turn), and the profiles
+            # already active are excluded (they are being used right now).
+            chat_team_profiles = self.get_profile_manager().get_team_profiles(
+                profiles=sorted_profiles,
+                exclude=sorted_profiles,
+            )
+            team_system_section = self._build_team_system_section(
+                team_profiles=chat_team_profiles
+            )
+            if team_system_section:
+                chat_profiles_system_content = concat_content([
+                    chat_profiles_system_content,
+                    team_system_section,
+                ])
+                chat_team_names = [p.name for p in chat_team_profiles]
+                logger.info(
+                    "Team profiles offered for new tasks: %s", chat_team_names
+                )
+
+            for profile in sorted_profiles:
+                chat_tools = chat_tools + profile.tools
+                logger.info("Profile '%s (%s)' tools: '%s'", profile.name, profile.project_id, profile.tools)
+            chat_tools = list(set(chat_tools))
+
+            # Profile knowledge tools are granted PER RUN by the agent, which is
+            # the only component that knows whether the user may teach the
+            # profile. Anything inherited from the profile definition is dropped,
+            # so a profile saved with `profile_learning` cannot offer the write
+            # tool to users without knowledge administration rights.
+            chat_tools = self._strip_inherited_profile_tools(chat_tools)
+            # Never let a saved allowlist hide the tools needed to investigate
+            # the files the profile is already allowed to read.
+            chat_tools = self._ensure_investigation_tools(
+                chat_tools, settings=self.settings
+            )
+
+            if not chat_model:
+                profile_models = [p for p in sorted_profiles if p.llm_model]
+                if profile_models:
+                    profile_model = profile_models[0]
+                    chat_model = profile_model.llm_model
+                    logger.info(
+                        "chat_model '%s' from profile: '%s'",
+                        profile_model.llm_model,
+                        profile_model.name
+                    )
+
+            if next((p for p in sorted_profiles if _is_refine(p.chat_mode)), None):
+                is_refine = True
+
+        elif chat_files:
+            chat_profiles_system_content = (
+                "Focus on the changes required by the task "
+                "and keep all other content as it is."
+            )
+
+        return {
+            "chat_profiles_system_content": chat_profiles_system_content,
+            "chat_profile_names": chat_profile_names,
+            "chat_team_names": chat_team_names,
+            "chat_model": chat_model,
+            "chat_tools": chat_tools,
+            "is_refine": is_refine,
+        }
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve guardrail service for all active profiles (UPDATED)
+    # -------------------------------------------------------------------------
+    def _resolve_guardrail_service(self, query_mentions: QueryMentions):
+        """
+        Return a GuardrailService aggregating the guardrail policies of every
+        profile active in the current turn.
+
+        Each profile now carries its own ``guardrails`` policy (not tied to
+        ``api_settings``). When several profiles work together in one chat,
+        their policies are combined so input, output and tool checks are
+        enforced for all of them.
+
+        :param query_mentions: Resolved mentions for the current user query.
+        :return: GuardrailService instance or None when no profile enables guardrails.
+        """
+        profiles = [
+            p for p in query_mentions.profiles
+            if p.guardrails and p.guardrails.enabled
+        ]
+        if not profiles:
+            return None
+
+        from codx.junior.guardrails.service import GuardrailService
+
+        return GuardrailService(
+            policies=[p.guardrails for p in profiles],
+            settings=self.settings,
+        )
+
+    # -------------------------------------------------------------------------
+    # Helper: evaluate knowledge-disable conditions
+    # -------------------------------------------------------------------------
+    def _evaluate_knowledge_flags(
+        self,
+        chat: Chat,
+        disable_knowledge: bool,
+        search_projects: List[CODXJuniorSettings],
+        user_message: Message
+    ) -> bool:
+        """
+        Determine whether knowledge search should be disabled, emitting events as needed.
+
+        :param chat: The current chat object.
+        :param disable_knowledge: Incoming disable flag.
+        :param search_projects: Resolved search projects.
+        :param user_message: The latest user message.
+        :return: True if knowledge should be disabled, False otherwise.
+        """
+        if disable_knowledge:
+            self.event_manager.chat_event(
+                chat=chat,
+                message="Knowledge search is disabled: Disabled by invocation"
+            )
+            return True
+
+        if not search_projects:
+            self.event_manager.chat_event(
+                chat=chat,
+                message="Knowledge search is disabled: No search projects found"
+            )
+            return True
+
+        if user_message.disable_knowledge:
+            self.event_manager.chat_event(
+                chat=chat,
+                message="Knowledge search is disabled: Disabled by user message"
+            )
+            return True
+
+        return False
+
+    # -------------------------------------------------------------------------
+    # Helper: detect if a file is binary
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _is_binary_file(file_path: str) -> bool:
+        """
+        Determine if a file is binary based on its extension.
+
+        :param file_path: Path to the file.
+        :return: True if file appears to be binary, False otherwise.
+        """
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lstrip(".").lower()
+        
+        binary_extensions = {
+            "pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg",
+            "ico", "tiff", "zip", "tar", "gz", "7z", "rar", "exe",
+            "dll", "so", "pyc", "o", "a", "lib"
+        }
+        
+        return ext in binary_extensions
+
+    # -------------------------------------------------------------------------
+    # Helper: load content for explicitly attached chat files
+    # -------------------------------------------------------------------------
+    def _load_chat_files_content(
+        self,
+        chat_files: List[str],
+        already_in_messages: Set[str],
+        file_base_paths: Optional[Dict[str, str]] = None
+    ) -> Tuple[str, List[Dict[str, str]]]:
+        """
+        Read and format the content of files explicitly attached to the chat.
+
+        Separates text and binary files:
+        - Text files: returned as formatted code blocks in the content string
+        - Binary files (PDFs, images): returned as separate list for vision API
+
+        Files already embedded as code blocks in the message history are skipped
+        to avoid duplication.
+
+        ADDED: Chat file references may be RELATIVE and are relative to the
+        project that owns the chat (``project_id`` if present, otherwise
+        ``owner_project_id``) — NOT necessarily the current engine settings.
+        ``file_base_paths`` maps each file path to the project root it must be
+        resolved against; files missing from the map fall back to the current
+        engine project path.
+
+        ADDED: files attached to a message that declares its own ``project_id``
+        map to THAT project's root, so a single chat can work on files living
+        in another project (see :meth:`_resolve_message_project_path`).
+
+        CHANGED: Now returns a tuple of (text_content, binary_files_list).
+        Binary files are detected and separated for potential vision API processing.
+
+        :param chat_files: List of file paths to load.
+        :param already_in_messages: Set of file paths already present in message bodies.
+        :param file_base_paths: Optional mapping of file path -> project root path
+                                used to resolve relative file references.
+        :return: Tuple of (formatted_text_content_string, binary_files_list).
+        """
+        chat_files_content = ""
+        binary_files = []
+        file_base_paths = file_base_paths or {}
+        
+        for chat_file in chat_files:
+            if chat_file in already_in_messages:
+                continue
+
+            # Resolve against the owning chat's project (parent files can live
+            # in a different project than the current engine settings).
+            base_project_path = (
+                file_base_paths.get(chat_file) or self.settings.abs_project_path
+            )
+
+            chat_file_full_path = self._resolve_chat_file_path(
+                chat_file=chat_file,
+                base_project_path=base_project_path
+            )
+            if not chat_file_full_path:
+                continue
+
+            try:
+                # Check if binary BEFORE attempting to read as text
+                if self._is_binary_file(chat_file_full_path):
+                    logger.info(
+                        "Binary file detected (will pass to LLM separately): '%s'",
+                        chat_file_full_path
+                    )
+                    binary_files.append({
+                        "path": chat_file,
+                        "full_path": chat_file_full_path
+                    })
+                    continue
+                
+                with open(chat_file_full_path, "r", encoding="utf-8") as fh:
+                    source = chat_file_full_path.replace(
+                        base_project_path + "/", ""
+                    )
+                    logger.info(
+                        "Loading chat_file content from '%s' with source: '%s'",
+                        chat_file_full_path,
+                        source
+                    )
+                    doc_context = self._document_to_context(
+                        Document(
+                            page_content=fh.read(),
+                            metadata={"source": source}
+                        )
+                    )
+                    chat_files_content += doc_context + "\n"
+            except UnicodeDecodeError:
+                logger.warning(
+                    "Failed to decode '%s' as UTF-8; treating as binary",
+                    chat_file_full_path
+                )
+                binary_files.append({
+                    "path": chat_file,
+                    "full_path": chat_file_full_path
+                })
+            except OSError as ex:
+                logger.error("Error adding context file to chat: %s", ex)
+
+        return chat_files_content, binary_files
+
+    def _document_to_context(self, doc: Document) -> str:
+        """
+        Convert a Document to a formatted context string with language-specific code fence.
+
+        :param doc: The Document to convert.
+        :return: Formatted context string with file metadata and code fence.
+        """
+        content = doc.page_content
+        source = doc.metadata['source']
+        language = doc.metadata.get('language')
+        extension = source.split(".")[-1] if "." in source else ""
+
+        language = language or extension
+        language = LANGUAGE_PARSER_MAPPING.get(language, language)
+        
+        return concat_content([
+            "### FILE CONTEXT",
+            f"This is the actual project's file content for '{source}', use same file path in your response.",
+            "This content represent the current file, use it as a base for changes.",
+            "",
+            f"```{language} {source}",
+            content,
+            "```",
+            ""
+        ])
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve a project id to its absolute project path
+    # -------------------------------------------------------------------------
+    def _resolve_project_path(self, project_id: Optional[str]) -> Optional[str]:
+        """
+        Resolve a project id to the absolute path of its project.
+
+        Uses the current engine settings when they already match *project_id*
+        (fast path) and falls back to project discovery otherwise.
+
+        :param project_id: The project id to resolve (may be None).
+        :return: The absolute project path, or None when it cannot be resolved.
+        """
+        if not project_id:
+            return None
+        # Fast path: the engine is already scoped to this project.
+        if project_id == self.settings.project_id:
+            return self.settings.abs_project_path
+        project_settings = find_project_by_id(project_id=project_id)
+        if project_settings and project_settings.abs_project_path:
+            return project_settings.abs_project_path
+        return None
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve the project path a chat's files are relative to
+    # -------------------------------------------------------------------------
+    def _resolve_chat_project_path(self, chat: Chat) -> str:
+        """
+        Resolve the absolute project path that a chat's file references are
+        relative to.
+
+        Chat file lists (``chat.file_list``) and message attachments may store
+        *relative* paths. Those paths are relative to the chat's working
+        project: ``project_id`` when present, otherwise ``owner_project_id``.
+
+        This matters especially for parent chats, which can live in a different
+        project than the current engine settings.
+
+        :param chat: The chat whose project base path to resolve (may be None).
+        :return: Absolute project path used as the base for the chat's files.
+        """
+        if chat:
+            for project_id in (chat.project_id, chat.owner_project_id):
+                project_path = self._resolve_project_path(project_id=project_id)
+                if project_path:
+                    return project_path
+        return self.settings.abs_project_path
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve the project the CURRENT turn works on (ADDED)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _resolve_turn_project_id(chat: Chat) -> Optional[str]:
+        """
+        Resolve the project the CURRENT turn works on.
+
+        The user message of the turn may declare its own ``project_id`` (like a
+        :class:`Chat` does). When set, that project becomes the MAIN project of
+        the turn: it takes precedence over ``chat.project_id``, the engine
+        switches its context to it and every file of the turn is resolved
+        against it.
+
+        ``owner_project_id`` is NOT a working project — it only tells where the
+        chat is persisted — so it is never used here.
+
+        flowchart TD
+            A[Last visible user message] --> B{project_id set?}
+            B -->|Yes| C[Main project = message.project_id]
+            B -->|No| D[Main project = chat.project_id]
+            D --> E{defined?}
+            E -->|No| F[None - engine project is used]
+
+        :param chat: The chat being processed.
+        :return: The project id the turn works on, or None when unknown.
+        """
+        for message in reversed(chat.messages or []):
+            if message.hide or message.improvement or message.role != "user":
+                continue
+            if message.project_id:
+                return message.project_id
+            # Only the CURRENT request defines the turn scope: previous user
+            # messages must not leak their project into this turn.
+            break
+        return chat.project_id or None
+
+    # -------------------------------------------------------------------------
+    # Helper: resolve the project path a MESSAGE's files are relative to (ADDED)
+    # -------------------------------------------------------------------------
+    def _resolve_message_project_path(
+        self,
+        message: Optional[Message],
+        chat: Optional[Chat]
+    ) -> str:
+        """
+        Resolve the absolute project path that a message's file references are
+        relative to.
+
+        A message may declare its own ``project_id`` (like a ``Chat`` does), so
+        a single chat can work on files that live in another project. When the
+        message does not define one — or it points to an unknown project — the
+        chat's project path is used.
+
+        The engine project is NOT switched here: the chat (and therefore its
+        persistence) still belongs to its own project. Only the file resolution
+        of the message is affected.
+
+        flowchart TD
+            A[message.project_id] --> B{defined?}
+            B -->|No| C[chat project path]
+            B -->|Yes| D[resolve project path]
+            D -->|found| E[message project path]
+            D -->|not found| F[log warning + chat project path]
+
+        :param message: The message whose project to resolve (may be None).
+        :param chat: The chat that owns the message (may be None).
+        :return: Absolute project path used as the base for the message's files.
+        """
+        message_project_path = self._resolve_project_path(
+            project_id=message.project_id if message else None
+        )
+        if message_project_path:
+            return message_project_path
+
+        chat_project_path = self._resolve_chat_project_path(chat=chat)
+        if message and message.project_id:
+            logger.warning(
+                "Message '%s' declares unknown project_id '%s'; falling back to "
+                "the chat project path '%s'",
+                message.doc_id,
+                message.project_id,
+                chat_project_path,
+            )
+        return chat_project_path
+
+    def _resolve_chat_file_path(
+        self,
+        chat_file: str,
+        base_project_path: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Resolve the full filesystem path of a chat-attached file.
+
+        Files may be absolute or relative. Relative paths are resolved against
+        *base_project_path* — the project that owns the chat the file belongs
+        to — falling back to the current engine project when not provided.
+
+        Returns None and logs a warning if the file cannot be found.
+
+        :param chat_file: Relative or absolute file path.
+        :param base_project_path: Project root the relative path is based on.
+        :return: Resolved absolute path, or None if unresolvable.
+        """
+        base_project_path = base_project_path or self.settings.abs_project_path
+
+        if chat_file.startswith(base_project_path) or os.path.isfile(chat_file):
+            return chat_file
+
+        logger.info(
+            "Normalizing chat_file '%s' for project path: '%s'",
+            chat_file,
+            base_project_path
+        )
+        normalized = chat_file.lstrip("/")
+        full_path = os.path.join(base_project_path, normalized)
+        return full_path
+
+    # -------------------------------------------------------------------------
+    # Helper: convert binary files to vision API format
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _prepare_vision_content(
+        binary_files: List[Dict[str, str]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Convert binary files to OpenAI vision API format.
+
+        Supports image files only. Image files are converted to base64-encoded
+        data URIs in the image_url format supported by OpenAI's vision API.
+
+        PDF support is not included as OpenAI's API does not accept PDFs in the
+        image_url or file format via data URIs.
+
+        Format returned matches OpenAI Chat Completions API vision support:
+        https://platform.openai.com/docs/guides/vision
+
+        CHANGED: Simplified to only handle image files. PDFs are skipped with
+        a debug log. Message attachments are NOT processed here: they are
+        gathered from every visible message by
+        :meth:`ChatPromptBuilder.collect_attachments` and appended to the
+        request message by :meth:`ChatPromptBuilder.build_ai_prompt_messages`.
+
+        :param binary_files: List of {'path', 'full_path'} dicts from chat files.
+        :return: List of content blocks (image_url type only).
+        """
+        vision_content = []
+
+        for binary_file in binary_files:
+            full_path = binary_file["full_path"]
+            mime_type = ChatEngine._get_mime_type_for_file(full_path)
+            
+            # Only process image files; skip PDFs and unsupported types
+            if not mime_type.startswith("image/"):
+                logger.debug(
+                    "Skipping non-image file for vision API: %s (mime_type=%s)",
+                    full_path, mime_type
+                )
+                continue
+            
+            try:
+                with open(full_path, "rb") as f:
+                    file_bytes = f.read()
+                base64_data = base64.b64encode(file_bytes).decode("utf-8")
+                
+                # Format as data URI (supported by vision models)
+                data_uri = f"data:{mime_type};base64,{base64_data}"
+                
+                vision_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_uri}
+                })
+                logger.info(
+                    "Added image file to vision content: %s",
+                    full_path
+                )
+            except OSError as ex:
+                logger.warning("Failed to read binary file %s: %s", full_path, ex)
+
+        return vision_content
+
+    @staticmethod
+    def _get_mime_type_for_file(file_path: str) -> str:
+        """
+        Determine MIME type from file extension.
+
+        :param file_path: File path.
+        :return: MIME type string.
+        """
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lstrip(".").lower()
+        
+        mime_map = {
+            "pdf": "application/pdf",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "gif": "image/gif",
+            "webp": "image/webp",
+        }
+        
+        return mime_map.get(ext, "application/octet-stream")
+
+    # -------------------------------------------------------------------------
+    # Helper: pre-search (vibe / search modes)
+    # -------------------------------------------------------------------------
+    async def _run_pre_search(
+        self,
+        chat: Chat,
+        messages: List,
+        query: str,
+        chat_files: List[str]
+    ) -> Tuple[List[Document], List[str], str]:
+        """
+        Execute the AI-driven pre-search used in vibe and search modes.
+
+        Combines conversation history with the current query to build a richer
+        search query, then delegates to ChatKnowledge.
+
+        :param chat: The current chat object.
+        :param messages: Existing LangChain messages (history).
+        :param query: The raw user query string.
+        :param chat_files: Files already attached to the chat.
+        :return: Tuple of (documents, file_list, context_string).
+        """
+        history_context = concat_content([m.content for m in messages])
+        pre_search_query = f"{history_context}\n{query}".strip()
+
+        pre_docs, pre_file_list, pre_context = (
+            await self.chat_knowledge.ai_search_for_context(
+                chat=chat,
+                query=pre_search_query,
+                existing_chat_files=chat_files
+            )
+        )
+        logger.info("Pre-search added %d documents to context", len(pre_docs))
+        return pre_docs, pre_file_list, pre_context
+
+    # -------------------------------------------------------------------------
+    # Helper: standard RAG knowledge search
+    # -------------------------------------------------------------------------
+    def _run_rag_knowledge_search(
+        self,
+        chat: Chat,
+        messages: List,
+        query: str,
+        ignore_documents: List[str],
+        search_projects: List[CODXJuniorSettings]
+    ) -> Tuple[List[Document], List[str], str]:
+        """
+        Perform the standard RAG document search across the given search projects.
+
+        :param chat: The current chat object.
+        :param messages: Existing LangChain message history.
+        :param query: The raw user query string.
+        :param ignore_documents: File paths to exclude from search results.
+        :param search_projects: Projects to search within.
+        :return: Tuple of (documents, file_list, context_string).
+        """
+        rag_documents: List[Document] = []
+        file_list: List[str] = []
+        context = ""
+
+        chat.messages.append(
+            self._new_chat_message(
+                "assistant",
+                content=f"Searching in {[p.project_name for p in search_projects]}"
+            )
+        )
+        logger.info("chat_with_project start project search %s", search_projects)
+
+        try:
+            if query:
+                query_context = concat_content([message.content for message in messages])
+                search_query = self.chat_knowledge.create_knowledge_search_query(
+                    query=f"{query_context}\n{query}"
+                )
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=f"Knowledge searching for: {search_query}"
+                )
+
+                rag_documents, file_list = (
+                    self.chat_knowledge.select_documents_from_knowledge(
+                        chat=chat,
+                        query=search_query,
+                        ignore_documents=ignore_documents,
+                        search_projects=search_projects
+                    )
+                )
+                for doc in rag_documents:
+                    doc_context = document_to_code_block(doc)
+                    context += f"{doc_context}\n"
+
+            self.event_manager.chat_event(
+                chat=chat,
+                message=f"Knowledge search found {len(rag_documents)} relevant documents"
+            )
+        except (OSError, ValueError, RuntimeError) as ex:
+            self.event_manager.chat_event(
+                chat=chat,
+                message=f"!!Error searching in knowledge {ex}",
+                event_type="error"
+            )
+            logger.exception("!!Error searching in knowledge: %s", ex)
+
+        return rag_documents, file_list, context
+
+    # -------------------------------------------------------------------------
+    # Helper: extract code blocks with filenames from response content
+    # -------------------------------------------------------------------------
+    def _extract_files_from_response(self, content: str) -> List[Dict[str, str]]:
+        """
+        Extract code blocks with filenames from the AI response content.
+
+        Parses markdown code blocks in the format:
+        ```language filename
+        code content here
+        ```
+
+        Returns a list of dicts with keys: language, file_path, content
+
+        :param content: The response content string to parse.
+        :return: List of file dicts extracted from code blocks.
+        """
+        return self.prompt_builder.extract_files_from_response(content=content)
+
+    # -------------------------------------------------------------------------
+    # ADDED: Helper to build user-friendly error message from API response
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _build_friendly_error_message(error: Exception) -> str:
+        """
+        Extract and format API error details for user consumption.
+
+        Handles OpenAI BadRequestError with parameter constraints, falling back
+        to a generic message for other error types.
+
+        :param error: The exception to extract details from.
+        :return: User-friendly error message.
+        """
+        error_str = str(error)
+        
+        try:
+            # BadRequestError contains response with error details
+            if hasattr(error, 'response') and error.response:
+                error_body = error.response.json() if hasattr(error.response, 'json') else {}
+                if isinstance(error_body, dict):
+                    error_info = error_body.get('error', {})
+                    if isinstance(error_info, dict):
+                        msg = error_info.get('message', '')
+                        param = error_info.get('param', '')
+                        
+                        if msg and param:
+                            return (
+                                f"⚠️ **Model Configuration Issue**\n\n"
+                                f"Parameter: `{param}`\n\n"
+                                f"Error: {msg}\n\n"
+                                f"*Suggestion: Check your model settings or try with different parameters.*"
+                            )
+                        elif msg:
+                            return f"⚠️ **API Error**: {msg}"
+        except Exception:
+            pass
+        
+        # Generic fallback
+        return f"⚠️ **Request Error**: {error_str}"
+
+    # -------------------------------------------------------------------------
+    # Helper: execute AI response
+    # -------------------------------------------------------------------------
+    async def _execute_ai_response(
+        self,
+        chat: Chat,
+        messages: List,
+        is_search: bool,
+        ai,
+        ai_headers: Dict[str, str],
+        chat_tools: List[str],
+        response_message: Message,
+        task_item: Optional[str],
+        callback,
+        send_message_event,
+        cancellation_token: Optional[CancellationToken] = None,
+        run_context: Optional[AgentRunContext] = None,
+        event_bridge: Optional[ChatEventBridge] = None,
+        vision_content: Optional[List[Dict[str, Any]]] = None,
+    ) -> Tuple[Optional[str], str, List[str], Any]:
+        """
+        Invoke the appropriate AI or search handler and extract the response parts.
+
+        Returns a tuple of (think_content, response_content, extra_files, ai_chat_fn).
+
+        COST: the AI returns a typed :class:`AgentRunResult`. Its
+        ``cost.iteration_cost_cxjcoins`` (every LLM round plus any tool cost) is
+        registered on the response message (``Message.cost``) so ``ChatManager``
+        accumulates it into ``Chat.cost``. The full breakdown is stored on
+        ``Message.cost_info`` and streamed to clients via ``message-event``.
+
+        CRASH-SAFETY: when an error occurs, ``response_message.error`` is set
+        and the response message is persisted IMMEDIATELY via the event bridge
+        so the error survives even if a later step crashes.
+
+        ADDED CRASH-SAFETY: hidden reasoning messages produced by multi-step
+        runs are persisted the moment they are appended (via
+        ``event_bridge.persist_message``) instead of waiting for the
+        end-of-turn chat save.
+
+        ADDED: vision_content (images, PDFs) can now be passed and will be
+        merged into the final user message for models that support vision APIs.
+
+        ADDED — profile tools scope: the internal ``profiles`` header (which
+        makes the agent inject the profile knowledge tools) is forwarded ONLY
+        for the main chat request. Auxiliary requests of the same turn (chat
+        summary, description, auto-init) call ``ai_chat`` with ``tags`` and get
+        the header removed, so they never receive those tools.
+
+        FIX Issue 3: The ``is_thinking`` / ``think_content`` detection block
+        has been removed. ``message_parts`` is always a single-element list so
+        ``is_thinking`` was always ``False`` and ``think_content`` always
+        ``None``. The ``think`` field is already populated correctly during
+        streaming via ``send_message_event`` → ``response_message.think``;
+        overwriting it here would erase the streamed think content.
+
+        FIX: the pure knowledge-search branch (``is_search``) builds its query
+        through :meth:`ChatPromptBuilder._get_text_content`, because prompt
+        messages may carry multimodal content parts (attachment images). Joining
+        ``m.content`` directly raised ``TypeError`` on list content.
+
+        flowchart TD
+            A{is_search?} -->|Yes| B[KnowledgeAISearch]
+            A -->|No| C[AI Chat with run_context - returns AgentRunResult]
+            B --> D[Build search message]
+            C --> E[Extract last message content]
+            C -->|cost| E1[Register cost + cost_info on response_message]
+            C -->|hidden reasoning| F4[persist_message - immediate]
+            C -->|tool events| F2[Events persisted on response_message]
+            C -->|error| F3[response_message.error persisted immediately]
+            C -->|vision| F5[Merge vision_content into user message]
+            D --> F[Return think, content, files]
+            E --> F
+            E1 --> F
+
+        :param chat: The current chat.
+        :param messages: Assembled prompt messages.
+        :param is_search: Whether this is a pure knowledge search request.
+        :param ai: Configured AI instance.
+        :param ai_headers: HTTP-style headers forwarded to the AI provider.
+        :param chat_tools: Tool names available to the AI.
+        :param response_message: The response message being assembled; the
+                                 run_context listeners attach tool/lifecycle
+                                 events to it during the AI call.
+        :param task_item: The task item type of the current user message.
+        :param callback: Streaming callback for partial content.
+        :param send_message_event: Callable to emit partial response events.
+        :param cancellation_token: Optional token to cancel the ongoing request.
+        :param run_context: Optional AgentRunContext with the ChatEventBridge
+                            listener bound to *response_message* (used only
+                            for the main chat request).
+        :param event_bridge: Optional bridge used to persist the response
+                             message immediately on error and to persist
+                             hidden reasoning messages as they are produced.
+        :param vision_content: Optional list of vision content blocks (image_url, file types)
+                               to merge into the final user message.
+        :return: Tuple of (think_content, main_content, extra_file_list, ai_chat_fn).
+        """
+        # FIX Issue 3: think_content is NOT derived here — it is set on
+        # response_message.think during streaming via send_message_event.
+        # Returning None here preserves whatever was already streamed.
+        think_content: Optional[str] = None
+        main_content = ""
+        extra_files: List[str] = []
+
+        async def ai_chat(messages=None, prompt="", tags="", callback=None, run_context=None, vision_content=None) -> AgentRunResult:
+            """Invoke the AI with the assembled messages, optional prompt, and vision content."""
+            if messages is None:
+                messages = []
+            headers = ai_headers
+            if tags:
+                # Auxiliary request (summary, description, auto-init): it does
+                # NOT belong to the profile knowledge flow, so the internal
+                # `profiles` header is dropped and the agent injects no profile
+                # tool. The header stays untouched in `ai_headers`, so the main
+                # request of the turn keeps it.
+                headers = {
+                    key: value for key, value in ai_headers.items()
+                    if key.lower() not in (
+                        PROFILES_HEADER,
+                        ORCHESTRATION.ORCHESTRATION_HEADER,
+                    )
+                }
+                headers["tags"] = ai_headers["tags"] + "," + tags
+            return await ai.a_chat_run(
+                messages=messages,
+                prompt=prompt,
+                callback=callback,
+                headers=headers,
+                # Auxiliary requests (summary/description/auto-init) never need
+                # tools; only the main turn receives the selected toolset.
+                tools=[] if tags else chat_tools,
+                cancellation_token=cancellation_token,
+                chat_id=chat.id,
+                run_context=run_context,
+                current_chat=chat,
+                vision_content=vision_content,
+            )
+
+        try:
+            input_messages_count = len(messages)
+
+            if is_search:
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=f"Knowledge search for: {chat.name}"
+                )
+                send_message_event("* Searching...", False)
+                # FIX: prompt messages may carry multimodal content parts
+                # (attachment images) — join only their TEXT parts.
+                combined_query = concat_content(
+                    [ChatPromptBuilder._get_text_content(m) for m in messages]
+                )
+                ai_search_results = await KnowledgeAISearch(
+                    settings=self.settings
+                ).ai_search(user_query=combined_query)
+                search_message = build_search_message(ai_search_results)
+                main_content = search_message.content
+                extra_files = search_message.files or []
+            else:
+                # The run_context (with the ChatEventBridge listener bound to
+                # response_message) is only forwarded for the MAIN chat request
+                # so tool / lifecycle events are attached to the response.
+                # Auxiliary calls (summary, auto-init) reuse ai_chat without a
+                # run_context.
+                run_result: AgentRunResult = await ai_chat(
+                    messages=messages,
+                    callback=callback,
+                    run_context=run_context,
+                    vision_content=vision_content,
+                )
+                response_messages = run_result.messages
+                new_message_count = len(response_messages) - input_messages_count
+
+                if new_message_count > 1:
+                    for reasoning_message in response_messages[input_messages_count + 1:-1]:
+                        hidden_msg = self._new_chat_message(
+                            role=reasoning_message.type,
+                            content=reasoning_message.content
+                        )
+                        hidden_msg.hide = True
+                        chat.messages.append(hidden_msg)
+                        # ADDED CRASH-SAFETY: persist each hidden reasoning
+                        # message IMMEDIATELY so it survives a crash before
+                        # the end-of-turn chat save.
+                        if event_bridge:
+                            event_bridge.persist_message(hidden_msg)
+
+                # FIX Issue 3: message_parts was always a single-element list
+                # so is_thinking was always False and think_content always None.
+                # Read only the final answer from the last message directly.
+                # response_message.think is already set correctly by
+                # send_message_event during streaming — do not touch it here.
+                main_content = (
+                    response_messages[-1].content if response_messages else ""
+                )
+
+                # Register the FULL processing cost of this run (all LLM rounds
+                # plus any tool cost reported via ToolResponse.cost) on the
+                # response message so ChatManager accumulates it into Chat.cost —
+                # the monotonic, deletion-safe budget accumulator compared
+                # against Chat.estimation_cost. The detailed breakdown is stored
+                # on cost_info and streamed to clients via message-event.
+                response_message.cost = run_result.cost.iteration_cost_cxjcoins
+                response_message.cost_info = run_result.cost
+
+        except Exception as ex:
+            logger.exception(
+                "Ops, sorry! Error chatting with project: %s %s", ex, chat.id
+            )
+            main_content = concat_content([
+                response_message.content,
+                f"> Ops, sorry! There was an error with latest request: {ex}"
+            ])
+            
+            response_message.error = str(ex)
+            response_message.content = main_content 
+            # CRASH-SAFETY: persist the error state IMMEDIATELY so it is not
+            # lost if any later step (summary, metadata, save) fails.
+            if event_bridge:
+                event_bridge.publish()
+
+        return think_content, main_content, extra_files, ai_chat
+
+    # -------------------------------------------------------------------------
+    # Helper: finalize response metadata
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _finalize_response_metadata(
+        response_message: Message,
+        user_message: Message,
+        timing_info: Dict[str, Any],
+        ai_model: str,
+        chat_profile_names: List[str],
+        extracted_files: List[Dict[str, str]] = None
+    ) -> None:
+        """
+        Stamp the response message with timing, model metadata, and extracted files.
+
+        Merges ``user_message.meta_data`` into the existing
+        ``response_message.meta_data`` so that fields already present on the
+        response message (e.g. ``cancellation_token_id`` stamped in step 6 or
+        ``analytics`` set by the ChatEventBridge) are **not** overwritten.
+
+        :param response_message: The message to annotate.
+        :param user_message: The originating user message (provides base meta_data).
+        :param timing_info: Dict containing 'start_time' and 'first_response'.
+        :param ai_model: Name of the model that generated the response.
+        :param chat_profile_names: Names of profiles active during this turn.
+        :param extracted_files: List of file dicts extracted from code blocks.
+        """
+        # Start from the user message's meta_data (may contain client-side fields),
+        # then overlay with whatever was already on the response message so that
+        # fields like ``cancellation_token_id`` and ``analytics`` that were
+        # stamped before/during the AI call are preserved.
+        base_meta: Dict[str, Any] = dict(user_message.meta_data or {})
+        base_meta.update(response_message.meta_data or {})
+
+        base_meta["time_taken"] = time.time() - timing_info["start_time"]
+        base_meta["first_chunk_time_taken"] = timing_info["first_response"]
+        base_meta["model"] = ai_model
+
+        # Add extracted files to metadata
+        if extracted_files:
+            base_meta["files"] = extracted_files
+            logger.info("Added %d extracted files to response metadata", len(extracted_files))
+
+        response_message.meta_data = base_meta
+
+    # -------------------------------------------------------------------------
+    # Helper: build clean message history for description (ADDED)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _build_clean_message_history_for_description(chat: Chat) -> List:
+        """
+        Build a message history that excludes system prompts, profile content,
+        and file content details.
+
+        This creates a cleaner conversation history suitable for generating
+        concise summaries without the technical implementation details.
+
+        Only includes the natural user and assistant messages from the chat,
+        excluding hidden and improvement messages.
+
+        CHANGED: the original ROLE of each message is preserved (the previous
+        implementation re-alternated user/assistant by index, mislabelling a
+        user correction that followed a user message) and the transcript is
+        bounded to the most recent messages, so the per-turn summary call does
+        not grow with the conversation.
+
+        :param chat: The chat whose clean history to build.
+        :return: List of ``(role, content)`` tuples (user and assistant only).
+        """
+        clean_messages = []
+        
+        for message in chat.messages:
+            # Skip hidden and improvement messages
+            if message.hide or message.improvement:
+                continue
+            
+            # Only include actual user and assistant messages
+            if message.role not in ("user", "assistant"):
+                continue
+            
+            # Clean the content by removing file content markers and system prompts
+            content = message.content.strip()
+            
+            # Skip context/file markers added during processing
+            if content.startswith("<project_files>") or content.startswith("## Working Files:"):
+                # Extract just the user request part if it exists
+                if "## User request" in content:
+                    parts = content.split("## User request")
+                    if len(parts) > 1:
+                        content = parts[1].strip()
+                    else:
+                        continue
+                else:
+                    continue
+            
+            # Skip processing messages
+            if content.startswith("* Processing"):
+                continue
+            
+            # Skip search messages
+            if content.startswith("Searching in") or content.startswith("Knowledge search"):
+                continue
+            
+            if content:
+                clean_messages.append(
+                    (
+                        message.role,
+                        content[:CHAT_DESCRIPTION_MAX_MESSAGE_CHARS],
+                    )
+                )
+
+        # Bound the transcript: the 5-line summary only needs the latest turns.
+        clean_messages = clean_messages[-CHAT_DESCRIPTION_MAX_MESSAGES:]
+        
+        logger.info(
+            "Built clean message history for description: %d messages",
+            len(clean_messages)
+        )
+        return clean_messages
+
+    # -------------------------------------------------------------------------
+    # Helper: generate chat description and history entry
+    # -------------------------------------------------------------------------
+    async def _generate_chat_description(
+        self,
+        chat: Chat,
+        messages: List,
+        is_refine: bool,
+        ai_chat_fn
+    ) -> None:
+        """
+        Generate and store a short summary of the conversation.
+
+        The summary includes only the core conversation content, excluding:
+        - Profile content and instructions
+        - File contents (only file paths are considered)
+        - Processing/system messages
+
+        Maintains a timestamped history of descriptions as the chat evolves,
+        allowing review of context changes over time.
+
+        :param chat: The chat to annotate with a description.
+        :param messages: Message list used for the conversation.
+        :param is_refine: Whether we are in task/refine mode (uses only last message).
+        :param ai_chat_fn: Async callable returning an :class:`AgentRunResult`.
+        """
+        try:
+            # Build clean messages without file contents and profile information
+            clean_messages = self._build_clean_message_history_for_description(chat)
+            
+            if not clean_messages:
+                logger.warning(
+                    "No clean messages available for description generation in chat '%s'",
+                    chat.doc_id
+                )
+                return
+            
+            # Convert clean (role, content) pairs to LangChain messages.
+            desc_messages = []
+            for role, content in clean_messages:
+                if role == "user":
+                    desc_messages.append(HumanMessage(content=content))
+                else:
+                    desc_messages.append(AIMessage(content=content))
+
+            # Some providers reject a transcript that starts with an assistant
+            # message: drop leading assistant turns (possible when the first
+            # user turn was filtered as file content).
+            while desc_messages and isinstance(desc_messages[0], AIMessage):
+                desc_messages.pop(0)
+            
+            # If in refine mode, use only the last message for context
+            if is_refine and desc_messages:
+                desc_messages = [desc_messages[-1]]
+            
+            logger.info(
+                "Generating chat description from %d clean messages for chat '%s'",
+                len(desc_messages),
+                chat.doc_id
+            )
+            
+            description_run: AgentRunResult = await ai_chat_fn(
+                messages=desc_messages,
+                prompt="Create a 5 lines summary of the conversation",
+                tags="chat-summary"
+            )
+            
+            new_description = (
+                description_run.messages[-1].content.strip()
+                if description_run.messages else ""
+            )
+            
+            # Update current description
+            chat.description = new_description
+            
+            # Create and append history entry
+            history_entry = ChatHistoryEntry(
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                summary=new_description,
+                message_ids=[m.doc_id for m in chat.messages]
+            )
+            
+            # Initialize history if needed
+            if not hasattr(chat, 'history') or chat.history is None:
+                chat.history = []
+            
+            chat.history.append(history_entry)
+            
+            logger.info(
+                "Chat description updated (history entries: %d) for chat '%s'",
+                len(chat.history),
+                chat.doc_id
+            )
+        except (ValueError, RuntimeError, OSError) as ex:
+            logger.exception(
+                "Error generating chat description: %s %s", ex, chat.doc_id
+            )
+
+    # -------------------------------------------------------------------------
+    # Helper: auto-initialize auto_initialize chat metadata
+    # -------------------------------------------------------------------------
+    async def _auto_initialize_chat_metadata(
+        self,
+        chat: Chat,
+        messages: List,
+        ai_chat_fn
+    ) -> None:
+        """
+        Auto-fill metadata for auto_initialize chats.
+
+        Two independent steps run for a chat marked ``auto_initialize``:
+
+        1. **Name** — asked to the AI through ``CHAT_INIT_PROMPT`` (unchanged
+           mechanism). Only the name is used; a missing name leaves the field
+           untouched.
+        2. **Board / column** — delegated to the chat organization process
+           (:class:`codx.junior.organizer.ChatOrganizer`), which decides the
+           destination against the project's real boards/columns
+           (``tasks/kanban.json``) and falls back to an LLM decision engine
+           when the preferred engine is unavailable or abstains — i.e. the
+           behaviour that existed before when no local engine is installed.
+
+        Both steps are best-effort: a failure in one never prevents the other
+        nor breaks the chat turn. ``auto_initialize`` is cleared once both
+        steps have been attempted so the chat is no longer re-processed.
+
+        flowchart TD
+            A{chat.auto_initialize?} -->|No| Z[Skip]
+            A -->|Yes| B[Ask AI for a name - CHAT_INIT_PROMPT]
+            B --> C{name suggested?}
+            C -->|Yes| D[Set chat.name]
+            C -->|No| E[Keep current name]
+            D --> F[ChatOrganizer.organize_if_needed]
+            E --> F
+            F --> G[Structured engine - local typed decision]
+            G -->|unavailable / abstain| H[LLM engine - previous behaviour]
+            G -->|match| I[Set board + column + priority]
+            H --> I
+            I --> J[Clear auto_initialize flag]
+
+        :param chat: The chat whose metadata may be auto-filled.
+        :param messages: The assembled message list for the current turn.
+        :param ai_chat_fn: Async callable returning an :class:`AgentRunResult`.
+        """
+        if not chat.auto_initialize:
+            return
+
+        logger.info(
+            "Chat '%s' is auto_initialize — initializing chat metadata",
+            chat.doc_id
+        )
+
+        # ------------------------------------------------------------------
+        # 1. Name — AI suggestion (unchanged mechanism, name only).
+        #
+        # CHANGED: the name suggestion no longer re-sends the FULL assembled
+        # prompt (project files context, attachment parts, profile content...).
+        # A chat title only needs the recent conversation, so the bounded clean
+        # history is used instead. This removes a large duplicate request from
+        # the first turn of every auto_initialize chat.
+        # ------------------------------------------------------------------
+        try:
+            clean_messages = self._build_clean_message_history_for_description(chat)
+            init_messages = [
+                HumanMessage(content=content) if role == "user"
+                else AIMessage(content=content)
+                for role, content in clean_messages[-CHAT_INIT_MAX_MESSAGES:]
+            ]
+            # Providers expect the transcript to start with a user message.
+            while init_messages and isinstance(init_messages[0], AIMessage):
+                init_messages.pop(0)
+            if not init_messages:
+                init_messages = messages.copy()
+            init_run: AgentRunResult = await ai_chat_fn(
+                messages=init_messages,
+                prompt=CHAT_INIT_PROMPT,
+                tags="chat-init"
+            )
+            raw = (
+                init_run.messages[-1].content.strip()
+                if init_run.messages else ""
+            )
+
+            # Strip possible markdown code fences
+            if raw.startswith("```"):
+                raw = concat_content(
+                    line for line in raw.splitlines()
+                    if not line.startswith("```")
+                ).strip()
+
+            suggestions: Dict[str, str] = json.loads(raw)
+            logger.info(
+                "Chat init name suggestion for '%s': %s", chat.doc_id, suggestions
+            )
+
+            if suggestions.get("name"):
+                chat.name = suggestions["name"]
+                logger.info("Auto-set chat.name = '%s'", chat.name)
+
+        except (ValueError, RuntimeError, JSONDecodeError, OSError) as ex:
+            logger.exception(
+                "Error auto-initializing chat name for '%s': %s", chat.doc_id, ex
+            )
+
+        # ------------------------------------------------------------------
+        # 2. Board / column — chat organization decision process.
+        #
+        #    The organizer decides the destination against the real boards and
+        #    columns of the project and only fills fields that are still empty
+        #    (a board/column set by a human always wins). The blocking decision
+        #    runs in a worker thread so the event loop is not blocked by the
+        #    local model inference or the LLM fallback call.
+        # ------------------------------------------------------------------
+        try:
+            organizer = ChatOrganizer(
+                settings=self.settings,
+                chat_manager=self.get_chat_manager(project_id=chat.owner_project_id),
+            )
+            await asyncio.to_thread(organizer.organize_if_needed, chat)
+        except Exception as ex:  # never break the chat on a decision failure
+            logger.exception(
+                "Error organizing chat '%s': %s", chat.doc_id, ex
+            )
+
+        chat.auto_initialize = False
+        logger.info(
+            "Chat '%s' metadata initialized: name='%s' board='%s' column='%s'",
+            chat.doc_id, chat.name, chat.board, chat.column
+        )
+
+    # -------------------------------------------------------------------------
+    # Helper: handle post-task mode cleanup
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _hide_non_answer_messages(chat: Chat) -> None:
+        """
+        In task mode, hide all prior messages that are not marked as answers.
+
+        :param chat: The chat to process.
+        """
+        for message in chat.messages[:-1]:
+            if not message.is_answer:
+                message.hide = True
+
+    # -------------------------------------------------------------------------
+    # Helper: Record chat session START (ADDED)
+    # -------------------------------------------------------------------------
+    def _record_chat_session_start(
+        self,
+        chat: Chat,
+        mode: str,
+        profiles: List[str],
+        files: List[str],
+        iteration: int,
+        max_iterations: int,
+        llm_model: str,
+        parent_chat_id: Optional[str] = None
+    ) -> None:
+        """
+        Record the start of a chat session with initial context.
+
+        Called at the beginning of chat processing to capture chat metadata
+        and context information. Additional calls during the session can update
+        this record with new information as it becomes available.
+
+        :param chat: The chat object being processed.
+        :param mode: Chat mode ('task', 'agent', 'vibe', 'chat').
+        :param profiles: List of active profile names.
+        :param files: List of files associated with the chat.
+        :param iteration: Current iteration number (for agent mode).
+        :param max_iterations: Maximum iterations allowed.
+        :param llm_model: LLM model being used.
+        :param parent_chat_id: Parent chat ID if nested.
+        """
+        try:
+            self.analytics.record_chat_session(
+                chat_id=chat.id,
+                chat_name=chat.name or "Unnamed Chat",
+                username=self.user.username if self.user else "anonymous",
+                project_name=self.settings.project_name or "",
+                project_id=getattr(self.settings, "project_id", "") or "",
+                mode=mode,
+                profiles=profiles,
+                files=files,
+                parent_chat_id=parent_chat_id,
+                iteration=iteration,
+                max_iterations=max_iterations,
+                llm_model=llm_model,
+                input_message_count=len(chat.messages),
+                output_message_count=0,
+            )
+            logger.info(
+                "Chat session start recorded: chat_id=%s mode=%s profiles=%s files=%d",
+                chat.id, mode, profiles, len(files)
+            )
+        except OSError as ex:
+            logger.warning("Failed to record chat session start: %s", ex)
+
+    # -------------------------------------------------------------------------
+    # Helper: Record chat session END (ADDED)
+    # -------------------------------------------------------------------------
+    def _record_chat_session_end(
+        self,
+        chat: Chat,
+        mode: str,
+        profiles: List[str],
+        files: List[str],
+        iteration: int,
+        max_iterations: int,
+        llm_model: str,
+        start_time: float,
+        parent_chat_id: Optional[str] = None,
+        cancelled: bool = False,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        Record the end of a chat session with final metrics.
+
+        Called after chat processing completes (or errors). Captures final duration,
+        message counts, and error state.
+
+        :param chat: The chat object being processed.
+        :param mode: Chat mode ('task', 'agent', 'vibe', 'chat').
+        :param profiles: List of active profile names.
+        :param files: List of files associated with the chat.
+        :param iteration: Final iteration number.
+        :param max_iterations: Maximum iterations allowed.
+        :param llm_model: LLM model being used.
+        :param start_time: Timestamp when chat processing started.
+        :param parent_chat_id: Parent chat ID if nested.
+        :param cancelled: Whether the chat was cancelled.
+        :param error: Error message if chat failed.
+        """
+        try:
+            duration_seconds = time.time() - start_time
+            output_message_count = len([m for m in chat.messages if m.role == "assistant"])
+
+            self.analytics.record_chat_session(
+                chat_id=chat.id,
+                chat_name=chat.name or "Unnamed Chat",
+                username=self.user.username if self.user else "anonymous",
+                project_name=self.settings.project_name or "",
+                project_id=getattr(self.settings, "project_id", "") or "",
+                mode=mode,
+                profiles=profiles,
+                files=files,
+                parent_chat_id=parent_chat_id,
+                iteration=iteration,
+                max_iterations=max_iterations,
+                llm_model=llm_model,
+                duration_seconds=duration_seconds,
+                input_message_count=len([m for m in chat.messages if m.role == "user"]),
+                output_message_count=output_message_count,
+                cancelled=cancelled,
+                error=error,
+            )
+            logger.info(
+                "Chat session end recorded: chat_id=%s duration=%.2fs cancelled=%s error=%s",
+                chat.id, duration_seconds, cancelled, error
+            )
+        except OSError as ex:
+            logger.warning("Failed to record chat session end: %s", ex)
+
+    # -------------------------------------------------------------------------
+    # Main entry point
+    # -------------------------------------------------------------------------
+    @profile_function
+    async def chat_with_project(
+        self,
+        chat: Chat,
+        disable_knowledge: bool = False,
+        callback=None,
+        append_references: bool = True,
+        chat_mode: str = None,
+        iteration: int = 0,
+        system: str = None,
+        turn_id: Optional[str] = None,
+        turn_attempt: int = 0,
+        turn_codx_path: Optional[str] = None,
+    ):
+        """
+        Main entry point for processing a chat interaction with a project.
+
+        Handles context gathering, knowledge search and AI response generation.
+
+        A CancellationToken is registered in the global CANCELLATION_REGISTRY
+        for the duration of this call (keyed by ``chat.doc_id``).  Each token
+        also carries a unique ``token_id`` (UUID4) that is stamped into the
+        response message's ``meta_data`` immediately so clients receive it via
+        streaming events.
+
+        CHANGED: The assistant response message is created BEFORE the AI call
+        and passed to :class:`ChatEventBridge`; tool executions and run
+        lifecycle events emitted during the run are attached to it as typed
+        ``tool_events`` / ``lifecycle_events`` lists.
+
+        CRASH-SAFETY: the bridge persists the response message on EVERY event
+        change (merge-safe ChatManager methods) and the engine persists it
+        immediately on error / cancellation, so tool results, run errors,
+        analytics and partial content survive a crash mid-run.
+
+        ADDED CRASH-SAFETY:
+          * Streamed partial content is persisted (throttled) from the
+            streaming callback via ``event_bridge.maybe_persist_stream``.
+          * Hidden reasoning messages are persisted the moment they are
+            appended via ``event_bridge.persist_message``.
+
+        FIXED: Parent chat messages are now properly included in the message
+        history when `ignore_parent_knowledge` flag is False, enabling proper
+        context inheritance across chat hierarchy.
+
+        ADDED: Binary chat files (PDFs, images) are now detected and passed
+        to the vision API if supported by the model.
+
+        ADDED: ``message.attachments`` of EVERY visible message (current chat
+        and parent chats) are attached to the single request message, so an
+        image uploaded in an earlier turn stays visible to the model on every
+        following turn (see :meth:`ChatPromptBuilder.build_ai_prompt_messages`).
+
+        ADDED: Chat-attached files (current chat AND parent chat) are resolved
+        against the project that owns the chat (``project_id`` if present,
+        otherwise ``owner_project_id``), so relative file references are read
+        from the correct project even when it differs from the current engine
+        settings.
+
+        ADDED — per-message project scope: a message may also declare its OWN
+        ``project_id`` (like ``Chat.project_id``). When the current USER message
+        sets it, that project becomes the MAIN project of the turn: the engine
+        switches its context to it (see :meth:`_resolve_turn_project_id`) and
+        chat-level files are resolved against it. Files attached to any other
+        message are resolved against the project that message declares (see
+        :meth:`_resolve_message_project_path`), so a single chat can work on
+        files that live in another project. Messages without ``project_id``
+        keep resolving against the project of the chat that owns them, and
+        :meth:`Message.get_project_id` returns ``None`` instead of inheriting
+        the chat's project.
+
+        ADDED — response project scope: the response message is stamped with
+        the ACTIVE project of the turn (``self.settings.project_id`` once the
+        engine switched its context), falling back to the project declared by
+        the user message only when the engine has none.
+
+        ADDED — team profiles: the active profiles may declare a ``team`` (list
+        of profile names) with the profiles the model can use in NEW tasks.
+        They are appended to the system prompt as a ``### TEAM`` table after the
+        profile composition (see :meth:`_build_team_system_section`) and are
+        reported as a chat event.
+
+        ADDED — profile knowledge tools: the profiles of the turn are declared
+        in the internal ``profiles`` AI request header (see
+        :meth:`_build_ai_headers`). :class:`SmolAgent` consumes it and injects
+        ``profile_knowledge_search`` for every user plus ``profile_learning``
+        only for users with knowledge administration rights (codx-junior admin,
+        project admin or project knowledge admin), which is what allows a
+        profile to learn from authorized conversations.
+
+        COST: the AI call returns a typed :class:`AgentRunResult`. Its cost is
+        registered on the response message so ``ChatManager`` accumulates it
+        into ``Chat.cost`` (compared against ``Chat.estimation_cost`` to stop
+        over-budget chats) and streamed to clients as ``Message.cost`` /
+        ``Message.cost_info``.
+
+        External callers can cancel the in-flight request via:
+          - ``CANCELLATION_REGISTRY.cancel(chat.doc_id)``          — by chat ID
+          - ``CANCELLATION_REGISTRY.cancel_by_token_id(token_id)`` — by token UUID
+
+        When cancellation occurs the response message's ``meta_data`` will
+        contain a ``"cancelled_at"`` key with an ISO-8601 UTC timestamp.
+
+        flowchart TD
+            A[Start] --> A0[Resolve turn project: user message project_id]
+            A0 --> A1[Register CancellationToken]
+            A1 --> A2[Create response_message + stamp token_id]
+            A2 --> A3[ChatEventBridge created EARLY - persists on every event]
+            A3 --> B{Project match?}
+            B -->|No| C[Switch project context]
+            B -->|Yes| D[Resolve chat mode & profiles]
+            D --> E{vibe or search?}
+            E -->|Yes| F[AI Search for context]
+            F --> G[Build context string]
+            E -->|No| G
+            G --> H{Knowledge enabled?}
+            H -->|Yes| I[RAG document search]
+            I --> J[Add docs to context]
+            H -->|No| J
+            J --> K{chat_mode?}
+            K -->|task| L[Refine document]
+            K -->|chat| N[Standard user message]
+            L --> O[Record Chat Session START]
+            N --> O
+            O --> P[Load chat files - per message project_id]
+            P --> Q[Prepare vision content]
+            Q --> Q1[Headers: tags + profiles]
+            Q1 --> R[AI Chat - AgentRunResult]
+            R -->|cost| R1[Register cost + cost_info on response_message]
+            R -->|stream flush| R4[Throttled persist of partial content]
+            R -->|hidden reasoning| R5[persist_message - immediate]
+            R -->|tool events| R2[Events persisted + streamed]
+            R -->|BadRequestError| R6[Catch param error + inform user]
+            R --> S{Cancelled or Error?}
+            S -->|Yes| T[bridge.publish - state persisted immediately]
+            T --> U[Record Chat Session END]
+            S -->|No| V[Parse response + bridge.publish final state]
+            V --> U[Record Chat Session END success]
+            U --> Y[Unregister CancellationToken]
+            Y --> Z[Return chat + docs]
+
+        :param chat: The Chat object containing messages and metadata.
+        :param disable_knowledge: If True, skip knowledge base search.
+        :param callback: Optional streaming callback for partial responses.
+        :param append_references: Whether to append document references to the response.
+        :param chat_mode: Override for the chat mode ('chat', 'task', 'vibe'; the
+                          former 'agent' mode now behaves exactly as 'chat').
+        :param iteration: Current iteration count (kept for analytics).
+        :param system: Optional system prompt override.
+        :param turn_id: Internal — durable turn record to resume (recovery
+                        worker). When omitted, a new record is created for
+                        regular chats (never for orchestration-owned chats).
+        :param turn_attempt: Internal — attempt number stamped on the record.
+        :param turn_codx_path: Internal — project path that owns the turn
+                               record (survives a project switch).
+        :return: Tuple of (updated Chat, list of Documents).
+        """
+        # --- Delegate to sibling engine when the turn works on another project ---
+        #
+        # CHANGED: the current USER message may declare the project it works on
+        # (like ``Chat.project_id``). When set, that project becomes the MAIN
+        # project of the turn and takes precedence over the chat's project, so
+        # the engine switches its context to it before processing.
+        turn_project_id = self._resolve_turn_project_id(chat=chat)
+        if turn_project_id and turn_project_id != self.settings.project_id:
+            logger.info(
+                "turn project_id is not the same as current project, switching contexts:"
+                " '%s' -> '%s'",
+                self.settings.project_id,
+                turn_project_id
+            )
+            engine = self.switch_project(turn_project_id)
+            if engine.settings.project_id == turn_project_id:
+                return await engine.chat_with_project(
+                    chat=chat,
+                    disable_knowledge=disable_knowledge,
+                    callback=callback,
+                    append_references=append_references,
+                    chat_mode=chat_mode,
+                    iteration=iteration,
+                    system=system,
+                    turn_id=turn_id,
+                    turn_attempt=turn_attempt,
+                    turn_codx_path=turn_codx_path or self.settings.codx_path,
+                )
+            # CRASH-SAFETY: an unresolvable project must never recurse forever;
+            # the turn simply continues on the current project.
+            logger.warning(
+                "Turn project '%s' could not be resolved; keeping project '%s'",
+                turn_project_id,
+                self.settings.project_id
+            )
+
+        # ------------------------------------------------------------------
+        # Register a cancellation token for this chat turn.
+        # Only register at the outermost iteration to avoid replacing an
+        # already-registered (and potentially cancelled) token mid-flight.
+        #
+        # The registry key must identify the CHAT: `Chat.doc_id` is a legacy
+        # field that is normally None, and registering under None would make
+        # every chat share one entry. The orchestration worker also looks up
+        # tokens by `chat.id` to detect a live manual/worker turn, so keying by
+        # the chat id is what keeps those two views in sync.
+        # ------------------------------------------------------------------
+        cancellation_key = str(chat.doc_id or chat.id or id(chat))
+        cancellation_token: Optional[CancellationToken] = None
+        is_root_iteration = iteration == 0
+        if is_root_iteration:
+            cancellation_token = CANCELLATION_REGISTRY.register(cancellation_key)
+            logger.info(
+                "CancellationToken registered for chat '%s' token_id='%s'",
+                cancellation_key,
+                cancellation_token.token_id,
+            )
+        else:
+            # Re-use the token that was registered at iteration 0
+            cancellation_token = CANCELLATION_REGISTRY.get(cancellation_key)
+
+        # ------------------------------------------------------------------
+        # Durable turn record (crash / restart recovery).
+        #
+        # The response message is already persisted incrementally, but the
+        # *intent to run* lived only in memory. A record on disk + an flock held
+        # for the duration of the turn lets the recovery worker resume the turn
+        # after a restart, and lets /api/chat/cancel stop an orphaned turn even
+        # when its process is gone. Orchestration chats are excluded: the
+        # orchestration worker already owns their recovery.
+        # ------------------------------------------------------------------
+        turn_store = None
+        turn_record = None
+        turn_manager = None
+        turn_watcher = None
+        turn_outcome = "failed"
+        turn_error: Optional[str] = None
+        is_orchestration_chat = bool(
+            getattr(chat, "run_id", None)
+            or getattr(chat, "run_step_id", None)
+            or getattr(chat, "mode", "") in (
+                ORCHESTRATION.CHAT_MODE_ORCHESTRATE,
+                ORCHESTRATION.CHAT_MODE_DELEGATE,
+            )
+        )
+        if is_root_iteration:
+            try:
+                manager = self.get_chat_manager(project_id=chat.owner_project_id)
+                turn_manager = manager
+                # Store the turn next to the CHAT (the owner project), not
+                # necessarily next to this engine: a chat can live in another
+                # project and recovery must be able to reload it from there.
+                durable_codx_path = (
+                    turn_codx_path
+                    or getattr(getattr(manager, "settings", None), "codx_path", None)
+                    or self.settings.codx_path
+                )
+                turn_store = get_turn_store(durable_codx_path)
+                # Turn any orphaned "Processing..." placeholder from a previous
+                # crash into a terminal, hidden message before the new turn.
+                # In-flight turns (another concurrent turn of this chat) are
+                # left untouched.
+                repair_incomplete_messages(
+                    chat,
+                    manager,
+                    note="",
+                    error="The previous turn was interrupted by an application restart",
+                    skip_turn_ids=turn_store.live_turn_ids(),
+                )
+                # Persist the chat (client messages, new chat id) BEFORE the
+                # turn record: recovery reloads the chat by id from disk.
+                manager.save_chat(chat=chat)
+
+                if turn_id:
+                    turn_record = turn_store.load(turn_id)
+                    if turn_record is None:
+                        logger.warning(
+                            "Resumed turn '%s' has no record on disk; creating "
+                            "a fresh one for chat '%s'",
+                            turn_id,
+                            chat.id,
+                        )
+                if turn_record is None and not is_orchestration_chat:
+                    turn_record = turn_store.begin(chat=chat, user=self.user)
+                if turn_record is not None and not turn_id:
+                    # Capture the turn options so recovery replays the SAME
+                    # request (mode, knowledge, references and extra system).
+                    turn_record.disable_knowledge = bool(disable_knowledge)
+                    turn_record.append_references = bool(append_references)
+                    turn_record.chat_mode = chat_mode
+                    turn_record.system = system
+                if turn_record is not None:
+                    turn_store.mark_running(
+                        turn_record,
+                        attempts=turn_attempt or None,
+                    )
+                    if cancellation_token is not None:
+                        # Cross-process stop: a client may stop this turn from
+                        # another process (e.g. the background worker resumed
+                        # it). Watch the durable marker and cancel locally.
+                        turn_watcher = TurnCancellationWatcher(
+                            store=turn_store,
+                            turn_id=turn_record.turn_id,
+                            token=cancellation_token,
+                        ).start()
+                    logger.info(
+                        "Durable turn '%s' running for chat '%s'",
+                        turn_record.turn_id,
+                        chat.id,
+                    )
+            except Exception as ex:
+                # Durability must never prevent a chat from running.
+                logger.exception(
+                    "Could not create the durable turn record for chat '%s': %s",
+                    chat.id,
+                    ex,
+                )
+                turn_store = None
+                turn_record = None
+
+        try:
+            result = await self._chat_with_project_inner(
+                chat=chat,
+                disable_knowledge=disable_knowledge,
+                callback=callback,
+                append_references=append_references,
+                chat_mode=chat_mode,
+                iteration=iteration,
+                system=system,
+                cancellation_token=cancellation_token,
+                turn_record=turn_record,
+            )
+            turn_outcome = (
+                "cancelled"
+                if cancellation_token is not None and cancellation_token.is_cancelled
+                else "completed"
+            )
+            return result
+        except Exception as ex:
+            turn_error = str(ex)
+            raise
+        finally:
+            if turn_watcher is not None:
+                turn_watcher.stop()
+                turn_watcher = None
+            if is_root_iteration and turn_store is not None and turn_record is not None:
+                try:
+                    if turn_outcome == "completed":
+                        turn_store.complete(turn_record)
+                    elif turn_outcome == "cancelled":
+                        turn_store.cancel(
+                            turn_record, reason="The turn was cancelled by the user"
+                        )
+                    else:
+                        turn_store.fail(
+                            turn_record,
+                            turn_error or "The turn ended without completing",
+                        )
+                        # A failed turn must not leave a "processing" message
+                        # behind: hide/finish its partial response so the
+                        # client sees a terminal state.
+                        if turn_manager is not None:
+                            try:
+                                repair_incomplete_messages(
+                                    chat,
+                                    turn_manager,
+                                    note="",
+                                    error=turn_error
+                                    or "The turn ended without completing",
+                                    skip_turn_ids=turn_store.live_turn_ids(),
+                                )
+                            except Exception:  # pragma: no cover - defensive
+                                logger.exception(
+                                    "Could not repair the failed turn of chat '%s'",
+                                    chat.id,
+                                )
+                except Exception as ex:  # pragma: no cover - defensive
+                    logger.exception(
+                        "Could not finalize durable turn '%s': %s",
+                        getattr(turn_record, "turn_id", ""),
+                        ex,
+                    )
+            if is_root_iteration:
+                CANCELLATION_REGISTRY.unregister(cancellation_key)
+                logger.info(
+                    "CancellationToken unregistered for chat '%s'", cancellation_key
+                )
+
+    async def _chat_with_project_inner(
+        self,
+        chat: Chat,
+        disable_knowledge: bool = False,
+        callback=None,
+        append_references: bool = True,
+        chat_mode: str = None,
+        iteration: int = 0,
+        system: str = None,
+        cancellation_token: Optional[CancellationToken] = None,
+        turn_record: Optional[Any] = None,
+    ):
+        """
+        Internal implementation of chat_with_project.
+
+        Separated from the public entry-point so that the cancellation token
+        can be registered / unregistered exactly once around the full call tree.
+
+        See ``chat_with_project`` for full parameter documentation.
+        """
+        with self.chat_action(chat=chat, event=f"Processing AI request {chat.name}"):
+            logger.info(
+                "Processing chat '%s'. Current project: '%s' target project '%s'",
+                chat.name,
+                self.settings.project_name,
+                chat.project_id
+            )
+
+            # ------------------------------------------------------------------
+            # 1. Collect timing information
+            # ------------------------------------------------------------------
+            timing_info: Dict[str, Any] = {
+                "start_time": time.time(),
+                "first_response": None
+            }
+            session_start_time = timing_info["start_time"]
+
+            # ------------------------------------------------------------------
+            # 2. Extract user message and basic query context
+            # ------------------------------------------------------------------
+            valid_messages = [
+                message for message in chat.messages
+                if not message.hide and not message.improvement
+            ]
+            all_messages_content_lines = "".join(
+                [m.content for m in valid_messages]
+            ).split("\n")
+            all_messages_content_code_block_file_paths: Set[str] = {
+                line.split()[-1]
+                for line in all_messages_content_lines
+                if line.startswith("```") and len(line.split()) >= 3
+            }
+
+            last_ai_messages = [m for m in valid_messages if m.role == "assistant"]
+            last_ai_message = last_ai_messages[-1] if last_ai_messages else None
+
+            user_message = valid_messages[-1] if valid_messages else Message(content="")
+            query = user_message.content
+            task_item = user_message.task_item
+
+            # ------------------------------------------------------------------
+            # 3. Resolve chat mode flags
+            # ------------------------------------------------------------------
+            mode_flags = self._resolve_chat_mode_flags(
+                chat=chat,
+                chat_mode=chat_mode,
+                task_item=task_item
+            )
+            chat_mode = mode_flags["chat_mode"]
+            is_refine: bool = mode_flags["is_refine"]
+            is_vibe: bool = mode_flags["is_vibe"]
+            is_search: bool = mode_flags["is_search"]
+            needs_pre_search: bool = mode_flags["needs_pre_search"]
+
+            # ------------------------------------------------------------------
+            # 4. Iteration accounting (analytics only)
+            #
+            #    The former agent loop (AGENT_DONE_WORD + recursion) has been
+            #    removed, so a turn is a single AI request; the iteration values
+            #    are still recorded in the chat session analytics.
+            # ------------------------------------------------------------------
+            max_iterations = self.settings.get_agent_max_iterations()
+
+            # ------------------------------------------------------------------
+            # 5. Resolve parent chat
+            # ------------------------------------------------------------------
+            parent_chat = None
+            if chat.parent_id:
+                chat_manager = self.get_chat_manager(project_id=chat.owner_project_id)
+                parent_chat = chat_manager.find_by_id(chat.parent_id)
+
+            # ------------------------------------------------------------------
+            # 6. Initialise response message BEFORE the AI call and stamp the
+            #    cancellation token_id immediately so clients receive it in the
+            #    very first streaming event. All tool / lifecycle events of the
+            #    upcoming run will be attached to this message and persisted on
+            #    every change.
+            # ------------------------------------------------------------------
+            response_message = self._new_chat_message("assistant")
+            # CHANGED: the response message records the ACTIVE project of the
+            # turn — the project the engine is working on after switching its
+            # context (`self.settings.project_id`), not just the project the
+            # user message happens to declare. The message project is only a
+            # fallback for the case where the engine has no project at all.
+            active_project_id = (
+                self.settings.project_id
+                or user_message.get_project_id()
+            )
+            response_message.project_id = active_project_id
+            logger.debug(
+                "Response message stamped with active project_id='%s' "
+                "(user message project_id='%s')",
+                active_project_id,
+                user_message.get_project_id(),
+            )
+            response_message.meta_data = {"start_time": timing_info["start_time"]}
+            if turn_record is not None:
+                response_message.meta_data["turn_id"] = turn_record.turn_id
+                response_message.meta_data["turn_attempt"] = turn_record.attempts
+            if cancellation_token:
+                response_message.meta_data["cancellation_token_id"] = cancellation_token.token_id
+                logger.debug(
+                    "Stamped cancellation_token_id='%s' into response meta_data "
+                    "for chat '%s'",
+                    cancellation_token.token_id,
+                    chat.doc_id,
+                )
+
+            # ------------------------------------------------------------------
+            # 6.5 CHANGED: Bind the ChatEventBridge to the response message
+            #      EARLY (before the streaming callback is defined) so it can:
+            #      * attach tool / lifecycle events during the AI call,
+            #      * persist streamed partial content (throttled) from
+            #        send_message_event — a hard kill loses at most a few
+            #        seconds of text,
+            #      * persist hidden reasoning messages immediately.
+            #      CRASH-SAFETY: the bridge PERSISTS the response message on
+            #      every event change (merge-safe ChatManager methods, with a
+            #      defensive save_chat fallback) and streams it.
+            # ------------------------------------------------------------------
+            event_bridge = ChatEventBridge(
+                chat=chat,
+                response_message=response_message,
+                chat_manager=self.get_chat_manager(project_id=chat.owner_project_id),
+                event_manager=self.event_manager,
+            )
+            run_context = AgentRunContext(
+                project_id=self.settings.project_id or "",
+                listeners=[event_bridge.on_event],
+            )
+            logger.info(
+                "AgentRunContext '%s' created for chat '%s' bound to response "
+                "message '%s' (iteration %d)",
+                run_context.run_id,
+                chat.doc_id,
+                response_message.doc_id,
+                iteration,
+            )
+
+            # ------------------------------------------------------------------
+            # 7. Resolve query mentions (profiles, files, projects)
+            # ------------------------------------------------------------------
+            query_mentions: QueryMentions = self.get_query_mentions(
+                chat=chat, user_message=user_message
+            )
+
+            # ------------------------------------------------------------------
+            # 8. Resolve chat files list
+            #
+            #    Collect files from ALL visible messages (not just the current
+            #    user_message) to ensure context from earlier turns is included.
+            #    Files referenced in query_mentions and parent_chat are also
+            #    merged in. Duplicates are removed via set union in the helper.
+            #
+            #    CHANGED: the user message may declare the project the turn
+            #    works on. When set it is the MAIN project of the turn (the
+            #    engine already switched to it in ``chat_with_project``), so
+            #    chat-level files are resolved against it and NOT against the
+            #    chat's project. Parent chat files may live in a DIFFERENT
+            #    project, so the base project path is tracked per file
+            #    (``file_base_paths``) and used when reading file content.
+            # ------------------------------------------------------------------
+            chat_project_path = (
+                self._resolve_project_path(
+                    project_id=self._resolve_turn_project_id(chat=chat)
+                )
+                or self._resolve_chat_project_path(chat=chat)
+            )
+            parent_project_path = (
+                self._resolve_chat_project_path(chat=parent_chat)
+                if parent_chat else chat_project_path
+            )
+
+            # Map each file path to the project root it must be resolved against
+            file_base_paths: Dict[str, str] = {}
+
+            chat_files: List[str] = self._collect_files_from_visible_messages(
+                valid_messages=valid_messages,
+                chat_base_files=chat.file_list or []
+            )
+            # Merge in files from query mentions (e.g. @file references)
+            if query_mentions.files:
+                chat_files = sorted(set(chat_files + query_mentions.files))
+
+            # CHANGED: a message may declare its own ``project_id`` (like a chat
+            # does), so the files attached to it are resolved against THAT
+            # project instead of the chat's. Messages without ``project_id``
+            # keep resolving against the project of the chat that owns them, so
+            # behaviour is unchanged for them.
+            for visible_message in valid_messages:
+                if not visible_message.files:
+                    continue
+                message_project_path = self._resolve_message_project_path(
+                    message=visible_message,
+                    chat=chat
+                )
+                for message_file in visible_message.files:
+                    known_project_path = file_base_paths.get(message_file)
+                    if known_project_path and known_project_path != message_project_path:
+                        logger.warning(
+                            "File '%s' is attached to messages working on "
+                            "different projects ('%s' / '%s'); the most recent "
+                            "reference wins",
+                            message_file,
+                            known_project_path,
+                            message_project_path,
+                        )
+                    file_base_paths[message_file] = message_project_path
+                if message_project_path != chat_project_path:
+                    logger.info(
+                        "Message '%s' resolves its %d file(s) against project "
+                        "path '%s' (turn project path '%s')",
+                        visible_message.doc_id,
+                        len(visible_message.files),
+                        message_project_path,
+                        chat_project_path,
+                    )
+
+            # Chat-level files (chat.file_list, @file mentions) resolve against
+            # the project of the turn. Message-level resolutions win (setdefault).
+            for chat_file in chat_files:
+                file_base_paths.setdefault(chat_file, chat_project_path)
+
+            # Merge in parent chat file list if present and not ignored
+            if parent_chat and parent_chat.file_list and not chat.ignore_parent_files:
+                chat_files = sorted(set(chat_files + parent_chat.file_list))
+                # setdefault: a file already provided by this chat keeps its base
+                for parent_file in parent_chat.file_list:
+                    file_base_paths.setdefault(parent_file, parent_project_path)
+                logger.info(
+                    "Merged parent chat files into context for chat '%s' "
+                    "(parent project path '%s')",
+                    chat.doc_id,
+                    parent_project_path,
+                )
+            elif parent_chat and chat.ignore_parent_files:
+                logger.info(
+                    "Skipping parent chat files for chat '%s' (ignore_parent_files=True)",
+                    chat.doc_id,
+                )
+
+            logger.info(
+                "Resolved %d unique chat files for chat '%s': %s",
+                len(chat_files),
+                chat.doc_id,
+                chat_files,
+            )
+
+            # ------------------------------------------------------------------
+            # 9. Resolve profiles, model, and tools
+            #    (linked/nested profiles are expanded inside the helper, and the
+            #    TEAM section is appended after the profile composition)
+            # ------------------------------------------------------------------
+            profile_result = self._resolve_profiles_and_model(
+                chat=chat,
+                query_mentions=query_mentions,
+                chat_files=chat_files,
+                is_refine=is_refine
+            )
+            chat_profiles_system_content: str = profile_result["chat_profiles_system_content"]
+            chat_profile_names: List[str] = profile_result["chat_profile_names"]
+            chat_team_names: List[str] = profile_result["chat_team_names"]
+            chat_model: Optional[str] = profile_result["chat_model"]
+            chat_tools: List[str] = profile_result["chat_tools"]
+            is_refine = profile_result["is_refine"]
+
+            if chat_profile_names:
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=f"Chat profiles: {chat_profile_names}"
+                )
+            if chat_team_names:
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=f"Team profiles: {chat_team_names}"
+                )
+
+            # ------------------------------------------------------------------
+            # 9.4 ADDED: register harness requests in the audit journal.
+            #      When the `codx-junior` harness profile takes part in a
+            #      user-initiated turn that is not yet a run main task, the
+            #      request is audited (append-only JSONL, never raises) so every
+            #      piece of work handed to the harness is traceable.
+            # ------------------------------------------------------------------
+            if (
+                iteration == 0
+                and "codx-junior" in chat_profile_names
+                and not getattr(chat, "run_id", None)
+            ):
+                try:
+                    from codx.junior.harness.audit import record_audit
+
+                    record_audit(
+                        str(self.settings.codx_path or ""),
+                        "task_requested",
+                        chat_id=chat.id,
+                        profile="codx-junior",
+                        user=self.user.username if self.user else "anonymous",
+                        mode=chat_mode,
+                        request=(query or "")[:500],
+                    )
+                except Exception as ex:  # pragma: no cover - audit must never break work
+                    logger.warning("Could not audit harness request: %s", ex)
+
+            response_message.profiles = chat_profile_names
+            
+            # ------------------------------------------------------------------
+            # 9.5 ADDED: Record chat session START with initial context
+            # ------------------------------------------------------------------
+            if iteration == 0:
+                self._record_chat_session_start(
+                    chat=chat,
+                    mode=chat_mode,
+                    profiles=chat_profile_names,
+                    files=chat_files,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    llm_model=chat_model or (self.settings.get_llm_settings().model),
+                    parent_chat_id=chat.parent_id if parent_chat else None,
+                )
+            
+            # ------------------------------------------------------------------
+            # 9.6 ADDED: Guardrail input check for externally exposed profiles.
+            #      Detects prompt injection / scope escape and applies severity-
+            #      based actions: BLOCK (refuse immediately) or REFUSE (disable
+            #      tools + inject scope guardrail into the system prompt).
+            # ------------------------------------------------------------------
+            guardrail_service = self._resolve_guardrail_service(query_mentions)
+            guardrail_scope_instructions: Optional[str] = None
+
+            if guardrail_service:
+                guardrail_input = guardrail_service.check_input(query)
+                response_message.meta_data = {
+                    **(response_message.meta_data or {}),
+                    "guardrail": guardrail_input.to_dict(),
+                }
+
+                if guardrail_input.blocked:
+                    documents: List[Document] = []
+                    response_message.content = guardrail_input.refusal_message
+                    response_message.done = True
+                    self._append_message_if_missing(chat=chat, message=response_message)
+                    event_bridge.publish()
+                    if iteration == 0:
+                        self._record_chat_session_end(
+                            chat=chat,
+                            mode=chat_mode,
+                            profiles=chat_profile_names,
+                            files=chat_files,
+                            iteration=iteration,
+                            max_iterations=max_iterations,
+                            llm_model=chat_model or (self.settings.get_llm_settings().model),
+                            start_time=session_start_time,
+                            parent_chat_id=chat.parent_id if parent_chat else None,
+                            cancelled=False,
+                            error="Guardrail blocked request",
+                        )
+                    return chat, documents
+
+                if guardrail_input.disable_tools:
+                    chat_tools = guardrail_service.filter_tools(chat_tools)
+
+                guardrail_scope_instructions = guardrail_input.scope_instructions
+            
+            # ------------------------------------------------------------------
+            # 10. Resolve search projects
+            # ------------------------------------------------------------------
+            query_mention_projects: List[CODXJuniorSettings] = [
+                p for p in query_mentions.projects
+                if p and hasattr(p, "codx_path")
+            ]
+            search_projects: List[CODXJuniorSettings] = list(
+                {s.codx_path: s for s in query_mention_projects}.values()
+            )
+
+            # ------------------------------------------------------------------
+            # 11. Evaluate knowledge disable conditions
+            # ------------------------------------------------------------------
+            if is_refine:
+                task_item = TASK_ITEM_ANALYSIS
+
+            disable_knowledge = self._evaluate_knowledge_flags(
+                chat=chat,
+                disable_knowledge=disable_knowledge,
+                search_projects=search_projects,
+                user_message=user_message
+            )
+
+            # ------------------------------------------------------------------
+            # 12. Build message history from prior turns (FIXED)
+            #
+            #     Now includes parent chat messages if ignore_parent_knowledge
+            #     is False. Parent content is built from EVERY visible (not
+            #     hidden) message — the ``is_answer`` flag is no longer required
+            #     — using each message's content, files and attachments.
+            #
+            #     ADDED — tool memory: the tool results already gathered in
+            #     previous turns (``Message.tool_events``) are distilled into a
+            #     ``<session_memory>`` block and sent back with the history, so
+            #     the agent reuses what it already knows instead of re-running
+            #     the same project_read_file / project_grep / project_search
+            #     calls on every turn. Nothing extra is executed or persisted
+            #     here: the block is rendered from the chat that is already in
+            #     memory.
+            # ------------------------------------------------------------------
+            prior_messages = self.prompt_builder.collect_prior_messages(
+                chat=chat,
+                include_parent=True,
+                # Tool memory is NOT filtered by ``is_answer``: the work done by
+                # a turn is real even when its message is excluded from the
+                # rendered history (refine/vibe modes). Hidden/improvement
+                # messages are still skipped by the collector.
+                only_answers=False,
+            )
+            tool_memory_section, tool_memory_stats = build_tool_memory_section(
+                prior_messages
+            )
+            if tool_memory_stats["chars"]:
+                response_message.meta_data = {
+                    **(response_message.meta_data or {}),
+                    "tool_memory": tool_memory_stats,
+                }
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=(
+                        f"Reusing earlier work: {tool_memory_stats['rendered']} "
+                        f"tool result(s) and {tool_memory_stats['files']} "
+                        f"inspected file(s) from "
+                        f"{tool_memory_stats['calls']} call(s)"
+                    ),
+                )
+                logger.info(
+                    "Chat '%s' reuses %d earlier tool result(s) and %d file(s) "
+                    "from %d call(s) (tool memory block: %d chars)",
+                    chat.doc_id,
+                    tool_memory_stats["rendered"],
+                    tool_memory_stats["files"],
+                    tool_memory_stats["calls"],
+                    tool_memory_stats["chars"],
+                )
+
+            messages = self.prompt_builder.build_message_history(
+                chat=chat,
+                include_parent_messages=True,
+                only_answers=(is_refine or is_vibe),
+                tool_memory_section=tool_memory_section,
+            )
+
+            ignore_documents = chat_files.copy()
+            if chat.name:
+                ignore_documents.append(f"/{chat.name}")
+
+            # ------------------------------------------------------------------
+            # 13. Load explicitly attached chat files (CHANGED: returns binary_files too)
+            # ------------------------------------------------------------------
+            chat_files_content, binary_files = self._load_chat_files_content(
+                chat_files=chat_files,
+                already_in_messages=all_messages_content_code_block_file_paths,
+                file_base_paths=file_base_paths
+            )
+
+            # ------------------------------------------------------------------
+            # 14. Prepare AI instance with merged system prompt
+            # ------------------------------------------------------------------
+            ai_settings = self.settings.get_llm_settings()
+            logger.info("[chat_model] %s", chat_model)
+            if chat_model:
+                ai_settings.model = chat_model
+            
+            # Merge profile system content with any provided system prompt
+            final_system_prompt = ""
+            if chat_profiles_system_content:
+                final_system_prompt = chat_profiles_system_content
+            if system:
+                if final_system_prompt:
+                    final_system_prompt += "\n\n" + system
+                else:
+                    final_system_prompt = system
+
+            # ADDED: scope guardrail for externally exposed profiles.
+            if guardrail_scope_instructions:
+                if final_system_prompt:
+                    final_system_prompt += "\n\n" + guardrail_scope_instructions
+                else:
+                    final_system_prompt = guardrail_scope_instructions
+
+            # PHASE 1: guardrail so the model treats prior turns as inert
+            # context and acts only on the wrapped <current_request>.
+            if final_system_prompt:
+                final_system_prompt += "\n\n" + CONVERSATION_GUARDRAIL_SYSTEM_PROMPT
+            else:
+                final_system_prompt = CONVERSATION_GUARDRAIL_SYSTEM_PROMPT
+            
+            ai = self.get_ai(llm_model=ai_settings.model, system=final_system_prompt)
+
+            self.event_manager.chat_event(
+                chat=chat, message=f"Chatting with {ai_settings.model}"
+            )
+            response_message.meta_data["model"] = ai_settings.model
+
+            # ------------------------------------------------------------------
+            # 15. Build AI request headers and tags
+            #
+            #     CHANGED: the profiles taking part in the turn are declared in
+            #     the internal `profiles` header. It is consumed by SmolAgent
+            #     (never forwarded to the provider) and is what makes the agent
+            #     inject the profile knowledge tools: `profile_knowledge_search`
+            #     for every user and `profile_learning` only for users allowed to
+            #     teach the profiles.
+            # ------------------------------------------------------------------
+            ai_headers = self._build_ai_headers(
+                chat=chat,
+                chat_mode=chat_mode,
+                is_vibe=is_vibe,
+                query_mentions=query_mentions,
+                chat_tools=chat_tools,
+                chat_profile_names=chat_profile_names,
+            )
+            if chat_profile_names:
+                logger.info(
+                    "Declaring %d profile(s) in the AI request header '%s': %s "
+                    "(the agent injects the profile knowledge tools per run)",
+                    len(chat_profile_names),
+                    PROFILES_HEADER,
+                    chat_profile_names,
+                )
+
+            # ------------------------------------------------------------------
+            # 16. Define streaming event emitter
+            # ------------------------------------------------------------------
+            def send_message_event(content: str, done: bool, documents=None) -> None:
+                """
+                Emit a message event with the current response state.
+
+                Handles think/content separation for models that emit reasoning blocks.
+                The ``cancellation_token_id`` present in ``response_message.meta_data``
+                is forwarded to the client in every event so they can cancel at any time.
+
+                ADDED CRASH-SAFETY: after streaming, a THROTTLED persist of the
+                response message is triggered via the event bridge so streamed
+                partial content survives a hard kill (bounded disk I/O).
+                """
+                if not response_message.is_thinking:
+                    if content and content.startswith("") \
+                            and not response_message.content:
+                        response_message.is_thinking = True
+                elif response_message.is_thinking and "" in content:
+                    response_message.is_thinking = False
+
+                content = content.replace("", "").replace("", "")
+
+                if not timing_info.get("first_response"):
+                    timing_info["first_response"] = (
+                        time.time() - timing_info["start_time"]
+                    )
+
+                if response_message.is_thinking:
+                    response_message.think = content
+                else:
+                    response_message.content = content
+
+                sources: List[str] = []
+                if documents:
+                    sources = list({
+                        d.metadata["source"].replace(self.settings.abs_project_path, "")
+                        for d in documents
+                    })
+                response_message.files = list(set(response_message.files + sources))
+                response_message.task_item = task_item
+                response_message.done = done
+                self.event_manager.message_event(chat=chat, message=response_message)
+                # ADDED CRASH-SAFETY: throttled persist of streamed partial
+                # content — a hard kill loses at most the throttle interval
+                # of streamed text (never raises, bounded disk I/O).
+                event_bridge.maybe_persist_stream()
+
+            send_message_event("* Processing request, please wait...\n", False)
+
+            # ------------------------------------------------------------------
+            # 17. Document accumulator (shared across search steps)
+            # ------------------------------------------------------------------
+            context = ""
+            documents: List[Document] = []
+
+            # ------------------------------------------------------------------
+            # 18. Pre-search (vibe / search modes)
+            # ------------------------------------------------------------------
+            if needs_pre_search:
+                logger.info(
+                    "Pre-search triggered. is_vibe=%s, is_search=%s",
+                    is_vibe, is_search
+                )
+                pre_docs, pre_file_list, pre_context = await self._run_pre_search(
+                    chat=chat,
+                    messages=messages,
+                    query=query,
+                    chat_files=chat_files
+                )
+                if pre_docs:
+                    documents.extend(pre_docs)
+                    context += pre_context
+                    response_message.files = list(
+                        set(response_message.files + pre_file_list)
+                    )
+
+            # ------------------------------------------------------------------
+            # 19. Standard RAG knowledge search
+            # ------------------------------------------------------------------
+            if not disable_knowledge and search_projects and not is_search:
+                rag_docs, rag_file_list, rag_context = self._run_rag_knowledge_search(
+                    chat=chat,
+                    messages=messages,
+                    query=query,
+                    ignore_documents=ignore_documents,
+                    search_projects=search_projects
+                )
+                documents.extend(rag_docs)
+                context += rag_context
+                response_message.files = list(
+                    set(response_message.files + rag_file_list)
+                )
+
+            # ------------------------------------------------------------------
+            # 20. Assemble final prompt messages
+            # ------------------------------------------------------------------
+            if not callback:
+                def callback(content: str) -> None:
+                    """Default streaming callback that emits partial response events."""
+                    send_message_event(content=content, done=False)
+
+            messages = self.prompt_builder.build_ai_prompt_messages(
+                chat=chat,
+                messages=messages,
+                user_message=user_message,
+                last_ai_message=last_ai_message,
+                context=context,
+                chat_files_content=chat_files_content,
+                is_refine=is_refine
+            )
+
+            # ------------------------------------------------------------------
+            # 20.5 ADDED: Report conversation attachments attached to the request
+            #      and prepare vision content from binary files.
+            #
+            #      Message attachments (image/* of every visible message, current
+            #      and parent chats) are already appended to the request message by
+            #      ``build_ai_prompt_messages``; this only reports them for
+            #      traceability. ``binary_files`` (project files on disk) follow the
+            #      separate ``vision_content`` route.
+            # ------------------------------------------------------------------
+            attachment_parts_count = ChatPromptBuilder.count_attachment_parts(messages)
+            if attachment_parts_count:
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=(
+                        f"Sending {attachment_parts_count} image attachment(s) "
+                        f"with the request"
+                    )
+                )
+
+            vision_content: Optional[List[Dict[str, Any]]] = None
+            if binary_files:
+                vision_content = self._prepare_vision_content(binary_files)
+                if vision_content:
+                    logger.info(
+                        "Prepared %d vision content block(s) for AI request",
+                        len(vision_content)
+                    )
+
+            # ------------------------------------------------------------------
+            # 21. Execute AI / search response
+            # ------------------------------------------------------------------
+            try:
+                think_content, main_content, extra_files, ai_chat_fn = (
+                    await self._execute_ai_response(
+                        chat=chat,
+                        messages=messages,
+                        is_search=is_search,
+                        ai=ai,
+                        ai_headers=ai_headers,
+                        chat_tools=chat_tools,
+                        response_message=response_message,
+                        task_item=task_item,
+                        callback=callback,
+                        send_message_event=send_message_event,
+                        cancellation_token=cancellation_token,
+                        run_context=run_context,
+                        event_bridge=event_bridge,
+                        vision_content=vision_content,
+                    )
+                )
+            except CancelledError as cancel_exc:
+                logger.info(
+                    "chat_with_project: CancelledError for chat '%s': %s",
+                    chat.doc_id, cancel_exc
+                )
+                cancelled_at = (
+                    cancellation_token.cancelled_at
+                    if cancellation_token and cancellation_token.cancelled_at
+                    else datetime.now(tz=timezone.utc)
+                )
+                response_message.meta_data = response_message.meta_data or {}
+                response_message.meta_data["cancelled_at"] = (
+                    cancelled_at.isoformat()
+                )
+                response_message.content = concat_content([
+                    response_message.content, 
+                    (
+                        response_message.content
+                        or "*(Request was cancelled)*"
+                    )
+                ])
+
+                response_message.done = True
+                # CRASH-SAFETY: persist the cancelled state (and any events
+                # collected so far) immediately; append only if the bridge
+                # did not already register the message on the chat.
+                self._append_message_if_missing(chat=chat, message=response_message)
+                event_bridge.publish()
+                self.event_manager.chat_event(chat=chat, message="cancelled")
+                
+                # ADDED: Record chat session END with cancellation
+                if iteration == 0:
+                    self._record_chat_session_end(
+                        chat=chat,
+                        mode=chat_mode,
+                        profiles=chat_profile_names,
+                        files=chat_files,
+                        iteration=iteration,
+                        max_iterations=max_iterations,
+                        llm_model=chat_model or (self.settings.get_llm_settings().model),
+                        start_time=session_start_time,
+                        parent_chat_id=chat.parent_id if parent_chat else None,
+                        cancelled=True,
+                        error="User cancelled the request",
+                    )
+                
+                return chat, documents
+
+            # ADDED: output guardrail for externally exposed profiles.
+            if guardrail_service:
+                guardrail_output = guardrail_service.check_output(main_content)
+                if guardrail_output.blocked:
+                    response_message.meta_data = {
+                        **(response_message.meta_data or {}),
+                        "guardrail_output": guardrail_output.to_dict(),
+                    }
+                    main_content = guardrail_output.refusal_message
+
+            # FIX Issue 3: think_content returned from _execute_ai_response is
+            # always None (detection was removed). response_message.think is
+            # already set correctly during streaming via send_message_event.
+            # Do NOT overwrite it here — doing so would erase streamed think content.
+            # Only set main_content and clear is_thinking flag.
+            response_message.content = main_content
+            
+            response_message.is_thinking = False
+            if extra_files:
+                response_message.files = list(
+                    set(response_message.files + extra_files)
+                )
+            send_message_event(content=response_message.content, done=True)
+
+            # ------------------------------------------------------------------
+            # 22. Extract files from response and finalize response metadata
+            # ------------------------------------------------------------------
+            extracted_files = self.prompt_builder.extract_files_from_response(
+                content=response_message.content
+            )
+
+            self._finalize_response_metadata(
+                response_message=response_message,
+                user_message=user_message,
+                timing_info=timing_info,
+                ai_model=ai_settings.model,
+                chat_profile_names=chat_profile_names,
+                extracted_files=extracted_files
+            )
+
+            # CRASH-SAFETY: persist the FINAL response state (content, error,
+            # events, metadata) immediately — before summary/auto-init steps
+            # that could still fail. The bridge may have already inserted the
+            # message during the run, so guard the in-memory append by doc_id.
+            self._append_message_if_missing(chat=chat, message=response_message)
+            event_bridge.publish()
+            logger.info("Chat done, adding message to chat. %s", chat.messages[-1])
+
+            # ------------------------------------------------------------------
+            # 23. Generate conversation summary and auto-initialize if needed
+            #
+            # Orchestration chats are EXCLUDED: a worker/step card and the run
+            # main task are driven by the orchestrator, and an extra summary AI
+            # call on every supervisor round/worker turn would only add cost and
+            # latency. Their names/descriptions are owned by the run.
+            # ------------------------------------------------------------------
+            is_orchestration_chat = bool(
+                getattr(chat, "run_id", None)
+                or getattr(chat, "run_step_id", None)
+                or getattr(chat, "mode", "") == ORCHESTRATION.CHAT_MODE_DELEGATE
+            )
+            if not is_search and not is_orchestration_chat:
+                await self._generate_chat_description(
+                    chat=chat,
+                    messages=messages,
+                    is_refine=is_refine,
+                    ai_chat_fn=ai_chat_fn
+                )
+
+                # Auto-initialize auto_initialize chats on their first response
+                await self._auto_initialize_chat_metadata(
+                    chat=chat,
+                    messages=messages,
+                    ai_chat_fn=ai_chat_fn
+                )
+
+                if _is_refine(chat_mode) or is_vibe:
+                    self._hide_non_answer_messages(chat=chat)
+
+            # NOTE: the former agent iteration recursion (``AGENT_DONE_WORD`` +
+            # ``is_agent``) has been removed: a turn is exactly one AI request,
+            # and long running work is driven by the board budget instead.
+
+            # ADDED: Record chat session END on success
+            if iteration == 0:
+                self._record_chat_session_end(
+                    chat=chat,
+                    mode=chat_mode,
+                    profiles=chat_profile_names,
+                    files=chat_files,
+                    iteration=iteration,
+                    max_iterations=max_iterations,
+                    llm_model=chat_model or (self.settings.get_llm_settings().model),
+                    start_time=session_start_time,
+                    parent_chat_id=chat.parent_id if parent_chat else None,
+                    cancelled=False,
+                    error=None,
+                )
+
+            self.event_manager.chat_event(chat=chat, message="done")
+            return chat, documents
+
+    def cancel_chat(self, chat_doc_id: str) -> bool:
+        """
+        Cancel an in-flight chat request identified by *chat_doc_id*.
+
+        Delegates to ``CANCELLATION_REGISTRY.cancel``.
+
+        :param chat_doc_id: The ``doc_id`` of the chat to cancel.
+        :returns: True if a token was found and cancelled, False otherwise.
+        """
+        result = CANCELLATION_REGISTRY.cancel(chat_doc_id)
+        logger.info(
+            "cancel_chat called for chat_id='%s': token_found=%s",
+            chat_doc_id,
+            result,
+        )
+        return result
+
+    def cancel_chat_by_token_id(self, token_id: str) -> bool:
+        """
+        Cancel an in-flight chat request identified by the cancellation *token_id*.
+
+        This is the preferred method when the client received the ``token_id``
+        from the response message ``meta_data`` and wants to cancel without
+        knowing the chat ``doc_id``.
+
+        Delegates to ``CANCELLATION_REGISTRY.cancel_by_token_id``.
+
+        :param token_id: The UUID string of the CancellationToken to cancel.
+        :returns: True if a token was found and cancelled, False otherwise.
+        """
+        result = CANCELLATION_REGISTRY.cancel_by_token_id(token_id)
+        logger.info(
+            "cancel_chat_by_token_id called for token_id='%s': token_found=%s",
+            token_id,
+            result,
+        )
+        return result
+
+    def switch_project(self, project_id: str) -> "ChatEngine":
+        """
+        Switch to another project based on the provided project ID.
+
+        :param project_id: The ID of the project to switch to.
+        :return: The ChatEngine instance after switching the project.
+        """
+        if not project_id or project_id == self.settings.project_id:
+            logger.debug("Already in project %s", project_id)
+            return self
+
+        settings = find_project_by_id(project_id=project_id)
+        if settings:
+            self.settings = settings
+            self.chat_knowledge = ChatKnowledge(
+                settings=self.settings,
+                event_manager=self.event_manager
+            )
+            logger.info("Switched to project ID %s", project_id)
+        else:
+            logger.warning("No settings found for project ID %s", project_id)
+
+        return self
+
+    def get_ai(self, llm_model: Optional[str] = None, system: str = None) -> AI:
+        """
+        Get an AI instance configured for a specific model.
+
+        :param llm_model: The name of the large language model.
+        :param system: Optional system prompt override.
+        :return: An AI instance.
+        """
+        ai_instance = AI(
+            settings=self.settings,
+            llm_model=llm_model,
+            user=self.user,
+            system=system,
+            session=self,
+        )
+        logger.debug("AI instance created with model %s", llm_model)
+        return ai_instance
+
+    def get_ai_code_generator_changes(self, response: str) -> AICodeGenerator:
+        """
+        Process the response string to generate AI code generator changes.
+
+        :param response: The string output from the AI model.
+        :return: An instance of AICodeGenerator containing the parsed changes.
+        """
+        code_generator = AICodeGenerator.from_response(response)
+        for change in code_generator.code_changes:
+            file_path = change.file_path
+            if not file_path.startswith(self.settings.abs_project_path):
+                change.file_path = os.path.join(
+                    self.settings.abs_project_path, file_path
+                )
+        logger.info("Code generator changes retrieved from response")
+        return code_generator
+
+    def get_query_mentions(self, chat: Chat, user_message: Message) -> QueryMentions:
+        """
+        Extract mentions of profiles and projects from the given query.
+
+        :param chat: The current chat object.
+        :param user_message: The latest user message.
+        :return: A QueryMentions object with resolved profiles, projects, and files.
+        """
+        profile_manager = self.get_profile_manager()
+        content = user_message.content
+        profiles = (
+            user_message.profiles if user_message.profiles else chat.profiles
+        ) or []
+
+        chat_files = list(set(chat.file_list + user_message.files))
+        for chat_file in chat_files:
+            file_profiles = [
+                p.name
+                for p in profile_manager.get_file_profiles_by_file_path(file_path=chat_file)
+            ]
+            profiles = profiles + file_profiles
+
+        chat_profiles = [f"@{name}" for name in profiles]
+        chat_utils = ChatUtils(profile_manager=profile_manager)
+        query = f"{content} {chat_profiles} @project"
+        query_mentions: QueryMentions = chat_utils.get_query_mentions(query=query)
+        logger.debug(
+            "Query mentions extracted for '%s...': %s",
+            query[0:10],
+            {
+                "projects": [p.name for p in query_mentions.projects],
+                "profiles": [p.name for p in query_mentions.profiles]
+            }
+        )
+        return query_mentions
+
+    def get_chat_analysis_parents(self, chat: Chat) -> str:
+        """
+        Traverse all parent chats and return concatenated parent content.
+
+        Every VISIBLE message (``hide == False``) of the ancestor chats is
+        collected — the ``is_answer`` flag is no longer required (see
+        :meth:`ChatPromptBuilder.is_visible_parent_message`). Each collected
+        message is rendered from its ``content``, ``files`` and ``attachments``
+        via :meth:`ChatPromptBuilder.format_parent_message`.
+
+        Respects the ignore_parent_knowledge flag at each level during traversal.
+
+        :param chat: The child chat whose parents to traverse.
+        :return: Concatenated content string from all ancestor chats.
+        """
+        parent_content: List[str] = []
+        chat_manager = self.get_chat_manager(project_id=chat.owner_project_id)
+        parent_chat = chat_manager.find_by_id(chat.parent_id)
+
+        if chat.parent_id and not parent_chat:
+            logger.warning(
+                "[parent_chat] parent_id: '%s' parent_project_id: '%s', "
+                "Not found for chat: %s",
+                chat.parent_id,
+                chat.owner_project_id,
+                chat.name
+            )
+            return ""
+
+        while parent_chat:
+            if parent_chat.ignore_parent_knowledge:
+                logger.info(
+                    "Parent chat '%s' has ignore_parent_knowledge=True, "
+                    "stopping parent traversal",
+                    parent_chat.doc_id,
+                )
+                break
+
+            messages = [
+                self.prompt_builder.format_parent_message(message)
+                for message in parent_chat.messages
+                if self.prompt_builder.is_visible_parent_message(message)
+            ]
+            if messages:
+                parent_content.append(concat_content(messages))
+                logger.info(
+                    "Collected %d visible messages from parent chat '%s'",
+                    len(messages),
+                    parent_chat.doc_id,
+                )
+
+            parent_chat = chat_manager.find_by_id(parent_chat.parent_id)
+
+        result = concat_content(parent_content)
+        logger.info(
+            "get_chat_analysis_parents collected %d chars from %d parent levels",
+            len(result),
+            len(parent_content),
+        )
+        return result
+
+    @staticmethod
+    def convert_message(message: Message):
+        """
+        Convert a DB Message object into a LangChain message type.
+
+        Delegates to :class:`ChatPromptBuilder` (extracted for size).
+
+        :param message: The Message object to convert.
+        :return: A LangChain HumanMessage or AIMessage (never a dict).
+        """
+        return ChatPromptBuilder.convert_message(message)
+
+    def get_all_search_projects(self) -> List[CODXJuniorSettings]:
+        """
+        Return all projects including child projects and dependencies.
+
+        :return: List of CODXJuniorSettings for the current project and its relations.
+        """
+        project_child_projects, project_dependencies = get_project_dependencies(
+            settings=self.settings
+        )
+        all_projects = [self.settings] + project_child_projects + project_dependencies
+        return all_projects
+
+    def index_chat(self, chat: Chat) -> None:
+        """
+        Index the chat as a Document in the knowledge system.
+
+        Converts valid chat messages into a single Document with appropriate
+        metadata.
+
+        :param chat: The chat to index.
+        """
+        valid_messages = [
+            message.content
+            for message in chat.messages
+            if not message.hide and not message.improvement
+        ]
+
+        page_content = concat_content(valid_messages)
+        metadata = {
+            "source": chat.file_path,
+            "parser": "chat",
+            "loader_type": "chat"
+        }
+
+        try:
+            self.knowledge.index_document(page_content, metadata)
+            logger.info("Chat indexed successfully: %s", chat.file_path)
+        except (OSError, ValueError, RuntimeError) as ex:
+            logger.exception("Failed to index chat: %s, error: %s", chat.file_path, ex)
+
+# Made with ❤️ by codx-junior

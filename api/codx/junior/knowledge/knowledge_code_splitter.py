@@ -1,0 +1,189 @@
+import logging
+import os
+
+from langchain_core.documents import Document
+from langchain_community.document_loaders.parsers import LanguageParser
+from langchain_community.document_loaders.blob_loaders import Blob
+
+from codx.junior.settings import CODXJuniorSettings
+
+# from codx.junior.browser.browseruse import BrowserUse
+
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+
+from llama_index.core.node_parser import CodeSplitter
+from codx.junior.knowledge.settings import (
+    LANGUAGE_FROM_EXTENSION,
+    CODE_PARSER_FROM_EXTENSION
+)
+
+from codx.junior.utils.utils import exec_command
+
+from codx.junior.globals import (
+  CURRENT_SPLITTER_LANGUAGES,
+  LANGUAGE_PARSER_MAPPING
+)
+
+logger = logging.getLogger(__name__)
+
+class KnowledgeCodeSplitter:
+    def __init__(self, settings: CODXJuniorSettings):
+        self.settings = settings
+        self.embeddings_ai_settings = self.settings.get_embeddings_settings()
+        chunk_size = self.embeddings_ai_settings.chunk_size or 65535
+        self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=10)
+
+    def load(self, file_path):
+        docs = self.file_to_documents(file_path=file_path)
+        if docs:
+            total_docs = len(docs)
+            for ix, doc in enumerate(docs):
+              doc.metadata["index"] = ix
+              doc.metadata["total_docs"] = total_docs
+              doc.metadata["length"] = len(doc.page_content)
+        return docs
+
+    def file_to_documents(self, file_path):
+        suffix = file_path.split(".")[-1] if "." in file_path else "txt"
+        language = LANGUAGE_FROM_EXTENSION.get(suffix, suffix) or suffix
+        code_parser_language = CODE_PARSER_FROM_EXTENSION.get(suffix, language) or language 
+        
+        # Handle PDF files with dedicated loader
+        if suffix.lower() == "pdf":
+            try:
+                return self.load_with_pdf_loader(file_path=file_path)
+            except Exception as ex:
+                logger.error(f"[KnowledgeCodeSplitter] PDF loader failed for {file_path}: {ex}")
+                # Fall through to other loaders as fallback
+                pass
+        
+        try:
+            return self.load_with_code_plitter(file_path=file_path, code_parser_language=code_parser_language)
+        except Exception as ex:
+            #logger.error(f"[KnowledgeCodeSplitter] load_with_code_plitter load error: {ex} - {file_path} language: {code_parser_language}")
+            pass
+
+        try:
+            return self.load_with_language_parser(file_path=file_path, code_parser_language=code_parser_language)
+        except Exception as ex:
+            #logger.error(f"[KnowledgeCodeSplitter] load_with_language_parser load error: {ex} - {file_path}")
+            pass
+          
+        # if not file_path.endswith(".md") and False:
+        #     try:
+        #         return self.load_with_docling(file_path=file_path, code_parser_language=code_parser_language)
+        #     except Exception as ex:
+        #         logger.exception(f"[KnowledgeCodeSplitter] load_with_docling load error: {ex} - {file_path}")
+        #         pass
+              
+        try:
+            return self.load_as_text(file_path=file_path)
+        except Exception as ex:
+            #logger.error(f"[KnowledgeCodeSplitter] load_as_text load error: {ex} - {file_path}")
+            pass
+
+        logger.exception(f"[KnowledgeCodeSplitter] !!!No valid code splitter found for file {file_path}") 
+        return None
+    
+    def load_with_browser(self, file_path):
+        browser = Browser(settings=self.settings)
+
+    def load_with_pdf_loader(self, file_path):
+        """Load PDF files using PyMuPDF."""
+        from codx.junior.knowledge.knowledge_pdf_loader import KnowledgePDFLoader
+        
+        pdf_loader = KnowledgePDFLoader(settings=self.settings)
+        docs = pdf_loader.load(file_path)
+        
+        # Split large pages if necessary
+        if self.embeddings_ai_settings.chunk_size:
+            docs = self._split_large_documents(docs)
+        
+        return docs
+
+    def _split_large_documents(self, documents):
+        """Split documents that exceed chunk size."""
+        result = []
+        for doc in documents:
+            if len(doc.page_content) <= self.embeddings_ai_settings.chunk_size:
+                result.append(doc)
+            else:
+                # Split large documents using text splitter
+                chunks = self.text_splitter.split_text(doc.page_content)
+                for chunk in chunks:
+                    new_doc = Document(page_content=chunk, metadata=doc.metadata.copy())
+                    result.append(new_doc)
+        return result
+
+    def load_with_code_plitter(self, file_path, code_parser_language):
+        code_parser = CodeSplitter(
+            language=code_parser_language,
+            # chunk_lines: int = DEFAULT_CHUNK_LINES,
+            # chunk_lines_overlap: int = DEFAULT_LINES_OVERLAP,
+            max_chars=self.embeddings_ai_settings.chunk_size
+            # parser: Any = None,
+            # callback_manager: Optional[CallbackManager] = None,
+            # include_metadata: bool = True,
+            # include_prev_next_rel: bool = True,
+            # id_func: Optional[Callable[[int, Document], str]] = None,
+        )
+        def build_document(page_content):
+            metadata = {
+                "source": file_path,
+                "language": language,
+                "code_parser_language": code_parser_language,
+                "parser": "CodeSplitter",
+                "loader_type": "code",
+                "splitter": "CodeSplitter"
+            }    
+            return Document(page_content=page_content, metadata=metadata)
+
+        with open(file_path, mode='r', encoding='utf-8') as file:
+            blocks = code_parser.split_text(file.read())
+            return [build_document(block) for block in blocks]
+
+    def load_with_language_parser(self, file_path, code_parser_language):
+        language_parser = LanguageParser(language=code_parser_language, chucnk_size=self.embeddings_ai_settings.chunk_size)
+        with open(file_path, mode='r', encoding='utf-8') as file:
+            blob = Blob(data=file.read(), encoding='utf-8', metadata={ 
+                "source": file_path,
+                "language": code_parser_language,
+                "parser": "LanguageParser"
+            })
+            docs = language_parser.parse(blob)
+            for doc in docs: # Dirty hack for json
+                doc.metadata["language"] = doc.metadata.get("language") or code_parser_language or suffix
+                doc.metadata["loader_type"] = "code"
+                doc.metadata["splitter"] = "LanguageParser"
+            return docs
+
+    def load_with_docling(self, file_path, code_parser_language):
+        from docling.document_converter import DocumentConverter
+
+        extension = file_path.split(".")[-1]
+        if extension in ["pdf", "docx", "xls", "jpg"]:
+            markdown_path = file_path + ".md"
+            if os.path.isfile(markdown_path) and \
+                os.path.getmtime(markdown_path) > os.path.getmtime(file_path):
+                
+                logger.info("load_with_docling SKIP '%s' is newer than '%s'", markdown_path, file_path)
+            else:
+                converter = DocumentConverter()
+                result = converter.convert(file_path)
+                markdown = result.document.export_to_markdown()
+                with open(markdown_path, 'w') as file:
+                    file.write(markdown)
+                logger.info("[load_with_docling] done, markdown length: %d", len(markdown))
+        
+        raise Exception("Let markdown take it!")
+        
+    def load_as_text(self, file_path):
+      docs = TextLoader(file_path).load_and_split(
+                    text_splitter=self.text_splitter)
+      for doc in docs:
+          doc.metadata["language"] = "txt"
+          doc.metadata["loader_type"] = "text"
+          doc.metadata["splitter"] = "TextLoader"
+      return docs

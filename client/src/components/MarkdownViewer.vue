@@ -1,0 +1,299 @@
+<script setup>
+import { full as emoji } from 'markdown-it-emoji'
+import MarkdownIt from 'markdown-it'
+import Modal from './Modal.vue'
+</script>
+
+<template>
+  <div class="text-wrap overflow-y-auto prose max-w-full">
+    <!-- Render markdown content with mixed elements -->
+    <div class="space-y-4">
+      <div class="w-full"
+        v-for="(element, idx) in renderedElements" 
+        :key="`element-${idx}`"
+        @click="handleClick"
+      >
+        <!-- Markdown/HTML content -->
+        <div 
+          v-if="element.type === 'markdown'"
+          class="overflow-x-auto"
+          v-html="element.content"
+        ></div>
+
+        <!-- Standard markdown table (scrolls horizontally on narrow screens) -->
+        <div 
+          v-else-if="element.type === 'table'"
+          class="overflow-x-auto"
+          v-html="element.markdownHtml"
+        ></div>
+      </div>
+    </div>
+
+    <!-- Image Preview Modal -->
+    <Modal
+      v-if="showImageModal"
+      :close="true"
+      @close="closeImageModal"
+    >
+      <template #header>
+        <span class="text-base font-semibold ">Image Preview</span>
+      </template>
+
+      <div class="flex items-center justify-center">
+        <img
+          :src="selectedImage"
+          :alt="selectedImageAlt"
+          class="max-w-full max-h-[70vh] rounded-lg"
+        />
+      </div>
+    </Modal>
+  </div>
+</template>
+
+<script>
+import MarkdownIt from 'markdown-it'
+import { full as emoji } from 'markdown-it-emoji'
+import Modal from './Modal.vue'
+import { highlightCode } from '@/utils/highlight'
+import parser from '@/utils/markdownParser'
+
+function createMd(documentId) {
+  // `highlight` replaces markdown-it-highlightjs, which statically imports the
+  // FULL highlight.js language pack into whichever chunk renders markdown.
+  const md = new MarkdownIt({ html: true, linkify: true, typographer: true, highlight: highlightCode })
+  md.use(emoji)
+
+  const defaultHeadingRenderer = md.renderer.rules.heading_open || function(tokens, idx, options, env, self) {
+    return self.renderToken(tokens, idx, options)
+  }
+
+  // Add IDs to heading elements - CRITICAL for DocumentSummary scroll-to functionality
+  md.renderer.rules.heading_open = function(tokens, idx, options, env, self) {
+    const token = tokens[idx]
+    const inlineToken = tokens[idx + 1]
+    if (inlineToken && inlineToken.children) {
+      const text = inlineToken.children
+        .filter(t => t.type === 'text' || t.type === 'code_inline')
+        .map(t => t.content)
+        .join('')
+      
+      // Generate slug matching DocumentSummary format
+      const slug = text
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '-')
+      
+      // Create anchor ID with documentId scope
+      const anchor = documentId ? `${documentId}-${slug}` : slug
+      
+      token.attrSet('id', anchor)
+      token.attrSet('class', 'heading-anchor scroll-mt-4')
+    }
+    return defaultHeadingRenderer(tokens, idx, options, env, self)
+  }
+
+  const defaultFenceRenderer = md.renderer.rules.fence || function(tokens, idx, options, env, self) {
+    return self.renderToken(tokens, idx, options)
+  }
+
+  // Add IDs to code block anchors - CRITICAL for DocumentSummary scroll-to functionality
+  md.renderer.rules.fence = function(tokens, idx, options, env, self) {
+    const token = tokens[idx]
+    const info = token.info ? token.info.trim() : ''
+    const infoMatch = info.match(/^(\w+)\s+([\w\-_.\/]+)$/)
+    const filePath = infoMatch ? infoMatch[2] : null
+    const rendered = defaultFenceRenderer(tokens, idx, options, env, self)
+
+    if (!filePath) return rendered
+
+    // Generate slug matching DocumentSummary format
+    const slug = filePath
+      .toLowerCase()
+      .replace(/[^\w\s\-./]/g, '')
+      .trim()
+      .replace(/[\s/]+/g, '-')
+    
+    // Create anchor ID with documentId scope
+    const anchor = documentId ? `${documentId}-${slug}` : slug
+    return `<div id="${anchor}" class="code-block-anchor scroll-mt-4">${rendered}</div>`
+  }
+
+  return md
+}
+
+const FILE_PATH_REGEX = /(?<=^|[\s(,>])((?:\.{1,2}\/|\/)?(?:[\w\-_.]+\/)+[\w\-_.]+\.(?:js|ts|vue|py|java|cpp|c|h|cs|go|rb|rs|php|html|css|scss|json|yaml|yml|md|txt|sh|bash|env|toml|xml|sql|graphql|proto|ipynb|jsx|tsx|mjs|cjs|svelte|kotlin|swift|dart))(?=[\s),<]|$)/g
+
+function addFileUploadIcons(html) {
+  return html.replace(
+    FILE_PATH_REGEX,
+    (match) =>
+      `<span
+        class=""
+        data-file-path="${match}"
+        title="Add '${match}' to chat files"
+      >${match}</span>`
+  )
+}
+
+export default {
+  props: {
+    text: { type: String, default: '' },
+    files: { type: Array, default: null },
+    documentId: { type: String, default: '' }
+  },
+  emits: ['add-file', 'copy-chapter', 'create-task'],
+  components: {
+    Modal
+  },
+  data() {
+    return {
+      renderedElements: [],
+      showImageModal: false,
+      selectedImage: '',
+      selectedImageAlt: ''
+    }
+  },
+  computed: {
+    sanitizedText() {
+      let text = ''
+      if (this.text) {
+        text = this.text
+          .replace('```thymeleaf', '```html')
+          .replace('```md', '')
+      }
+      // <file_change> envelopes are rendered as regular fenced code blocks so
+      // they get syntax highlighting and a scroll anchor like legacy fences.
+      return parser.fileChangeBlocksToFences(text)
+    }
+  },
+  watch: {
+    text() {
+      this.renderContent()
+    },
+    documentId() {
+      this.renderContent()
+    }
+  },
+  mounted() {
+    this.renderContent()
+  },
+  methods: {
+    renderContent() {
+      try {
+        const md = createMd(this.documentId)
+        const textWithLinks = this.sanitizedText.replace(
+          /`((?:\/[^\s:]+)+)(?::(\d+))?`/g,
+          (match, filePath, lineNumber) => {
+            const slashCount = (filePath.match(/\//g) || []).length
+            if (slashCount < 2) return match
+            const lineInfo = lineNumber ? `:${lineNumber}` : ''
+            return `<span>${filePath}${lineInfo}</span>`
+          }
+        )
+        const rendered = md.render(textWithLinks)
+        this.parseElements(rendered)
+      } catch (ex) {
+        console.error("Message can't be rendered", this.text)
+        this.renderedElements = []
+      }
+    },
+    parseElements(html) {
+      const elements = []
+      const tableRegex = /<table[^>]*>[\s\S]*?<\/table>/g
+      let lastIndex = 0
+      let match
+
+      // Extract all tables with their positions
+      const tables = []
+      while ((match = tableRegex.exec(html)) !== null) {
+        tables.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          html: match[0]
+        })
+      }
+
+      // Split content by tables
+      tables.forEach((table) => {
+        // Add markdown content before table
+        if (table.start > lastIndex) {
+          const mdHtml = html.substring(lastIndex, table.start).trim()
+          if (mdHtml) {
+            elements.push({
+              type: 'markdown',
+              content: addFileUploadIcons(mdHtml)
+            })
+          }
+        }
+
+        // Add standard markdown table element
+        if (table.html) {
+          elements.push({
+            type: 'table',
+            markdownHtml: table.html
+          })
+        }
+
+        lastIndex = table.end
+      })
+
+      // Add remaining markdown content
+      if (lastIndex < html.length) {
+        const mdHtml = html.substring(lastIndex).trim()
+        if (mdHtml) {
+          elements.push({
+            type: 'markdown',
+            content: addFileUploadIcons(mdHtml)
+          })
+        }
+      }
+
+      this.renderedElements = elements.length > 0 ? elements : [{ 
+        type: 'markdown', 
+        content: addFileUploadIcons(html) 
+      }]
+
+      // Attach image click handlers after DOM update
+      this.$nextTick(() => {
+        this.attachImageListeners()
+      })
+    },
+    attachImageListeners() {
+      const images = this.$el.querySelectorAll('img')
+      images.forEach(img => {
+        // Only attach if not already attached
+        if (!img.dataset.imageListenerAttached) {
+          img.style.cursor = 'pointer'
+          img.addEventListener('click', (e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            this.openImageModal(img.src, img.alt)
+          })
+          img.dataset.imageListenerAttached = 'true'
+        }
+      })
+    },
+    openImageModal(src, alt) {
+      this.selectedImage = src
+      this.selectedImageAlt = alt || 'Image preview'
+      this.showImageModal = true
+    },
+    closeImageModal() {
+      this.showImageModal = false
+      this.selectedImage = ''
+      this.selectedImageAlt = ''
+    },
+    handleClick(event) {
+      const btn = event.target.closest('.file-path-upload-btn')
+      if (!btn) return
+      event.preventDefault()
+      event.stopPropagation()
+      const filePath = btn.getAttribute('data-file-path')
+      if (filePath) {
+        this.$emit('add-file', filePath)
+      }
+    }
+  }
+}
+</script>

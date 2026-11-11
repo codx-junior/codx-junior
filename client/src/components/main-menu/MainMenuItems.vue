@@ -1,0 +1,121 @@
+<script setup>
+import MenubarItem from './MenubarItem.vue'
+import WorkspacesMenu from './WorkspacesMenu.vue'
+import SettingsMenu from './SettingsMenu.vue'
+import MenuDivider from './MenuDivider.vue'
+import { $storex } from '@/store'
+
+// The main menu is the one launcher that ALWAYS contains everything, in both
+// product shells (company and working mode). Apps that are simplified out of
+// the company sidebar remain reachable from here.
+function openCompanyWorkspace() {
+  const companyId = $storex.users.primaryCompanyId
+  const companyMode = $storex.users.isCompanyMode
+  $storex.$router.push({
+    name: companyMode ? 'company-home' : 'company',
+    params: companyMode
+      ? (companyId ? { companyId } : {})
+      : {}
+  })
+}
+
+function openManagementDashboard() {
+  $storex.ui.openApp('management-dashboard')
+}
+
+function openProjects() {
+  $storex.ui.openApp('projects')
+}
+
+function openCompanySettings() {
+  // Company settings live inside the assistant window: open the company shell
+  // with a one-shot query flag that CompanyView turns into an assistant turn.
+  $storex.$router.push({
+    name: 'company-home',
+    query: { assistant: 'settings' }
+  })
+}
+</script>
+
+<template>
+  <MenubarItem @click="$ui.setActiveTab('home')">
+    <i class="fa-solid fa-home"></i>
+    Home
+  </MenubarItem>
+  <MenubarItem @click="openCompanyWorkspace">
+    <i class="fa-solid fa-building-columns"></i>
+    Company
+  </MenubarItem>
+  <MenubarItem @click="openCompanySettings">
+    <i class="fa-solid fa-building-user"></i>
+    Company settings
+  </MenubarItem>
+  <MenubarItem @click="openManagementDashboard">
+    <i class="fa-solid fa-table-columns"></i>
+    Management
+  </MenubarItem>
+  <MenubarItem @click="openProjects">
+    <i class="fa-solid fa-cubes"></i>
+    Projects
+  </MenubarItem>
+  <MenubarItem @click="$ui.showNewProject(true)">
+    <i class="fa-solid fa-plus"></i>
+    New project
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('wiki')">
+    <i class="fa-solid fa-graduation-cap"></i> Wiki
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('tasks')">
+    <i class="fa-brands fa-trello"></i>
+    Task manager
+  </MenubarItem>
+  <MenubarItem @click="$ui.openPlanning()">
+    <i class="fa-solid fa-diagram-project"></i>
+    Planning
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('team')">
+    <i class="fa-solid fa-people-group"></i>
+    Team
+  </MenubarItem>
+  <MenubarItem @click="$ui.openMeet()">
+    <i class="fa-solid fa-video"></i>
+    Meet
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('file-explorer')">
+    <i class="fa-regular fa-folder-open"></i>
+    File explorer
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('browser-sessions')">
+    <i class="fa-solid fa-desktop"></i> Computer sessions
+  </MenubarItem>
+  <MenubarItem @click="$ui.openGitView()">
+    <i class="fa-solid fa-code-branch"></i> Git
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('knowledge')"
+    v-if="$users.isProjectAdmin">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    Knowledge
+  </MenubarItem>
+  <MenubarItem @click="$ui.setActiveTab('analytics')">
+    <i class="fa-solid fa-chart-area"></i>
+    Analytics
+  </MenubarItem>
+  <MenubarItem @click="$ui.openInfra()">
+    <i class="fa-solid fa-server"></i>
+    Infrastructure
+  </MenubarItem>
+  <MenuDivider />
+  <WorkspacesMenu />
+  <MenuDivider />
+  <SettingsMenu />
+  <MenuDivider />
+  <MenubarItem>
+    <a
+      class="flex gap-1 tooltip text-error"
+      data-tip="Log out"
+      @click.stop="$users.logout()">
+      <i class="fa-solid fa-right-from-bracket"></i>
+      Log out
+    </a>
+  </MenubarItem>
+</template>

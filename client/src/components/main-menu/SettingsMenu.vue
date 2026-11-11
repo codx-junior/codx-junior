@@ -1,0 +1,157 @@
+<script setup>
+import MenubarSub from './MenubarSub.vue'
+import MenubarItem from './MenubarItem.vue'
+</script>
+<template>
+    <MenubarSub title="Settings">
+        <template v-slot:menubaritem>
+            <i class="fa-solid fa-gear"></i>
+            Settings
+        </template>
+        <div class="font-bold px-2 hover:bg-base-300">
+            Settings
+        </div>
+        <MenubarItem @click="$ui.setActiveTab('account')">
+            User account
+        </MenubarItem>
+
+        <MenubarItem @click="$ui.setActiveTab('settings')" v-if="$users.isProjectAdmin">
+            Project settings
+        </MenubarItem>
+
+
+        <MenubarItem v-if="$project && $storex.api.permissions.isProjectAdmin">
+            <a class="flex gap-1 tooltip tooltip-right click" data-tip="Knowledge settings"
+                @click.stop="$ui.setActiveTab('knowledge_settings')">
+                Knowledge settings
+            </a>
+        </MenubarItem>
+
+        <MenubarItem class="flex gap-2 hover:bg-base-300" @click="$ui.setActiveTab('global-settings')"
+            v-if="$users.isAdmin">
+            Global settings
+        </MenubarItem>
+
+        <!-- Product shell switch: managers can go back to the full project
+             workspace, and members/engineers with a company can enter the
+             simplified company shell. The preference is stored on the user. -->
+        <MenubarItem
+            v-if="!$users.isCompanyMode && ($users.isCompanyManager || $users.companyIds.length)"
+            @click="setWorkspaceMode('company')">
+            <i class="fa-solid fa-building-columns"></i>
+            Company workspace
+        </MenubarItem>
+        <MenubarItem v-if="$users.isCompanyMode" @click="setWorkspaceMode('work')">
+            <i class="fa-solid fa-code"></i>
+            Working workspace
+        </MenubarItem>
+        <MenubarItem v-if="$storex.api.user?.workspace_mode !== 'auto'" @click="setWorkspaceMode('auto')">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+            Automatic workspace
+        </MenubarItem>
+
+        <MenubarSub title="Miscellaneous">
+            <div class="font-bold px-2 hover:bg-base-300">
+                Miscellaneous
+            </div>
+
+            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+                <a class="flex gap-1 tooltip tooltip-right click" data-tip="Logs" @click="$ui.toggleLogs()">
+                    View logs
+                </a>
+            </MenubarItem>
+            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+                <a class="flex gap-1 tooltip tooltip-right click" data-tip="Logs" @click="$ui.openChatLogs()">
+                    Chat logs
+                </a>
+            </MenubarItem>
+            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+                <a class="flex gap-1 tooltip tooltip-right click" data-tip="Decision model logs"
+                    @click="$ui.openDecisionModelLogs()">
+                    Decision model logs
+                </a>
+            </MenubarItem>
+            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+                <!-- Uses the unified opener so it works in BOTH modes: desktop
+                     opens the dockview panel, single/mobile pushes the
+                     "/:projectName/api-monitoring" route (see config/apps.js). -->
+                <a class="flex gap-1 tooltip tooltip-right click" data-tip="API latency, throughput and errors"
+                    @click.stop="openApiMonitoring()">
+                    API monitoring
+                </a>
+            </MenubarItem>
+            <MenubarItem class="flex gap-2 hover:bg-base-300" v-if="$ui.isMobile" @click="showEruda">
+                Mobile console
+            </MenubarItem>
+        </MenubarSub>
+
+        <MenubarItem>
+            <a class="flex gap-4 items-center gap-2 tooltip select select-sm" data-tip="Voice language">
+                <i class="fa-solid fa-microphone-lines"></i>
+                <select class="select select-sm" @change="$ui.setVoiceLanguage($event.target.value)" @click.stop="">
+                    <option v-for="key, lang in $ui.voiceLanguages" :key="lang" :selected="$ui.voiceLanguage === lang"
+                        :value="lang">
+                        {{ key }}
+                    </option>
+                </select>
+            </a>
+        </MenubarItem>
+    </MenubarSub>
+</template>
+<script>
+export default {
+    computed: {
+        workspaces() {
+            return this.$storex.projects.projectApps.reduce((acc, app) => {
+                const apps = acc[app.workspaceName] || []
+                apps.push(app)
+                return {
+                    ...acc,
+                    [app.workspaceName]: apps
+                }
+            }, {})
+        }
+    },
+    methods: {
+        toggleViewMode() {
+            if (this.$storex.ui.viewMode === 'vibe') {
+                this.$storex.ui.setExpertMode()
+            } else {
+                this.$storex.ui.setVibeMode()
+            }
+        },
+        toggleAppPanel(app) {
+            app = this.$ui.openApps[app.key] || app
+            this.$ui.showApp({
+                ...app,
+                left: !app?.left,
+                ts: new Date().getTime()
+            })
+        },
+        // Opens the API monitoring screen through the unified opener
+        // (panel in desktop mode, route in single/mobile mode).
+        openApiMonitoring() {
+            const navigation = this.$storex.$navigation
+            if (!navigation) {
+                console.warn('[SettingsMenu] navigation is not ready')
+                return
+            }
+            navigation.openApp('api-monitoring')
+        },
+        showEruda() {
+            window.eruda.init()
+        },
+        async setWorkspaceMode(mode) {
+            try {
+                await this.$storex.users.setWorkspaceMode(mode)
+                // Re-enter through "/" so the shell, the guard redirect and the
+                // active route are rebuilt from the new mode in one go.
+                window.location.assign('/')
+            } catch (error) {
+                console.error('[SettingsMenu] cannot change workspace mode', error)
+                this.$storex.session.onError('Could not change the workspace mode')
+            }
+        }
+    }
+}
+</script>

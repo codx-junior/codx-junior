@@ -1,0 +1,2307 @@
+"""
+File sub-engine for codx-junior.
+Handles all file system operations including reading, writing, diffing and profile application.
+
+Made with ❤️ by codx-junior
+"""
+
+import logging
+import os
+import re
+import shlex
+import subprocess
+import base64
+import shutil
+import threading
+import time
+
+from datetime import datetime
+from typing import TYPE_CHECKING, Dict, List, Optional, Pattern, Tuple
+
+import pathspec
+
+from codx.junior.db import Chat, Message
+from codx.junior.model.model import Profile
+from codx.junior.project.project_discover import find_all_user_projects
+from codx.junior.utils.utils import write_file, exec_command
+
+if TYPE_CHECKING:
+    from codx.junior.engine.session import CODXJuniorSession
+
+logger = logging.getLogger(__name__)
+
+# Name of the gitignore file
+GITIGNORE_FILE = ".gitignore"
+# Name of the git directory to always skip
+GIT_DIR = ".git"
+
+# Upload constraints
+DEFAULT_MAX_FILE_SIZE = 1024 * 1024 * 1024  # 1 GB
+DEFAULT_MAX_TOTAL_SIZE = 4 * DEFAULT_MAX_FILE_SIZE  # 4 GB
+
+# Binary file extensions
+BINARY_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg', 'zip', 'tar', 'gz', 'woff', 'woff2', 'ttf', 'eot', 'pdf'}
+
+
+class GitIgnoreManager:
+    """
+    Efficiently checks whether files are git-ignored by pre-loading
+    all .gitignore rules found within a directory tree.
+
+    Instead of spawning one subprocess per file (git check-ignore),
+    this class reads every .gitignore file once and performs all checks
+    in memory using the `pathspec` library.
+
+    Supports nested .gitignore files: each .gitignore applies to its
+    own directory and all subdirectories, matching git's actual behaviour.
+
+    Also correctly handles the case where a parent directory is ignored:
+    any file or directory inside an ignored directory is also considered
+    ignored, regardless of whether it matches a pattern directly.
+
+    ```mermaid
+    flowchart TD
+        A[GitIgnoreManager created with root_path] --> B[scan_gitignore_files]
+        B --> C{.gitignore found?}
+        C -- Yes --> D[Parse rules with pathspec]
+        C -- No --> E[No rules for that dir]
+        D --> F[Store dir -> PathSpec mapping]
+        F --> G[is_ignored called with abs_path]
+        G --> H[Walk up from file to root]
+        H --> I{PathSpec for dir?}
+        I -- Yes --> J[Check relative path against PathSpec]
+        J --> K{Matches?}
+        K -- Yes --> L[Return True - is ignored]
+        K -- No --> M[Continue up the tree]
+        I -- No --> M
+        M --> N[Check if dir itself is ignored]
+        N -- Yes --> L
+        N -- No --> O{Reached root?}
+        O -- Yes --> P[Return False - not ignored]
+        O -- No --> H
+    ```
+    """
+
+    def __init__(self, root_path: str) -> None:
+        """
+        Initialize and pre-load all .gitignore rules under root_path.
+
+        Args:
+            root_path: Absolute path to the root directory to scan.
+        """
+        self.root_path: str = os.path.normpath(root_path)
+        # Maps absolute directory path -> compiled PathSpec for that directory
+        self._specs: Dict[str, pathspec.PathSpec] = {}
+        # Cache of already-computed ignored directories to speed up child lookups
+        self._ignored_dirs_cache: Dict[str, bool] = {}
+        self._load_all_gitignore_files()
+
+    def _load_all_gitignore_files(self) -> None:
+        """
+        Walk the directory tree once and load every .gitignore found.
+
+        Each .gitignore is compiled into a PathSpec and stored keyed
+        by the directory that contains it.
+        """
+        for dir_path, dirs, files in os.walk(self.root_path):
+            # Skip .git internals entirely
+            if GIT_DIR in dirs:
+                dirs.remove(GIT_DIR)
+
+            if GITIGNORE_FILE in files:
+                gitignore_path = os.path.join(dir_path, GITIGNORE_FILE)
+                spec = self._parse_gitignore(gitignore_path)
+                if spec is not None:
+                    self._specs[dir_path] = spec
+                    logger.debug(
+                        "Loaded .gitignore rules from %s", gitignore_path
+                    )
+
+        logger.debug(
+            "GitIgnoreManager loaded %d .gitignore file(s) under %s",
+            len(self._specs),
+            self.root_path,
+        )
+
+    def _parse_gitignore(self, gitignore_path: str) -> Optional[pathspec.PathSpec]:
+        """
+        Parse a single .gitignore file into a PathSpec object.
+
+        Args:
+            gitignore_path: Absolute path to the .gitignore file.
+
+        Returns:
+            Compiled PathSpec, or None if the file cannot be read.
+        """
+        try:
+            with open(gitignore_path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            return pathspec.PathSpec.from_lines("gitwildmatch", lines)
+        except OSError as ex:
+            logger.warning("Could not read %s: %s", gitignore_path, ex)
+            return None
+
+    def _is_within_root(self, abs_path: str) -> bool:
+        """
+        Check whether abs_path is the root_path itself or a descendant of it.
+
+        This guard prevents the recursive walk in _is_dir_ignored from
+        climbing above root_path all the way to the filesystem root,
+        which would cause infinite recursion since the base-case
+        ``abs_dir_path == self.root_path`` would never be reached.
+
+        Args:
+            abs_path: Normalised absolute path to test.
+
+        Returns:
+            True if abs_path equals root_path or starts with root_path + os.sep.
+        """
+        return abs_path == self.root_path or abs_path.startswith(
+            self.root_path + os.sep
+        )
+
+    def _is_dir_ignored(self, abs_dir_path: str) -> bool:
+        """
+        Check whether a directory itself is matched by any .gitignore rule,
+        walking up to root_path. Results are cached to avoid redundant work
+        when checking many children of the same directory.
+
+        This is the key method that ensures children of ignored directories
+        are also reported as ignored, even if they don't match any pattern
+        directly.
+
+        The recursion is bounded by two base cases:
+        1. ``abs_dir_path == self.root_path`` – we have reached the root; never ignored.
+        2. ``not self._is_within_root(abs_dir_path)`` – the path has escaped the root
+           (e.g. the listed directory is outside the root); treat as not ignored and
+           stop climbing to prevent infinite recursion toward the filesystem root.
+
+        Args:
+            abs_dir_path: Absolute path of the directory to check.
+
+        Returns:
+            True if the directory (or any of its ancestors up to root) is ignored.
+        """
+        # Already resolved - return cached result
+        if abs_dir_path in self._ignored_dirs_cache:
+            return self._ignored_dirs_cache[abs_dir_path]
+
+        # Base case: the root itself is never ignored
+        if abs_dir_path == self.root_path:
+            self._ignored_dirs_cache[abs_dir_path] = False
+            return False
+
+        # Safety guard: if we have somehow walked above the root (e.g. the path
+        # passed to is_ignored was outside the tree), stop recursion immediately.
+        # Without this guard, dirname("/") == "/" causes infinite recursion.
+        if not self._is_within_root(abs_dir_path):
+            logger.debug(
+                "Path is outside GitIgnoreManager root; treating as not ignored: %s",
+                abs_dir_path,
+            )
+            self._ignored_dirs_cache[abs_dir_path] = False
+            return False
+
+        parent = os.path.dirname(abs_dir_path)
+
+        # If the parent is ignored, so is this directory (cascade)
+        if self._is_dir_ignored(parent):
+            self._ignored_dirs_cache[abs_dir_path] = True
+            return True
+
+        # Check whether this directory matches any rule in its parent's scope
+        # or any ancestor's scope (walk up from parent to root)
+        current = parent
+        while True:
+            spec = self._specs.get(current)
+            if spec is not None:
+                try:
+                    rel = os.path.relpath(abs_dir_path, current)
+                except ValueError:
+                    pass
+                else:
+                    if spec.match_file(rel):
+                        self._ignored_dirs_cache[abs_dir_path] = True
+                        return True
+
+            if current == self.root_path:
+                break
+
+            ancestor = os.path.dirname(current)
+            # Guard against infinite loop at filesystem root
+            if ancestor == current:
+                break
+            current = ancestor
+
+        self._ignored_dirs_cache[abs_dir_path] = False
+        return False
+
+    def is_ignored(self, abs_path: str) -> bool:
+        """
+        Check whether a file or directory is matched by any .gitignore rule.
+
+        Handles two cases:
+        1. The path itself matches a .gitignore pattern.
+        2. The path lives inside a directory that is ignored (cascade).
+
+        Walking up the directory tree from abs_path to root_path mirrors
+        how git resolves ignore rules (nearest .gitignore wins, rules are
+        cumulative). The additional parent-directory cascade check ensures
+        that files inside ignored folders are correctly reported as ignored
+        even if no pattern matches them directly.
+
+        If abs_path is outside the root_path tree, this method returns False
+        immediately since no rules from this root can apply to it.
+
+        Args:
+            abs_path: Absolute path of the file or directory to check.
+
+        Returns:
+            True if the path is ignored by any applicable .gitignore rule,
+            or if any of its ancestor directories up to root_path is ignored.
+        """
+        abs_path = os.path.normpath(abs_path)
+        parent_dir = os.path.dirname(abs_path)
+
+        # If the path is entirely outside the root, no rules here apply to it.
+        if not self._is_within_root(abs_path):
+            logger.debug(
+                "Path is outside GitIgnoreManager root; skipping ignore check: %s",
+                abs_path,
+            )
+            return False
+
+        # Fast path: if the containing directory is already known to be ignored,
+        # every child is ignored too - no need to check patterns.
+        if self._is_dir_ignored(parent_dir):
+            logger.debug(
+                "Path is inside an ignored directory, marking as ignored: %s", abs_path
+            )
+            return True
+
+        # Walk up from the file's directory to root checking each .gitignore
+        current_dir = parent_dir
+        while True:
+            spec = self._specs.get(current_dir)
+            if spec is not None:
+                try:
+                    rel = os.path.relpath(abs_path, current_dir)
+                except ValueError:
+                    # Different drives on Windows - skip
+                    pass
+                else:
+                    if spec.match_file(rel):
+                        return True
+
+            # Stop after we have checked the root
+            if current_dir == self.root_path:
+                break
+
+            ancestor = os.path.dirname(current_dir)
+            # Guard against infinite loop at filesystem root
+            if ancestor == current_dir:
+                break
+            current_dir = ancestor
+
+        return False
+
+
+# ----------------------------------------------------------------------
+# Search cache
+# ----------------------------------------------------------------------
+# The chat composer calls `GET /api/files/search` on every keystroke (`@`
+# mentions), so the two costly artefacts a search needs are cached
+# process-wide, per search root, with a short TTL:
+#
+# * the parsed `GitIgnoreManager` (loading .gitignore files walks the tree)
+# * a materialized file index (one `os.walk` of the whole tree)
+#
+# With both cached, a repeated search on the same root performs zero walks: it
+# only filters the in-memory index. Entries expire after
+# `SEARCH_CACHE_TTL_SECONDS` and the number of cached roots is bounded, so
+# memory cannot grow unbounded (mutating file operations also invalidate).
+#
+# ```mermaid
+# flowchart TD
+#     A[search_files / search_files_content] --> B{_get_file_index cached?}
+#     B -- yes --> C[Filter entries in memory]
+#     B -- no --> D[_build_file_index: ONE os.walk]
+#     D --> E[_build_gitignore_manager: cached per root]
+#     E --> F[parse .gitignore files once]
+#     D --> G[Cache the index by root]
+#     G --> C
+#     C --> H[parse_file_line on the page slice only]
+# ```
+SEARCH_CACHE_TTL_SECONDS = 45
+SEARCH_CACHE_MAX_ROOTS = 8
+
+_search_cache_lock = threading.RLock()
+# Absolute search root -> (expires_at, GitIgnoreManager)
+_gitignore_cache: Dict[str, Tuple[float, "GitIgnoreManager"]] = {}
+# (project root, current project base path, raw_search) -> (expires_at, entries)
+_file_index_cache: Dict[Tuple[str, str, bool], Tuple[float, List[dict]]] = {}
+
+
+def _cache_get(cache: dict, key):
+    """
+    Return the cached value for ``key`` when it is still fresh, else None.
+
+    Args:
+        cache: Module cache dict holding ``key -> (expires_at, value)``.
+        key: Cache key to look up.
+
+    Returns:
+        The cached value, or None when the key is missing or expired.
+    """
+    with _search_cache_lock:
+        entry = cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if expires_at <= time.time():
+            cache.pop(key, None)
+            logger.debug("Search cache entry expired: %s", key)
+            return None
+        return value
+
+
+def _cache_set(cache: dict, key, value) -> None:
+    """
+    Store ``value`` under ``key`` with the search cache TTL.
+
+    The entries closest to expiration are evicted first, so the cache never
+    holds more than ``SEARCH_CACHE_MAX_ROOTS`` roots and memory stays bounded.
+
+    Args:
+        cache: Module cache dict holding ``key -> (expires_at, value)``.
+        key: Cache key to store.
+        value: Value to cache.
+    """
+    with _search_cache_lock:
+        cache[key] = (time.time() + SEARCH_CACHE_TTL_SECONDS, value)
+        while len(cache) > SEARCH_CACHE_MAX_ROOTS:
+            oldest_key = min(cache, key=lambda cached: cache[cached][0])
+            cache.pop(oldest_key, None)
+            logger.debug("Search cache evicted: %s", oldest_key)
+
+
+def _paths_related(path_a: str, path_b: str) -> bool:
+    """
+    Check whether two paths are the same or one lives inside the other.
+
+    Args:
+        path_a: Absolute, normalized path.
+        path_b: Absolute, normalized path.
+
+    Returns:
+        True when both paths are equal or one is a descendant of the other.
+    """
+    return (
+        path_a == path_b
+        or path_a.startswith(path_b + os.sep)
+        or path_b.startswith(path_a + os.sep)
+    )
+
+
+def _invalidate_search_cache_root(root_path: str) -> None:
+    """
+    Drop cached gitignore managers and file indexes related to ``root_path``.
+
+    Both the entries rooted at ``root_path`` and the ones whose root contains it
+    (a parent project index covers the changed file) are dropped.
+
+    Args:
+        root_path: Absolute path of the file or directory that changed.
+    """
+    root_path = os.path.normpath(root_path)
+    with _search_cache_lock:
+        for cached_root in list(_gitignore_cache):
+            if _paths_related(cached_root, root_path):
+                _gitignore_cache.pop(cached_root, None)
+        for cache_key in list(_file_index_cache):
+            if _paths_related(cache_key[0], root_path) or _paths_related(
+                cache_key[1], root_path
+            ):
+                _file_index_cache.pop(cache_key, None)
+
+
+def _clear_search_cache() -> None:
+    """Drop every cached gitignore manager and file index."""
+    with _search_cache_lock:
+        _gitignore_cache.clear()
+        _file_index_cache.clear()
+
+
+class FileEngine:
+    """
+    Handles file system operations for the project.
+
+    ```mermaid
+    flowchart TD
+        FE[FileEngine]
+        FE --> resolve_file_target
+        FE --> read_file
+        FE --> write_project_file
+        FE --> upload_file
+        FE --> upload_files
+        FE --> diff_file
+        FE --> _git_diff_no_index
+        FE --> create_file
+        FE --> delete_file
+        FE --> rename_file
+        FE --> reset_file
+        FE --> process_project_file_before_saving
+        FE --> apply_file_profile
+        FE --> get_valid_project_file_path
+        FE --> search_files
+        FE --> search_files_content
+        FE --> get_file_info
+        FE --> _build_gitignore_manager
+        FE --> _build_file_index
+        FE --> _get_file_index
+        FE --> _invalidate_search_cache
+        FE --> get_media_type
+        FE --> get_project_roots
+        FE --> get_project_root_for_path
+    ```
+    """
+
+    def __init__(self, session: "CODXJuniorSession") -> None:
+        """Initialize with a reference to the parent session."""
+        self.session = session
+
+    @property
+    def settings(self):
+        """Shortcut to session settings."""
+        return self.session.settings
+
+    def _build_gitignore_manager(self, search_root: str) -> GitIgnoreManager:
+        """
+        Return the GitIgnoreManager for ``search_root``, building it on first use.
+
+        Loading a manager reads every .gitignore under the root (a full
+        ``os.walk``), which used to happen once per search call - on every
+        keystroke of the chat ``@`` composer. The instance is therefore cached
+        process-wide per root for ``SEARCH_CACHE_TTL_SECONDS`` and shared by
+        every caller (``read_directory``, ``search_files``,
+        ``search_files_content``).
+
+        Args:
+            search_root: Absolute directory path to scan for .gitignore files.
+
+        Returns:
+            Ready-to-use GitIgnoreManager instance (possibly cached).
+        """
+        root_path = os.path.normpath(search_root)
+        gitignore_manager = _cache_get(_gitignore_cache, root_path)
+        if gitignore_manager is not None:
+            logger.debug("Reusing cached GitIgnoreManager for root: %s", root_path)
+            return gitignore_manager
+
+        logger.debug("Building GitIgnoreManager for root: %s", root_path)
+        gitignore_manager = GitIgnoreManager(root_path=root_path)
+        _cache_set(_gitignore_cache, root_path, gitignore_manager)
+        return gitignore_manager
+
+    def _build_file_index(
+        self, root_path: str, raw_search: bool = False
+    ) -> List[dict]:
+        """
+        Materialize the file list of ``root_path`` with a single ``os.walk``.
+
+        Each entry keeps:
+
+        - ``abs_path``: absolute file path.
+        - ``rel_path``: path relative to the current project root, which is the
+          value reported by the API (``file_path`` is rebuilt from it).
+        - ``is_ignored``: git-ignored flag computed with the cached manager.
+
+        Ignored directories are pruned in place unless ``raw_search`` is True,
+        so their subtrees are never visited for a normal search. Entries are
+        sorted once by relative path: ``search_files`` has always returned
+        results in path order, so filtering never needs to sort again.
+
+        Args:
+            root_path: Absolute project (or sub project) root to index.
+            raw_search: When True, ignored directories are walked as well, so
+                ``raw_search=True`` still reports files living inside ignored
+                folders.
+
+        Returns:
+            List of index entries sorted by relative path.
+        """
+        base_path = os.path.normpath(self.settings.abs_project_path)
+        gitignore_manager = self._build_gitignore_manager(root_path)
+        index: List[dict] = []
+
+        for root, dirs, files in os.walk(root_path):
+            # Always skip the .git bookkeeping directory
+            if GIT_DIR in dirs:
+                dirs.remove(GIT_DIR)
+
+            if not raw_search:
+                # Prune ignored directories in-place so os.walk skips their subtrees
+                dirs[:] = [
+                    d for d in dirs
+                    if not gitignore_manager.is_ignored(os.path.join(root, d))
+                ]
+
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    rel_path = os.path.relpath(file_path, base_path)
+                except ValueError:
+                    # Different drives on Windows - skip
+                    continue
+                index.append({
+                    "abs_path": file_path,
+                    "rel_path": rel_path,
+                    "is_ignored": gitignore_manager.is_ignored(file_path),
+                })
+
+        index.sort(key=lambda entry: entry["rel_path"])
+        logger.debug(
+            "Indexed %d files under %s (raw_search=%s)",
+            len(index),
+            root_path,
+            raw_search,
+        )
+        return index
+
+    def _get_file_index(self, root_path: str, raw_search: bool = False) -> List[dict]:
+        """
+        Return the cached file index of ``root_path``, building it on first use.
+
+        The index is keyed by project root, by the current project base path
+        (relative paths are reported against it) and by ``raw_search``, so the
+        pruned index used by the ``@`` mention search is never mixed with the
+        full index required by ``raw_search=True``.
+
+        Args:
+            root_path: Absolute project (or sub project) root to index.
+            raw_search: Whether ignored entries must be part of the index.
+
+        Returns:
+            List of index entries sorted by relative path.
+        """
+        root_path = os.path.normpath(root_path)
+        base_path = os.path.normpath(self.settings.abs_project_path)
+        cache_key = (root_path, base_path, bool(raw_search))
+
+        index = _cache_get(_file_index_cache, cache_key)
+        if index is not None:
+            logger.debug(
+                "Reusing cached file index of %d entries for %s (raw_search=%s)",
+                len(index),
+                root_path,
+                raw_search,
+            )
+            return index
+
+        index = self._build_file_index(root_path, raw_search=raw_search)
+        _cache_set(_file_index_cache, cache_key, index)
+        return index
+
+    def _invalidate_search_cache(self, root_path: Optional[str] = None) -> None:
+        """
+        Drop cached gitignore managers and file indexes after a tree change.
+
+        Mutating file operations call this so the next search sees the new tree.
+        Only the entries rooted at (or containing) ``root_path`` are dropped, so
+        editing a file in one project does not force a rebuild of the others.
+
+        Args:
+            root_path: Absolute path of the file or directory that changed.
+                When None, the whole search cache is cleared.
+        """
+        if root_path is None:
+            logger.debug("Clearing the whole search cache")
+            _clear_search_cache()
+            return
+
+        logger.debug("Invalidating search cache for %s", root_path)
+        _invalidate_search_cache_root(root_path)
+
+    # ------------------------------------------------------------------
+    # Project scopes (current project + child projects)
+    # ------------------------------------------------------------------
+
+    def _is_path_within(self, abs_path: str, root_path: str) -> bool:
+        """
+        Check that ``abs_path`` is ``root_path`` itself or a descendant of it.
+
+        Uses a separator-aware comparison instead of a plain ``startswith`` so
+        that sibling roots sharing a prefix (``/projects/app`` and
+        ``/projects/app-2``) are never confused.
+
+        Args:
+            abs_path: Absolute path to test.
+            root_path: Absolute project root to test against.
+
+        Returns:
+            True when the path belongs to the project root tree.
+        """
+        if not abs_path or not root_path:
+            return False
+
+        abs_path = os.path.normpath(abs_path)
+        root_path = os.path.normpath(root_path)
+        return abs_path == root_path or abs_path.startswith(root_path + os.sep)
+
+    def get_project_roots(self) -> List[Tuple[str, any]]:
+        """
+        Return every project root file operations may work with.
+
+        The current project always comes first, followed by its child (sub)
+        projects sorted deepest path first, so the most specific project wins
+        when several roots could match the same path.
+
+        Child projects are resolved from the filesystem (``get_sub_projects``)
+        and the scan is only triggered by callers that actually need it, so
+        paths inside the current project never pay for it.
+
+        Returns:
+            List of ``(absolute_project_path, project_settings)`` tuples.
+        """
+        current_root = os.path.normpath(self.settings.abs_project_path)
+        roots: List[Tuple[str, any]] = [(current_root, self.settings)]
+
+        try:
+            sub_projects = self.settings.get_sub_projects()
+        except Exception as ex:
+            logger.warning(
+                "Could not resolve child projects for '%s': %s",
+                self.settings.project_name,
+                ex,
+            )
+            sub_projects = []
+
+        child_roots = [
+            (os.path.normpath(project.abs_project_path), project)
+            for project in sub_projects
+            if project and project.abs_project_path
+        ]
+        # Deepest path first: the most specific project must win
+        child_roots.sort(key=lambda root: len(root[0]), reverse=True)
+
+        return roots + child_roots
+
+    def get_project_root_for_path(self, abs_path: str) -> str:
+        """
+        Return the most specific known project root containing ``abs_path``.
+
+        Used to scope folder scans (.gitignore loading) to the project that
+        actually owns a directory. Falls back to the current project root when
+        the path does not belong to any known project.
+
+        Args:
+            abs_path: Absolute path of the file or directory.
+
+        Returns:
+            Absolute path of the owning project root.
+        """
+        current_root = os.path.normpath(self.settings.abs_project_path)
+        if self._is_path_within(abs_path, current_root):
+            return current_root
+
+        for root, _project in self.get_project_roots()[1:]:
+            if self._is_path_within(abs_path, root):
+                return root
+
+        return current_root
+
+    def resolve_file_target(self, file_path: str) -> Tuple[str, any, str]:
+        """
+        Resolve the target project that owns ``file_path``.
+
+        File operations run inside a session bound to the *current* project, but
+        the paths they receive may belong to a child (sub) project instead. Every
+        read/write operation must therefore resolve the owning project **before**
+        touching the filesystem, git or the project profiles, and then use that
+        project for anything project-scoped (git cwd, relative paths, profiles).
+
+        Args:
+            file_path: Relative (to any known project) or absolute file path.
+
+        Returns:
+            Tuple of:
+            - absolute file path,
+            - settings of the project owning the path,
+            - path relative to that project root (used for git commands).
+
+        Raises:
+            ValueError: If the path is outside all allowed projects, or if a
+                relative path escapes the resolved project root.
+        """
+        abs_file_path, file_project = self.get_valid_project_file_path(file_path)
+        rel_file_path = os.path.relpath(abs_file_path, file_project.abs_project_path)
+        logger.debug(
+            "Resolved file target '%s' -> project '%s' (%s)",
+            file_path,
+            file_project.project_name,
+            abs_file_path,
+        )
+        return abs_file_path, file_project, rel_file_path
+
+    def _compile_regex_pattern(self, pattern: str, case_sensitive: bool = False) -> Optional[Pattern]:
+        """
+        Compile a regex pattern with error handling.
+
+        Globally enables MULTILINE mode so that ^ and $ match line boundaries
+        in addition to string boundaries. This allows patterns to work across
+        multi-line content naturally.
+
+        Args:
+            pattern: Regex pattern string.
+            case_sensitive: Whether to compile with IGNORECASE flag.
+
+        Returns:
+            Compiled regex pattern or None if compilation fails.
+
+        Raises:
+            ValueError: If regex pattern is invalid.
+        """
+        try:
+            flags = re.MULTILINE
+            if not case_sensitive:
+                flags |= re.IGNORECASE
+            return re.compile(pattern, flags)
+        except re.error as ex:
+            raise ValueError(f"Invalid regex pattern: {ex}")
+
+    def _is_binary_file(self, file_path: str) -> bool:
+        """
+        Check if a file is binary based on its extension.
+
+        Args:
+            file_path: Absolute path to the file.
+
+        Returns:
+            True if the file extension matches known binary types.
+        """
+        _, ext = os.path.splitext(file_path)
+        return ext.lstrip('.').lower() in BINARY_EXTENSIONS
+
+    def get_media_type(self, file_path: str) -> str:
+        """
+        Determine the media type (MIME type) for a file based on its extension.
+
+        Args:
+            file_path: Absolute path to the file.
+
+        Returns:
+            MIME type string (e.g., 'video/mp4', 'application/pdf').
+        """
+        _, ext = os.path.splitext(file_path)
+        ext = ext.lstrip('.').lower()
+
+        media_types = {
+            # Video
+            'mp4': 'video/mp4',
+            'avi': 'video/x-msvideo',
+            'mov': 'video/quicktime',
+            'mkv': 'video/x-matroska',
+            'flv': 'video/x-flv',
+            'wmv': 'video/x-ms-wmv',
+            'webm': 'video/webm',
+            'ogv': 'video/ogg',
+            'ts': 'video/mp2t',
+            'mts': 'video/mp2t',
+            'vob': 'video/x-ms-vob',
+            # Audio
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'flac': 'audio/flac',
+            'aac': 'audio/aac',
+            'wma': 'audio/x-ms-wma',
+            'ogg': 'audio/ogg',
+            # Images
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif',
+            'webp': 'image/webp',
+            'ico': 'image/x-icon',
+            'svg': 'image/svg+xml',
+            # Documents
+            'pdf': 'application/pdf',
+        }
+
+        return media_types.get(ext, 'application/octet-stream')
+
+    def get_file_info(self, file_path: str) -> dict:
+        """
+        Return metadata for a file: last_modification (ISO 8601) and size in bytes.
+
+        Relative paths are resolved against the project that owns them (the
+        current project or one of its child projects), so callers may pass either
+        the absolute path reported by the API or a project-relative path.
+
+        Args:
+            file_path: Absolute or relative (to the owning project root) path.
+
+        Returns:
+            Dict with 'last_modification' (str or None) and 'size' (int or None).
+        """
+        if not os.path.isabs(file_path):
+            try:
+                file_path, _file_project, _rel_path = self.resolve_file_target(file_path)
+            except ValueError:
+                # Outside all known projects: keep the previous behaviour and
+                # resolve it against the current project root.
+                file_path = os.path.join(self.settings.abs_project_path, file_path)
+        if not os.path.isfile(file_path):
+            return {"last_modification": None, "size": None}
+        stat = os.stat(file_path)
+        return {
+            "last_modification": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "size": stat.st_size,
+        }
+
+    def parse_file_line(
+        self,
+        file: str,
+        base_path: str,
+        gitignore_manager: Optional[GitIgnoreManager] = None,
+        parent_is_ignored: bool = False,
+    ) -> dict:
+        """
+        Parse a file name into a structured dict for directory listings.
+
+        The ``parent_is_ignored`` flag allows callers to propagate ignored
+        status from a containing directory so that children of an ignored
+        folder are correctly marked as ignored even when their own path
+        does not match any .gitignore pattern directly.
+
+        Entries are always reported with an absolute ``file_path``. Paths that
+        live outside the current project (e.g. a child project configured with
+        its own absolute ``project_path``) are returned untouched - prefixing
+        them again would produce paths that do not exist on disk and break
+        subsequent read requests.
+
+        Args:
+            file: Relative file name.
+            base_path: Base directory path.
+            gitignore_manager: Optional pre-loaded manager used to flag ignored entries.
+            parent_is_ignored: When True, marks the entry as ignored regardless of
+                               whether its path matches a .gitignore pattern directly.
+                               Used to cascade ignored status from parent directories.
+
+        Returns:
+            Dict with name, file_path, is_dir, is_ignored, children,
+            last_modification, and size.
+        """
+        file_path = os.path.join(base_path, file)
+        if not os.path.isabs(file_path):
+            # Entries come as paths relative to the project root
+            file_path = os.path.join(self.settings.abs_project_path, file_path)
+        file_path = os.path.normpath(file_path)
+
+        is_dir = os.path.isdir(file_path)
+
+        # A path is ignored if its parent is already ignored (cascade) OR if it
+        # matches a .gitignore rule directly via the manager.
+        if parent_is_ignored:
+            is_ignored = True
+        elif gitignore_manager is not None:
+            is_ignored = gitignore_manager.is_ignored(file_path)
+        else:
+            is_ignored = False
+
+        entry = {
+            "name": file.split("/")[-1],
+            "file_path": file_path,
+            "is_dir": is_dir,
+            "is_ignored": is_ignored,
+            "children": [] if is_dir else None,
+        }
+        if not is_dir:
+            entry.update(self.get_file_info(file_path))
+        else:
+            entry["last_modification"] = None
+            entry["size"] = None
+            # A folder holding .codx/project.json is already a codx-junior
+            # project: the explorer badges it and never offers to create it
+            # again. Only folders are checked, files are always False.
+            entry["is_codx_project"] = os.path.isfile(
+                os.path.join(file_path, ".codx", "project.json")
+            )
+        return entry
+
+    def read_directory(self, path: str) -> dict:
+        """
+        List the contents of a directory, flagging git-ignored entries.
+
+        The directory path may be relative or belong to a child project, so the
+        project owning it is resolved before listing. Paths that belong to no
+        known project are listed as given (e.g. while browsing the filesystem),
+        without raising an error.
+
+        If the directory being listed is itself git-ignored, all of its
+        children are also marked as ignored (cascade behaviour matching git).
+
+        The GitIgnoreManager is rooted at the deepest project owning the
+        directory: the current project when ``path`` lives inside it, otherwise
+        the child project that contains it. This way rules defined above the
+        listed directory (e.g. a top-level .gitignore that ignores this folder)
+        are taken into account and child projects keep their own rules.
+
+        Args:
+            path: Absolute or project-relative path to the directory.
+
+        Returns:
+            Dict with path, full_path, is_ignored, and files list.
+        """
+        try:
+            abs_path, _file_project, _rel_path = self.resolve_file_target(path)
+        except ValueError:
+            logger.debug(
+                "Directory is outside all known projects, listing it as given: %s", path
+            )
+            abs_path = path
+
+        files = os.listdir(abs_path)
+
+        # Root the GitIgnoreManager at the project owning the directory so that
+        # rules defined outside of it (e.g. a top-level .gitignore that ignores
+        # this folder) are still taken into account.
+        project_root = self.get_project_root_for_path(abs_path)
+        gitignore_manager = self._build_gitignore_manager(project_root)
+
+        # Determine whether the directory being listed is itself ignored.
+        # If so, every child inherits that status.
+        dir_is_ignored = gitignore_manager.is_ignored(abs_path)
+        if dir_is_ignored:
+            logger.debug(
+                "Directory is git-ignored; all children will be marked ignored: %s",
+                abs_path,
+            )
+
+        return {
+            "path": path,
+            "full_path": abs_path,
+            "is_ignored": dir_is_ignored,
+            "files": [
+                self.parse_file_line(
+                    file,
+                    abs_path,
+                    gitignore_manager,
+                    parent_is_ignored=dir_is_ignored,
+                )
+                for file in sorted(files)
+            ],
+        }
+
+    def get_project_file_path(self, path: str) -> str:
+        """
+        Resolve a (possibly relative) path to an absolute project path.
+
+        Args:
+            path: Possibly relative file path.
+
+        Returns:
+            Absolute file path.
+        """
+        abs_file_path, _ = self.get_valid_project_file_path(file_path=path)
+        return abs_file_path
+
+    def read_file(self, path: str) -> dict:
+        """
+        Read a project file and return its content along with file metadata.
+
+        The project owning the path is resolved first, so files of child
+        projects are read (and reported) as part of their own project.
+
+        For binary files (images, PDFs, etc.), content is returned as base64.
+        For text files, content is returned as plain text.
+
+        Args:
+            path: File path (relative or absolute).
+
+        Returns:
+            Dict with 'content' (base64 for binary, text for text files), 
+            'last_modification', 'size', 'is_binary' flag and the owning
+            project ('file_project', 'file_project_path').
+        """
+        abs_path, file_project, _rel_path = self.resolve_file_target(path)
+        is_binary = self._is_binary_file(abs_path)
+
+        try:
+            if is_binary:
+                # Read binary file and encode to base64
+                with open(abs_path, "rb") as f:
+                    file_bytes = f.read()
+                content = base64.b64encode(file_bytes).decode('ascii')
+                logger.debug("Read binary file as base64: %s", abs_path)
+            else:
+                # Read text file normally
+                with open(abs_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                logger.debug("Read text file: %s", abs_path)
+
+            info = self.get_file_info(abs_path)
+            return {
+                "content": content,
+                "is_binary": is_binary,
+                "file_project": file_project.project_name,
+                "file_project_path": file_project.abs_project_path,
+                "abs_file_path": abs_path,
+                **info,
+            }
+        except OSError as ex:
+            logger.error("Error reading file %s: %s", abs_path, ex)
+            raise
+
+    def diff_file(
+        self,
+        path: str,
+        content: str,
+        from_branch: str = None,
+        to_branch: str = None,
+    ) -> dict:
+        """
+        Diff a project file against provided content using git diff --no-index.
+
+        The project owning the path is resolved first, so relative paths coming
+        from a child project are diffed against the right file.
+
+        The provided content is streamed to git through stdin (via
+        ``subprocess.run(input=...)``) instead of being embedded in a shell
+        command. This avoids the OS "Argument list too long" (E2BIG) error
+        that occurs when the content is large enough to exceed the kernel's
+        maximum command-line length (ARG_MAX) - which is what happened when
+        the content was passed through an ``os.popen`` shell heredoc.
+
+        The existence of the file is checked explicitly: ``git diff --no-index``
+        reports an inaccessible path on stderr, exits with 128 and writes
+        nothing to stdout, so a file that is not there used to produce exactly
+        the same answer as a file without changes (an empty diff). A missing
+        file is now diffed against ``/dev/null`` - every provided line is
+        reported as added, a new file - and the ``exists`` flag tells the caller
+        which of the two situations it received.
+
+        Args:
+            path: File path.
+            content: New content to diff against.
+            from_branch: Reserved for future use.
+            to_branch: Reserved for future use.
+
+        Returns:
+            Dict with 'diff', 'stats', 'exists', 'last_modification', and 'size'.
+
+        Raises:
+            RuntimeError: If git cannot compute the diff.
+        """
+        abs_path, _file_project, _rel_path = self.resolve_file_target(path)
+
+        # An existing file is compared against its working-tree content, a
+        # missing one against /dev/null so its content is reported as a new file
+        # instead of git failing on stderr and returning an empty diff.
+        exists = os.path.isfile(abs_path)
+        left_path = abs_path if exists else os.devnull
+
+        # Full diff: compare the file (or /dev/null) against the provided content.
+        # Content is piped through stdin so large files never hit ARG_MAX.
+        diff_out = self._git_diff_no_index(left_path, content)
+
+        # Short stats: same piping strategy, no shell heredoc.
+        diff_stats_out = self._git_diff_no_index(left_path, content, shortstat=True)
+
+        info = self.get_file_info(abs_path)
+        return {
+            "diff": diff_out.strip(),
+            "stats": diff_stats_out.strip(),
+            "exists": exists,
+            **info,
+        }
+
+    def _git_diff_no_index(
+        self, left_path: str, content: str, shortstat: bool = False
+    ) -> str:
+        """
+        Run ``git diff --no-index <left_path> -`` and return its stdout.
+
+        The right side is read from stdin (``-``), so the diffed content never
+        goes through the kernel's command-line length limit (ARG_MAX).
+
+        ``git diff --no-index`` imitates ``diff(1)`` exit codes: 0 means no
+        changes, 1 means differences and anything else is an error (the path
+        cannot be accessed, git is not available...). Only 0 and 1 are accepted:
+        a failure is propagated instead of being silently reported as "no
+        changes", which is what made an existing file look undetected.
+
+        Args:
+            left_path: Absolute path of the file, or ``os.devnull`` for a file
+                that does not exist yet.
+            content: Content to compare against, streamed through stdin.
+            shortstat: Return the ``--shortstat`` summary instead of the patch.
+
+        Returns:
+            Captured diff (or shortstat) output.
+
+        Raises:
+            RuntimeError: If git cannot compute the diff.
+        """
+        cmd = ["git", "diff"]
+        if shortstat:
+            cmd.append("--shortstat")
+        cmd += ["--no-index", left_path, "-"]
+
+        result = subprocess.run(
+            cmd, input=content or "", text=True, capture_output=True
+        )
+        if result.returncode not in (0, 1):
+            logger.error(
+                "git diff --no-index failed for %s: %s",
+                left_path,
+                result.stderr.strip(),
+            )
+            raise RuntimeError(
+                "Could not diff '%s': %s" % (left_path, result.stderr.strip())
+            )
+        return result.stdout
+
+    def diff_file_comments(
+        self, path: str, content: str, comments: dict = None
+    ) -> None:
+        """
+        Diff a file with inline comments (placeholder, not yet implemented).
+
+        Args:
+            path: File path.
+            content: File content.
+            comments: Optional dict of inline comments.
+        """
+        pass
+
+    async def process_project_file_before_saving(
+        self, file_path: str, content: str
+    ) -> str:
+        """
+        Apply all matching file profiles to content before saving.
+
+        The project owning the file is resolved first, so the profiles of the
+        child project the file belongs to are applied (each project defines its
+        own `file_match` profiles). When the path cannot be resolved the current
+        project profiles are used.
+
+        Args:
+            file_path: Absolute file path.
+            content: File content to process.
+
+        Returns:
+            Processed file content.
+        """
+        try:
+            abs_file_path, file_project, _rel_path = self.resolve_file_target(file_path)
+        except ValueError as ex:
+            logger.warning(
+                "Could not resolve the project owning %s, using the current project profiles: %s",
+                file_path,
+                ex,
+            )
+            abs_file_path, file_project = file_path, self.settings
+
+        file_profiles = self.session.get_profile_manager(
+            settings=file_project
+        ).get_file_profiles_by_file_path(file_path=abs_file_path)
+        self.session.log_info(
+            "Applying file profiles %s to %s (project %s)",
+            [p.name for p in file_profiles],
+            abs_file_path,
+            file_project.project_name,
+        )
+        if file_profiles:
+            for profile in file_profiles:
+                content = await self.apply_file_profile(
+                    file_path=abs_file_path, content=content, profile=profile
+                )
+        return content
+
+    async def apply_file_profile(
+        self, file_path: str, content: str, profile: Profile
+    ) -> str:
+        """
+        Apply a single file profile to content using AI.
+
+        Args:
+            file_path: File path for context.
+            content: Current file content.
+            profile: Profile with instructions to apply.
+
+        Returns:
+            Improved file content.
+        """
+        file_profile_prompt = f"""
+        You are given a section of code that requires improvement by applying best practices. Your task is to refactor the code while ensuring that it adheres to the specified best practices. Please follow the instructions below:
+
+        ### File Content:
+        ```
+        {content}
+        ```
+
+        ### Instructions:
+        ```
+        {profile.content}
+        ```
+        Return the final content without any kind of decoration or extra comments.
+        Avoid surronding your response with fences (```), just return the final content.
+        """
+
+        content_message = Message(role="user", content=file_profile_prompt)
+        chat = Chat(
+            name=f"Improve file with profile {profile.name}", messages=[content_message]
+        )
+        await self.session.chat_with_project(chat=chat, disable_knowledge=True)
+        return chat.messages[-1].content
+
+    def get_valid_project_file_path(self, file_path: str) -> Tuple[str, any]:
+        """
+        Validate and resolve a file path within the user's allowed projects.
+
+        Handles both absolute and relative paths:
+        - Absolute paths: Must be within the current project, one of its child
+          projects, or a project the user has access to
+        - Relative paths: Resolved within the current project root, falling back
+          to the child projects when the path only exists there
+
+        Prevents path traversal attacks using '..' sequences.
+
+        Args:
+            file_path: The path to validate (absolute or relative).
+
+        Returns:
+            Tuple of (absolute_path, project_settings).
+
+        Raises:
+            ValueError: If path is outside the allowed projects or traversal is
+                attempted.
+        """
+        norm_input_path = os.path.normpath(file_path.lstrip("/"))
+
+        if os.path.isabs(file_path):
+            return self._resolve_absolute_path(file_path)
+
+        return self._resolve_relative_path(norm_input_path, file_path)
+
+    def _resolve_absolute_path(self, file_path: str) -> Tuple[str, any]:
+        """
+        Resolve and validate an absolute file path against the allowed projects.
+
+        Lookup order:
+        1. Current project (fast path, also covers child projects nested inside it).
+        2. Child projects of the current project (deepest path first) - a child
+           project may declare its own absolute ``project_path`` outside of the
+           parent tree.
+        3. Any project the user has access to.
+
+        Args:
+            file_path: Absolute file path to validate.
+
+        Returns:
+            Tuple of (absolute_path, project_settings).
+
+        Raises:
+            ValueError: If path is outside all allowed projects.
+        """
+        abs_file_path = os.path.normpath(file_path)
+
+        # Check current project first (fast path)
+        if self._is_path_within(abs_file_path, self.settings.abs_project_path):
+            return abs_file_path, self.settings
+
+        # Child projects of the current project
+        for root, project in self.get_project_roots()[1:]:
+            if self._is_path_within(abs_file_path, root):
+                return abs_file_path, project
+
+        # Fall back to checking all user projects
+        try:
+            for project in find_all_user_projects(self.session.user):
+                if self._is_path_within(abs_file_path, project.abs_project_path):
+                    return abs_file_path, project
+        except Exception as ex:
+            logger.warning(
+                "Could not resolve user projects while validating %s: %s",
+                abs_file_path,
+                ex,
+            )
+
+        raise ValueError(
+            "Access denied: absolute path is outside all allowed projects: %s"
+            % abs_file_path
+        )
+
+    def _join_relative_to(
+        self, root_path: str, norm_input_path: str, original_path: str
+    ) -> str:
+        """
+        Join a normalised relative path to a project root and validate it.
+
+        Args:
+            root_path: Absolute project root to resolve the path against.
+            norm_input_path: Normalised (lstripped) relative path.
+            original_path: Original path string for error messages.
+
+        Returns:
+            Absolute resolved path.
+
+        Raises:
+            ValueError: If the result escapes the given project root.
+        """
+        abs_path = os.path.normpath(os.path.join(root_path, norm_input_path))
+        if not self._is_path_within(abs_path, root_path):
+            raise ValueError(
+                "Access denied: path traversal outside project root: %s"
+                % original_path
+            )
+        return abs_path
+
+    def _resolve_relative_path(
+        self, norm_input_path: str, original_path: str
+    ) -> Tuple[str, any]:
+        """
+        Resolve and validate a relative file path within the allowed projects.
+
+        The current project is always tried first, so reading, writing and
+        creating files inside it keeps its current behaviour. Only when the
+        path does not exist under the current project root are the child
+        projects tried (deepest path first), which makes paths relative to a
+        child project work the same way.
+
+        When the path exists nowhere, the current project resolution is
+        returned so new files are still created inside the current project.
+
+        Args:
+            norm_input_path: Normalised (lstripped) relative path.
+            original_path: Original path string for error messages.
+
+        Returns:
+            Tuple of (absolute_path, project_settings).
+
+        Raises:
+            ValueError: If path escapes the resolved project root.
+        """
+        current_root = os.path.normpath(self.settings.abs_project_path)
+        current_candidate = self._join_relative_to(
+            current_root, norm_input_path, original_path
+        )
+        if os.path.exists(current_candidate):
+            return current_candidate, self.settings
+
+        # Not found in the current project: the path may be relative to a
+        # child project (e.g. the UI browsing a child project's file tree).
+        for root, project in self.get_project_roots()[1:]:
+            child_candidate = self._join_relative_to(
+                root, norm_input_path, original_path
+            )
+            if os.path.exists(child_candidate):
+                logger.debug(
+                    "Resolved relative path %s into child project %s: %s",
+                    original_path,
+                    project.project_name,
+                    child_candidate,
+                )
+                return child_candidate, project
+
+        return current_candidate, self.settings
+
+    async def write_project_file(
+        self, file_path: str, content: str, process: bool = True
+    ) -> dict:
+        """
+        Write content to a project file, optionally processing through file profiles.
+
+        Args:
+            file_path: Target file path.
+            content: Content to write.
+            process: Whether to run file profiles before writing.
+
+        Returns:
+            Dict with file and project metadata including last_modification and size.
+
+        Raises:
+            OSError: If writing fails.
+        """
+        abs_file_path, file_project = self.get_valid_project_file_path(file_path)
+        try:
+            os.makedirs(os.path.dirname(abs_file_path), exist_ok=True)
+
+            if process:
+                content = await self.process_project_file_before_saving(
+                    file_path=abs_file_path, content=content
+                )
+
+            write_file(file_path=abs_file_path, content=content)
+            # The tree changed: cached searches must see the new content
+            self._invalidate_search_cache(abs_file_path)
+            info = self.get_file_info(abs_file_path)
+            return {
+                "file_project": file_project.project_name,
+                "file_project_path": file_project.abs_project_path,
+                "file_path": file_path,
+                "abs_file_path": abs_file_path,
+                "project_path": self.settings.abs_project_path,
+                **info,
+            }
+        except OSError as ex:
+            raise OSError("Error processing file %s:\n%s" % (abs_file_path, ex)) from ex
+
+    async def create_file(self, file_path: str, is_dir: bool = False) -> dict:
+        """
+        Create a new file or directory at the specified path.
+
+        For directories: creates parent directories as needed.
+        For files: creates parent directories and an empty file.
+
+        Args:
+            file_path: Target file/directory path (relative to project root).
+            is_dir: If True, create directory; if False, create empty file.
+
+        Returns:
+            Dict with created path, absolute path, is_dir flag, and status message.
+
+        Raises:
+            FileExistsError: If path already exists.
+            ValueError: If path is invalid or outside project.
+            OSError: If creation fails.
+        """
+        try:
+            abs_path, _ = self.get_valid_project_file_path(file_path)
+        except ValueError as ex:
+            logger.error("Invalid file path: %s", ex)
+            raise
+
+        # Check if already exists
+        if os.path.exists(abs_path):
+            logger.warning("Path already exists: %s", file_path)
+            raise FileExistsError(f"Path already exists: {file_path}")
+
+        try:
+            # The tree changed: cached searches must see the new path
+            self._invalidate_search_cache(abs_path)
+            if is_dir:
+                # Create directory and parents
+                os.makedirs(abs_path, exist_ok=True)
+                logger.info("Created directory: %s", file_path)
+                return {
+                    "file_path": file_path,
+                    "abs_path": abs_path,
+                    "is_dir": True,
+                    "message": "Directory created successfully"
+                }
+            else:
+                # Create parent directories
+                os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+                # Create empty file
+                with open(abs_path, "w", encoding="utf-8") as f:
+                    pass
+                logger.info("Created file: %s", file_path)
+                info = self.get_file_info(abs_path)
+                return {
+                    "file_path": file_path,
+                    "abs_path": abs_path,
+                    "is_dir": False,
+                    "message": "File created successfully",
+                    **info,
+                }
+        except OSError as ex:
+            logger.error("Error creating file/directory %s: %s", file_path, ex)
+            raise
+
+    async def delete_file(self, file_path: str) -> dict:
+        """
+        Delete a file or directory from the project.
+
+        For directories: recursively deletes all contents.
+        For files: deletes the single file.
+
+        Args:
+            file_path: Target file/directory path (relative to project root).
+
+        Returns:
+            Dict with deleted path and status message.
+
+        Raises:
+            FileNotFoundError: If path does not exist.
+            ValueError: If path is invalid or outside project.
+            OSError: If deletion fails.
+        """
+        try:
+            abs_path, _ = self.get_valid_project_file_path(file_path)
+        except ValueError as ex:
+            logger.error("Invalid file path: %s", ex)
+            raise
+
+        # Check if exists
+        if not os.path.exists(abs_path):
+            logger.warning("Path not found: %s", file_path)
+            raise FileNotFoundError(f"Path not found: {file_path}")
+
+        try:
+            # The tree changed: cached searches must forget the path
+            self._invalidate_search_cache(abs_path)
+            if os.path.isdir(abs_path):
+                shutil.rmtree(abs_path)
+                logger.info("Deleted directory: %s", file_path)
+            else:
+                os.remove(abs_path)
+                logger.info("Deleted file: %s", file_path)
+
+            return {
+                "path": file_path,
+                "message": "Deleted successfully"
+            }
+        except OSError as ex:
+            logger.error("Error deleting file %s: %s", file_path, ex)
+            raise
+
+    async def rename_file(self, old_path: str, new_path: str) -> dict:
+        """
+        Rename or move a file or directory.
+
+        Both paths are resolved to the project that owns them first, so a file
+        can be moved into (or out of) a child project. ``shutil.move`` is used
+        because a cross-project move may also cross filesystem boundaries, where
+        a plain ``os.rename`` would fail.
+
+        Creates parent directories for the destination as needed.
+
+        Args:
+            old_path: Current file/directory path (relative to project root).
+            new_path: New file/directory path (relative to project root).
+
+        Returns:
+            Dict with old path, new path, destination project and status message.
+
+        Raises:
+            FileNotFoundError: If source path does not exist.
+            FileExistsError: If destination path already exists.
+            ValueError: If paths are invalid or outside project.
+            OSError: If rename fails.
+        """
+        try:
+            old_abs_path, _old_project, _old_rel_path = self.resolve_file_target(old_path)
+            new_abs_path, new_project, _new_rel_path = self.resolve_file_target(new_path)
+        except ValueError as ex:
+            logger.error("Invalid file path: %s", ex)
+            raise
+
+        # Check if source exists
+        if not os.path.exists(old_abs_path):
+            logger.warning("Source path not found: %s", old_path)
+            raise FileNotFoundError(f"Source path not found: {old_path}")
+
+        # Check if destination already exists
+        if os.path.exists(new_abs_path):
+            logger.warning("Destination path already exists: %s", new_path)
+            raise FileExistsError(f"Destination path already exists: {new_path}")
+
+        try:
+            # Ensure parent directory of destination exists
+            os.makedirs(os.path.dirname(new_abs_path), exist_ok=True)
+            # Move file or directory (also handles cross-project/cross-device)
+            shutil.move(old_abs_path, new_abs_path)
+            # The tree changed: cached searches must follow the move
+            self._invalidate_search_cache(old_abs_path)
+            self._invalidate_search_cache(new_abs_path)
+            logger.info(
+                "Renamed %s to %s (project %s)",
+                old_path,
+                new_path,
+                new_project.project_name,
+            )
+
+            return {
+                "old_path": old_path,
+                "new_path": new_path,
+                "file_project": new_project.project_name,
+                "file_project_path": new_project.abs_project_path,
+                "message": "Renamed successfully"
+            }
+        except OSError as ex:
+            logger.error("Error renaming file: %s", ex)
+            raise
+
+    async def reset_file(self, file_path: str) -> dict:
+        """
+        Reset a file to its last committed git version.
+
+        The project owning the file is resolved first and git is executed inside
+        that project root with a project-relative path, so files belonging to a
+        child project are reset against their own repository (which may be a
+        nested repo or the parent one).
+
+        Requires the file to be tracked by git. Uses 'git checkout'
+        to restore the file to its HEAD version.
+
+        Args:
+            file_path: Target file path (relative to project root).
+
+        Returns:
+            Dict with file path and reset status message.
+
+        Raises:
+            ValueError: If path is invalid or outside project.
+            RuntimeError: If git reset fails or file is not tracked.
+        """
+        try:
+            abs_path, file_project, rel_path = self.resolve_file_target(file_path)
+        except ValueError as ex:
+            logger.error("Invalid file path: %s", ex)
+            raise
+
+        # Check if file exists
+        if not os.path.isfile(abs_path):
+            logger.warning("File not found: %s", file_path)
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        try:
+            # Use git to reset the file to HEAD version, running it inside the
+            # project that owns the file and referencing it relative to that root.
+            stdout, stderr = exec_command(
+                f"git checkout -- {shlex.quote(rel_path)}",
+                cwd=file_project.abs_project_path
+            )
+
+            if stderr and "error" in stderr.lower():
+                logger.warning("Git reset failed for %s: %s", file_path, stderr)
+                raise RuntimeError(
+                    f"Failed to reset file (file may not be tracked by git): {stderr}"
+                )
+
+            logger.info(
+                "Reset file to git version: %s (project %s)",
+                rel_path,
+                file_project.project_name,
+            )
+            info = self.get_file_info(abs_path)
+            return {
+                "path": file_path,
+                "file_project": file_project.project_name,
+                "file_project_path": file_project.abs_project_path,
+                "message": "File reset to git HEAD version",
+                **info,
+            }
+        except Exception as ex:
+            logger.error("Error resetting file %s: %s", file_path, ex)
+            raise
+
+    async def upload_file(
+        self,
+        file_path: str,
+        file_content: bytes,
+        process: bool = False,
+        max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    ) -> dict:
+        """
+        Upload a single file to the project.
+
+        Validates file size and path security before writing.
+        Supports optional file profile application during upload.
+
+        Args:
+            file_path: Target file path (relative to project root).
+            file_content: Raw file bytes to write.
+            process: Whether to apply file profiles before writing.
+            max_file_size: Maximum allowed file size in bytes.
+
+        Returns:
+            Dict with upload metadata including file path, size, and modification time.
+
+        Raises:
+            ValueError: If file size exceeds limit or path is invalid.
+            OSError: If file write fails.
+        """
+        # Validate file size
+        file_size = len(file_content)
+        if file_size > max_file_size:
+            raise ValueError(
+                "File size %d exceeds maximum allowed size %d bytes"
+                % (file_size, max_file_size)
+            )
+
+        # Validate and resolve file path
+        abs_file_path, file_project = self.get_valid_project_file_path(file_path)
+
+        try:
+            # The tree changed: cached searches must see the uploaded file
+            self._invalidate_search_cache(abs_file_path)
+            # Create parent directories if needed
+            os.makedirs(os.path.dirname(abs_file_path), exist_ok=True)
+
+            # Decode content if it's bytes and we need to process
+            if isinstance(file_content, bytes):
+                try:
+                    content_str = file_content.decode("utf-8")
+                except UnicodeDecodeError:
+                    # For binary files, write as-is
+                    logger.info("Writing binary file: %s", abs_file_path)
+                    with open(abs_file_path, "wb") as f:
+                        f.write(file_content)
+                    info = self.get_file_info(abs_file_path)
+                    return {
+                        "file_project": file_project.project_name,
+                        "file_project_path": file_project.abs_project_path,
+                        "file_path": file_path,
+                        "abs_file_path": abs_file_path,
+                        "project_path": self.settings.abs_project_path,
+                        "is_binary": True,
+                        **info,
+                    }
+            else:
+                content_str = file_content
+
+            # Apply file profiles if requested (text files only)
+            if process:
+                content_str = await self.process_project_file_before_saving(
+                    file_path=abs_file_path, content=content_str
+                )
+
+            write_file(file_path=abs_file_path, content=content_str)
+            info = self.get_file_info(abs_file_path)
+            return {
+                "file_project": file_project.project_name,
+                "file_project_path": file_project.abs_project_path,
+                "file_path": file_path,
+                "abs_file_path": abs_file_path,
+                "project_path": self.settings.abs_project_path,
+                "is_binary": False,
+                **info,
+            }
+        except OSError as ex:
+            logger.error("Error uploading file %s: %s", abs_file_path, ex)
+            raise OSError("Error uploading file %s:\n%s" % (abs_file_path, ex)) from ex
+
+    async def upload_files(
+        self,
+        file_uploads: List[Tuple[str, bytes]],
+        process: bool = False,
+        max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+        max_total_size: int = DEFAULT_MAX_TOTAL_SIZE,
+    ) -> dict:
+        """
+        Upload multiple files to the project in batch.
+
+        Validates total size across all files and individual file sizes.
+        Supports optional file profile application during upload.
+        Continues processing remaining files even if some fail.
+
+        Args:
+            file_uploads: List of (file_path, file_content) tuples.
+            process: Whether to apply file profiles before writing.
+            max_file_size: Maximum allowed size for individual files.
+            max_total_size: Maximum allowed total size for all files combined.
+
+        Returns:
+            Dict with results containing:
+            - successful: List of successfully uploaded files
+            - failed: List of failed uploads with error details
+            - total_files: Total number of files attempted
+            - total_size_uploaded: Total size of successfully uploaded files
+        """
+        # Validate total size
+        total_size = sum(len(content) for _, content in file_uploads)
+        if total_size > max_total_size:
+            raise ValueError(
+                "Total upload size %d exceeds maximum allowed size %d bytes"
+                % (total_size, max_total_size)
+            )
+
+        successful = []
+        failed = []
+
+        logger.info(
+            "Starting batch upload of %d files (total size: %d bytes)",
+            len(file_uploads),
+            total_size,
+        )
+
+        for file_path, file_content in file_uploads:
+            try:
+                result = await self.upload_file(
+                    file_path=file_path,
+                    file_content=file_content,
+                    process=process,
+                    max_file_size=max_file_size,
+                )
+                successful.append(result)
+                logger.info("Successfully uploaded file: %s", file_path)
+            except (ValueError, OSError) as ex:
+                error_msg = str(ex)
+                failed.append({
+                    "file_path": file_path,
+                    "error": error_msg,
+                })
+                logger.warning(
+                    "Failed to upload file %s: %s", file_path, error_msg
+                )
+
+        total_uploaded = sum(f.get("size", 0) or 0 for f in successful)
+
+        result_dict = {
+            "total_files": len(file_uploads),
+            "successful": successful,
+            "failed": failed,
+            "total_size_uploaded": total_uploaded,
+        }
+
+        logger.info(
+            "Batch upload completed: %d successful, %d failed",
+            len(successful),
+            len(failed),
+        )
+
+        return result_dict
+
+    def search_files(
+        self,
+        search: str,
+        search_path: str = None,
+        page: int = 0,
+        page_size: int = 50,
+        raw_search: bool = False,
+        use_regex: bool = False,
+    ) -> dict:
+        """
+        Search for files whose paths contain the search pattern.
+
+        Performs a filesystem search (not knowledge-based) within the project.
+        Optionally limits search to a specific subdirectory.
+        Supports both substring and regex pattern matching.
+
+        When raw_search is False, files and directories matched by any
+        .gitignore rule are excluded from results.
+
+        Results are served from the cached file index of the project that owns
+        the searched root (see ``_get_file_index``): a repeated search on the
+        same root performs no new ``os.walk``, it only filters the in-memory
+        index. Only the requested page is materialized, so just page-sized
+        ``stat`` calls happen for last_modification/size.
+
+        Each result entry includes an 'is_ignored' flag.  When raw_search is
+        False ignored entries are filtered out; when True they are included
+        with is_ignored=True so callers can still distinguish them.
+
+        Args:
+            search: Substring or regex pattern to search for in file paths.
+            search_path: Optional subdirectory path (relative to project root).
+            page: Page number (0-indexed, default 0).
+            page_size: Number of results per page (default 50).
+            raw_search: If True, include all files. If False, exclude git-ignored files.
+            use_regex: If True, treat search as regex pattern. If False, use substring match.
+
+        Returns:
+            Dict with page info, total_files count, and paginated files list.
+            Includes 'error' field if an error occurs during search.
+        """
+        try:
+            search_root = self._resolve_search_root(search_path)
+            if search_root is None:
+                return {"page": page, "total_files": 0, "page_size": page_size, "files": []}
+
+            # Compile regex if needed
+            compiled_pattern = None
+            if use_regex:
+                try:
+                    compiled_pattern = self._compile_regex_pattern(search, case_sensitive=False)
+                except ValueError as ex:
+                    logger.warning("Invalid regex pattern: %s", ex)
+                    return {
+                        "page": page,
+                        "total_files": 0,
+                        "page_size": page_size,
+                        "files": [],
+                        "error": str(ex),
+                    }
+
+            # Serve the search from the cached index: no walk of the tree here.
+            # The index belongs to the project that owns the searched root (the
+            # current project or one of its child projects).
+            project_root = self.get_project_root_for_path(search_root)
+            gitignore_manager = self._build_gitignore_manager(project_root)
+            file_index = self._get_file_index(project_root, raw_search=raw_search)
+
+            # Restrict the results to `search_path` when one was requested
+            search_prefix = None
+            if search_path:
+                search_prefix = os.path.normpath(search_root) + os.sep
+
+            matching_entries = []
+
+            for entry in file_index:
+                if search_prefix is not None and not entry["abs_path"].startswith(search_prefix):
+                    continue
+
+                # Discard ignored files when not in raw mode
+                if not raw_search and entry["is_ignored"]:
+                    logger.debug("Skipping git-ignored file: %s", entry["abs_path"])
+                    continue
+
+                rel_path = entry["rel_path"]
+
+                # Match using regex or substring
+                if use_regex:
+                    matches = compiled_pattern.search(rel_path) is not None
+                else:
+                    matches = search.lower() in rel_path.lower()
+
+                if matches:
+                    matching_entries.append(entry)
+
+            total_files = len(matching_entries)
+            page_start = page * page_size
+            page_end = page_start + page_size
+
+            return {
+                "page": page,
+                "total_files": total_files,
+                "page_size": page_size,
+                "files": [
+                    self.parse_file_line(
+                        entry["rel_path"],
+                        self.settings.abs_project_path,
+                        gitignore_manager,
+                    )
+                    for entry in matching_entries[page_start:page_end]
+                ],
+            }
+        except Exception as ex:
+            error_msg = str(ex)
+            logger.error("Error during file search: %s", error_msg)
+            return {
+                "page": page,
+                "total_files": 0,
+                "page_size": page_size,
+                "files": [],
+                "error": error_msg,
+            }
+
+    def search_files_content(
+        self,
+        query: str,
+        search_path: str = None,
+        page: int = 0,
+        page_size: int = 50,
+        case_sensitive: bool = False,
+        raw_search: bool = False,
+        use_regex: bool = False,
+    ) -> dict:
+        """
+        Search for file content matching a query pattern.
+
+        Searches file contents within the project scope with pagination support.
+        search_path can be a directory or a file:
+        - If a directory: searches all files within that directory tree
+        - If a file: searches only that single file
+        When raw_search is False, git-ignored files are excluded. Directory
+        searches are served from the cached file index of the project that owns
+        the searched root (see ``_get_file_index``), so repeated searches on the
+        same root perform no new ``os.walk``.
+        Supports both substring and regex pattern matching.
+
+        Args:
+            query: Substring or regex pattern to search for in file contents.
+            search_path: Optional directory or file path (relative to project root).
+            page: Page number (0-indexed, default 0).
+            page_size: Number of results per page (default 50).
+            case_sensitive: Whether search should be case-sensitive (default False).
+            raw_search: If True, include all files. If False, exclude git-ignored files.
+            use_regex: If True, treat query as regex pattern. If False, use substring match.
+
+        Returns:
+            Dict with page info, total_files, total_matches, and paginated results.
+            Each result includes an 'is_ignored' flag.
+            Includes 'error' field if an error occurs during search.
+        """
+        try:
+            search_info = self._resolve_search_root(search_path)
+            if search_info is None:
+                return {
+                    "page": page,
+                    "total_files": 0,
+                    "total_matches": 0,
+                    "page_size": page_size,
+                    "results": [],
+                }
+
+            # Check if search_info is a file (single file search mode)
+            is_single_file_search = os.path.isfile(search_info)
+
+            # Compile regex if needed
+            compiled_pattern = None
+            if use_regex:
+                try:
+                    compiled_pattern = self._compile_regex_pattern(query, case_sensitive=case_sensitive)
+                except ValueError as ex:
+                    logger.warning("Invalid regex pattern: %s", ex)
+                    return {
+                        "page": page,
+                        "total_files": 0,
+                        "total_matches": 0,
+                        "page_size": page_size,
+                        "results": [],
+                        "error": str(ex),
+                    }
+
+            search_pattern = query if case_sensitive else query.lower()
+            matching_results = []
+
+            if is_single_file_search:
+                # Single file search mode
+                logger.debug("Single file search mode for: %s", search_info)
+                try:
+                    rel_path = os.path.relpath(
+                        search_info, self.settings.abs_project_path
+                    )
+                except ValueError:
+                    return {
+                        "page": page,
+                        "total_files": 0,
+                        "total_matches": 0,
+                        "page_size": page_size,
+                        "results": [],
+                        "error": "File path is outside project root",
+                    }
+
+                # Build ignore manager for the project root
+                gitignore_manager = self._build_gitignore_manager(self.settings.abs_project_path)
+                is_ignored = gitignore_manager.is_ignored(search_info)
+
+                # Discard ignored files when not in raw mode
+                if not raw_search and is_ignored:
+                    logger.debug(
+                        "File is git-ignored, skipping: %s", search_info
+                    )
+                    return {
+                        "page": page,
+                        "total_files": 0,
+                        "total_matches": 0,
+                        "page_size": page_size,
+                        "results": [],
+                    }
+
+                result = self._search_in_file(
+                    file_path=search_info,
+                    rel_path=rel_path,
+                    search_pattern=search_pattern,
+                    compiled_pattern=compiled_pattern,
+                    case_sensitive=case_sensitive,
+                    use_regex=use_regex,
+                    is_ignored=is_ignored,
+                )
+                if result is not None:
+                    matching_results.append(result)
+            else:
+                # Directory search mode: iterate the cached index, no walk here
+                logger.debug("Directory search mode for: %s", search_info)
+                project_root = self.get_project_root_for_path(search_info)
+                file_index = self._get_file_index(project_root, raw_search=raw_search)
+                search_prefix = os.path.normpath(search_info) + os.sep
+
+                for entry in file_index:
+                    if not entry["abs_path"].startswith(search_prefix):
+                        continue
+
+                    # Discard ignored files when not in raw mode
+                    if not raw_search and entry["is_ignored"]:
+                        logger.debug(
+                            "Skipping git-ignored file in content search: %s",
+                            entry["abs_path"],
+                        )
+                        continue
+
+                    result = self._search_in_file(
+                        file_path=entry["abs_path"],
+                        rel_path=entry["rel_path"],
+                        search_pattern=search_pattern,
+                        compiled_pattern=compiled_pattern,
+                        case_sensitive=case_sensitive,
+                        use_regex=use_regex,
+                        is_ignored=entry["is_ignored"],
+                    )
+                    if result is not None:
+                        matching_results.append(result)
+
+            matching_results.sort(key=lambda x: (-x["match_count"], x["rel_path"]))
+
+            total_files = len(matching_results)
+            total_matches = sum(r["match_count"] for r in matching_results)
+            page_start = page * page_size
+            page_end = page_start + page_size
+
+            return {
+                "page": page,
+                "total_files": total_files,
+                "total_matches": total_matches,
+                "page_size": page_size,
+                "results": matching_results[page_start:page_end],
+            }
+        except Exception as ex:
+            error_msg = str(ex)
+            logger.error("Error during content search: %s", error_msg)
+            return {
+                "page": page,
+                "total_files": 0,
+                "total_matches": 0,
+                "page_size": page_size,
+                "results": [],
+                "error": error_msg,
+            }
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_search_root(self, search_path: Optional[str]) -> Optional[str]:
+        """
+        Resolve the root directory or file for a search operation.
+
+        Args:
+            search_path: Optional relative path (file or directory); None means project root.
+
+        Returns:
+            Absolute path (directory or file), or None if path doesn't exist.
+        """
+        if search_path:
+            search_root = self.get_project_file_path(search_path)
+            # Accept both files and directories
+            if not os.path.exists(search_root):
+                logger.warning("search_path does not exist: %s", search_root)
+                return None
+            # If it's a file, return the file path; if it's a directory, return the directory path
+            return search_root
+        return self.settings.abs_project_path
+
+    def _search_in_file(
+        self,
+        file_path: str,
+        rel_path: str,
+        search_pattern: str,
+        compiled_pattern: Optional[Pattern] = None,
+        case_sensitive: bool = False,
+        use_regex: bool = False,
+        is_ignored: bool = False,
+    ) -> Optional[dict]:
+        """
+        Search for a pattern inside a single file and return match metadata.
+
+        Args:
+            file_path: Absolute path to the file.
+            rel_path: Path relative to the project root (used in results).
+            search_pattern: Pre-lowercased (or not) substring pattern to look for.
+            compiled_pattern: Pre-compiled regex pattern or None.
+            case_sensitive: Whether the search is case-sensitive.
+            use_regex: Whether to use regex matching.
+            is_ignored: Whether the file is git-ignored (carried into result).
+
+        Returns:
+            Result dict if matches were found, None otherwise.
+        """
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+        except OSError as ex:
+            logger.debug("Could not read file %s: %s", file_path, ex)
+            return None
+
+        matches = []
+
+        if use_regex:
+            # Regex search
+            for line_num, line in enumerate(content.split("\n"), 1):
+                match_objs = list(compiled_pattern.finditer(line))
+                if match_objs:
+                    matches.append({
+                        "line_number": line_num,
+                        "line_content": line.strip(),
+                        "match_count": len(match_objs),
+                    })
+        else:
+            # Substring search
+            search_content = content if case_sensitive else content.lower()
+            if search_pattern not in search_content:
+                return None
+
+            for line_num, line in enumerate(content.split("\n"), 1):
+                line_search = line if case_sensitive else line.lower()
+                if search_pattern in line_search:
+                    matches.append({
+                        "line_number": line_num,
+                        "line_content": line.strip(),
+                        "match_count": line_search.count(search_pattern),
+                    })
+
+        if not matches:
+            return None
+
+        file_info = self.get_file_info(file_path)
+        return {
+            "file_path": file_path,
+            "rel_path": rel_path,
+            "match_count": len(matches),
+            "matches": matches,
+            "is_ignored": is_ignored,
+            **file_info,
+        }
+
+    def get_wiki_file(self, file_path: str) -> dict:
+        """
+        Read a wiki file and return its content along with file metadata.
+
+        Args:
+            file_path: Relative path within the wiki directory.
+
+        Returns:
+            Dict with 'content', 'last_modification', and 'size', or a 'not found' message dict.
+        """
+        project_wiki_path = self.settings.get_project_wiki_path()
+        if project_wiki_path:
+            if project_wiki_path[-1] != "/" and file_path[0] != "/":
+                file_path = f"/{file_path}"
+            wiki_file = f"{project_wiki_path}{file_path}"
+            try:
+                logger.info("Reading wiki file: %s", wiki_file)
+                with open(wiki_file, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+                info = self.get_file_info(wiki_file)
+                return {"content": content, **info}
+            except OSError:
+                pass
+        return {"content": f"> {file_path} not found", "last_modification": None, "size": None}
+
+    def get_readme(self) -> dict:
+        """
+        Read the project README.md and return its content along with file metadata.
+
+        Returns:
+            Dict with 'content', 'last_modification', and 'size'.
+        """
+        readme_file = os.path.join(self.settings.abs_project_path, "README.md")
+        if os.path.isfile(readme_file):
+            with open(readme_file, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            info = self.get_file_info(readme_file)
+            return {"content": content, **info}
+        return {"content": "", "last_modification": None, "size": None}
+
+    def api_image_to_text(self, image_bytes: bytes) -> str:
+        """
+        Convert image bytes to text using OCR (pytesseract).
+
+        Args:
+            image_bytes: Raw image bytes.
+
+        Returns:
+            Extracted text string.
+        """
+        from PIL import Image
+        import pytesseract
+        import io
+
+        image = Image.open(io.BytesIO(image_bytes))
+        text = pytesseract.image_to_string(image)
+        return text
+
+
+# Made with ❤️ by codx-junior

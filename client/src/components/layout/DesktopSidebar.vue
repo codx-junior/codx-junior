@@ -1,0 +1,280 @@
+<script setup>
+import AppsSection from './AppsSection.vue'
+import WorkspacesSection from './WorkspacesSection.vue'
+import Notifications from '../Notifications.vue'
+import WindowsMenu from '../main-menu/WindowsMenu.vue'
+</script>
+
+<template>
+  <!-- Desktop Sidebar -->
+  <!-- The WRAPPER lives in normal flow and owns the layout width:
+       w-16 when collapsed (icon rail), w-64 when expanded.
+       Expansion is ALWAYS explicit (click the rail indicator or the header
+       toggle). There is no hover-to-expand and no "floating/pinned" state:
+       opening a launcher overlay simply expands the sidebar and it stays
+       expanded, so wrapper and aside always share the same width. -->
+  <div
+    ref="sidebarEl"
+    class="relative h-full shrink-0 transition-all duration-200"
+    :class="[isCollapsed ? 'w-16' : 'w-64']"
+  >
+    <aside
+      class="absolute left-0 top-0 bottom-0 h-full flex flex-col shrink-0 bg-base-100 border-r border-base-content/5 transition-all duration-200"
+      :class="isCollapsed ? 'w-16' : 'w-64'"
+    >
+      <!-- Header Section -->
+      <div class="px-2 py-4 shrink-0 border-b border-base-content/5">
+        <div class="flex items-center justify-between gap-2">
+          <div v-if="!isCollapsed" class="flex items-center shrink-0 gap-2 flex-1">
+            <!-- Expanded: Collapse back to the icon rail -->
+            <button
+              class="click w-6 h-6 rounded border border-base-content/20 flex items-center justify-center hover:bg-white/5 transition-colors"
+              @click="toggleCollapse"
+              title="Collapse sidebar"
+            >
+              <i class="fa-solid fa-angle-left text-base-content/40 text-xs"></i>
+            </button>
+            <span class="text-lg font-semibold">
+              <span class="text-codx-secondary">codx-</span>
+              <span class="text-codx-secondary">junior</span>
+            </span>
+          </div>
+          <!-- Collapsed: logo + chevron indicator inviting the user to expand -->
+          <div v-else class="flex justify-center w-full">
+            <button
+              class="click w-10 flex flex-col items-center gap-1 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
+              title="Expand sidebar"
+              aria-label="Expand sidebar"
+              @click="toggleCollapse"
+            >
+              <img class="w-6 h-6" src="/only_icon.png" alt="codx-junior" />
+            </button>
+          </div>
+
+          <div v-if="!isCollapsed" class="flex items-center gap-2">
+            <Notifications />
+          </div>        
+        </div>
+      </div>
+
+      <!-- Scrollable Content Area -->
+      <div class="flex-1 min-h-0 min-w-0 overflow-y-auto overflow-x-hidden flex flex-col">
+        <!-- Apps Section (renders the pinned projects quick switcher) -->
+        <AppsSection
+          :is-collapsed="isCollapsed"
+          :more-expanded="moreExpanded"
+          @update:moreExpanded="moreExpanded = $event"
+          @close="handleClose"
+          @toggle-collapse="toggleCollapse"
+          @overlay-open="onOverlayOpen"
+        />
+        
+        <!-- Workspaces Section — the active project's workspace apps
+             (store/project.js → projectApps → API.allWorkspaces).
+             Always rendered, no workspace-mode filter: the section is a
+             launcher in its own right, not a company-mode-only affordance.
+             The component itself hides when the project has no apps. -->
+        <WorkspacesSection
+          :workspace-apps="workspaceApps"
+          :is-collapsed="isCollapsed"
+          :current-workspace-id="currentWorkspaceId"
+          @close="handleClose"
+        />
+
+      </div>
+
+      <!-- Footer -->
+      <div class="shrink-0 border-t border-base-content/5 px-2 py-3">
+        <!-- Expanded Footer - opens the unified Windows-like menu -->
+        <WindowsMenu v-if="!isCollapsed" @open="onOverlayOpen">
+          <div class="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-white/5 transition-colors cursor-pointer w-full"
+            :class="!connected && 'bg-error/20'"
+          >
+            <div class="avatar tooltip shrink-0" :data-tip="$user.username">
+              <div class="w-8 rounded-full overflow-hidden">
+                <img :src="$user.avatar">
+              </div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm truncate">{{ userName }}</div>
+              <div class="flex items-center gap-1.5 min-w-0 text-xs">
+                <span
+                  class="shrink-0"
+                  :class="connected ? 'text-success/60': 'text-error'"
+                >{{ connected ? 'online': 'offline' }}</span>
+                <!-- Daily spent: today's cxj consumption, always visible.
+                     Lives on the secondary line so the name keeps its width. -->
+                <span
+                  v-if="todaySpentFormatted != null"
+                  class="flex items-center gap-1 min-w-0 truncate transition-colors duration-150"
+                  :title="todaySpentTitle"
+                  :aria-label="todaySpentTitle"
+                >
+                  <i
+                    class="fa-solid fa-coins text-[10px] shrink-0"
+                    :class="dailyLimitExceeded ? 'text-error' : 'text-warning'"
+                    aria-hidden="true"
+                  ></i>
+                  <span
+                    class="font-mono font-semibold tabular-nums"
+                    :class="dailyLimitExceeded ? 'text-error' : 'text-warning'"
+                  >{{ todaySpentFormatted }}</span>
+                  <span class="text-base-content/40">today</span>
+                </span>
+              </div>
+            </div>
+            <!-- Wallet balance: always visible next to the chevron,
+                 independent of the menu open/closed state. -->
+            <span
+              v-if="walletBalance != null"
+              class="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-success/15 text-success text-[11px] font-mono font-semibold leading-none whitespace-nowrap tabular-nums transition-colors duration-150"
+              :title="`Wallet balance: ${walletBalance} cxj coins`"
+              :aria-label="`Wallet balance: ${walletBalance} cxj coins`"
+            >
+              <i class="fa-solid fa-wallet" aria-hidden="true"></i>{{ walletBalance }}
+            </span>
+            <i class="fas fa-chevron-down text-xs text-base-content/40 shrink-0"></i>
+          </div>
+        </WindowsMenu>
+
+        <!-- Collapsed Footer - Icon Only -->
+        <div v-else class="flex items-center justify-center py-2">
+          <WindowsMenu 
+            :class="!connected && 'bg-error/20 rounded-xl animate-pulse'"
+            @open="onOverlayOpen">
+            <div class="p-1 rounded-full hover:bg-white/5 transition-colors cursor-pointer">
+              <div class="avatar tooltip tooltip-right" :data-tip="$user.username">
+                <div class="w-8 rounded-full overflow-hidden">
+                  <img :src="$user.avatar">
+                </div>
+              </div>
+            </div>
+          </WindowsMenu>
+        </div>
+      </div>
+    </aside>
+  </div>
+</template>
+
+<script>
+export default {
+  emits: ['settings', 'close'],
+  data() {
+    return {
+      dailyLimitStatus: 'normal',
+      moreExpanded: false,
+      metricsInterval: null
+    }
+  },
+  computed: {
+    // Collapsed (icon rail) state lives in the ui store so the shell (App.vue)
+    // and the sidebar share a single, persisted source of truth.
+    isCollapsed() {
+      return this.$storex.ui.sidebarCollapsed
+    },
+    workspaceApps() {
+      return this.$projects.projectApps || []
+    },
+    currentUser() {
+      return this.$storex?.users?.user || this.$user
+    },
+    hasWorkspaceApps() {
+      return this.workspaceApps && this.workspaceApps.length > 0
+    },
+    isProjectAdmin() {
+      return this.$users?.isProjectAdmin || false
+    },
+    currentWorkspaceId() {
+      return this.$storex.$router.$navigation.getWorkspaceId()
+    },
+    isDesktopMode() {
+      return this.$storex.$router.$navigation.isDesktopMode
+    },
+    userName() { 
+      return this.$users.user?.username 
+    },
+    userSubtitle() {
+      const email = this.$users.user?.email
+      return email && email.length > 20 ? email.substring(0, 20) + '...' : email
+    },
+    connected() {
+      return this.$session.connected
+    },
+    // Wallet balance (cxj coins) shown next to the footer chevron.
+    // Always rendered — it does not depend on the WindowsMenu open state.
+    walletBalance() {
+      const balance = this.$storex?.users?.user?.wallet?.balance_cxjcoins
+      return balance != null ? Number(balance).toFixed(2) : null
+    },
+    // Amount spent today (cxj coins) — $storex.users.metrics.today.total_cxjcoins
+    todaySpent() {
+      const coins = this.$storex?.users?.metrics?.today?.total_cxjcoins
+      return coins != null ? Number(coins) : null
+    },
+    todaySpentFormatted() {
+      return this.todaySpent != null ? this.todaySpent.toFixed(2) : null
+    },
+    // Daily spending limit (if configured): { period, limit_cxjcoins }
+    dailyLimit() {
+      const limit = this.$storex?.users?.user?.wallet?.spending_limits?.find(l => l.period === 'daily')
+      return limit?.limit_cxjcoins ?? null
+    },
+    // Exceeded limit turns the value into an error state (never color-only:
+    // the tooltip/label carries the meaning).
+    dailyLimitExceeded() {
+      if (this.dailyLimit == null || this.todaySpent == null) return false
+      return this.todaySpent >= this.dailyLimit
+    },
+    todaySpentTitle() {
+      if (this.todaySpent == null) return null
+      if (this.dailyLimit == null) return `Spent today: ${this.todaySpentFormatted} cxj coins`
+      return `Spent today: ${this.todaySpentFormatted} of ${Number(this.dailyLimit).toFixed(2)} cxj coins (daily limit)`
+    }
+  },
+  mounted() {
+    // Metrics are otherwise only loaded by UserInfo (inside the lazily
+    // rendered Windows menu), so the sidebar keeps its own fresh copy.
+    this.loadTodaySpend()
+    this.metricsInterval = setInterval(() => this.loadTodaySpend(), 60000)
+  },
+  beforeUnmount() {
+    if (this.metricsInterval) {
+      clearInterval(this.metricsInterval)
+      this.metricsInterval = null
+    }
+  },
+  methods: {
+    // Toggle between the icon rail and the expanded sidebar.
+    toggleCollapse() {
+      return this.$storex.ui.toggleSidebar()
+    },
+    // A launcher overlay (project selector, windows menu, …) was opened.
+    // Expand the sidebar and keep it expanded so the launcher and its state
+    // stay visible — this replaces the old floating/pin behaviour.
+    onOverlayOpen() {
+      this.$storex.ui.expandSidebar()
+    },
+    async loadTodaySpend() {
+      try {
+        await this.$storex.users.loadMetrics()
+      } catch (ex) {
+        console.error('Error loading user metrics', ex)
+      }
+    },
+    handleClose() {
+      this.$emit('close')
+    }
+  }
+}
+</script>
+
+<style scoped>
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+</style>

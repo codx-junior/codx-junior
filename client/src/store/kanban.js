@@ -1,0 +1,1766 @@
+import { getterTree, mutationTree, actionTree } from 'typed-vuex'
+import { $storex } from '.'
+import { v4 as uuidv4 } from 'uuid'
+
+export const namespaced = true
+
+// Reserved id/title of the virtual board that groups every board-less chat.
+// Boards are keyed by title, so the virtual board reuses its title as id.
+// It is never persisted: `boardById` synthesizes it from the chats.
+export const NO_BOARD_ID = 'Unassigned'
+
+// Label shared by the virtual board AND by the virtual columns that group the
+// chats defining no board / no column / no status.
+export const UNASSIGNED_TITLE = NO_BOARD_ID
+
+// Placeholder column that groups the chats which define no `column`.
+//
+// The fallback is applied AT THE COMPARISON SITES (column list, view builder,
+// sprint grouping) and never on the chat objects themselves: wrapping a chat
+// in `{ ...c, column }` gave every task a NEW identity on every read, so the
+// board columns could never recognise their cards and re-rendered the whole
+// board (columns → tasks → cards) on any single chat write.
+export const NO_COLUMN_ID = '--none--'
+
+// Placeholder status of the sprint column that groups the tasks the board
+// cannot place:
+//   • a task that defines no `status` at all, or
+//   • a task whose `status` matches NONE of the board's columns (a status whose
+//     column was removed, a value written by another client, a typo…).
+//
+// Same rule as NO_COLUMN_ID: applied when grouping, never written on the chat.
+// Writing it back CLEARS `chat.status` (see `moveSprintStatus`).
+export const NO_STATUS_ID = '--no-status--'
+
+// Status a NEW sprint task is created with when the target column defines none.
+// Grouping uses NO_STATUS_ID instead: a task without a status is NOT a todo.
+const FALLBACK_STATUS = 'todo'
+
+// Portable board document contract used by export/import.
+export const BOARD_EXPORT_FORMAT = 'codx-junior-board'
+export const BOARD_EXPORT_VERSION = 1
+
+export const state = () => ({
+  filter: null,
+  loadingChats: 0,
+})
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function getKanban(project) {
+  const targetProject = project || $storex.projects.activeProject
+  return targetProject?.$state?.kanban || { boards: {} }
+}
+
+function getActiveProject(project) {
+  return project || $storex.projects.activeProject
+}
+
+// ─── Case-insensitive identity ────────────────────────────────────────────────
+// Board titles, column titles and sprint statuses are free text typed by the
+// user, so they must never be compared literally: "Sprint 1" is the same board
+// as "sprint 1", "Doing" is the same column as "doing" and a task whose status
+// is "Doing" belongs to the "doing" column.
+//
+// `compareKey` is that identity (trimmed + lowercased) and `sameKey` is its
+// readable shorthand. The STORED spelling is never rewritten by a comparison:
+// only the values written back onto a chat (its `status`) are normalized, so
+// the rest of the app keeps working with the canonical status values.
+
+function compareKey(value) {
+  return value == null ? '' : String(value).trim().toLowerCase()
+}
+
+function sameKey(a, b) {
+  return compareKey(a) === compareKey(b)
+}
+
+// Board documents are keyed by title: resolve the stored key of a board from
+// ANY spelling of its title (null when the board does not exist).
+function findBoardKey(kanban, boardId) {
+  const boards = kanban?.boards || {}
+  if (boardId == null || boardId === '') return null
+  if (Object.prototype.hasOwnProperty.call(boards, boardId)) {
+    return boards[boardId] === null ? null : boardId
+  }
+  const key = compareKey(boardId)
+  return Object.keys(boards)
+    .find(title => boards[title] !== null && compareKey(title) === key) || null
+}
+
+// The board document of a board, addressed by any spelling of its title
+function getBoard(kanban, boardId) {
+  const key = findBoardKey(kanban, boardId)
+  return key ? kanban.boards[key] : null
+}
+
+// The board assignee is a SINGLE profile name (board settings → assignee).
+// An empty / blank value means "no assignee", so it is normalized to null
+// instead of being stored as ''.
+function normalizeAssignee(value) {
+  const name = value == null ? '' : String(value).trim()
+  return name || null
+}
+
+// Board manager configuration (board settings → Board manager). The manager is
+// an opt-in background reviewer: a profile reviews the board periodically and
+// applies the actions it decides. The normalized shape mirrors
+// api/codx/junior/board_manager/models.py so the UI and the worker agree on
+// defaults and limits.
+function normalizeManager(value) {
+  if (!value || typeof value !== 'object') return null
+  const clamp = (number, min, max, fallback) => {
+    const parsed = Number(number)
+    if (!Number.isFinite(parsed)) return fallback
+    return Math.max(min, Math.min(max, Math.round(parsed)))
+  }
+  return {
+    enabled: !!value.enabled,
+    profile: value.profile == null ? '' : String(value.profile).trim().replace(/^@+/, ''),
+    mode: value.mode === 'suggest' ? 'suggest' : 'apply',
+    interval_minutes: clamp(value.interval_minutes, 5, 7 * 24 * 60, 60),
+    max_actions: clamp(value.max_actions, 1, 20, 5),
+    max_tasks: clamp(value.max_tasks, 1, 200, 80),
+    include_done: !!value.include_done,
+    instructions: value.instructions == null ? '' : String(value.instructions).slice(0, 8000)
+  }
+}
+
+// Canonical spelling of a task status: the status list value when the given
+// status matches one ignoring case ("Doing" → "doing"), otherwise the value as
+// the user defined it, trimmed.
+//
+// `chat.status` is shared with the rest of the app (chat badges, filters, the
+// status tokens driving the columns colours), so it is always written in its
+// canonical form; the board columns keep comparing it ignoring case, which is
+// what makes an already stored "Doing" land in the "doing" column.
+function canonicalStatus(value) {
+  if (!value) return ''
+  const key = compareKey(value)
+  const known = ($storex.chats.statusList || [])
+    .find(status => compareKey(status.value) === key)
+  return known ? known.value : String(value).trim()
+}
+
+// ─── Board export / import helpers ────────────────────────────────────────────
+
+// Normalize a filesystem path (drop a trailing slash) for prefix comparison.
+function normalizeProjectPath(path) {
+  if (!path) return path
+  return path.endsWith('/') ? path.slice(0, -1) : path
+}
+
+/**
+ * Rewrite an absolute path that points inside the *source* project so it points
+ * inside the *target* project instead. Paths outside the source project are
+ * returned untouched, so shared/external references survive the import.
+ */
+function remapProjectPath(path, sourcePath, targetPath) {
+  if (!path || !sourcePath || !targetPath) return path
+  const source = normalizeProjectPath(sourcePath)
+  const target = normalizeProjectPath(targetPath)
+  if (path === source) return target
+  if (path.startsWith(`${source}/`)) return `${target}${path.slice(source.length)}`
+  return path
+}
+
+function remapPathList(list, sourcePath, targetPath) {
+  if (!Array.isArray(list)) return []
+  return list.map(path => remapProjectPath(path, sourcePath, targetPath))
+}
+
+// A board key/title that is free in the target project ("Title", "Title (2)"…).
+// Board titles compare ignoring case, so "Todo" is taken while "todo" exists.
+function findFreeBoardTitle(kanban, baseTitle) {
+  const clean = (baseTitle || 'Imported board').trim() || 'Imported board'
+  if (!sameKey(clean, NO_BOARD_ID) && !findBoardKey(kanban, clean)) return clean
+  let index = 2
+  let candidate = `${clean} (${index})`
+  while (findBoardKey(kanban, candidate)) {
+    index += 1
+    candidate = `${clean} (${index})`
+  }
+  return candidate
+}
+
+/**
+ * Adapt one exported chat to the import target project.
+ *
+ * EVERY field that is bound to the project the chat was created in is
+ * retargeted here:
+ *  - owner_project_id / project_id                 -> target project
+ *  - parent_id / linked_chat_ids / chat_links       -> remapped new chat ids
+ *  - absolute file paths (file_list + message files)-> target project root
+ *  - board / sprint membership                      -> the imported board
+ *  - session_id (AI log link of the source project) -> cleared
+ */
+function adaptImportedChat({
+  sourceChat,
+  idMap,
+  boardTitle,
+  boardType,
+  projectId,
+  columnTitles,
+  sourcePath,
+  targetPath
+}) {
+  // Deep clone so in-memory store objects are never mutated by the import.
+  const chat = JSON.parse(JSON.stringify(sourceChat))
+
+  delete chat.file_path
+  chat.session_id = null
+
+  chat.id = idMap[sourceChat.id]
+  chat.owner_project_id = projectId
+  chat.project_id = projectId
+
+  // Inter-task links (parent/child + threads) between imported chats only.
+  chat.parent_id = sourceChat.parent_id ? (idMap[sourceChat.parent_id] || null) : null
+  chat.parent_owner_project_id = sourceChat.parent_id ? projectId : null
+  chat.parent_project_id = sourceChat.parent_id ? projectId : null
+  chat.message_id = sourceChat.message_id || null
+
+  // Board / sprint membership.
+  chat.board = boardTitle
+  if (boardType === 'sprint') {
+    chat.sprints = [boardTitle]
+    // Statuses are compared ignoring case and stored canonically ("Doing" → "doing")
+    chat.status = canonicalStatus(sourceChat.status) || 'todo'
+  } else {
+    // Kanban tasks drop foreign sprint membership (only this board is imported)
+    chat.sprints = []
+    // Resolve the destination column to one that exists on the imported board
+    // (the column names compare ignoring case)
+    chat.column = columnTitles.find(title => sameKey(title, sourceChat.column))
+      || columnTitles[0]
+      || 'tasks'
+  }
+
+  // Cross-chat links.
+  chat.linked_chat_ids = (sourceChat.linked_chat_ids || [])
+    .map(id => idMap[id])
+    .filter(Boolean)
+  chat.chat_links = (sourceChat.chat_links || [])
+    .map(link => ({ chat_id: idMap[link.chat_id], project_id: projectId }))
+    .filter(link => link.chat_id)
+
+  // Project-bound file references.
+  chat.file_list = remapPathList(sourceChat.file_list, sourcePath, targetPath)
+  chat.messages = (sourceChat.messages || []).map(message => ({
+    ...message,
+    files: remapPathList(message.files, sourcePath, targetPath)
+  }))
+
+  return chat
+}
+
+// Link imported kanban tasks into their board column. Sprint membership is
+// already carried on the chat (`sprints`), so sprint boards are skipped.
+function linkChatsToColumns(board, imported) {
+  if (!board) return
+  // Columns are resolved by their case-insensitive key: a task exported from a
+  // column spelled "Doing" lands in the imported column "doing"
+  const columnByKey = {}
+  ;(board.columns || []).forEach(col => { columnByKey[compareKey(col.title)] = col })
+
+  imported.forEach(({ chat }) => {
+    const columnTitle = chat.column || 'tasks'
+    const key = compareKey(columnTitle)
+    let column = columnByKey[key]
+    if (!column) {
+      column = {
+        id: uuidv4(),
+        title: columnTitle,
+        color: null,
+        // Profiles tasks created in this column should inherit
+        profiles: [],
+        project_id: board.project_id,
+        chats: []
+      }
+      board.columns = [...(board.columns || []), column]
+      columnByKey[key] = column
+    }
+    if (!(column.chats || []).some(id => sameKey(id, chat.id))) {
+      column.chats = [...(column.chats || []), chat.id]
+    }
+  })
+}
+
+// ─── Sprint column helpers ────────────────────────────────────────────────────
+
+// Default sprint columns mirror the canonical task statuses. They are the
+// fallback for boards that were never customized (and for the virtual
+// "No board" board). Once a board's columns are edited they are persisted on
+// `board.columns`, each one carrying the chat `status` it groups (and an
+// optional Font Awesome `icon`).
+function defaultSprintColumns() {
+  return $storex.chats.statusList.map(status => ({
+    id: status.value,
+    title: status.label,
+    icon: status.icon,
+    color: null,
+    profiles: [],
+    // Project tasks created in this column are assigned to (optional)
+    project_id: null,
+    status: status.value
+  }))
+}
+
+// The chat status a sprint column writes: the explicit `status`, or the UI
+// `title` when no status was defined.
+function sprintColumnStatus(column) {
+  return column?.status || column?.title
+}
+
+// Ordering of the tasks inside a board column: explicit sort_index first, then
+// the most recently updated task.
+function sortColumnTasks(a, b) {
+  const ao = a.sort_index ?? Number.MAX_SAFE_INTEGER
+  const bo = b.sort_index ?? Number.MAX_SAFE_INTEGER
+  if (ao !== bo) return ao - bo
+  return (a.updated_at || '') < (b.updated_at || '') ? 1 : -1
+}
+
+// ─── Getters ─────────────────────────────────────────────────────────────────
+
+export const getters = getterTree(state, {
+  kanban: () => getKanban(),
+
+  rawBoards: () => {
+    const { boards = {} } = getKanban()
+    return Object.keys(boards).reduce((acc, id) => {
+      acc[id] = { ...boards[id], id, title: id, type: boards[id]?.type || 'kanban' }
+      return acc
+    }, {})
+  },
+
+  // ── Virtual "Unassigned" board ──────────────────────────────────────────────
+  // Chats that are not associated with any board. Templates and channel-mode
+  // chats are excluded because they are not real work items.
+  //
+  // The chats are returned AS STORED — no wrapper objects, no defaulted
+  // fields. See NO_COLUMN_ID / NO_STATUS_ID: the grouping defaults are applied
+  // where the grouping happens.
+  noBoardChats: () => {
+    const allChats = Object.values($storex.chats.chats || {})
+    return allChats
+      .filter(c => c?.id && !c.board && !c.is_template && c.mode !== 'channel')
+  },
+
+  // Synthetic, non-persisted board describing the board-less group. It is typed
+  // as a 'sprint' so the board view renders it with the fixed status columns.
+  virtualBoard: (_, getters) => {
+    const chats = getters.noBoardChats
+    const lastUpdate = chats.reduce((latest, c) => {
+      const ts = c.updated_at || c.lastMessageAt || null
+      return ts && ts > (latest || '') ? ts : latest
+    }, null)
+
+    return {
+      id: NO_BOARD_ID,
+      title: NO_BOARD_ID,
+      type: 'sprint',
+      virtual: true,
+      description: 'Chats not associated with any board',
+      background: '',
+      parent_id: null,
+      project_id: null,
+      bookmark: false,
+      users: [],
+      // The virtual board cannot be assigned to a profile
+      assignee: null,
+      columns: [],
+      last_update: lastUpdate
+    }
+  },
+
+  // The virtual board is ALWAYS listed, even while it holds no chats.
+  //
+  // It used to be exposed only when `noBoardChats` was not empty, which made it
+  // invisible in the board list of a project whose chats all belong to a board —
+  // and therefore unreachable: it is the drop target that regroups the chats
+  // detached from every board, so it must exist before it has content (the same
+  // reason the "Unassigned" columns are always rendered, see `sprintColumns`).
+  // It still resolves through `boardById` (which never depended on the chats),
+  // and it stays read-only: it is not part of the kanban document.
+  virtualBoards: (state, getters) => [getters.virtualBoard],
+
+  // Persisted boards, built from the kanban document ONLY.
+  //
+  // This getter deliberately does not depend on the chats store: it is what
+  // gives a stored board a STABLE object identity while chats keep changing.
+  // `boardById()` is read by every board consumer (the active board watcher,
+  // the canvas, the app params), so a board object that changed identity on
+  // each chat write re-rendered the whole workspace — chats are not part of a
+  // board's identity, the kanban document is.
+  storedBoards: (_, getters) => {
+    const { boards = {} } = getters.kanban
+    return Object.keys(boards)
+      .filter(title => boards[title] !== null)
+      .map(title => ({
+        ...boards[title],
+        id: title,
+        title,
+        // Boards are 'kanban' unless explicitly created as a 'sprint'
+        type: boards[title]?.type || 'kanban',
+        // Board participants (user list) — optional
+        users: boards[title]?.users || [],
+        // Profile the board is assigned to (single profile name) — optional
+        assignee: boards[title]?.assignee || null,
+        // Background board manager configuration — null when never configured
+        manager: normalizeManager(boards[title]?.manager)
+      }))
+  },
+
+  allBoards: (_, getters) => [
+    ...getters.storedBoards,
+    // The virtual "Unassigned" board is always appended last
+    ...getters.virtualBoards
+  ],
+
+  // Resolve a board by its id/title. The virtual "Unassigned" board always
+  // resolves (even with no chats) so a component can keep it selected.
+  //
+  // Board names are free text and compare IGNORING CASE: "Sprint 1" and
+  // "sprint 1" are the same board.
+  boardById: (state, getters) => (boardId) => {
+    if (!boardId) return null
+    if (sameKey(boardId, NO_BOARD_ID)) return getters.virtualBoard
+    return getters.storedBoards.find(b => sameKey(b.id, boardId)) || null
+  },
+
+  isVirtualBoard: (state, getters) => (boardId) => sameKey(boardId, NO_BOARD_ID),
+
+  isSprintBoard: (state, getters) => (boardId) =>
+    getters.boardById(boardId)?.type === 'sprint',
+
+  boardType: (state, getters) => (boardId) =>
+    getters.boardById(boardId)?.type || 'kanban',
+
+  // The PROFILE a board is assigned to.
+  //
+  // `board.assignee` stores the profile NAME (a single profile, set from the
+  // board settings), so it is resolved against the project the board belongs to
+  // — the board may live in another project than the active one. While the
+  // project profiles are not loaded yet, a minimal `{ name }` is returned so the
+  // board header can still show who the board belongs to.
+  boardAssignee: (state, getters) => (boardId) => {
+    const board = getters.boardById(boardId)
+    const assignee = normalizeAssignee(board?.assignee)
+    if (!assignee) return null
+
+    const project = $storex.projects.allProjectsById?.[board.project_id] ||
+      $storex.projects.activeProject
+    const profiles = project?.$state?.profiles ||
+      $storex.profiles.profilesByProject?.[project?.project_id] ||
+      []
+    return profiles.find(p => sameKey(p.name, assignee)) || { name: assignee }
+  },
+
+  // The PROFILE selected for the board manager (board settings → Board manager).
+  //
+  // Unlike `boardAssignee` it does NOT fall back to the board assistant: an
+  // empty manager profile means "not selected yet", and the toolbar shows a
+  // generic user icon instead of borrowing the assistant's avatar. The profile
+  // is resolved against the board's own project (the board may live in another
+  // project than the active one), with a minimal `{ name }` fallback while the
+  // profiles are still loading.
+  boardManagerProfile: (state, getters) => (boardId) => {
+    const board = getters.boardById(boardId)
+    const name = board?.manager?.profile == null
+      ? ''
+      : String(board.manager.profile).trim()
+    if (!name) return null
+
+    const project = $storex.projects.allProjectsById?.[board.project_id] ||
+      $storex.projects.activeProject
+    const profiles = project?.$state?.profiles ||
+      $storex.profiles.profilesByProject?.[project?.project_id] ||
+      []
+    return profiles.find(p => sameKey(p.name, name)) || { name }
+  },
+
+  // Tasks that belong to a board (chat.board === boardId). The virtual board
+  // instead exposes every board-less chat.
+  //
+  // The chat objects are returned as stored (see `noBoardChats`): columns, cards
+  // and drag & drop all compare them by identity to know whether anything
+  // changed, so cloning them here made every consumer re-render on every chat
+  // write.
+  boardChats: (state, getters) => (boardId) => {
+    if (!boardId) return []
+    if (sameKey(boardId, NO_BOARD_ID)) return getters.noBoardChats
+    const allChats = Object.values($storex.chats.chats || {})
+    // The stored board title and the requested id may differ in case only
+    return allChats.filter(c => sameKey(c.board, boardId))
+  },
+
+  // The chat field VALUES the board columns group. Stored columns contribute
+  // their title; chats that sit outside every stored column contribute the
+  // NO_COLUMN_ID placeholder, which `buildViewColumns` renders as the virtual
+  // "Unassigned" column.
+  //
+  // Column names compare ignoring case ("Doing" is the "doing" column), so the
+  // list is deduplicated by that key while keeping the first spelling seen —
+  // otherwise one column would be rendered twice (once per spelling).
+  columnList: (state, getters) => (boardId) => {
+    const kanbanColumns = getters.boardById(boardId)?.columns?.map(c => c.title) || []
+    // Chats without a column are grouped under a placeholder column
+    const chatColumns = getters.boardChats(boardId).map(c => c.column || NO_COLUMN_ID)
+    const byKey = new Map()
+    ;[...kanbanColumns, ...chatColumns].forEach(value => {
+      const key = compareKey(value)
+      if (!byKey.has(key)) byKey.set(key, value)
+    })
+    return [...byKey.values()]
+  },
+
+  // Build the kanban columns (with their tasks) for a board.
+  buildViewColumns: (state, getters) => (boardId, filterText) => {
+    const board = getters.boardById(boardId)
+    const columnChats = board?.columns?.chats || []
+    // Hoisted: looking the board chats up again for every column made this
+    // O(columns × chats) on each evaluation.
+    const boardTasks = getters.boardChats(boardId)
+    const text = filterText ? filterText.toLowerCase() : null
+
+    const getChatIndex = (c) => columnChats.findIndex(kc => kc.id === c.id)
+
+    const builtColumns = getters.columnList(boardId).map((col, ix) => {
+      // The stored column configuration is matched ignoring case
+      const storeColumn = board?.columns?.find(bc => sameKey(bc.title, col)) || {}
+      // A column that is not stored on the board and matches the placeholder is
+      // the VIRTUAL column grouping the chats that define no `column`. It is not
+      // part of the kanban document — it cannot be renamed, reordered, removed
+      // or written back to the tasks — and it disappears as soon as every chat
+      // of the board sits in a real column.
+      const virtual = !storeColumn.id && sameKey(col, NO_COLUMN_ID)
+      const tasks = boardTasks
+        // The chat column value is compared ignoring case, so a task stored as
+        // "doing" is grouped by the column named "Doing"
+        .filter(t => sameKey(t.column || NO_COLUMN_ID, col))
+        .sort((a, b) => {
+          // Respect explicit sort_index if present, then fall back to pinned / chat index
+          if (a.sort_index !== undefined && b.sort_index !== undefined) {
+            return a.sort_index - b.sort_index
+          }
+          return a.pinned || getChatIndex(a) < getChatIndex(b) ? -1 : 1
+        })
+
+      const filtered = text
+        ? tasks.filter(task =>
+            Object.keys(task)
+              .reduce((acc, k) => `${acc} ${JSON.stringify(task[k])}`, '')
+              .toLowerCase()
+              .includes(text)
+          )
+        : tasks
+
+      return {
+        id: storeColumn.id || col,
+        // `value` is the chat field value the column groups: the title for a
+        // stored column, NO_COLUMN_ID for the virtual one. Drag & drop, sidebar
+        // filtering and the column sync all compare against it (the `title` is
+        // only the label rendered in the header).
+        value: col,
+        virtual,
+        title: virtual ? UNASSIGNED_TITLE : col,
+        color: storeColumn.color || null,
+        // Profiles tasks created in this column inherit by default
+        profiles: storeColumn.profiles || [],
+        showSubTasks: storeColumn.showSubTasks,
+        project_id: storeColumn.project_id || null,
+        valid: !!storeColumn.id,
+        position: ix,
+        project: $storex.projects.allProjectsById[storeColumn.project_id] || null,
+        tasks: filtered
+      }
+    }).sort((a, b) => (a.position < b.position ? -1 : 1))
+
+    return builtColumns
+  },
+
+  // ── Sprint boards ──────────────────────────────────────────────────────────
+  // A sprint is a board with type === 'sprint'. Its columns map a UI `title`, an
+  // `icon` and a `color` to the chat `status` they group; boards that were never
+  // edited (and the virtual board) fall back to the canonical status order.
+
+  // Real sprint boards only — the virtual board must not be a switch target
+  sprintBoards: (_, getters) =>
+    getters.allBoards.filter(b => b.type === 'sprint' && !b.virtual),
+
+  // Tasks that belong to a sprint (chat.sprints includes the board id).
+  // Returned as stored, like `boardChats` — no clones, no defaulted `status`.
+  sprintBoardChats: (state, getters) => (boardId) => {
+    if (!boardId) return []
+    if (sameKey(boardId, NO_BOARD_ID)) return getters.noBoardChats
+
+    const allChats = Object.values($storex.chats.chats || {})
+    // Sprint membership is a list of board titles, compared ignoring case
+    return allChats.filter(c => (c.sprints || []).some(id => sameKey(id, boardId)))
+  },
+
+  // The sprint columns for a board. Customized boards persist their columns on
+  // `board.columns` ({ id, title, icon, color, status }); boards that were never
+  // edited (and the virtual board) fall back to the canonical statuses.
+  //
+  // Sprint boards work by changing a task's `status` field, so each column
+  // groups every task whose `status` matches the column `status` (or its
+  // `title` when no status was defined). Statuses compare IGNORING CASE — a task
+  // stored as "Doing" is grouped by the "doing" column and vice versa.
+  //
+  // A task the board cannot place — it defines NO status, or a status that
+  // matches none of the board's columns — belongs to the virtual "Unassigned"
+  // column appended at the end (see NO_STATUS_ID).
+  sprintColumns: (state, getters) => (boardId) => {
+    const board = getters.boardById(boardId)
+    const tasks = getters.sprintBoardChats(boardId)
+
+    const custom = board?.columns?.length ? board.columns : null
+    const columns = custom || defaultSprintColumns()
+
+    // The chat statuses this board actually renders (case-insensitive keys). A
+    // task whose `status` is not among them would be rendered by NO column and
+    // would silently vanish from the board (a status whose column was removed, a
+    // status added by another client, a typo…), so those tasks fall back to the
+    // virtual "Unassigned" column below.
+    const boardStatuses = new Set(
+      columns.map(col => compareKey(sprintColumnStatus(col))).filter(Boolean)
+    )
+
+    const builtColumns = []
+    // The status keys already rendered. "Doing" and "doing" are the SAME column,
+    // so a duplicated configuration would list its tasks twice — only the first
+    // column defining a status is rendered.
+    const renderedStatuses = new Set()
+
+    columns.forEach(col => {
+      // The chat status this column groups (falls back to the UI title)
+      const status = sprintColumnStatus(col)
+      // Canonical spelling: the status tokens (icon / colours / labels) are
+      // keyed by the lowercase status value, so "Doing" resolves to the same
+      // badge as "doing"
+      const canonical = canonicalStatus(status)
+      const statusKey = compareKey(canonical || col.title)
+      if (renderedStatuses.has(statusKey)) return
+      renderedStatuses.add(statusKey)
+
+      const isStatus = $storex.chats.statusList.some(s => sameKey(s.value, status))
+      const config = $storex.chats.statusConfig(canonical)
+
+      const columnTasks = tasks
+        // Statuses compare ignoring case ("Doing" === "doing")
+        .filter(t => sameKey(t.status || NO_STATUS_ID, status))
+        .sort(sortColumnTasks)
+
+      builtColumns.push({
+        id: col.id || status,
+        status,
+        title: col.title || config.label,
+        // A custom icon wins; canonical statuses otherwise keep their icon.
+        // Columns without an icon fall back to the colour dot (board column).
+        icon: col.icon || (isStatus ? config.icon : null),
+        textColor: isStatus ? config.textColor : null,
+        borderColor: isStatus ? config.borderColor : null,
+        color: col.color || null,
+        // Profiles tasks created in this column inherit by default
+        profiles: col.profiles || [],
+        // Project tasks created in this column are assigned to
+        project_id: col.project_id || null,
+        project: $storex.projects.allProjectsById?.[col.project_id] || null,
+        position: builtColumns.length,
+        tasks: columnTasks
+      })
+    })
+
+    // Virtual column: the tasks the board cannot place.
+    //
+    // It is ALWAYS rendered (last), even while it holds no task: a drop target
+    // that only appears once it already has content could never be used, and the
+    // tasks that reach a sprint without a status — added through "Add existing",
+    // imported, or written by an older client — would be silently invisible.
+    //
+    // It is not part of the board document — it cannot be renamed, reordered,
+    // removed or written back to the tasks (`syncSprintColumnOrder`,
+    // `newSprintTask` and the board canvas all skip `virtual` columns). Dragging
+    // a card out of it writes the destination status; dropping one back in
+    // clears `chat.status` (see `moveSprintStatus`).
+    builtColumns.push({
+      id: NO_STATUS_ID,
+      // The chat field value this column groups (see `buildViewColumns`)
+      value: NO_STATUS_ID,
+      // Writing this value back clears `chat.status`
+      status: NO_STATUS_ID,
+      title: UNASSIGNED_TITLE,
+      virtual: true,
+      // Neutral rendering: the status tokens do not describe this column
+      icon: 'fa-solid fa-circle-question',
+      textColor: null,
+      borderColor: null,
+      color: null,
+      profiles: [],
+      project_id: null,
+      project: null,
+      position: builtColumns.length,
+      // No status at all, or a status that matches no column of this board
+      // (`boardStatuses`). Both cases have no column of their own, so they are
+      // listed here instead of disappearing from the board. A task can never be
+      // listed twice: a status in `boardStatuses` is grouped by its own column.
+      tasks: tasks
+        .filter(t => !t.status || !boardStatuses.has(compareKey(t.status)))
+        .sort(sortColumnTasks)
+    })
+
+    return builtColumns
+  },
+
+  childBoards: (state, getters) => (boardId) =>
+    // Parent links are board titles: compared ignoring case
+    getters.allBoards.filter(b => sameKey(b.parent_id, boardId)),
+
+  parentBoard: (state, getters) => (boardId) => {
+    const board = getters.boardById(boardId)
+    if (!board?.parent_id) return null
+    return getters.storedBoards.find(b => sameKey(b.id, board.parent_id)) || null
+  },
+
+  // The virtual board can never be a parent board
+  parentBoardOptions: (_, getters) => getters.allBoards.filter(b => !b.virtual),
+
+  bookmarkedBoards: (_, getters) => getters.allBoards.filter(b => b.bookmark),
+
+  isLoading: (state) => state.loadingChats > 0,
+})
+
+// ─── Mutations ────────────────────────────────────────────────────────────────
+
+export const mutations = mutationTree(state, {
+  setFilter(state, filter) {
+    state.filter = filter || null
+  },
+
+  incrementLoading(state) {
+    state.loadingChats += 1
+  },
+
+  decrementLoading(state) {
+    state.loadingChats = Math.max(0, state.loadingChats - 1)
+  },
+
+  // Boards are keyed by title, resolved ignoring case ("Sprint 1" === "sprint 1")
+  updateBoard(state, { boardId, updates }) {
+    const kanban = getKanban()
+    const key = findBoardKey(kanban, boardId)
+    if (key) {
+      kanban.boards[key] = {
+        ...kanban.boards[key],
+        ...updates
+      }
+    }
+  },
+
+  deleteBoard(state, boardId) {
+    const kanban = getKanban()
+    const key = findBoardKey(kanban, boardId)
+    if (key) {
+      delete kanban.boards[key]
+    }
+  },
+
+  addColumn(state, { boardId, column }) {
+    const kanban = getKanban()
+    const board = getBoard(kanban, boardId)
+    if (board) {
+      board.columns = [...(board.columns || []), column]
+      board.last_update = new Date().toISOString()
+    }
+  },
+
+  updateColumn(state, { boardId, columnId, updates }) {
+    const kanban = getKanban()
+    const board = getBoard(kanban, boardId)
+    if (board?.columns) {
+      // Columns are addressed by id or by title, and titles compare ignoring case
+      const col = board.columns.find(c =>
+        c.id === columnId ||
+        (updates.title !== undefined && sameKey(c.title, updates.title)))
+      if (col) {
+        Object.assign(col, updates)
+        board.last_update = new Date().toISOString()
+      }
+    }
+  },
+
+  removeColumn(state, { boardId, columnTitle }) {
+    const kanban = getKanban()
+    const board = getBoard(kanban, boardId)
+    if (board?.columns) {
+      // The column named "Doing" and the one named "doing" are the same column
+      board.columns = board.columns.filter(c => !sameKey(c.title, columnTitle))
+      board.last_update = new Date().toISOString()
+    }
+  },
+
+  reorderColumns(state, { boardId, columns }) {
+    const kanban = getKanban()
+    const board = getBoard(kanban, boardId)
+    if (board) {
+      board.columns = columns
+      board.last_update = new Date().toISOString()
+    }
+  },
+
+  setColumnsChats(state, { boardId, columnChats }) {
+    const kanban = getKanban()
+    const board = getBoard(kanban, boardId)
+    if (board) {
+      // `columnChats` is keyed by column title; the key is resolved ignoring case
+      const chatsFor = (title) => {
+        const key = Object.keys(columnChats || {}).find(k => sameKey(k, title))
+        return key ? columnChats[key] : undefined
+      }
+      board.columns = board.columns?.map(col => ({
+        ...col,
+        chats: chatsFor(col.title) || col.chats || []
+      })) || []
+      board.last_update = new Date().toISOString()
+    }
+  },
+})
+
+// ─── Actions ─────────────────────────────────────────────────────────────────
+
+export const actions = actionTree(
+  { state, getters, mutations },
+  {
+    async init() {
+    },
+
+    async onActiveProjectChanged() {
+      // Called by projects store when activeProject changes
+      mutations.setFilter(state, null)
+      await $storex.kanban.loadKanban()
+    },
+
+    async loadKanban({ state }, project) {
+      const targetProject = getActiveProject(project)
+      if (!targetProject?.$api) return
+      const kanban = await targetProject.$api.chats.kanban.load()
+      if (!targetProject.$state) return
+      targetProject.$state.kanban = kanban
+      return kanban
+    },
+
+    async saveKanban({ state }, project) {
+      const targetProject = getActiveProject(project)
+      if (!targetProject?.$api) return
+      const data = getKanban(targetProject)
+      await targetProject.$api.chats.kanban.save(data)
+    },
+
+    async addColumn({ state }, { boardId, title, color, project_id, profiles }) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+      title = title?.trim()
+      if (!title) return
+
+      // Column names compare ignoring case: "Doing" and "doing" are one column
+      const exists = board.columns?.find(c => sameKey(c.title, title))
+      if (exists) return
+
+      mutations.addColumn(state, {
+        boardId,
+        column: {
+          id: uuidv4(),
+          title,
+          color: color || null,
+          // Profiles tasks created in this column inherit by default
+          profiles: profiles || [],
+          project_id: project_id || null,
+          chats: []
+        }
+      })
+      await $storex.kanban.saveKanban()
+    },
+
+    async updateColumn({ state }, { boardId, id, title, color, project_id, profiles }) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+
+      const updates = {
+        title: title?.trim(),
+        color: color !== undefined ? color : undefined,
+        project_id: project_id !== undefined ? project_id : undefined
+      }
+      // Only touch `profiles` when the caller provides it, so an unrelated
+      // column update never wipes the profiles the column defines.
+      if (profiles !== undefined) updates.profiles = profiles
+
+      mutations.updateColumn(state, {
+        boardId,
+        columnId: id,
+        updates
+      })
+      await $storex.kanban.saveKanban()
+    },
+
+    async deleteColumn({ state, getters }, { boardId, title }) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+
+      // Column titles compare ignoring case
+      const col = getters.buildViewColumns(boardId, null).find(c => sameKey(c.title, title))
+      if (col?.tasks?.length) {
+        await Promise.all(col.tasks.map(chat => $storex.chats.deleteChat(chat)))
+      }
+
+      mutations.removeColumn(state, {
+        boardId,
+        columnTitle: col?.title || title
+      })
+      await $storex.kanban.saveKanban()
+    },
+
+    async syncColumnOrder({ state, getters }, { boardId, viewColumns }) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+
+      const newColumns = await Promise.all(
+        viewColumns
+          // The virtual "Unassigned" column is NOT part of the board document:
+          // it only groups the chats that define no column, so it is never
+          // persisted and never written back onto the tasks. Persisting it would
+          // turn the placeholder into a real column ("Unassigned") that every
+          // chat would then be forced into.
+          .filter(viewCol => !viewCol.virtual)
+          .map(async (viewCol) => {
+            const storeCol = getters.boardById(boardId)?.columns?.find(
+              c => c.id === viewCol.id || sameKey(c.title, viewCol.title)
+            ) || {}
+            // The chat.column value the column groups (its title for every
+            // stored column — see `buildViewColumns`)
+            const value = viewCol.value || viewCol.title
+
+            await Promise.all(
+              (viewCol.tasks || [])
+                // Column names compare ignoring case
+                .filter(t => !sameKey(t.column, value))
+                .map(task => $storex.chats.saveChatInfo({ ...task, column: value }))
+            )
+
+            return {
+              id: storeCol.id || viewCol.id,
+              title: storeCol.title || value,
+              color: storeCol.color || viewCol.color || null,
+              // Keep the profiles tasks created in this column inherit
+              profiles: storeCol.profiles || viewCol.profiles || [],
+              project_id: storeCol.project_id || viewCol.project_id || null,
+              showSubTasks: storeCol.showSubTasks,
+              chats: (viewCol.tasks || []).map(t => t.id)
+            }
+          })
+      )
+
+      mutations.reorderColumns(state, {
+        boardId,
+        columns: newColumns
+      })
+      await $storex.kanban.saveKanban()
+    },
+
+    // Persist a new column ORDER for a SPRINT board.
+    //
+    // Sprint columns live on `board.columns` ({ id, title, icon, color, status })
+    // and group their tasks by the chat `status` they map to, so the kanban
+    // `syncColumnOrder` cannot be reused here: no task has to move between
+    // columns, only the column order itself changes.
+    async syncSprintColumnOrder({ state }, { boardId, columns } = {}) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board || !columns?.length) return
+
+      // Boards that were never customized keep their columns in code, so the
+      // canonical statuses are materialized first (this gives them stable ids
+      // and makes the chosen order survive a reload).
+      if (!board.columns?.length) {
+        await $storex.kanban.materializeSprintColumns({ boardId })
+      }
+
+      const stored = board.columns || []
+      const reordered = []
+      // Map the reordered view columns (id / status / title) back to their
+      // persisted configuration, keeping every extra stored field. The virtual
+      // "Unassigned" column is not part of the document and is skipped.
+      // Ids, statuses and titles all compare ignoring case.
+      columns.filter(col => !col.virtual).forEach(col => {
+        const storedCol = stored.find(c =>
+          (col.id && c.id === col.id) ||
+          (col.status && sameKey(sprintColumnStatus(c), col.status)) ||
+          (col.title && sameKey(c.title, col.title))
+        )
+        if (storedCol && !reordered.includes(storedCol)) reordered.push(storedCol)
+      })
+      // Never drop a column: anything missing from the view keeps its position
+      stored.forEach(col => {
+        if (!reordered.includes(col)) reordered.push(col)
+      })
+      if (!reordered.length) return
+
+      // The mutation signature is (state, payload), so `state` MUST be passed as
+      // the first argument. Omitting it makes the payload land in `state` and the
+      // destructuring of `{ boardId, columns }` throw, aborting the action before
+      // the board is written and saved (the reorder then reverts on reload).
+      mutations.reorderColumns(state, { boardId, columns: reordered })
+      await $storex.kanban.saveKanban()
+    },
+
+    async moveTask({ state }, { taskId, toColumn }) {
+      const task = $storex.chats.chats?.[taskId]
+      if (!task) return
+
+      // Dropping a card into the virtual "Unassigned" column detaches it from
+      // its column (it falls back to the virtual column, which is where it was
+      // dropped) instead of writing the placeholder label onto the chat.
+      const column = sameKey(toColumn, NO_COLUMN_ID) ? '' : toColumn
+      // Column names compare ignoring case ("Doing" === "doing")
+      if (sameKey(task.column, column)) return
+
+      await $storex.chats.saveChatInfo({ ...task, column })
+    },
+
+    // Persist a new task order within a column using sort_index on each chat
+    async reorderTasksInColumn({ state, getters }, { boardId, columnTitle, taskIds }) {
+      const tasks = getters.boardChats(boardId)
+        // The column name compares ignoring case
+        .filter(t => sameKey(t.column || NO_COLUMN_ID, columnTitle))
+      await Promise.all(
+        taskIds.map((id, index) => {
+          const task = tasks.find(t => t.id === id)
+          if (!task) return Promise.resolve()
+          return $storex.chats.saveChatInfo({ ...task, sort_index: index })
+        })
+      )
+    },
+
+    async newTask({ state }, { mode, column, name, profiles, board, llm_model, parentId, project_id }) {
+      const activeProject = $storex.projects.activeProject
+      const parentChat = parentId ? $storex.chats.chats?.[parentId] : null
+      const chat = await $storex.chats.createNewChat({
+        id: uuidv4(),
+        mode: mode || parentChat?.mode || 'chat',
+        profiles: profiles || [],
+        messages: [],
+        name: name || null,
+        board: board || parentChat?.board || null,
+        column: column || parentChat?.column || null,
+        parent_id: parentChat?.id || null,
+        project_id: project_id || parentChat?.project_id || null,
+        llm_model: llm_model || null,
+        owner_project_id: activeProject?.project_id || null,
+      })
+      return chat
+    },
+
+    // ── Sprint actions ───────────────────────────────────────────────────────
+
+    // Create a board of type 'sprint' (columns are implicit statuses)
+    async createSprintBoard({ state }, { title, description } = {}) {
+      return $storex.kanban.addBoard({
+        title,
+        description,
+        type: 'sprint'
+      })
+    },
+
+    // Move a task across sprint columns → writes chat.status (NOT chat.column).
+    // Works for the virtual board too: it just re-groups the orphan chat.
+    //
+    // Statuses compare IGNORING CASE ("Doing" === "doing"): a task already
+    // carrying the target status in another casing needs no rewrite, and the
+    // value written onto the chat is the canonical spelling.
+    async moveSprintStatus({ state }, { taskId, status } = {}) {
+      if (!taskId || !status) return
+      const chat = $storex.chats.chats?.[taskId]
+      if (!chat) return
+      // Dropping a card into the virtual "Unassigned" column clears the status,
+      // so the task goes back to the unclassified bucket instead of being
+      // stored with a placeholder value. This is also how a task carrying an
+      // unknown status ("blocked"…) is normalized: it simply loses it.
+      const nextStatus = sameKey(status, NO_STATUS_ID) ? '' : canonicalStatus(status)
+      if (sameKey(chat.status || NO_STATUS_ID, nextStatus || NO_STATUS_ID)) return
+      await $storex.chats.updateChatInfo({ chat, updates: { status: nextStatus } })
+    },
+
+    // Add existing tasks to a sprint (adds the board id to chat.sprints)
+    async addTasksToSprint({ state }, { taskIds, sprintId } = {}) {
+      // The virtual board is a catch-all, not a sprint — it cannot be joined
+      if (!sprintId || sameKey(sprintId, NO_BOARD_ID) || !taskIds?.length) return
+      // Membership is stored with the board's own spelling (titles compare
+      // ignoring case)
+      const boardTitle = findBoardKey(getKanban(), sprintId) || sprintId
+
+      await Promise.all(taskIds.map(async (id) => {
+        const chat = $storex.chats.chats?.[id]
+        if (!chat) return
+        if ((chat.sprints || []).some(board => sameKey(board, boardTitle))) return
+        const sprints = [...(chat.sprints || []), boardTitle]
+        await $storex.chats.updateChatInfo({ chat, updates: { sprints } })
+      }))
+    },
+
+    // Remove a task from a sprint (keeps the task itself)
+    async removeTaskFromSprint({ state }, { taskId, sprintId } = {}) {
+      const chat = $storex.chats.chats?.[taskId]
+      // The virtual board has no membership to remove
+      if (!sprintId || sameKey(sprintId, NO_BOARD_ID) || !chat) return
+      const sprints = (chat.sprints || []).filter(id => !sameKey(id, sprintId))
+      await $storex.chats.updateChatInfo({ chat, updates: { sprints } })
+    },
+
+    // Create a task (or subtask) directly on a sprint, in its first column
+    async newSprintTask({ state, getters }, { name, status, mode, profiles, project_id, llm_model, parentId, sprintId } = {}) {
+      // The virtual "Unassigned" board is read-only: it surfaces existing orphan
+      // chats, it must not create sprint tasks. Board/column are required by the
+      // backend, so creation is disabled for it at the UI level too.
+      if (!sprintId || sameKey(sprintId, NO_BOARD_ID)) return null
+
+      const activeProject = $storex.projects.activeProject
+      const parentChat = parentId ? $storex.chats.chats?.[parentId] : null
+
+      // Sprint membership is stored with the board's own spelling
+      const boardTitle = findBoardKey(getKanban(), sprintId) || sprintId
+
+      // The sprint board's columns are its task statuses; the first REAL column
+      // is the default landing column (the virtual "Unassigned" one is last, but
+      // it is skipped explicitly so it can never become a creation target).
+      const columns = (getters.sprintColumns(sprintId) || []).filter(c => !c.virtual)
+      const firstColumn = columns[0]
+      // Statuses compare ignoring case and are written in their canonical
+      // spelling ("Doing" → "doing"), which is what the rest of the app expects
+      const requested = status ? canonicalStatus(status) : ''
+      const taskStatus = requested || canonicalStatus(firstColumn?.status) || FALLBACK_STATUS
+      // The destination column may define the project its tasks belong to
+      const targetColumn = columns.find(c => sameKey(c.status, taskStatus)) || firstColumn
+
+      // `board` and `column` are required by the backend and must be part of the
+      // create payload (before the chat is saved via PUT /api/chats?chat_only=1).
+      // Root tasks fall back to this sprint board and its first column so the
+      // create never sends null.
+      const board = parentChat?.board || boardTitle || null
+      const column = parentChat?.column || firstColumn?.title || taskStatus
+
+      const chat = await $storex.chats.createNewChat({
+        id: uuidv4(),
+        mode: mode || parentChat?.mode || 'chat',
+        profiles: profiles || [],
+        messages: [],
+        name: name || null,
+        status: taskStatus,
+        sprints: [boardTitle],
+        parent_id: parentChat?.id || null,
+        board,
+        column,
+        llm_model: llm_model || null,
+        owner_project_id: parentChat?.owner_project_id || activeProject?.project_id || null,
+        // The column's project wins over the sprint board's project
+        project_id: project_id || targetColumn?.project_id || parentChat?.project_id || null,
+      })
+
+      // Defensive: guarantee membership/status via the metadata endpoint even if
+      // the create payload path ignored those fields.
+      if (chat?.id) {
+        await $storex.chats.updateChatInfo({
+          chat,
+          updates: { sprints: [boardTitle], status: taskStatus, board, column }
+        })
+      }
+      return chat
+    },
+
+    // ── Sprint columns (add / edit / remove) ─────────────────────────────────
+    // Sprint columns are stored on `board.columns` as
+    // { id, title, icon, color, status } where `status` is the chat.status the
+    // column groups (it falls back to the title when omitted) and `icon` is an
+    // optional Font Awesome class. Boards without stored columns fall back to the
+    // canonical statuses, so the defaults are materialized before any edit.
+
+    async materializeSprintColumns({ state }, { boardId } = {}) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board || board.columns?.length) return board
+
+      // `id` mirrors the status value so a column's identity is stable across
+      // the fallback → persisted transition (keeps canvas reorder in sync).
+      board.columns = defaultSprintColumns().map(col => ({
+        id: col.id,
+        title: col.title,
+        icon: col.icon || null,
+        color: col.color || null,
+        // Profiles tasks created in this column inherit by default
+        profiles: col.profiles || [],
+        // Project tasks created in this column are assigned to (optional)
+        project_id: col.project_id || null,
+        status: col.status,
+        chats: []
+      }))
+      board.last_update = new Date().toISOString()
+      await $storex.kanban.saveKanban()
+      return board
+    },
+
+    // Add a column: `title` labels it in the UI, `status` is the chat status its
+    // tasks get (defaults to the title when omitted) and `icon` is optional.
+    async addSprintColumn({ state }, { boardId, title, status, icon, color, profiles, project_id } = {}) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+      title = title?.trim()
+      if (!title) return
+      // The status is stored in its canonical spelling (see `canonicalStatus`)
+      const columnStatus = canonicalStatus(status?.trim() || title)
+
+      // Keep the existing (default) columns before appending the new one
+      await $storex.kanban.materializeSprintColumns({ boardId })
+
+      // Two columns must not write the same chat status (the same tasks would
+      // be listed twice). Statuses compare IGNORING CASE, so "Doing" and "doing"
+      // are the same column. The dialog validates this too — this is the guard.
+      if (board.columns.some(c => sameKey(sprintColumnStatus(c), columnStatus))) return
+
+      board.columns = [
+        ...(board.columns || []),
+        {
+          id: uuidv4(),
+          title,
+          icon: icon || null,
+          color: color || null,
+          // Profiles tasks created in this column inherit by default
+          profiles: profiles || [],
+          // Project tasks created in this column are assigned to (optional)
+          project_id: project_id || null,
+          status: columnStatus,
+          chats: []
+        }
+      ]
+      board.last_update = new Date().toISOString()
+      await $storex.kanban.saveKanban()
+    },
+
+    // Update a column (title / status / icon / color / profiles / project).
+    // Changing the status a column writes migrates its tasks so the cards
+    // follow the column.
+    async updateSprintColumn({ state, getters }, { boardId, id, title, icon, color, status, profiles, project_id } = {}) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+
+      // Default columns are persisted on first edit (boards start column-less)
+      await $storex.kanban.materializeSprintColumns({ boardId })
+
+      // Columns are addressed by id, title or status — all compared ignoring case
+      const column = id ? board.columns.find(c =>
+        c.id === id || sameKey(sprintColumnStatus(c), id) || sameKey(c.title, id)) : null
+      if (!column) return
+
+      const previousStatus = sprintColumnStatus(column)
+      const nextTitle = title !== undefined ? (title?.trim() || column.title) : column.title
+      // An explicit status wins; otherwise fall back to the (new) title
+      const nextStatus = canonicalStatus(status !== undefined
+        ? (status?.trim() || nextTitle)
+        : (column.status || nextTitle))
+
+      // No other column may take this one's name or group the same status:
+      // "Doing" and "doing" are the same column and would list the same tasks.
+      const collision = board.columns.some(c =>
+        c !== column &&
+        (sameKey(sprintColumnStatus(c), nextStatus) || sameKey(c.title, nextTitle)))
+      if (collision) return
+
+      // Changing the status re-groups the column, so move its tasks along.
+      // Statuses compare ignoring case, so a pure case change (title or status)
+      // migrates nothing.
+      if (!sameKey(nextStatus, previousStatus)) {
+        const tasks = getters.sprintBoardChats(boardId)
+          .filter(t => sameKey(t.status || NO_STATUS_ID, previousStatus))
+        await Promise.all(tasks.map(t =>
+          $storex.chats.updateChatInfo({ chat: t, updates: { status: nextStatus } })
+        ))
+      }
+
+      column.title = nextTitle
+      column.status = nextStatus
+      if (icon !== undefined) column.icon = icon || null
+      if (color !== undefined) column.color = color || null
+      // Only touch `profiles` when the caller provides it
+      if (profiles !== undefined) column.profiles = profiles || []
+      // Only touch `project_id` when the caller provides it
+      if (project_id !== undefined) column.project_id = project_id || null
+      board.last_update = new Date().toISOString()
+      await $storex.kanban.saveKanban()
+    },
+
+    async removeSprintColumn({ state, getters }, { boardId, id, reassignTo } = {}) {
+      const board = getBoard(getKanban(), boardId)
+      if (!board) return
+
+      // Default columns are persisted on first edit (boards start column-less)
+      await $storex.kanban.materializeSprintColumns({ boardId })
+      // A board must keep at least one column
+      if (board.columns.length <= 1) return
+
+      // Columns are addressed by id, title or status — all compared ignoring case
+      const column = id ? board.columns.find(c =>
+        c.id === id || sameKey(sprintColumnStatus(c), id) || sameKey(c.title, id)) : null
+      if (!column) return
+
+      const status = sprintColumnStatus(column)
+      const remaining = board.columns.filter(c => c !== column)
+      // Where the column's tasks go: the requested target or the first column
+      // left (statuses compare ignoring case)
+      const target = remaining.find(c => sameKey(sprintColumnStatus(c), reassignTo)) || remaining[0]
+      const targetStatus = canonicalStatus(sprintColumnStatus(target))
+
+      // Move the tasks so the removed column never loses them
+      const tasks = getters.sprintBoardChats(boardId)
+        .filter(t => sameKey(t.status || NO_STATUS_ID, status))
+      await Promise.all(tasks.map(t =>
+        $storex.chats.updateChatInfo({ chat: t, updates: { status: targetStatus } })
+      ))
+
+      board.columns = remaining
+      board.last_update = new Date().toISOString()
+      await $storex.kanban.saveKanban()
+    },
+
+    async createSubTask({ state }, {
+      parent, name, mode, description, project_id, parent_id,
+      message_id, file_list, activateChat, child_index, column, profiles
+    }) {
+      const chat = await $storex.chats.createNewChat({
+        id: uuidv4(),
+        board: parent.board,
+        name,
+        mode,
+        profiles: profiles || [],
+        column: column || parent.column,
+        parent_id: parent_id || parent.id,
+        message_id,
+        project_id: project_id || parent.project_id,
+        owner_project_id: parent.owner_project_id || parent.project_id,
+        messages: description ? [{ role: 'user', content: description }] : [],
+        file_list,
+        child_index
+      })
+
+      if (activateChat !== false) {
+        await $storex.chats.setActiveChat(chat)
+      }
+
+      await $storex.chats.saveChat(chat)
+      if (description) $storex.projects.chatWihProject(chat)
+      return chat
+    },
+
+    async addBoard({ state }, { title, description, background, parent_id, project_id, columns, type, users, assignee, manager }) {
+      const kanban = getKanban()
+      if (!kanban) return
+
+      title = title?.trim()
+      // The virtual board id/title is reserved, and board names compare ignoring
+      // case: "Sprint 1" and "sprint 1" would be the same board.
+      if (!title || sameKey(title, NO_BOARD_ID) || findBoardKey(kanban, title)) return
+
+      if (!kanban.boards) kanban.boards = {}
+      kanban.boards[title] = {
+        id: uuidv4(),
+        title,
+        type: type || 'kanban',
+        description: description || '',
+        background: background || '',
+        parent_id: parent_id || null,
+        project_id: project_id || null,
+        users: users || [],
+        // Profile the board is assigned to (single profile name)
+        assignee: normalizeAssignee(assignee),
+        // Background board manager configuration (opt-in)
+        manager: normalizeManager(manager),
+        columns: columns || [],
+        last_update: new Date().toISOString()
+      }
+
+      await $storex.kanban.saveKanban()
+      return kanban.boards[title]
+    },
+
+    async saveBoard({ state }, { originalTitle, board }) {
+      const kanban = getKanban()
+      const oldName = originalTitle
+      const newName = board.title?.trim()
+      // The virtual board id/title is reserved and cannot be taken over (any casing)
+      if (!newName || sameKey(newName, NO_BOARD_ID)) return
+
+      // Board names compare ignoring case, so the stored key is resolved first
+      const oldKey = findBoardKey(kanban, oldName)
+      const newKey = findBoardKey(kanban, newName)
+
+      // Preserve board type (kanban | sprint) across edits and renames
+      const boardType = board.type
+        || (oldKey && kanban.boards?.[oldKey]?.type)
+        || (newKey && kanban.boards?.[newKey]?.type)
+        || 'kanban'
+
+      // Do not silently overwrite a DIFFERENT existing board. Renaming into the
+      // same board (a case-only change) is allowed.
+      if (oldKey && newKey && oldKey !== newKey) return
+
+      if (oldKey && oldKey !== newName) {
+        // Rename: every task and child board follows the new spelling
+        const allChats = Object.values($storex.chats.chats || {})
+        await Promise.all(
+          allChats
+            .filter(c => sameKey(c.board, oldKey))
+            .map(c => $storex.chats.saveChatInfo({ ...c, board: newName }))
+        )
+        delete kanban.boards[oldKey]
+        Object.values(kanban.boards)
+          .filter(b => b && sameKey(b.parent_id, oldKey))
+          .forEach(b => (b.parent_id = newName))
+      }
+
+      const existing = kanban.boards[newName] || {}
+      // The assignee is a SINGLE profile name: an omitted value keeps the stored
+      // one, an empty value clears it (nobody assigned to the board).
+      const assignee = board.assignee !== undefined
+        ? normalizeAssignee(board.assignee)
+        : normalizeAssignee(existing.assignee)
+      // The manager is merged like the assignee: an omitted value keeps the
+      // stored configuration, an explicit null disables/clears it.
+      const manager = board.manager !== undefined
+        ? normalizeManager(board.manager)
+        : normalizeManager(existing.manager)
+      kanban.boards[newName] = {
+        ...existing,
+        title: newName,
+        type: boardType,
+        description: board.description !== undefined ? board.description : (existing.description || ''),
+        background: board.background !== undefined ? board.background : (existing.background || ''),
+        parent_id: board.parent_id !== undefined ? board.parent_id : (existing.parent_id || null),
+        project_id: board.project_id !== undefined ? board.project_id : (existing.project_id || null),
+        users: board.users !== undefined ? board.users : (existing.users || []),
+        // Profile the board is assigned to (shown on the board header)
+        assignee,
+        // Background review policy (enabled profile, interval, mode, limits)
+        manager
+      }
+
+      await $storex.kanban.saveKanban()
+    },
+
+    /**
+     * Delete a board (kanban or sprint).
+     *
+     * @param {object} payload
+     * @param {object|string} payload.board  Board object (or its id/title).
+     * @param {boolean} [payload.deleteChats=true]  When true, the board's tasks
+     *   are deleted from the project. When false they are kept and DETACHED
+     *   from the board:
+     *     - kanban: `board` and `column` are cleared (they fall back to the
+     *       virtual "Unassigned" board);
+     *     - sprint: the board id is removed from each task's `sprints`.
+     *   The UI only offers this choice for kanban boards; moving a board always
+     *   deletes the source tasks (they were copied to the target project).
+     * @returns {Promise<string|null>} The board id to fall back to.
+     */
+    async deleteBoard({ state }, { board, deleteChats = true } = {}) {
+      const kanban = getKanban()
+      const boardTitle = board?.title || board?.id || board
+      // Board names compare ignoring case
+      const boardKey = findBoardKey(kanban, boardTitle)
+      if (!boardKey) return
+
+      const boardType = board?.type || kanban.boards[boardKey]?.type || 'kanban'
+      const allChats = Object.values($storex.chats.chats || {})
+      // Kanban tasks carry `chat.board`; sprint tasks carry the id in `sprints`.
+      const boardChats = boardType === 'sprint'
+        ? allChats.filter(c => (c.sprints || []).some(id => sameKey(id, boardKey)))
+        : allChats.filter(c => sameKey(c.board, boardKey))
+
+      if (deleteChats) {
+        await Promise.all(boardChats.map(c => $storex.chats.deleteChat(c)))
+      } else if (boardType === 'sprint') {
+        // Keep the tasks, only remove this sprint from their membership.
+        await Promise.all(boardChats.map(c => $storex.chats.updateChatInfo({
+          chat: c,
+          updates: { sprints: (c.sprints || []).filter(id => !sameKey(id, boardKey)) }
+        })))
+      } else {
+        // Keep the tasks but detach them from the board (board + column cleared)
+        // so they fall back to the virtual "Unassigned" board.
+        await Promise.all(boardChats.map(c => $storex.chats.updateChatInfo({
+          chat: c,
+          updates: { board: '', column: '' }
+        })))
+      }
+
+      const childBoardsList = Object.values(kanban.boards)
+        .filter(b => b && sameKey(b.parent_id, boardKey))
+      for (const child of childBoardsList) {
+        await $storex.kanban.deleteBoard({ board: child, deleteChats })
+      }
+
+      mutations.deleteBoard(state, boardKey)
+      await $storex.kanban.saveKanban()
+
+      // Return the board the caller should fall back to (parent or any other)
+      return board?.parent_id ||
+        Object.keys(kanban.boards).find(k => kanban.boards[k] !== null) ||
+        null
+    },
+
+    async toggleBookmark({ state }, boardId) {
+      const kanban = getKanban()
+      // Board names compare ignoring case; the virtual board is not stored, so
+      // this is a no-op for it
+      const key = findBoardKey(kanban, boardId)
+      if (!key) return
+      kanban.boards[key].bookmark = !kanban.boards[key].bookmark
+      await $storex.kanban.saveKanban()
+    },
+
+    // ── Board export / import ─────────────────────────────────────────────────
+
+    /**
+     * Serialize a board (kanban or sprint) and ALL its tasks into a portable
+     * document that can be imported into any project.
+     *
+     * The chat list endpoints only return a summary (last message), so every
+     * task is force-loaded here to guarantee the full message history travels
+     * with the export.
+     *
+     * @returns {object|null} the board document, or null when there is no board.
+     */
+    async exportBoard({ getters }, { boardId } = {}) {
+      const board = getters.boardById(boardId)
+      if (!board || board.virtual) return null
+
+      const activeProject = $storex.projects.activeProject
+      const tasks = board.type === 'sprint'
+        ? getters.sprintBoardChats(boardId)
+        : getters.boardChats(boardId)
+
+      const chats = []
+      for (const task of tasks) {
+        if (!task?.id) continue
+        const full = await $storex.chats.loadUninitialized(task)
+        chats.push(JSON.parse(JSON.stringify(full || task)))
+      }
+
+      return {
+        format: BOARD_EXPORT_FORMAT,
+        version: BOARD_EXPORT_VERSION,
+        exported_at: new Date().toISOString(),
+        source: {
+          project_id: activeProject?.project_id || null,
+          project_name: activeProject?.project_name || null,
+          abs_project_path: activeProject?.abs_project_path || null
+        },
+        board: {
+          title: board.title,
+          type: board.type || 'kanban',
+          description: board.description || '',
+          background: board.background || '',
+          parent_id: board.parent_id || null,
+          users: [...(board.users || [])],
+          // Profile the board is assigned to (single profile name)
+          assignee: normalizeAssignee(board.assignee),
+          columns: (board.columns || []).map(col => ({
+            id: col.id || null,
+            title: col.title,
+            icon: col.icon || null,
+            color: col.color || null,
+            // Profiles tasks created in this column inherit by default
+            profiles: [...(col.profiles || [])],
+            project_id: col.project_id || null,
+            showSubTasks: col.showSubTasks,
+            status: col.status || null,
+            chats: [...(col.chats || [])]
+          }))
+        },
+        chats
+      }
+    },
+
+    /**
+     * Import a board document into a project (the active one by default),
+     * adapting every project-bound setting to the target project.
+     *
+     * Steps:
+     *  1. Resolve a free board title and create the board shell.
+     *  2. Make sure every task column exists on the board.
+     *  3. Persist each task with a NEW id (parents/links remapped to the new ids).
+     *  4. Link the kanban tasks into their board columns and save the board.
+     *
+     * @returns {{ boardId: string, board: object, importedCount: number }}
+     */
+    async importBoard({ getters }, { document: doc, project, title } = {}) {
+      const payload = typeof doc === 'string' ? JSON.parse(doc) : doc
+      if (!payload || payload.format !== BOARD_EXPORT_FORMAT || !payload.board) {
+        throw new Error('Invalid board file')
+      }
+
+      const targetProject = project || $storex.projects.activeProject
+      if (!targetProject?.project_id) {
+        throw new Error('No target project selected')
+      }
+
+      // Ensure the target project kanban lives in the store (supports importing
+      // into a project that is not currently active).
+      if (!targetProject.$state?.kanban) {
+        await $storex.projects.loadKanban(targetProject)
+      }
+      const kanban = getKanban(targetProject)
+      if (!kanban.boards) kanban.boards = {}
+
+      const boardType = payload.board.type || 'kanban'
+      // The free title is resolved ignoring case (see `findFreeBoardTitle`)
+      const boardTitle = findFreeBoardTitle(kanban, title || payload.board.title)
+
+      // 1. Board shell (columns kept, tasks linked afterwards).
+      kanban.boards[boardTitle] = {
+        id: uuidv4(),
+        title: boardTitle,
+        type: boardType,
+        description: payload.board.description || '',
+        background: payload.board.background || '',
+        // The parent board is NOT part of the export — the imported board is a root.
+        parent_id: null,
+        project_id: targetProject.project_id,
+        users: [...(payload.board.users || [])],
+        // Profile the board is assigned to (single profile name)
+        assignee: normalizeAssignee(payload.board.assignee),
+        columns: (payload.board.columns || []).map(col => ({
+          id: uuidv4(),
+          title: col.title,
+          icon: col.icon || null,
+          color: col.color || null,
+          // Profiles tasks created in this column inherit by default
+          profiles: [...(col.profiles || [])],
+          project_id: targetProject.project_id,
+          showSubTasks: col.showSubTasks,
+          // Sprint columns carry the task status they group
+          status: col.status || null,
+          chats: []
+        })),
+        last_update: new Date().toISOString()
+      }
+      const board = kanban.boards[boardTitle]
+
+      const sourceChats = Array.isArray(payload.chats) ? payload.chats : []
+
+      // 2. Guarantee every referenced column exists (kanban only). Column names
+      // compare ignoring case, so "Doing" and "doing" are the same column.
+      if (boardType !== 'sprint') {
+        const known = new Set(board.columns.map(c => compareKey(c.title)))
+        sourceChats.forEach(sourceChat => {
+          const columnTitle = sourceChat?.column
+          const key = compareKey(columnTitle)
+          if (columnTitle && !known.has(key)) {
+            known.add(key)
+            board.columns = [...board.columns, {
+              id: uuidv4(),
+              title: columnTitle,
+              color: null,
+              profiles: [],
+              project_id: targetProject.project_id,
+              chats: []
+            }]
+          }
+        })
+      }
+      await $storex.projects.saveKanban({ project: targetProject })
+
+      // 3. Allocate the new chat ids first, so inter-task links can be remapped.
+      const idMap = {}
+      sourceChats.forEach(sourceChat => {
+        if (sourceChat?.id) idMap[sourceChat.id] = uuidv4()
+      })
+
+      const sourcePath = payload.source?.abs_project_path || null
+      const targetPath = targetProject.abs_project_path || null
+      const columnTitles = (board.columns || []).map(c => c.title)
+
+      const imported = []
+      for (const sourceChat of sourceChats) {
+        if (!sourceChat?.id || !idMap[sourceChat.id]) continue
+        const chat = adaptImportedChat({
+          sourceChat,
+          idMap,
+          boardTitle,
+          boardType,
+          projectId: targetProject.project_id,
+          columnTitles,
+          sourcePath,
+          targetPath
+        })
+        const created = await $storex.chats.importChat(chat)
+        if (created) imported.push({ source: sourceChat, chat: created })
+      }
+
+      // 4. Link the kanban tasks into their columns (sprint uses `sprints`).
+      if (boardType !== 'sprint') {
+        linkChatsToColumns(board, imported)
+      }
+      await $storex.projects.saveKanban({ project: targetProject })
+
+      return {
+        boardId: boardTitle,
+        board,
+        importedCount: imported.length,
+        // The project the board now lives in (used by the caller to decide
+        // whether the imported board can be focused in the current project).
+        project: targetProject
+      }
+    },
+
+    /**
+     * Copy a board (with all its tasks) into another project.
+     *
+     * Reuses the same project-adapting pipeline as the file export/import: the
+     * board is serialized (full message history included) and re-created in the
+     * target project with NEW ids, retargeted projects, links, columns and file
+     * references. The source board is left untouched.
+     *
+     * @returns {Promise<{ boardId: string, board: object, importedCount: number }>}
+     */
+    async copyBoardToProject(_, { boardId, project, title } = {}) {
+      if (!boardId) throw new Error('No board selected')
+
+      const targetProject = project || $storex.projects.activeProject
+      if (!targetProject?.project_id) throw new Error('No target project selected')
+
+      const document = await $storex.kanban.exportBoard({ boardId })
+      if (!document) throw new Error('Nothing to copy')
+
+      return await $storex.kanban.importBoard({
+        document,
+        project: targetProject,
+        title
+      })
+    },
+
+    /**
+     * Move a board to another project: copy it (adapting every project-bound
+     * setting) and only THEN remove it from the source project, so a failed
+     * transfer never loses data. The virtual "Unassigned" board cannot be moved.
+     *
+     * @returns {Promise<{ boardId: string, board: object, importedCount: number }>}
+     */
+    async moveBoardToProject({ getters }, { boardId, project, title } = {}) {
+      const sourceBoard = getters.boardById(boardId)
+      if (!sourceBoard || sourceBoard.virtual) {
+        throw new Error('This board cannot be moved')
+      }
+
+      const result = await $storex.kanban.copyBoardToProject({ boardId, project, title })
+      // Copy succeeded — now it is safe to drop the source board and its tasks.
+      await $storex.kanban.deleteBoard({ board: sourceBoard, deleteChats: true })
+      return result
+    },
+  }
+)

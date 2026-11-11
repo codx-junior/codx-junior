@@ -1,0 +1,406 @@
+import { getterTree, mutationTree, actionTree } from 'typed-vuex'
+import { $storex } from '.'
+
+export const namespaced = true
+
+const STORAGE_KEY_PREFIX = 'projectLayout'
+
+export const state = () => ({
+  _desktopApi: null,
+  _layoutChangeDisposable: null,
+  _activePanelDisposable: null,
+  _panelAddDisposable: null,
+  _panelRemoveDisposable: null,
+  loadedView: false,
+  fullscreenPanelId: null
+})
+
+export const getters = getterTree(state, {
+  isPanelFullscreen: state => panelId => state.fullscreenPanelId === panelId,
+})
+
+export const mutations = mutationTree(state, {
+  setDesktopApi(state, api) {
+    // Cleanup old disposables
+    if (state._layoutChangeDisposable?.dispose) {
+      state._layoutChangeDisposable.dispose()
+      state._layoutChangeDisposable = null
+    }
+    if (state._activePanelDisposable?.dispose) {
+      state._activePanelDisposable.dispose()
+      state._activePanelDisposable = null
+    }
+    if (state._panelAddDisposable?.dispose) {
+      state._panelAddDisposable.dispose()
+      state._panelAddDisposable = null
+    }
+    if (state._panelRemoveDisposable?.dispose) {
+      state._panelRemoveDisposable.dispose()
+      state._panelRemoveDisposable = null
+    }
+
+    state._desktopApi = api
+
+    if (!api) return
+
+    // Setup all event listeners
+    if (api.onDidLayoutChange) {
+      state._layoutChangeDisposable = api.onDidLayoutChange(() => {
+        $storex.views.onLayoutChanged()
+      })
+    }
+
+    if (api.onDidActivePanelChange) {
+      state._activePanelDisposable = api.onDidActivePanelChange((event) => {
+        $storex.views.onPanelActive(event)
+      })
+    }
+
+    if (api.onDidAddPanel) {
+      state._panelAddDisposable = api.onDidAddPanel(() => {
+        $storex.views.onLayoutChanged()
+      })
+    }
+
+    if (api.onDidRemovePanel) {
+      state._panelRemoveDisposable = api.onDidRemovePanel((panel) => {
+        $storex.views.onPanelRemoved(panel)
+      })
+    }
+
+    // Do NOT call autoLoadLastLayout here - project may not be ready yet
+    // It will be triggered by onActiveProjectChanged or onApiReady in Desktop.vue
+  },
+  setFullscreenPanel(state, panelId) {
+    state.fullscreenPanelId = panelId
+  },
+  clearFullscreenPanel(state) {
+    state.fullscreenPanelId = null
+  }
+})
+
+function getProjectStorageKey() {
+  const projectName = $storex.projects?.activeProject?.project_name
+  if (!projectName) return null
+  return `${STORAGE_KEY_PREFIX}_${projectName}`
+}
+
+function extractAppsFromLayout(layout) {
+  const apps = []
+  if (!layout.panels) return apps
+
+  for (const panel of Object.values(layout.panels)) {
+    // Dockview persists each panel's `params` verbatim. We always embed the
+    // originating app snapshot under `params.app` when the panel is created
+    // (see addPanelToDesktop / syncPanelsWithApps), so read the tab's display
+    // name/component/key from there. Dockview's serialized panel only exposes
+    // `title` and `contentComponent` - reading `panel.name`/`panel.componentName`
+    // restored every tab as "Unknown", which is why the tab name was lost.
+    const params = panel.params || {}
+    const app = params.app || {}
+
+    apps.push({
+      tabId: panel.id || panel.tabId,
+      name: app.name || params.tabName || panel.title || app.title || 'Unknown',
+      component: app.component || panel.contentComponent || 'unknown',
+      key: app.key || panel.key,
+      params,
+      openedAt: panel.openedAt || Date.now()
+    })
+  }
+
+  return apps
+}
+
+// ── Layout persistence (debounced) ────────────────────────────────────────
+//
+// `onLayoutChanged` is wired to dockview's `onDidLayoutChange` and
+// `onDidAddPanel`, which fire continuously while a splitter or panel is
+// dragged, and again on every tab activation. Serializing the layout
+// (`toJSON`) and writing it to localStorage synchronously on each of those
+// events ran on the main thread during exactly the interactions reported as
+// "slow".
+//
+// Writes are coalesced and happen once the interaction settles. The trailing
+// flush on `pagehide`/`visibilitychange` makes sure the last change still
+// survives the tab being closed.
+const LAYOUT_SAVE_DELAY = 300
+
+let layoutSaveTimer = null
+
+function saveLayoutNow() {
+  if (layoutSaveTimer !== null) {
+    clearTimeout(layoutSaveTimer)
+    layoutSaveTimer = null
+  }
+
+  // Nothing loaded yet: there is no layout worth persisting.
+  if (!$storex.views?.loadedView) return
+
+  try {
+    const desktopApi = $storex.views._desktopApi
+    if (!desktopApi) return
+
+    const key = getProjectStorageKey()
+    if (!key) return
+
+    localStorage.setItem(key, JSON.stringify(desktopApi.toJSON()))
+  } catch (error) {
+    console.error('Error saving layout:', error)
+  }
+}
+
+function scheduleLayoutSave() {
+  if (layoutSaveTimer !== null) clearTimeout(layoutSaveTimer)
+  layoutSaveTimer = setTimeout(() => {
+    layoutSaveTimer = null
+    saveLayoutNow()
+  }, LAYOUT_SAVE_DELAY)
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', saveLayoutNow)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') saveLayoutNow()
+  })
+}
+
+export const actions = actionTree(
+  { state, getters, mutations },
+  {
+    async unloadCurrentLayout({ state }) {
+      state.loadedView = false
+      try {
+        const desktopApi = $storex.views._desktopApi
+        if (desktopApi) {
+          desktopApi.clear()
+        }
+        $storex.ui.resetOpenApps()
+      } catch (error) {
+        console.error('Failed to unload current layout:', error)
+      }
+    },
+
+    async onActiveProjectChanged() {
+      await $storex.views.unloadCurrentLayout()
+      await $storex.views.autoLoadLastLayout()
+    },
+
+    async autoLoadLastLayout({ state }) {
+      const desktopApi = state._desktopApi
+
+      if (!desktopApi) {
+        console.warn('Desktop API not yet available for auto-loading layout')
+        return
+      }
+
+      try {
+        const key = getProjectStorageKey()
+        if (!key) {
+          await $storex.views.createEmptyLayout()
+          return
+        }
+
+        const savedData = localStorage.getItem(key)
+        if (savedData) {
+          const layout = JSON.parse(savedData)
+          // Mark as loaded BEFORE fromJSON so layout change events are saved
+          state.loadedView = key
+          desktopApi.fromJSON(layout)
+          await $storex.views.syncAppsFromLayout(layout)
+        } else {
+          await $storex.views.createEmptyLayout()
+        }
+      } catch (error) {
+        console.error('Failed to auto-load last layout:', error)
+        await $storex.views.createEmptyLayout()
+      }
+    },
+
+    async createEmptyLayout({ state }) {
+      try {
+        const desktopApi = $storex.views._desktopApi
+        if (!desktopApi) return
+
+        desktopApi.clear()
+        // Mark layout as ready so subsequent changes are persisted
+        const key = getProjectStorageKey()
+        state.loadedView = key || true
+        $storex.ui.openTasks()
+      } catch (error) {
+        console.error('Failed to create empty layout:', error)
+      }
+    },
+
+    async syncAppsFromLayout(_, layout) {
+      try {
+        const apps = extractAppsFromLayout(layout)
+        for (const app of apps) {
+          $storex.ui.showApp(app)
+        }
+        const panels = $storex.views._desktopApi.panels
+        panels.map(panel => panel.isActive && $storex.views.onPanelActive(panel))
+        if (!panels.length) {
+          $storex.ui.openTasks()
+        }
+      } catch (error) {
+        console.error('Failed to sync apps from layout:', error)
+      }
+    },
+
+    togglePanelFullscreen({ state }, panelId) {
+      if (!state._desktopApi) return
+      try {
+        const panel = state._desktopApi.getPanel(panelId)
+        if (panel) {
+          state._desktopApi.maximizePanel(panel)
+        }
+      } catch(e) {
+        console.error(`Error toggling fullscreen for panel ${panelId}:`, e)
+      }
+    },
+
+    onLayoutChanged({ state }) {
+      // Only save if a layout has been loaded/initialized for this session
+      if (!state.loadedView) {
+        return
+      }
+      // Coalesced: dockview emits this on every frame of a drag.
+      scheduleLayoutSave()
+    },
+
+    async onPanelActive(_, panel) {
+      if (!panel) {
+        return
+      }
+      try {
+        const params = panel.params?.params || panel.params
+        const chat = params?.chat
+        if (!chat?.id) return
+
+        await $storex.chats.loadUninitialized(chat)
+      } catch (error) {
+        console.error('Error handling active panel change:', error)
+      }
+    },
+
+    async onPanelRemoved(_, panel) {
+      try {
+        const app = panel.params?.app
+        if (app) {
+          $storex.ui.closeApp(app)
+        }
+      } catch (error) {
+        console.error('Error handling panel remove:', error)
+      }
+    },
+
+    async activatePanel(_, panelId) {
+      try {
+        const desktopApi = $storex.views._desktopApi
+        if (!desktopApi) return
+
+        const panel = desktopApi.getPanel?.(panelId)
+        if (!panel) return
+
+        // A dockview panel is focused through its OWN api (`panel.api.setActive()`);
+        // there is no top-level `desktopApi.setActivePanel`. We try the panel APIs
+        // first and keep the old top-level call as a guarded last resort so this
+        // keeps working regardless of the desktop api version in use.
+        if (typeof panel.api?.setActive === 'function') {
+          panel.api.setActive()
+        } else if (typeof panel.setActive === 'function') {
+          panel.setActive()
+        } else if (typeof desktopApi.setActivePanel === 'function') {
+          desktopApi.setActivePanel(panel)
+        } else {
+          console.warn(`[Views] Unable to activate panel ${panelId}: no setActive API available`)
+        }
+      } catch (error) {
+        console.error(`Error activating panel ${panelId}:`, error)
+      }
+    },
+
+    addPanelToDesktop(_, { id, title, component, position, params, renderer }) {
+      const desktopApi = $storex.views._desktopApi
+      if (!desktopApi) return
+
+      try {
+        if (!desktopApi.panels.find(p => p.id === id)) {
+          const app = params?.app
+          const initialParams = app?.initialParams || params
+
+          desktopApi.addPanel({
+            id,
+            title,
+            component,
+            position,
+            renderer,
+            key: app?.key,
+            params: {
+              ...params,
+              tabName: title,
+              initialParams
+            },
+            tabComponent: 'tabComponent'
+          })
+        }
+      } catch (error) {
+        console.error(`Error adding panel ${id}:`, error)
+        throw error
+      }
+    },
+
+    removePanelFromDesktop(_, panelId) {
+      const desktopApi = $storex.views._desktopApi
+      if (!desktopApi) return
+
+      try {
+        const panel = desktopApi.getPanel(panelId)
+        if (panel) {
+          desktopApi.removePanel(panel)
+        }
+      } catch (error) {
+        console.error(`Error removing panel ${panelId}:`, error)
+      }
+    },
+
+    syncPanelsWithApps({ state }, desktopApi) {
+      const api = desktopApi || state._desktopApi
+      if (!api) return
+
+      const { openApps } = $storex.ui
+      const apps = Object.values(openApps)
+      const panelTabIds = api.panels.map(p => p.id)
+      const openAppTabIds = apps.map(app => app.tabId)
+
+      // Add missing app panels
+      apps
+        .filter(({ tabId }) => !panelTabIds.includes(tabId))
+        .forEach(app => {
+          if (!app?.tabId) return
+          const component = app.component || 'app-window'
+          const renderer = 'always'
+          try {
+            $storex.views.addPanelToDesktop({
+              id: app.tabId,
+              title: app.name,
+              component,
+              renderer,
+              params: {
+                ...app.params || {},
+                app
+              }
+            })
+          } catch (error) {
+            console.error('Error adding app panel:', error)
+          }
+        })
+
+      // Remove closed app panels
+      panelTabIds
+        .filter(tabId => !openAppTabIds.includes(tabId))
+        .forEach(tabId => $storex.views.removePanelFromDesktop(tabId))
+    }
+  }
+)

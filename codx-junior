@@ -1,0 +1,174 @@
+#!/bin/bash
+echo "codx-junior scripts ENV:"
+env
+
+# Dynamically set CODX_JUNIOR_PATH to the parent directory of the script
+if [ -z "${CODX_JUNIOR_PATH}" ]; then
+    export CODX_JUNIOR_PATH="$(cd "$(dirname "$0")" && pwd)"
+fi
+
+# Load .env variables
+source ${CODX_JUNIOR_PATH}/set_env.sh
+bash "${CODX_JUNIOR_PATH}/scripts/logo.sh"
+
+function kill_pid() {
+  if [ "$1" != "" ]; then
+    echo "Stopping pid: $1"
+    kill $1
+    ps --pid "$1" > /dev/null
+    if [ "$?" -eq 0 ]; then
+        echo "Forcing kill $1."
+        kill -9 $1
+    fi
+  fi
+}
+
+function kill_apps() {
+  echo "stop supervisor"
+  SUPERVISOR_PID=$(pgrep -f "codx-junior/supervisor.conf")
+  if [ "$SUPERVISOR_PID" != "" ]; then
+    kill_pid $(pgrep -f "codx-junior supervisor") 
+    kill_pid $SUPERVISOR_PID
+  fi
+
+  echo "Stop api"
+  kill_pid $(pgrep -f "run_api")
+  kill_pid $(pgrep -f "codx.junior.main:app")
+  kill_pid $(pgrep -f ".venv_codx_junior_api")
+    
+  echo "Stop client"
+  kill_pid $(pgrep -f "run_client")
+  kill_pid $(pgrep -f "codx-junior/client")
+}
+
+# Function to display help information
+function show_help() {
+    cat << EOF
+Usage: app.cli [command]
+
+Commands:
+  help      Display this help message
+  install   Install the application
+  run       Run the application
+  stop      Stop the application
+  status    Display the status of the application
+  logs      Show the tail of the logs file
+            Valida logs: api client supervisor
+EOF
+}
+
+# Function to simulate installation process
+function install_app() {
+    echo "Starting the installation process..."
+    bash "${CODX_JUNIOR_PATH}/scripts/install.sh"
+    echo "Application installed successfully."
+}
+
+function stop_codx() {
+  echo "Stopping codx-junior"
+  kill_apps
+}
+
+function status() {
+  echo "codx-junior status"
+
+  for pid_file in ./pids/*.pid; do
+    echo "Checking '$pid_file'..."
+    if [ -f "$pid_file" ]; then
+      pid=$(cat "$pid_file")
+      if ps -p "$pid" > /dev/null 2>&1; then
+        echo "Process with PID $pid ($(basename "$pid_file" .pid)) is running."
+      else
+        echo "Process with PID $pid ($(basename "$pid_file" .pid)) is not running."
+      fi
+    fi
+  done
+}
+
+# Function to show the tail of the logs file
+function show_log() {
+  echo "Logs for $1 PID $2"
+  tail -n 100 -f ${CODX_SUPERVISOR_LOG_FOLDER}/$1
+}
+function show_logs() {
+    case "$1" in
+    api)
+        show_log codx-junior-api.log
+        ;;
+    client)
+        show_log codx-junior-web.log
+        ;;
+    supervisor)
+        show_log supervisord.log
+        ;;
+    *)
+        echo "Invalid command. Use 'logs' to see available commands."
+        ;;
+esac
+}
+
+# Function to simulate running the application
+function start_codx() {
+    stop_codx
+
+    echo "Running the application..."
+    run_codx_apps
+}
+
+function run_codx_apps() {
+    run_api
+    run_client
+}
+
+function run_api() {
+    echo "Run API"
+    bash "${CODX_JUNIOR_PATH}/scripts/run_api.sh" >> ./logs/api 2>&1 &
+}
+function run_client() {
+    echo "Run client"
+    bash "${CODX_JUNIOR_PATH}/scripts/run_client.sh" >> ./logs/client 2>&1 & 
+}
+
+function run_supervisor {
+    echo "run_supervisor $CODX_SUPERVISOR_LOG_FOLDER"
+    mkdir -p $CODX_SUPERVISOR_LOG_FOLDER
+    kill_apps
+    if [ "$(id -u)" != "0" ]; then
+      echo "Switching supervisor to root"
+      USER=$USER HOME=$HOME bash ${CODX_JUNIOR_PATH}/codx-junior supervisor
+    else
+      echo "Running supervisor $USER - $HOME - CODX_JUNIOR_PATH: $CODX_JUNIOR_PATH"
+
+      /usr/bin/supervisord -c ${CODX_JUNIOR_PATH}/supervisor.conf
+    fi
+}
+
+COMMAND=$1
+shift
+# Check the command line argument
+case "$COMMAND" in
+    stop)
+        stop_codx
+        ;;
+    help)
+        show_help
+        ;;
+    install)
+        install_app
+        ;;
+    start)
+        start_codx
+        ;;
+    status)
+        status
+        ;;
+    logs)
+        show_logs $@
+        ;;
+    supervisor)
+        run_supervisor
+        ;;
+    *)
+        echo "Invalid command. Use 'help' to see available commands."
+        ;;
+esac

@@ -1,0 +1,206 @@
+import os
+import logging
+import subprocess
+import string
+import inspect
+
+from pathlib import Path
+import json
+import hashlib
+
+from pydantic import BaseModel, Field
+from typing import Optional
+
+from codx.junior.globals import (
+  LANGUAGE_PARSER_MAPPING,
+  HOST_USER,
+  LOGS_FOLDER
+)
+
+logger = logging.getLogger(__name__)
+
+
+class TextBlock(BaseModel):
+    language: Optional[str] = Field(default="")
+    file_path: Optional[str] = Field(default="")
+    content: Optional[str] = Field(default="")
+
+def extract_code_blocks(content):
+    for text_block in extract_text_blocks(content=content):
+        yield text_block.content
+
+def extract_text_blocks(content):
+    in_fence = False
+    content_lines = []
+    text_block = TextBlock()
+    def is_fence_line(line):
+        return line.strip().startswith("```")
+
+    
+    for line in content.split("\n"):
+      if is_fence_line(line=line):
+          if in_fence:
+              text_block.content = "\n".join(content_lines) 
+              yield text_block
+              in_fence = False
+              content_lines = []
+              text_block = TextBlock()
+          else:  
+            in_fence = True
+            parts = line.strip()[3:].split(" ")
+            text_block.language = parts[0] if parts else ""
+            text_block.file_path = parts[1] if parts and len(parts) > 1 else ""
+          continue
+      if in_fence:
+          content_lines.append(line)
+
+
+def extract_json_blocks(content):
+    for block in extract_code_blocks(content=content):
+        try:
+            yield json.loads(block)
+        except:
+            pass
+
+def calculate_md5(file_path):
+    hasher = hashlib.md5()
+    with open(file_path, 'rb') as f:
+        for chunk in iter(lambda: f.read(4096), b''):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+def document_to_context(doc):
+
+    content = doc.metadata.get('summary', doc.page_content)
+    keywords = doc.metadata.get('keywords')
+    category = doc.metadata.get('category')
+    source = str(Path(doc.metadata['source']).absolute())
+    language = doc.metadata.get('language')
+    
+    language = LANGUAGE_PARSER_MAPPING.get(language, language)
+    
+    return f"""
+    <document keywords="{keywords}" category="{category}" source="{source}" language="{language}">
+    {content}
+    </document>
+    """
+
+def document_to_code_block(doc):
+
+    content = doc.metadata.get('summary', doc.page_content)
+    source = doc.metadata['source']
+    language = doc.metadata.get('language')
+    extension = source.split(".")[-1] if "." in source else ""
+
+    language = language or extension
+    language = LANGUAGE_PARSER_MAPPING.get(language, language)
+    
+    return "\n".join([
+      f"```{ language } {source}", 
+      content,
+      "```"
+    ])
+
+def remove_starting_block(content):
+    if content.startswith("```"):
+        return "\n".join(content.split("\n")[1:-1])
+    return content
+
+def extract_blocks(content):
+    add_line = False
+    block_type = None
+    content_lines = []
+    for line in content.split("\n"):
+      if line.startswith("```"):
+          if add_line:
+              yield {
+                      "type": block_type,
+                      "content": "\n".join(content_lines)
+                    }
+              add_line = False
+              block_type = None
+              content_lines = []
+          else:
+              add_line = True
+              block_type = line.replace('```', '')
+          continue
+      if add_line:
+          content_lines.append(line)
+          continue
+
+def exec_command(command: str, cwd: str=None, env: dict=None):
+    result = subprocess.run(f"""
+    {command}
+    """, shell=True,
+        cwd=cwd,
+        env=os.environ | (env or {}),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True)
+    return result.stdout, result.stderr
+
+def set_file_permissions(file_path: str):
+    if HOST_USER:
+        exec_command(f"sudo chown {HOST_USER} {file_path}")
+
+def write_file(file_path: str, content: str):
+    dir_name = os.path.dirname(file_path)
+    os.makedirs(dir_name, exist_ok=True)
+    set_file_permissions(file_path)
+    # Let's try to add to git
+    exec_command(f"git add {file_path}", cwd=dir_name)
+    with open(file_path, 'w') as f:
+        f.write(clean_string(content))
+    
+def read_file(file_path: str, project_path: str = ""):
+    if project_path and not file_path.startswith(project_path):
+        file_path = path_join(project_path, file_path)
+    with open(file_path, 'r') as f:
+        return f.read()
+
+def path_join(path, *paths):
+  paths = [p[1:] if p[0] == '/' else p for p in paths]
+  return "/".join([path] + paths)
+
+def clean_string(string_to_clean: str) -> str:
+    """Removes invalid characters from a string"""
+    # NOT WORKING WITH SPANISH LANGUAGE, IT REMOVES VALID CHARS
+    return string_to_clean
+    # return ''.join(c if c in string.printable else ' ' for c in string_to_clean)
+
+
+async def asyncify(res):
+    """
+        mix sync and async code.
+        f can be sync or async:
+        res = await asyncify(f())
+    """
+    if inspect.iscoroutinefunction(res):
+        try:
+            res = await res
+        except Exception as ex:
+            # inspect.iscoroutinefunction... rare.. :(
+            cant_await = "can't be used in 'await'" in str(ex)
+            if not cant_await:
+                raise ex
+    return res
+
+
+def create_file_logger(logger_name):
+    # 1. Create a custom logger
+    logger = logging.getLogger('path_logger')
+    logger.setLevel(logging.INFO)
+
+    # 2. Create a file handler
+    file_path = f'{LOGS_FOLDER}/{logger_name}.log'
+    stdout, _ = exec_command(f"mkdir -p $(dirname {file_path})")
+    file_handler = logging.FileHandler(file_path)
+
+    # 3. Add a format (optional but recommended)
+    formatter = logging.Formatter('[%(asctime)s] [%(levelname)s]\n%(message)s')
+    file_handler.setFormatter(formatter)
+
+    # 4. Add the handler to your logger
+    logger.addHandler(file_handler)
+
+    return logger

@@ -1,0 +1,68 @@
+from codx.junior.sio.session_channel import SessionChannel
+from codx.junior.db import Chat, Message
+
+class EventManager:
+    def __init__(self,
+            codx_path: str,
+            channel: SessionChannel = None):
+        if not channel:
+            from codx.junior.sio.sio import sio
+            channel = SessionChannel(sio=sio)
+
+        self.codx_path = codx_path
+        self.channel = channel
+
+    def event_data(self, data: dict):
+        data['codx_path'] = self.codx_path
+        return data
+
+    def send_notification(self, **kwargs):
+        if not kwargs.get("type"):
+            kwargs["type"] = "notification"
+        self.channel.send_event('codx-junior', self.event_data(kwargs))
+
+    def send_event(self, message: str):
+        self.channel.send_event('codx-junior', self.event_data({ 'text': message, "type": "event" }))
+        # self.log_info(f"Sending event {message}- SENT!")
+    def send_knowled_event(self, **kwargs):
+        self.channel.send_event('knowledge-event', self.event_data(kwargs))
+
+    def chat_event(self, chat: Chat, message: str = None, event_type: str = None):
+        self.channel.send_event('chat-event', self.event_data({ 'chat': { 'id': chat.id, 'owner_project_id': chat.owner_project_id }, 'text': message, 'type': event_type }))
+        # self.log_info(f"SEND MESSAGE {message}- SENT!")
+
+    def message_event(self, chat: Chat, message: Message):
+        self.channel.send_event('message-event', self.event_data({ 'chat': { 'id': chat.id, 'owner_project_id': chat.owner_project_id }, 'message': message.model_dump() }))
+        # self.log_info(f"SEND MESSAGE {message.role} {message.doc_id}- SENT!")
+
+    def orchestration_event(self, payload: dict):
+        """
+        Emit an orchestration-run event to connected clients.
+
+        The payload contains ``run_id``, ``event``, ``status``, ``main_chat_id``,
+        ``progress`` and event-specific data (step id, cost...). Clients can
+        subscribe to ``codx-junior-orchestration`` for live run progress; the
+        REST endpoints remain the source of truth.
+        """
+        self.channel.send_event(
+            'codx-junior-orchestration',
+            self.event_data(payload),
+        )
+
+    def board_manager_event(self, payload: dict):
+        """
+        Emit a board-manager event to connected clients.
+
+        The payload carries ``board``, ``event`` (started/finished/error/...),
+        ``message`` and event-specific data. The REST endpoints remain the
+        source of truth; clients can subscribe to ``codx-junior-board-manager``
+        for live status updates.
+        """
+        self.channel.send_event(
+            'codx-junior-board-manager',
+            self.event_data(payload),
+        )
+
+    def wiki_event(self, message: str):
+        self.channel.send_event('wiki-event', self.event_data({ "info": message }))
+        # self.log_info(f"SEND MESSAGE {message.role} {message.doc_id}- SENT!")

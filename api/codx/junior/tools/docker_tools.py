@@ -2051,6 +2051,89 @@ def docker_compose_up(
         )
 
 
+def docker_compose_down(
+    remove_volumes: bool = False,
+    remove_orphans: bool = True,
+    profiles: Optional[List[str]] = None,
+    **kwargs,
+) -> ToolResponse:
+    """
+    Stop and remove docker-compose services.
+
+    Runs ``docker-compose down`` in the project directory. Volumes are kept
+    unless ``remove_volumes`` is True, so a teardown never destroys data by
+    accident.
+
+    Args:
+        remove_volumes: Also delete named volumes (destructive, default: False).
+        remove_orphans: Remove containers for services no longer defined
+                        (default: True).
+        profiles: Optional compose profiles to activate, so a stack that was
+                  started with ``--profile`` is torn down completely.
+        **kwargs: Additional arguments including:
+            - settings (CODXJuniorSettings): Project settings (required).
+            - user (CodxUser): Current user (for audit logging).
+
+    Returns:
+        ToolResponse: Down result with command output.
+
+    Raises:
+        RuntimeError: If Docker Compose command fails.
+
+    Example:
+        >>> docker_compose_down()
+        # Stops and removes every service, keeping its volumes
+        >>> docker_compose_down(remove_volumes=True)
+        # Full teardown, including named volumes
+    """
+    settings: CODXJuniorSettings = kwargs.get("settings")
+    user: CodxUser = kwargs.get("user")
+    profiles = profiles or []
+
+    if not settings:
+        raise Exception("Invalid project settings")
+
+    try:
+        project_dir, compose_file, error = _compose_context(
+            settings, "docker_compose_down", kwargs.get("compose_file")
+        )
+        if error:
+            return ToolResponse(user_response=f"❌ {error}", llm_response=error)
+
+        command = _compose_base() + ["-f", compose_file] + _compose_profile_args(profiles) + ["down"]
+        if remove_volumes:
+            command.append("--volumes")
+        if remove_orphans:
+            command.append("--remove-orphans")
+
+        operation = " ".join(command)
+        result = _safe_exec_docker(command, timeout=300, cwd=project_dir)
+
+        if not result.ok:
+            logger.error("Docker Compose down error: %s", result.stderr)
+            return ToolResponse(
+                user_response=f"❌ Failed to bring services down\n\n{_command_failure(operation, result)}",
+                llm_response=(
+                    f"`{operation}` failed with exit code {result.returncode}.\n"
+                    f"stderr:\n{result.stderr.strip()}\nstdout:\n{result.stdout.strip()}"
+                )
+            )
+
+        logger.info("Compose down by user %s", user.username if user else "unknown")
+
+        return ToolResponse(
+            user_response=_format_command_feedback(operation, result.stdout),
+            llm_response=f"Successfully stopped and removed compose services.\nOutput:\n{result.stdout}"
+        )
+
+    except Exception as e:
+        logger.exception("Error in docker_compose_down: %s", str(e))
+        return ToolResponse(
+            user_response=f"❌ Error: {str(e)}",
+            llm_response=f"Failed to bring compose services down: {str(e)}"
+        )
+
+
 def docker_container(action: str, container_name: str, **kwargs) -> ToolResponse:
     """
     Unified Docker container management tool.
@@ -2161,6 +2244,7 @@ def docker_compose_service(action: str, service: str, **kwargs) -> ToolResponse:
         action: Action to perform. Available actions:
             - "build": Build service images (all services if service is empty)
             - "up": Build (optional) and start services (all if service is empty)
+            - "down": Stop and remove services (supports remove_volumes param)
             - "start": Start a stopped service (or all services if service is empty)
             - "stop": Stop a running service (supports timeout param)
             - "restart": Restart a service (supports timeout param)

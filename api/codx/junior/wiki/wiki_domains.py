@@ -1,21 +1,20 @@
 import os
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from slugify import slugify
 from langchain_core.documents import Document
 
 from codx.junior.runtime import runtime_file
 from codx.junior.settings import CODXJuniorSettings
-from codx.junior.knowledge.knowledge_db import KnowledgeDB
 from codx.junior.knowledge.knowledge_graph import DependencyGraph
 
 logger = logging.getLogger(__name__)
 
 
 class WikiDomains:
-    def __init__(self, settings: CODXJuniorSettings, db: KnowledgeDB, ai):
+    def __init__(self, settings: CODXJuniorSettings, db: Any, ai):
         self.settings = settings
         self.db = db
         self.ai = ai

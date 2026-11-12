@@ -1,13 +1,35 @@
 # Fast deployment analysis — codx-junior
 
-Status: analysis + proposal (nothing in this document has been implemented yet).
-Scope: `codx-junior-installer/codx-junior/*`, `scripts/install_*.sh`, `scripts/run_*.sh`,
-`api/pyproject.toml`.
+Status: **partly implemented.** The demo tier (§7) is in the tree and on `main`;
+the rest of the change list is still a proposal — see §7.5 for what is open.
+
+Scope: `codx-junior-installer/*`, `scripts/install_*.sh`, `scripts/run_*.sh`,
+`api/pyproject.toml`, `api/codx/junior/bootstrap.py`.
 
 Goal: make `codx-junior` **cheap to build, cheap to pull and one command to run**, so
 people can try it in minutes instead of waiting for a multi-gigabyte build.
 
+How to deploy: [`README.md`](README.md) (quick start) and [`demo/README.md`](demo/README.md)
+(settings reference).
+
 ---
+
+## 0. Decisions taken
+
+| Question | Decision | Status |
+|---|---|---|
+| Vector store | **LanceDB replaces Milvus** as the default for the trial/local tiers. Embedded: no container, still native BM25 + dense + RRF. Milvus only for the server tier. | ✅ implemented — `knowledge_lancedb.py` behind `CODX_JUNIOR_KNOWLEDGE_BACKEND` (default `lancedb`), 15 tests |
+| LocalAI | Replaced by "bring a provider key": `bootstrap.py` presets fill the base URL, the models and the five global slots. `localai` stays as an opt-in profile for offline demos | ✅ implemented |
+| Traefik | Opt-in `--profile proxy` only; the demo serves the SPA through nginx in-process instead | ⏳ demo done, server compose not split yet |
+| DEV deployment | Kept — as an overlay/profile, never the default | ⏳ DEV is still the only compose that mounts the source |
+| Client container | Gone: builder stage + nginx inside the single image | ✅ implemented in the demo tier |
+
+> **Knowledge is built in.** The vector store is LanceDB, embedded in the API
+> process: no container, no profile, no flag. Milvus is now a *choice* for
+> installations that already hold data in it or that outgrow an embedded index
+> (`CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus`, `pip install 'codx-junior[milvus]'`).
+> §1 and §2 describe the stack we deploy *today* and still list Milvus, which is
+> exactly what the demo tier removes.
 
 ## 1. What we deploy today
 
@@ -19,7 +41,7 @@ people can try it in minutes instead of waiting for a multi-gigabyte build.
 | 1 | `codx-junior-api` | `codxjunior/codx-junior:api` (built) | FastAPI, `shm_size: 4gb`, mounts host `docker.sock`, mounts the **source tree** over the image | keep (slim) |
 | 2 | `codx-junior-api-background` | same image | second full Python stack (`CODX_JUNIOR_API_BACKGROUND=1`), `shm_size: 4gb` | collapse into #1 |
 | 3 | `codx-junior-client` | `codxjunior/codx-junior:client` (built) | Node + nvm + `node_modules`, runs `npm run preview` | replace |
-| 4 | `milvus-codx-junior` | `milvusdb/milvus:v2.5.11` | vector store for knowledge/RAG (embedded etcd) | keep (only backend in code) |
+| 4 | `milvus-codx-junior` | `milvusdb/milvus:v2.5.11` | vector store for knowledge/RAG (embedded etcd) | **drop it**: the default backend is now embedded LanceDB (§6.1). Keep only for existing data / large corpora |
 | 5 | `localai-codx-junior` | built `FROM localai/localai:latest` | "optional local models", but started by default, `shm_size: 20gb` | move to a profile |
 | 6 | `traefik-codx-junior` | `traefik:latest` | TLS + `forwardAuth` + workspace routing, ports 80/443, `docker.sock:ro`, ACME | move to a profile |
 | 7 | `codx-junior-analytics-init` | `codxjunior/codx-junior:debian` | one-shot `mkdir` + `chown` of a volume | delete |
@@ -83,7 +105,7 @@ path; idle RAM from several GB down to well under 2 GB.
 | API | yes | slim image, one process tree |
 | API background worker | yes (indexing, orchestration worker) | run it as a `supervisor.conf` program **inside the API container** — `supervisor.conf` already defines `codx-junior-api`, `codx-junior-api-background` and `codx-junior-client` |
 | Client | yes (the UI) | **static build** (multi-stage `node` builder) served by `nginx:alpine` (~10 MB) *or* by FastAPI `StaticFiles` → 0 extra containers |
-| Milvus | needed for knowledge only | keep for trial; the real win is making the API **start without a reachable Milvus** so a first-time user can skip RAG. `sqlite-vec`/`LanceDB` would remove the container entirely but needs a new `KnowledgeDB` backend (medium effort, later) |
+| Milvus | **no** — LanceDB is embedded and built in | removed from the default path: **LanceDB** is the default backend behind the same `KnowledgeDB` interface (§6.1), no container and no profile. Milvus remains as an explicit choice (`CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus`) and as the server-tier backend |
 | Traefik | no for a trial (`localhost:19981` is enough) | profile `proxy`: needed only for TLS, custom domains and workspace routing |
 | LocalAI | no | profile `local-models`; users bring OpenAI / Ollama / vLLM |
 | analytics-init | no | create the volume in the entrypoint (`mkdir -p` + `chown` before dropping privileges) or use a bind mount prepared by the installer |
@@ -107,15 +129,17 @@ docker run -d --name codx-junior -p 19981:19981 \
 
 * one pulled image, no build, no clone, no `.env`, no DNS, no certificate
 * `supervisor` starts API + background worker + static client inside it
-* knowledge is optional: if no `CODX_JUNIOR_MILVUS_URL` (or no reachable Milvus)
-  the API runs in "no-knowledge" mode and the UI hides RAG features
-* the user then only needs one API key (`Settings → AI Models`) plus a project folder
+* **no vector database at all**: with no reachable Milvus the API still boots
+  (import-time connect is wrapped in `try/except`) and only knowledge *queries*
+  fail. RAG is opt-in, never an installation prerequisite
+* the user passes one provider + one API key; `bootstrap.py` creates the provider,
+  the models and the five global slots — plus a project folder
 
 ### Tier 2 — Local compose (developers / self-host, no TLS)
 
-api (+ worker in-process) + optional `milvus` service, published ports, no Traefik,
-no LocalAI, no client container, no init containers. `docker compose up -d` on a
-repo checkout, ready in minutes.
+api (+ worker in-process) + **knowledge built in** (embedded LanceDB, no
+service), published ports, no Traefik, no LocalAI, no client container, no init
+containers. `docker compose up -d` on a repo checkout, ready in minutes.
 
 ### Tier 3 — Server (full, current behaviour)
 
@@ -160,8 +184,7 @@ Medium:
    `mkdir/chown`; `codx-junior-init` → onboarding in the API or a documented step;
    drop `depends_on: localai`.
 8. **Profiles instead of a monolith.** `proxy` (traefik), `local-models` (localai),
-   `knowledge` (milvus), `workspaces`. Default `up` should start only what is needed
-   to see the UI.
+   `workspaces`. Default `up` should start only what is needed to see the UI.
 9. **Remove the dev bind mount** `../../.:/home/codx-junior/codx-junior` from the
    production compose (keep it in an override file for development).
 10. **Real installer script.** `installer.sh` (root) currently is 3 commands with no
@@ -174,10 +197,11 @@ Medium:
 
 Later (needs design + tests):
 
-11. **Make knowledge optional at runtime** — API must boot and serve the UI when the
-    vector DB is unreachable, with a clear "knowledge unavailable" state.
-12. **Embedded vector store** (`sqlite-vec` / LanceDB) to drop the Milvus container
-    for small installs; behind the existing `KnowledgeDB` interface.
+11. ~~**Make knowledge optional at runtime**~~ — **done**: the API boots and serves
+    the UI with no vector store; a missing/broken backend degrades to lexical
+    search (`NullKnowledgeDB` when disabled).
+12. ~~**Embedded vector store** (LanceDB)~~ — **done**: `knowledge_lancedb.py`,
+    default backend, behind the existing `KnowledgeDB` interface.
 13. **Single-image release** (`codxjunior/codx-junior:latest`) published to a registry
     so Tier 1 is pull-only, and a `docker compose` file that only *references* it.
 
@@ -190,7 +214,8 @@ Later (needs design + tests):
 * Image size ≤ ~1.2 GB and no `torch`/`vllm`/TeX/Node inside it.
 * Cold `docker compose up` from a clean cache ≤ ~5 min.
 * `docker compose up` with no `--profile` starts the API (and worker) only; adding
-  `--profile proxy`, `--profile local-models`, `--profile knowledge` adds the rest.
+  `--profile proxy` and `--profile local-models` adds the rest. Knowledge is built
+  in and needs no profile.
 * Restarting a container does no installs and no recursive `chown`.
 * Documented in `docs/getting-started.md` as the first path, with the full stack
   described as the "server" profile.
@@ -200,6 +225,10 @@ Later (needs design + tests):
 ## 6. Review answers (three open points)
 
 ### 6.1 Are sqlite-vec / LanceDB equal to Milvus?
+
+**Decision: LanceDB.** It is the default target for the trial and local tiers;
+Milvus is kept for the server tier only. Status: not implemented yet — see the
+end of this section.
 
 What the code actually uses (`api/codx/junior/knowledge/knowledge_db.py`):
 
@@ -221,14 +250,23 @@ Verdict:
 * **sqlite-vec is lighter but not equal**: it is vector-only. BM25 would come from
   FTS5 (weaker code tokenizer) and the hybrid fusion is ours to write. Not worth it
   while lexical search is a core feature; it stays the "zero dependency" fallback.
-* **Milvus stays** for the server tier (multi-project, big corpora, existing data).
-
-Plan: `CODX_JUNIOR_KNOWLEDGE_BACKEND=lancedb|milvus`, default `lancedb` in tier 1/2,
-`milvus` in the server profile. Cost: one adapter (`knowledge_lancedb.py`,
-~700-900 LOC) behind the `KnowledgeDB` interface + tests; `knowledge_db` is imported
-by 12 modules and `knowledge_milvus` by 24, so the interface must not change.
-Embedding dimension must be stored per collection/index and a dim change must trigger
-reindex (only the env var exists today).
+* **Milvus is a choice, not the default.** LanceDB is what runs unless you ask
+  otherwise; Milvus stays for the server tier (multi-project, big corpora, existing
+  data) via `CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus`.
+* **Implementation status: done.** `api/codx/junior/knowledge/knowledge_lancedb.py`
+  implements the full `KnowledgeDB` surface (index/delete/search/hybrid/raw_search/
+  sources/categories/metrics/reset) on a real LanceDB dataset — no server, no
+  network. `knowledge_backend.py` holds the single selector
+  (`CODX_JUNIOR_KNOWLEDGE_BACKEND`: `lancedb` · `milvus` · `none`) and a
+  `NullKnowledgeDB`, and imports the Milvus module **lazily**, so a LanceDB install
+  never pulls `pymilvus` (now an optional extra, `codx-junior[milvus]`).
+* **15 tests** in `api/tests/test_knowledge_lancedb.py` cover indexing, native FTS
+  (`INVERTED`/BM25), hybrid fusion, the Milvus filter syntax, dedup on reindex,
+  metrics parity, dimension change ⇒ rebuild, and degradation when the embeddings
+  stack is broken.
+* **Embedding dimension** is stored in `index_meta.json` per table and a dimension
+  change rebuilds the table, so switching from the 384d local model to (say) 1536d
+  provider embeddings reindexes instead of corrupting the index.
 
 ### 6.2 Replace localai with provider key presets
 
@@ -272,12 +310,12 @@ in-flight agent turns.
 Design — one compose base, additive overlays:
 
 * **default (`prod`)**: pull-only image, source *not* mounted, no Node, no install on start.
-* **`dev`** (`docker-compose.dev.yaml`): source mounted, `DEBUG=1`, Vite dev server with
+* **`dev`** (`docker-compose.dev.yaml` — **not created yet: today the source mount and `DEBUG=1` are hardcoded in `docker-compose.yaml`**): source mounted, `DEBUG=1`, Vite dev server with
   HMR (`server.watch` already ignores `**/.codx/**`), `CODX_JUNIOR_API_RELOAD=1` per
   service choice, `node_modules`/venv in named volumes (or a `dev` build target) so
   restarts never reinstall, several projects mounted at once (multi-project watch),
   `docker.sock` for workspaces.
-* **`proxy`**, **`local-models`**, **`knowledge`** (milvus), **`anthropic`**: additive.
+* **`proxy`**, **`local-models`**, **`anthropic`**: additive.
 
 So the DEV stack keeps every project, watcher and hot reload, while the trial path
 never pays for it.
@@ -294,7 +332,7 @@ anything.
 | File | Purpose |
 |---|---|
 | `demo/up.sh` | one command: validates the settings, creates `.env`, pulls (or `--build`s) the image, starts the stack, waits for health, applies the AI provider |
-| `demo/docker-compose.yaml` | **one** service on port 19981 + optional `--profile knowledge` (Milvus). No Traefik, no LocalAI, no client container, no init containers, no `docker.sock` by default |
+| `demo/docker-compose.yaml` | **one** service on port 19981, and **no** Milvus: knowledge is the embedded LanceDB inside the API. No Traefik, no LocalAI, no client container, no init containers, no `docker.sock` by default |
 | `demo/Dockerfile` | two stages: `node:22-slim` compiles the SPA, `python:3.11-slim` runs it. No torch/vLLM/Playwright/TeX/Tesseract/Firefox, no Node at runtime |
 | `demo/nginx.conf` | serves the built SPA and proxies `/api` (+ socket.io websocket) to `127.0.0.1:19980` — this is what removes Traefik and the second web server |
 | `demo/supervisord.conf` | `api` + `api-background` + nginx in a single container (the two API containers of the old compose) |
@@ -341,12 +379,16 @@ anything.
 
 ### 7.5 Still open (in the order I would do it)
 
-1. Publish `codxjunior/codx-junior:demo` from CI so `demo/up.sh` is pull-only for
+1. ~~**`knowledge_lancedb.py` adapter (§6.1)**~~ — **done**: the embedded backend,
+   the `CODX_JUNIOR_KNOWLEDGE_BACKEND` selector (default `lancedb`, Milvus imported
+   lazily so a LanceDB install never pulls `pymilvus`), the `NullKnowledgeDB`
+   fallback and 15 tests in `api/tests/test_knowledge_lancedb.py`. The `--knowledge`
+   flag is gone from `demo/up.sh`.
+2. Publish `codxjunior/codx-junior:demo` from CI so `demo/up.sh` is pull-only for
    real (`--build` exists as a fallback until then).
-2. `knowledge_lancedb.py` adapter (§6.1) so the trial tier can have RAG without a
-   second container; today `--profile knowledge` is the only option.
-3. Embedding dimension stored in the index metadata (dim change ⇒ reindex) —
-   needed before 1536d provider embeddings are mixed with the 384d local model.
+3. ~~Embedding dimension stored in the index metadata~~ — **done**: the dimension
+   and the embeddings model are written to `index_meta.json` on table creation, and
+   a dimension change rebuilds the table (reindex) instead of corrupting it.
 4. Image models (`image_generation_model` / `image_vision_model`) in the bootstrap
    presets, for the providers that support them.
 5. Server tier: apply the same profile split (`proxy`, `local-models`, `knowledge`,

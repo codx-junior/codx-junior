@@ -4,12 +4,12 @@ import json
 from datetime import datetime
 from functools import reduce
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 
-from codx.junior.knowledge.knowledge_db import KnowledgeDB
+from codx.junior.knowledge.knowledge_backend import create_knowledge_db
 from codx.junior.model.model import CodxUser
 from codx.junior.engine.progress_callback import ProgressCallback, ProgressEventType
 from langchain_core.documents import Document
@@ -36,7 +36,7 @@ SUMMARY_FILE_NAME = "project_summary.md"
 
 
 class Knowledge:
-    db: KnowledgeDB
+    db: Any
     ai: AI
 
     def __init__(self, settings: CODXJuniorSettings, callback: Optional[ProgressCallback] = None):
@@ -62,7 +62,7 @@ class Knowledge:
 
     def get_db(self):
         if not self.db:
-            self.db = KnowledgeDB(settings=self.settings)
+            self.db = create_knowledge_db(settings=self.settings)
         return self.db
 
     def refresh_last_update(self):

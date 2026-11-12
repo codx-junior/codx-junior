@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.documents import Document
 
-from codx.junior.knowledge.knowledge_db import KnowledgeDB
+from codx.junior.knowledge.knowledge_backend import create_knowledge_db
 from codx.junior.profiles.profile_manager import (
     MAX_KNOWLEDGE_FILE_SIZE,
     TEXT_KNOWLEDGE_EXTENSIONS,
@@ -99,32 +99,33 @@ class ProfileKnowledge:
         self.settings = settings
         self.profile_manager = ProfileManager(settings=settings)
         # One DB per knowledge folder, reused while this instance lives.
-        self._dbs: Dict[str, KnowledgeDB] = {}
+        self._dbs: Dict[str, Any] = {}
 
     # -------------------------------------------------------------------------
     # One KnowledgeDB per knowledge folder
     # -------------------------------------------------------------------------
-    def get_db(self, knowledge_path: str) -> KnowledgeDB:
+    def get_db(self, knowledge_path: str) -> Any:
         """
         Return the KnowledgeDB that indexes one knowledge folder.
 
         The DB uses a copy of the project settings whose ``abs_project_path``
-        is the folder, which makes ``KnowledgeDB`` build its own collection and
-        database folder for it. ``codx_path`` (and therefore the project
-        identity) is kept.
+        is the folder, which makes the knowledge backend build its own
+        collection/table and database folder for it. ``codx_path`` (and
+        therefore the project identity) is kept.
 
         Args:
             knowledge_path: Absolute path of the knowledge folder.
 
         Returns:
-            KnowledgeDB instance bound to that folder.
+            Knowledge database bound to that folder (LanceDB by default, see
+            :mod:`codx.junior.knowledge.knowledge_backend`).
         """
         if knowledge_path not in self._dbs:
             logger.info("Opening profile knowledge DB for '%s'", knowledge_path)
             folder_settings = self.settings.model_copy(
                 update={"abs_project_path": knowledge_path}
             )
-            self._dbs[knowledge_path] = KnowledgeDB(settings=folder_settings)
+            self._dbs[knowledge_path] = create_knowledge_db(settings=folder_settings)
         return self._dbs[knowledge_path]
 
     # -------------------------------------------------------------------------

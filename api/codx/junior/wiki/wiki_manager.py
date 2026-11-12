@@ -37,7 +37,7 @@ from .model import *
 from ..ai import AI
 from ..events.event_manager import EventManager
 from codx.junior.profiles.profile_manager import ProfileManager
-from codx.junior.knowledge.knowledge_db import KnowledgeDB
+from codx.junior.knowledge.knowledge_backend import create_knowledge_db
 from codx.junior.knowledge.knowledge_loader import KnowledgeLoader
 from codx.junior.knowledge.knowledge_graph import DependencyGraph
 from codx.junior.wiki.wiki_domains import WikiDomains
@@ -118,7 +118,7 @@ class WikiManager:
         self.event_manager = EventManager(codx_path=settings.codx_path)
         self.profile_manager = ProfileManager(settings=settings)
         self.wiki_path: str = settings.get_project_wiki_path()
-        self.db = KnowledgeDB(settings=settings)
+        self.db = create_knowledge_db(settings=settings)
         self.loader = KnowledgeLoader(settings=settings)
         self.is_wiki_active = self.settings.project_wiki or False
         self.wiki_home_path = os.path.join(self.wiki_path, "home.md")

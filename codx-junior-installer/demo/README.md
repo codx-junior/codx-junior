@@ -13,6 +13,10 @@ codx-junior. It is pull-only (nothing is compiled on their machine), it does not
 run Milvus, Traefik, LocalAI, a second API container, an init container or a
 Node server, and restarting it installs nothing.
 
+> Until `codxjunior/codx-junior:demo` is published to Docker Hub, `up.sh` warns and
+> falls back to a local build (a few minutes). Pass `--build` to make that explicit.
+> How to deploy the other tiers: [`../README.md`](../README.md).
+
 | | Full deployment (`codx-junior/docker-compose.yaml`) | Demo (this folder) |
 |---|---|---|
 | Containers | 8 | **1** (+1 optional) |
@@ -111,15 +115,35 @@ The key itself is **not** written to the settings files: the provider stores
 | **api-background** container | runs as a supervisord program in the same container | never needed |
 | **traefik** | same-origin: nginx proxies `/api` to the API | add a proxy in front, or use the server tier |
 | **localai** | replaced by "bring your own provider key" | `codx-junior/docker-compose.yaml` |
-| **milvus** | only vector backend, but heavy (~1 GB RAM) | `./up.sh --knowledge` |
+| **milvus** | not needed: the vector store is embedded LanceDB, running in the API process | never needed (point at your own Milvus only if you have data in it) |
 | **analytics-init / codx-junior-init** | their `mkdir`/`chown` work is done by the entrypoint | — |
 | torch / sentence-transformers / vLLM / Playwright / TeX / Tesseract / Firefox | runtime deps of optional features; now `pip` extras (`.[local-models,browser]`) | full deployment installs them |
 
 Features **not available** in the demo without extra work: local (offline)
 embeddings, document → PDF/DOCX conversion, Tesseract OCR, browser/computer
-sessions and workspaces (they need `/var/run/docker.sock`), knowledge/RAG search
-(needs `--knowledge`).
+sessions and workspaces (they need `/var/run/docker.sock`).
 
+### Knowledge / RAG: built in, no vector database to run
+
+Knowledge is a **built-in** feature of this deployment: the vector store is
+**LanceDB**, embedded on disk and running in the API process. There is no Milvus
+container, no `--knowledge` flag and no extra RAM.
+
+- **One switch**: `CODX_JUNIOR_KNOWLEDGE_BACKEND` — `lancedb` (default,
+  embedded), `milvus` (your external server, needs
+  `pip install 'codx-junior[milvus]'`) or `none`.
+- **Native hybrid search**: BM25 full-text + dense vectors fused with RRF — the
+  same result shape as the Milvus backend, so the UI is identical.
+- **RAG also needs an embeddings model.** `deepseek`, `openrouter` and `groq` do
+  not provide one, so on those keys search stays **lexical** (full-text) instead
+  of failing; `openai`, `gemini`, `mistral` and `ollama` configure one
+  automatically.
+- **It degrades, never breaks.** If the embeddings stack cannot load, the dense
+  leg is switched off with a single log warning and the lexical leg keeps
+  answering; knowledge never stops the API from booting.
+
+So there is nothing to enable: the chat, the projects, the agent, the file tools
+and knowledge search all work with one container.
 To enable the docker-dependent features, uncomment the socket mount in
 `docker-compose.yaml`. Be aware that it gives the container control of the host
 Docker daemon.
@@ -130,7 +154,6 @@ Docker daemon.
 
 ```bash
 ./up.sh                      # start (idempotent)
-./up.sh --knowledge          # also start Milvus
 ./up.sh --build              # build the image from source instead of pulling
 docker compose logs -f codx-junior
 docker compose down          # stop (volumes are kept)
@@ -154,10 +177,12 @@ the API answers.
 
 ## 5. Development deployment (unchanged)
 
-The watch/reload deployment is still `codx-junior/docker-compose.yaml` +
-`codx-junior/docker-compose.build.yaml` (+ `docker-compose.dev.yaml`): it mounts
-the source tree over the image, sets `DEBUG=1`, runs Vite dev server with HMR,
-and `scripts/run_api.sh` syncs the environment on start. Use it when you hack on
+The watch/reload deployment is `codx-junior/docker-compose.yaml` (+ the
+`docker-compose.build.yaml` overlay when the images still have to be built). There
+is **no `docker-compose.dev.yaml`**: the source mount and `DEBUG=1` are hardcoded in
+that compose file, `scripts/run_api.sh` syncs the environment on start, and the web
+client only runs the Vite dev server when you switch its service to `DEBUG=1`
+(it ships with `DEBUG=0`, i.e. `npm run preview`). Use it when you hack on
 codx-junior itself, not to show it to a user.
 
 Two knobs make the source deployment behave like this one:
@@ -175,7 +200,7 @@ Two knobs make the source deployment behave like this one:
 |---|---|
 | UI loads, chat answers "no model configured" | the bootstrap did not run: check `docker exec codx-junior curl -s localhost:19980/api/bootstrap` and that `CODX_JUNIOR_AI_API_KEY` is set in `.env`. |
 | `401` / `invalid api key` in the logs | wrong key, or `CODX_JUNIOR_AI_API_URL` missing `/v1`. |
-| Chat works, "knowledge search" fails | expected without Milvus: `./up.sh --knowledge`, or use a provider with an embeddings model and enable it. |
+| Chat works, "knowledge search" finds nothing | check the embeddings model for the preset (see §3): `deepseek`, `openrouter` and `groq` have none, so search stays lexical |
 | Container is `unhealthy` | `docker compose logs --tail 100 codx-junior`; the API log is `api.log` inside `$CODX_SUPERVISOR_LOG_FOLDER`. |
 | Port 19981 already in use | `./up.sh --port 8080`. |
 | Projects folder empty / permission denied | `./up.sh --projects /absolute/path`; the demo container runs as root so it can write to host folders. |

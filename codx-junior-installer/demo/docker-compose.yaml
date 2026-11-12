@@ -4,11 +4,12 @@
 #   cd codx-junior-installer/demo && ./up.sh
 #
 # One container: API + background worker + web client (nginx) in the same
-# image, published on 19981. No Traefik, no LocalAI, no Milvus, no init
-# containers, no build on the user's machine (the image is pulled).
+# image, published on 19981. No Traefik, no LocalAI, no vector database
+# container, no init containers, no build on the user's machine (pull).
 #
-# Optional, opt-in and additive — they are never started by default:
-#   --profile knowledge     Milvus, required by knowledge/RAG search
+# Knowledge / RAG is BUILT IN: it runs on LanceDB, an embedded (in-process,
+# on-disk) vector database, so there is no Milvus to start. Only an embeddings
+# provider is needed, and the AI provider preset already sets one.
 #
 # Settings live in `.env` (see .env.example and README.md).
 # =============================================================================
@@ -31,9 +32,10 @@ services:
       # in-process session state (see set_env.sh).
       WEB_CONCURRENCY: "1"
       ANONYMIZED_TELEMETRY: "False"
-      # Vector store: empty (default) means the knowledge features stay off
-      # until `--profile knowledge` is enabled.
-      CODX_JUNIOR_MILVUS_URL: ${CODX_JUNIOR_MILVUS_URL:-http://codx-junior-milvus:19530}
+      # Knowledge / RAG backend: embedded LanceDB, no external service.
+      # Set to `milvus` only if you point CODX_JUNIOR_MILVUS_URL at your own
+      # (external) Milvus server; `none` disables knowledge entirely.
+      CODX_JUNIOR_KNOWLEDGE_BACKEND: ${CODX_JUNIOR_KNOWLEDGE_BACKEND:-lancedb}
     volumes:
       # Where the user's projects live on the host. This is the only thing a
       # trial user has to change.
@@ -54,39 +56,8 @@ services:
       retries: 30
       start_period: 30s
 
-  # ---------------------------------------------------------------------------
-  # Optional: knowledge / RAG search backend.
-  #   docker compose --profile knowledge up -d
-  # Adds ~1 GB of RAM (Milvus standalone + embedded etcd).
-  # ---------------------------------------------------------------------------
-  codx-junior-milvus:
-    profiles: ["knowledge"]
-    image: milvusdb/milvus:v2.5.11
-    container_name: codx-junior-milvus
-    security_opt:
-      - seccomp:unconfined
-    environment:
-      - ETCD_USE_EMBED=true
-      - ETCD_DATA_DIR=/var/lib/milvus/etcd
-      - ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml
-      - COMMON_STORAGETYPE=local
-    volumes:
-      - milvus_data:/var/lib/milvus
-      - ../codx-junior/milvus_embedEtcd.yaml:/milvus/configs/embedEtcd.yaml
-      - ../codx-junior/milvus_user.yaml:/milvus/configs/user.yaml
-    restart: unless-stopped
-    command: milvus run standalone
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
-      interval: 30s
-      start_period: 90s
-      timeout: 20s
-      retries: 3
-
 volumes:
   codx-junior-settings:
     name: codx-junior-settings
   codx-junior-analytics:
     name: codx-junior-analytics
-  milvus_data:
-    name: codx-junior-demo-milvus

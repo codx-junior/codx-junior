@@ -39,7 +39,7 @@ if [ ! -d "$CODX_JUNIOR_API_VENV/bin" ]; then
   # Extras installed by default: local embeddings (torch/sentence-transformers)
   # and the browser client. A slim deployment can opt out with
   # CODX_JUNIOR_API_EXTRAS="" (see codx-junior-installer/demo/Dockerfile).
-  API_EXTRAS=${CODX_JUNIOR_API_EXTRAS:-local-models,browser}
+  API_EXTRAS=${CODX_JUNIOR_API_EXTRAS:-local-models,browser,milvus}
 
   # Install editable package using uv with the best-match strategy
   if [ -n "$API_EXTRAS" ]; then

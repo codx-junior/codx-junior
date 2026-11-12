@@ -354,9 +354,9 @@ class WikiAssistant:
     ) -> List[Dict[str, Any]]:
         """Best-effort knowledge search; failures are non-fatal."""
         try:
-            from codx.junior.knowledge.knowledge_db import KnowledgeDB
+            from codx.junior.knowledge.knowledge_backend import create_knowledge_db
 
-            documents = KnowledgeDB(settings=self.settings).search(question, _limit=8)
+            documents = create_knowledge_db(settings=self.settings).search(question, _limit=8)
         except Exception as ex:
             logger.debug("Wiki assistant knowledge search unavailable: %s", ex)
             return []
@@ -381,9 +381,9 @@ class WikiAssistant:
         if related:
             for child in related[:3]:
                 try:
-                    from codx.junior.knowledge.knowledge_db import KnowledgeDB
+                    from codx.junior.knowledge.knowledge_backend import create_knowledge_db
 
-                    documents = KnowledgeDB(settings=child).search(question, _limit=3)
+                    documents = create_knowledge_db(settings=child).search(question, _limit=3)
                 except Exception as ex:
                     logger.debug("Child knowledge search unavailable for %s: %s", child.project_name, ex)
                     continue

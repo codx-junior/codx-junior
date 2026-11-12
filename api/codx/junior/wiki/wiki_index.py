@@ -2,19 +2,18 @@ import os
 import json
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from langchain_core.documents import Document
 
 from codx.junior.settings import CODXJuniorSettings
-from codx.junior.knowledge.knowledge_db import KnowledgeDB
 from codx.junior.knowledge.knowledge_graph import DependencyGraph
 
 logger = logging.getLogger(__name__)
 
 
 class WikiIndex:
-    def __init__(self, settings: CODXJuniorSettings, db: KnowledgeDB):
+    def __init__(self, settings: CODXJuniorSettings, db: Any):
         self.settings = settings
         self.db = db
         self.wiki_path = settings.get_project_wiki_path()

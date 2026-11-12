@@ -1,8 +1,9 @@
 import logging
 import json
 from datetime import datetime
+from typing import Any
 
-from codx.junior.knowledge.knowledge_db import KnowledgeDB
+from codx.junior.knowledge.knowledge_backend import create_knowledge_db
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -11,13 +12,13 @@ from codx.junior.settings import CODXJuniorSettings
 logger = logging.getLogger(__name__)
 
 class KnowledgeWiki:
-    db: KnowledgeDB
+    db: Any
     def __init__(self, settings: CODXJuniorSettings):
         self.settings = settings
 
     def get_db(self):
         if not self.db:
-          self.db = KnowledgeDB(settings=self.settings)
+          self.db = create_knowledge_db(settings=self.settings)
         return self.db
 
     def check_files(self):

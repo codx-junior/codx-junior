@@ -28,7 +28,10 @@ dependencies = [
   'pillow',
   'beautifulsoup4',
   'markdownify',
-  'pymilvus>=2.4.0',
+  # Embedded vector database: the built-in knowledge/RAG backend. It is an
+  # in-process library (no server, no container), which is what allows a trial
+  # installation to have working knowledge search out of the box.
+  'lancedb>=0.5.0',
   'watchfiles>=1.0.4',
   'pyjwt>=2.10.1',
   'bcrypt>=4.3.0',
@@ -59,8 +62,8 @@ classifiers = [
 # does not have to download torch (~2.5 GB), the CUDA-less vLLM stack or a
 # browser runtime before the first chat.
 #
-# Full installations keep today's behaviour by installing `.[local-models,browser]`
-# (scripts/install_api.sh does exactly that).
+# Full installations keep today's behaviour by installing
+# `.[local-models,browser,milvus]` (scripts/install_api.sh does exactly that).
 [project.optional-dependencies]
 test = [
     "pytest>=7.3.1",
@@ -79,6 +82,13 @@ local-models = [
 browser = [
     "playwright",
 ]
+# Milvus vector database client. Only needed when
+# CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus: the default (lancedb) backend is embedded
+# and part of the base dependencies, while pymilvus pulls grpcio and the
+# milvus-lite binary.
+milvus = [
+    "pymilvus>=2.4.0",
+]
 # Deprecated local inference server (codx/junior/ai/vllm_cpu_ai.py)
 vllm = [
     "vllm>=0.5.0",
@@ -88,8 +98,8 @@ full = [
     "sentence-transformers>=6.2.0",
     "torch>=2.4.0",
     "playwright",
+    "pymilvus>=2.4.0",
 ]
-
 [project.scripts]
 codx-junior = 'codx.app:app'
 
@@ -111,7 +121,7 @@ target-version = "py311"
 # Extras a plain `uv sync` installs (source / dev deployments). They keep the
 # full feature set: local embeddings + the browser client. The slim demo image
 # installs with pip and no extras, so it never downloads torch.
-default-extras = ["local-models", "browser"]
+default-extras = ["local-models", "browser", "milvus"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

@@ -4,12 +4,14 @@
 #
 #   ./up.sh                                  # reads .env (created from .env.example)
 #   ./up.sh --provider deepseek --key sk-...  # configures .env for you
-#   ./up.sh --knowledge                       # also start Milvus (RAG search)
 #   ./up.sh --build                           # build the image locally (developers)
 #
 # What it does: validate the settings you must pass, pull the image, start the
 # stack, wait until the API reports healthy and apply the AI provider
 # configuration. Idempotent: running it again just restarts the stack.
+#
+# Knowledge / RAG is built in (embedded LanceDB): there is no extra service to
+# start, only an embeddings provider, which the preset already configures.
 # =============================================================================
 set -euo pipefail
 
@@ -25,7 +27,6 @@ API_KEY=""
 PORT=""
 PROJECTS=""
 DO_BUILD=0
-KNOWLEDGE=0
 
 usage() {
     cat <<USAGE
@@ -41,7 +42,6 @@ Usage: ./up.sh [options]
   --model <model-id>  Override the default chat model of the provider
   --port <port>       Web port (default 19981)
   --projects <path>   Host folder that holds your projects (default ./projects)
-  --knowledge         Also start Milvus, needed by knowledge/RAG search
   --build             Build the image from source instead of pulling it
   --no-wait           Do not wait for the health check
   -h, --help          This help
@@ -56,7 +56,6 @@ while [[ $# -gt 0 ]]; do
         --model)    MODEL="${2:-}"; shift 2 ;;
         --port)     PORT="${2:-}"; shift 2 ;;
         --projects) PROJECTS="${2:-}"; shift 2 ;;
-        --knowledge) KNOWLEDGE=1; shift ;;
         --build)    DO_BUILD=1; shift ;;
         --no-wait)  NO_WAIT=1; shift ;;
         -h|--help)  usage; exit 0 ;;
@@ -150,7 +149,6 @@ log "Projects folder: ${PROJECTS_PATH}"
 # --- start -----------------------------------------------------------------
 COMPOSE_FILES=(-f docker-compose.yaml)
 COMPOSE_PROFILES=()
-[[ "${KNOWLEDGE}" -eq 1 ]] && COMPOSE_PROFILES=(--profile knowledge)
 
 if [[ "${DO_BUILD}" -eq 1 ]]; then
     log "Building the demo image (first build takes a few minutes)..."

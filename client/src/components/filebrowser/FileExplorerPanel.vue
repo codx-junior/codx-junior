@@ -86,7 +86,12 @@ export default {
     // (see hasOpenFiles), so we wait a tick for the TabManager ref to exist.
     async openTab(tab) {
       this.hasOpenFiles = true
-      await this.$nextTick()
+      // A render error somewhere else in the tree rejects the flush promise and
+      // used to abort the whole open: the panel stayed mounted but empty. Log
+      // the failure and keep opening the tab.
+      await this.$nextTick().catch((error) => {
+        console.error('Error mounting the file panel', error)
+      })
       if (this.$refs.tabManager) {
         this.$refs.tabManager.addTab(tab)
       } else {

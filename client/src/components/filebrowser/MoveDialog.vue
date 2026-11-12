@@ -7,7 +7,7 @@
       <!-- Header -->
       <h3 class="font-bold text-lg flex items-center gap-2">
         <i class="fa-solid fa-folder-tree text-primary"></i>
-        Move {{ sources.length }} {{ sources.length === 1 ? 'item' : 'items' }}
+        {{ isCopy ? 'Copy' : 'Move' }} {{ sources.length }} {{ sources.length === 1 ? 'item' : 'items' }}
       </h3>
 
       <!-- Items being moved -->
@@ -96,7 +96,7 @@
 
       <div v-if="invalidTarget" class="alert alert-warning py-2">
         <i class="fa-solid fa-ban"></i>
-        <span class="text-sm">A folder cannot be moved inside itself.</span>
+        <span class="text-sm">A folder cannot be {{ isCopy ? 'copied' : 'moved' }} inside itself.</span>
       </div>
 
       <!-- Actions -->
@@ -108,7 +108,7 @@
           @click="confirm"
         >
           <i class="fa-solid fa-folder-tree"></i>
-          Move here
+          {{ isCopy ? 'Copy here' : 'Move here' }}
         </button>
       </div>
     </div>
@@ -133,6 +133,11 @@ export default {
     startPath: {
       type: String,
       default: ''
+    },
+    // 'move' (default) or 'copy': same folder picker, different action labels
+    mode: {
+      type: String,
+      default: 'move'
     }
   },
   emits: ['move', 'cancel'],
@@ -147,6 +152,10 @@ export default {
   computed: {
     $api() {
       return this.$project.$api
+    },
+    // Labels of the dialog follow the action it performs
+    isCopy() {
+      return this.mode === 'copy'
     },
     // Absolute project path: browsed paths are always resolved inside it
     projectRoot() {

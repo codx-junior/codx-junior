@@ -29,6 +29,8 @@ import subprocess
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from codx.junior.runtime import WIKI_SETTINGS_FILE, runtime_file
+
 from .constants import (
     ATLAS_INDEX_VERSION,
     DEFAULT_MAX_FILES,
@@ -118,9 +120,14 @@ class AtlasIndexer:
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
         exclude_paths: Sequence[str] = (),
         ignore_patterns: Any = (),
+        codx_path: str = "",
     ):
         self.root = os.path.abspath(root)
         self.db_path = db_path
+        # Project ``.codx`` folder. The database itself lives in the runtime
+        # folder, so the sibling artefacts (``wiki_settings.json``) can no
+        # longer be derived from ``db_path`` alone.
+        self.codx_path = str(codx_path or "")
         self.project_name = project_name or os.path.basename(self.root)
         self.max_files = max(100, int(max_files or DEFAULT_MAX_FILES))
         # Child projects own their atlas: do not index their files here.
@@ -872,14 +879,33 @@ class AtlasIndexer:
                 })
         return nodes, edges
 
+    def _wiki_settings_path(self) -> str:
+        """
+        Locate ``wiki_settings.json``.
+
+        It is a generated cache: the runtime folder holds the current one and
+        ``<codx_path>`` the one written by older releases, so both are tried
+        before giving up.
+        """
+        candidates: List[str] = []
+        if self.codx_path:
+            candidates.append(runtime_file(self.codx_path, WIKI_SETTINGS_FILE))
+            candidates.append(os.path.join(self.codx_path, WIKI_SETTINGS_FILE))
+        candidates.append(
+            os.path.join(os.path.dirname(os.path.dirname(self.db_path)), WIKI_SETTINGS_FILE)
+        )
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return ""
+
     def _wiki_sources(self) -> Dict[str, str]:
         """Map generated wiki pages to source files (legacy wiki_settings)."""
         if self._wiki_source_map is not None:
             return self._wiki_source_map
         self._wiki_source_map = {}
-        codx_path = os.path.dirname(os.path.dirname(self.db_path))
-        settings_path = os.path.join(codx_path, "wiki_settings.json")
-        if not os.path.isfile(settings_path):
+        settings_path = self._wiki_settings_path()
+        if not settings_path:
             return self._wiki_source_map
         try:
             with open(settings_path, "r", encoding="utf-8") as handle:
@@ -1152,10 +1178,12 @@ def index_project(
     ttl_seconds: int = DEFAULT_TTL_SECONDS,
     exclude_paths: Sequence[str] = (),
     ignore_patterns: Any = (),
+    codx_path: str = "",
 ) -> AtlasStore:
     """Convenience entry point used by tests and non-settings callers."""
     return AtlasIndexer(
         root=root,
+        codx_path=codx_path,
         db_path=db_path,
         project_name=project_name,
         max_files=max_files,

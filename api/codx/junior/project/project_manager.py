@@ -10,7 +10,11 @@ from codx.junior.model.model import CodxUser
 
 from codx.junior.utils.utils import exec_command
 from codx.junior.globals import CODX_JUNIOR_PROJECTS_PATH
-
+from codx.junior.events.collection_events import (
+    ACTION_UPSERTED,
+    COLLECTION_PROJECTS,
+    emit_collection_event
+)
 from codx.junior.project.project_discover import find_project_by_project_path, get_projects_root_path
     
 logger = logging.getLogger(__name__)
@@ -51,4 +55,19 @@ def create_project(project_path: str, user: CodxUser):
     new_project = CODXJuniorSettings.from_project_file(f"{project_path}/.codx/project.json")
     if user:
         UserSecurityManager().add_user_to_project(project_id=new_project.project_id, user=user, permissions='admin')
+
+    # Every client caches the project list: announce the new project so other
+    # tabs/users reload it instead of rendering a stale list. Best effort: the
+    # project is already on disk.
+    emit_collection_event(
+        COLLECTION_PROJECTS,
+        ACTION_UPSERTED,
+        {
+            "project_id": new_project.project_id,
+            "project_name": new_project.project_name,
+            "codx_path": new_project.codx_path,
+        },
+        settings=new_project,
+        source="project_manager",
+    )
     return new_project

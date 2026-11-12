@@ -1,12 +1,13 @@
 """
 Crash-safe persistence and single-flight locking for orchestration runs.
 
-Layout under the project::
+Layout:
 
-    .codx/orchestration/
-      runs/<run_id>.json          # the run document (source of truth)
-      runs/<run_id>.lock          # flock target for the worker
-      worker.json                 # background-worker heartbeat
+* ``<codx_path>/orchestration/runs/<run_id>.json`` — the run document (source
+  of truth, durable project data);
+* ``<runtime>/orchestration/<run_id>.lock`` and ``worker.json`` — the flock
+  targets and the heartbeat, rewritten on every tick and therefore kept in the
+  project runtime folder (``/tmp`` by default) instead of the repository.
 
 Every write is atomic (``tmp`` + ``os.replace``) so a crash can never leave a
 half-written run. The worker holds an exclusive ``flock`` for the whole tick, so
@@ -31,6 +32,8 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional
+
+from codx.junior.runtime import runtime_dir
 
 from . import constants as C
 from .models import (
@@ -145,6 +148,8 @@ class RunStore:
         self.root_dir = os.path.join(self.codx_path, C.ORCHESTRATION_DIR)
         self.runs_dir = os.path.join(self.root_dir, C.RUNS_DIR)
         os.makedirs(self.runs_dir, exist_ok=True)
+        # Locks and the heartbeat churn on every tick: runtime folder, not repo.
+        self.runtime_dir = runtime_dir(self.codx_path, C.ORCHESTRATION_DIR)
 
     # -- paths -----------------------------------------------------------
 
@@ -156,15 +161,22 @@ class RunStore:
         return os.path.join(self.runs_dir, f"{safe_id}.json")
 
     def lock_path(self, run_id: str) -> str:
-        """Return the lock path of *run_id* (same stem as the run document)."""
+        """
+        Return the lock path of *run_id*.
+
+        Locks churn while a run progresses, so they live in the project runtime
+        folder (``/tmp`` by default) instead of the repository: a lock that
+        outlives a crash is worthless anyway.
+        """
         # Do not use str.replace: a run id may legitimately contain ".json"
         # (the loader only enforces a basename), and replacing every occurrence
         # would produce a different stem for the lock file.
-        return os.path.splitext(self.run_path(run_id))[0] + ".lock"
+        stem = os.path.splitext(self.run_path(run_id))[0]
+        return os.path.join(self.runtime_dir, os.path.basename(stem) + ".lock")
 
     def worker_path(self) -> str:
-        """Return the worker heartbeat path."""
-        return os.path.join(self.root_dir, C.WORKER_FILE)
+        """Return the worker heartbeat path (runtime folder, rewritten often)."""
+        return os.path.join(self.runtime_dir, C.WORKER_FILE)
 
     # -- read / write ----------------------------------------------------
 

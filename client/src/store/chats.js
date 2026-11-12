@@ -149,6 +149,91 @@ function applyChatMessages(state, chatId, messages) {
   if (merged !== chat.messages) chat.messages = merged
 }
 
+// Whether a `chat-event` payload carries the chat DOCUMENT or only its
+// reference (`{ id, owner_project_id }`, what older servers send).
+function isChatDocument(chat) {
+  return !!chat && (
+    Array.isArray(chat.messages) ||
+    chat.updated_at !== undefined ||
+    chat.name !== undefined
+  )
+}
+
+// Apply the chat document carried by a `chat-event` WITHOUT requesting it.
+// Returns true when the payload was usable (so no HTTP request is needed).
+function applyChatEventDocument(state, chat) {
+  if (!isChatDocument(chat) || !chat.id) return false
+
+  const chatId = chat.id
+  const existing = state.chats[chatId]
+
+  if (!existing) {
+    // Unknown chat: register it. Without a conversation it stays flagged for a
+    // full load, so opening it still fetches the history exactly once.
+    const hasMessages = Array.isArray(chat.messages) && chat.messages.length > 0
+    registerChat(state, { ...chat, messages: chat.messages || [] })
+    if (hasMessages) {
+      $storex.chats.clearChatNeedsReload(chatId)
+      $storex.chats.setChatLoadingStatus({ chatId, status: ENTITY_STATUS.LOADED })
+    } else {
+      $storex.chats.setChatNeedsReload(chatId)
+      $storex.chats.setChatLoadingStatus({ chatId, status: ENTITY_STATUS.UNINITIALIZED })
+    }
+    return true
+  }
+
+  // A full load is in flight: its response is authoritative.
+  if (state.chatLoadingStatus[chatId] === ENTITY_STATUS.LOADING) return true
+
+  // Known chat: merge in place. `messages` is absent from the event payload, so
+  // `mergeChat` leaves the loaded conversation untouched.
+  mergeChat(existing, chat)
+  return true
+}
+
+// Patch ONE message carried by a `message-event` into the loaded conversation,
+// IN PLACE. Returns true when applied (no request needed).
+// This is what makes streaming cheap: every response chunk arrives as a
+// `message-event` and is merged here instead of re-fetching the whole chat.
+function applyChatEventMessage(state, chatId, message) {
+  const chat = state.chats?.[chatId]
+  if (!chat || !message) return false
+
+  // Only a fully loaded conversation can be patched message by message: a
+  // summary (last message only) would end up with an incomplete history.
+  if (state.chatLoadingStatus[chatId] !== ENTITY_STATUS.LOADED) return false
+  if (!Array.isArray(chat.messages)) return false
+
+  const key = messageKey(message)
+  if (!key) return false
+
+  const index = chat.messages.findIndex(m => messageKey(m) === key)
+  if (index === -1) {
+    // New message (the streamed response): the array must be replaced so the
+    // message list and its watchers notice the insertion.
+    chat.messages = [...chat.messages, message]
+  } else {
+    // Existing message: patch it in place, it keeps its identity.
+    mergeMessage(chat.messages[index], message)
+  }
+
+  const timestamp = message.timestamp || message.created_at
+  if (timestamp && chat.lastMessageAt !== timestamp) {
+    $storex.chats.updateChatLastMessageAt({ chatId, timestamp })
+  }
+  return true
+}
+
+// Drop a message announced by a `message-event` (`message_removed_id`).
+function removeChatEventMessage(state, chatId, messageDocId) {
+  const chat = state.chats?.[chatId]
+  if (!chat || !messageDocId || !Array.isArray(chat.messages)) return false
+  const remaining = chat.messages.filter(m => messageKey(m) !== messageDocId)
+  if (remaining.length === chat.messages.length) return false
+  chat.messages = remaining
+  return true
+}
+
 // Merge `source` INTO `target`, keeping `target`'s identity and the identity of
 // every value whose content did not really change.
 //
@@ -1170,15 +1255,16 @@ export const actions = actionTree(
     },
     async onChatEvent({ state }, { event, data }) {
       const {
-        chat: {
-          id: chatId,
-          owner_project_id
-        },
+        chat: chatData,
         message,
+        message_removed_id,
         event_type,
         type,
         codx_path
       } = data
+
+      const chatId = chatData?.id
+      const owner_project_id = chatData?.owner_project_id
 
       if (event_type === 'error') {
         $storex.ui.addNotification({ text: message, type: event_type })
@@ -1208,12 +1294,28 @@ export const actions = actionTree(
           return
         }
 
-        if (type === 'changed' || !state.chats[chatId]) {
+        // ── Apply the payload carried by the event, WITHOUT a request ─────────
+        // The backend sends the changed data with the event (see
+        // `EventManager.chat_event` / `message_event`):
+        //   'chat-event'    → the chat document (messages excluded)
+        //   'message-event' → the single message that changed (one per chunk
+        //                     while the assistant streams)
+        // Merging it here is what removes the request that used to be fired for
+        // every change — and, above all, for every streamed message chunk.
+        const appliedChat = applyChatEventDocument(state, chatData)
+        const appliedMessage = applyChatEventMessage(state, chatId, message)
+        const appliedRemoval = removeChatEventMessage(state, chatId, message_removed_id)
+
+        // Fallback for a payload-less event (an older server, or a chat the
+        // client has no summary of): fetch it exactly once.
+        const hasPayload = appliedChat || appliedMessage || appliedRemoval
+        if (!hasPayload && (type === 'changed' || !state.chats[chatId])) {
           await $storex.chats.reloadChat({ id: chatId, owner_project_id })
         }
+
         const chat = state.chats[chatId]
-        if (chat && message) {
-          const allMessagesDone = chat.messages.every(m => m.done)
+        if (chat && (message || appliedRemoval)) {
+          const allMessagesDone = (chat.messages || []).every(m => m.done)
           if (allMessagesDone) {
             $storex.chats.setChatUpdating({ chatId, updating: false })
           } else {

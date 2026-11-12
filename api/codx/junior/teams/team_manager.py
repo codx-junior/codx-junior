@@ -32,6 +32,12 @@ import shutil
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from codx.junior.events.collection_events import (
+    ACTION_DELETED,
+    ACTION_UPSERTED,
+    COLLECTION_TEAMS,
+    emit_collection_event
+)
 from codx.junior.model.team import Team, TeamMember
 from codx.junior.profiles.profile_manager import ProfileManager
 from codx.junior.settings import CODXJuniorSettings
@@ -242,6 +248,16 @@ class TeamManager:
             file.write(json.dumps(definition, indent=2))
 
         logger.info("Saved team '%s' at %s", team.name, team.path)
+
+        # Every client caches the team list: announce the change so the other
+        # tabs/users reload it. Best effort: the team is already persisted.
+        emit_collection_event(
+            COLLECTION_TEAMS,
+            ACTION_UPSERTED,
+            {"name": team.name},
+            settings=self.settings,
+            source="team_manager",
+        )
         return team
 
     def delete_team(self, name: str) -> bool:
@@ -267,6 +283,15 @@ class TeamManager:
             os.remove(legacy_path)
             logger.info("Deleted legacy team file %s", legacy_path)
             deleted = True
+
+        if deleted:
+            emit_collection_event(
+                COLLECTION_TEAMS,
+                ACTION_DELETED,
+                {"name": name},
+                settings=self.settings,
+                source="team_manager",
+            )
 
         return deleted
 

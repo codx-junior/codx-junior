@@ -22,6 +22,7 @@ from codx.junior.utils.utils import (
 )
 
 from codx.junior.ai import AI
+from codx.junior.runtime import runtime_file
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.knowledge.knowledge_loader import KnowledgeLoader
 from codx.junior.knowledge.knowledge_prompts import KnowledgePrompts
@@ -48,7 +49,9 @@ class Knowledge:
         self.knowledge_keywords = KnowledgeKeywords(settings=settings)
         self.loader = KnowledgeLoader(settings=settings)
         self.wiki_manager = WikiManager(settings=settings)
-        self.summary_file_path = os.path.join(self.settings.codx_path, SUMMARY_FILE_NAME)
+        # Generated summary cache: it lives in the runtime folder, not in the
+        # repository working tree.
+        self.summary_file_path = runtime_file(self.settings.codx_path, SUMMARY_FILE_NAME)
 
     def get_ai(self):
         if not self.ai:

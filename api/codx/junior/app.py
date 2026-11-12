@@ -99,7 +99,6 @@ from codx.junior.project.project_discover import (
 from codx.junior.project.project_manager import (
     create_project,
 )
-
 from codx.junior.utils.utils import (
     exec_command,
 )
@@ -393,6 +392,20 @@ async def api_save_settings(request: Request):
     settings = await request.json()
     settings = CODXJuniorSettings.from_json(settings).save_project()
     find_all_projects()
+    # The saved settings ARE the catalogue item of the project (name, icon,
+    # repo…): announce it so every client refreshes its project list. This
+    # endpoint runs without a project session, so the event is built from the
+    # saved settings. Best effort: the settings are already persisted.
+    emit_collection_event(
+        COLLECTION_PROJECTS,
+        ACTION_UPSERTED,
+        {
+            "project_id": settings.project_id,
+            "project_name": settings.project_name,
+        },
+        settings=settings,
+        source="api_save_settings",
+    )
     # Keep the Traefik project-rules snapshot in sync immediately; otherwise the
     # HTTP provider would only see the new rules after the next discovery scan.
     try:

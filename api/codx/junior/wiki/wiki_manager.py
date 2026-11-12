@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from aiofiles import open as aio_open
 
+from codx.junior.runtime import WIKI_SETTINGS_FILE, runtime_file
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.utils.utils import (
     exec_command,
@@ -121,7 +122,11 @@ class WikiManager:
         self.loader = KnowledgeLoader(settings=settings)
         self.is_wiki_active = self.settings.project_wiki or False
         self.wiki_home_path = os.path.join(self.wiki_path, "home.md")
-        self.wiki_settings_path = os.path.join(self.settings.codx_path, "wiki_settings.json")
+        # Generated category index: a cache in the runtime folder, never a
+        # file of the repository working tree.
+        self.wiki_settings_path = runtime_file(
+            self.settings.codx_path, WIKI_SETTINGS_FILE
+        )
         self.site_builder = WikiSiteBuilder(settings=settings)
         self._ai_instance: Optional[AI] = None
         self._ai_lock = threading.RLock()

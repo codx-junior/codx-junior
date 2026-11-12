@@ -70,6 +70,16 @@ function baseName(path) {
   return normalizePath(path).split('/').filter(Boolean).pop() || ''
 }
 
+/**
+ * Normalize a single path or a list of paths into a list of non-empty paths.
+ *
+ * @param {string|string[]} paths - One path or a list of paths.
+ * @returns {string[]} The paths, without empty entries.
+ */
+function toPathList(paths) {
+  return (Array.isArray(paths) ? paths : [paths]).filter(Boolean)
+}
+
 export const filesModule = (API) => ({
   list(path) {
     return API.get(`/api/files?path=${encodeURIComponent(path)}`)
@@ -305,5 +315,106 @@ export const filesModule = (API) => ({
           return result
         })
     }))
+  },
+
+  /**
+   * Copy files/folders into a folder (server side, so folders are copied recursively).
+   *
+   * The backend never overwrites silently: a destination that is already taken
+   * is renamed with a number (`notes.md` -> `notes (1).md`), so pasting the same
+   * file twice keeps both. Pass `autoRename: false` to get the collision in
+   * `conflicts` (HTTP 200) and retry with `overwrite: true`.
+   *
+   * @param {string|string[]} sources - Path(s) to copy.
+   * @param {string} targetDir - Destination folder.
+   * @param {Object} [options] - Options.
+   * @param {boolean} [options.overwrite] - Replace the existing destinations.
+   * @param {string} [options.nameSuffix] - Suffix for the copied name (' (copy)').
+   * @param {boolean} [options.autoRename] - Number a colliding name (default true).
+   * @returns {Promise<Object>} `{ items, conflicts, failed, total }`.
+   */
+  copy(sources, targetDir, { overwrite = false, nameSuffix = '', autoRename = true } = {}) {
+    const paths = toPathList(sources)
+    return API.post(`/api/files/copy`, {
+      sources: paths,
+      target_dir: targetDir,
+      overwrite,
+      name_suffix: nameSuffix,
+      auto_rename: autoRename
+    }).then((result) => {
+      paths.forEach((path) => invalidatePath(API, path))
+      ;(result?.items || []).forEach((item) => invalidatePath(API, item.destination))
+      return result
+    })
+  },
+
+  /**
+   * Move files/folders into a folder in a single round-trip.
+   *
+   * Same payload as `copy`: every entry is handled on its own, so a conflicting
+   * name does not stop the rest of the selection.
+   *
+   * @param {string|string[]} sources - Path(s) to move.
+   * @param {string} targetDir - Destination folder.
+   * @param {Object} [options] - Options.
+   * @param {boolean} [options.overwrite] - Replace the existing destinations.
+   * @returns {Promise<Object>} `{ items, conflicts, failed, total }`.
+   */
+  moveMany(sources, targetDir, { overwrite = false } = {}) {
+    const paths = toPathList(sources)
+    return API.post(`/api/files/move`, {
+      sources: paths,
+      target_dir: targetDir,
+      overwrite
+    }).then((result) => {
+      paths.forEach((path) => invalidatePath(API, path))
+      ;(result?.items || []).forEach((item) => invalidatePath(API, item.destination))
+      return result
+    })
+  },
+
+  /**
+   * Compress files/folders into a zip / tar archive.
+   *
+   * Supported formats: `zip`, `tar`, `tar.gz`, `tgz`, `tar.bz2`, `tbz2`,
+   * `tar.xz`, `txz`. The extension of `archivePath` decides when it is given.
+   *
+   * @param {string|string[]} sources - Path(s) to compress.
+   * @param {Object} [options] - Options.
+   * @param {string} [options.archivePath] - Destination archive (derived when omitted).
+   * @param {string} [options.format] - Archive format.
+   * @param {boolean} [options.overwrite] - Replace an existing archive.
+   * @returns {Promise<Object>} `{ archive_path, abs_archive_path, format, size }`.
+   */
+  archive(sources, { archivePath = null, format = null, overwrite = false } = {}) {
+    return API.post(`/api/files/archive`, {
+      sources: toPathList(sources),
+      archive_path: archivePath,
+      format,
+      overwrite
+    }).then((result) => {
+      invalidatePath(API, result?.abs_archive_path)
+      return result
+    })
+  },
+
+  /**
+   * Extract a zip / tar archive.
+   *
+   * @param {string} path - Archive to extract.
+   * @param {Object} [options] - Options.
+   * @param {string} [options.targetDir] - Destination folder (the archive folder by default).
+   * @param {boolean} [options.overwrite] - Extract over the existing files.
+   * @returns {Promise<Object>} `{ extracted, target_dir, abs_target_dir, format, files }`.
+   */
+  extract(path, { targetDir = null, overwrite = false } = {}) {
+    return API.post(`/api/files/extract`, {
+      path,
+      target_dir: targetDir,
+      overwrite
+    }).then((result) => {
+      invalidatePath(API, result?.abs_target_dir)
+      return result
+    })
   }
 })

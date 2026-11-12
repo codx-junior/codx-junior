@@ -138,6 +138,12 @@ from codx.junior.profiling.profiler import profile_function
 
 from codx.junior.chat.chat_export import ChatExport, ExportedDocument
 
+from codx.junior.events.collection_events import (
+    ACTION_CHANGED,
+    ACTION_DELETED,
+    COLLECTION_BOARDS,
+    emit_collection_event
+)
 from codx.junior.events.event_manager import EventManager
 
 from codx.junior.project.project_discover import find_project_by_id
@@ -921,6 +927,52 @@ class ChatManager:
             logger.warning("Could not resolve root_id for chat '%s': %s", chat.id, ex)
             return chat.root_id
 
+    def _emit_message_event(self, chat: Chat, message: Message) -> None:
+        """
+        Announce a single message change to connected clients.
+
+        The event carries the WHOLE message, so a client patches it in place
+        instead of re-fetching the chat (see
+        :meth:`codx.junior.events.event_manager.EventManager.message_event`).
+        During an AI turn this is the hot path: every streamed chunk is
+        persisted and announced here.
+
+        Best effort: a notification failure must never break persistence.
+
+        :param chat: The chat the message belongs to.
+        :param message: The message that changed.
+        """
+        try:
+            self.event_manager.message_event(chat=chat, message=message)
+        except Exception:  # pragma: no cover - notifications are best effort
+            logger.exception(
+                "Could not emit message event for chat '%s' message '%s'",
+                getattr(chat, "id", None),
+                getattr(message, "doc_id", None),
+            )
+
+    def _emit_message_removed_event(self, chat: Chat, message_doc_id: str) -> None:
+        """
+        Announce that a message was removed (best effort).
+
+        A removal has no content to stream, so it needs its own event: without
+        it another client would keep the deleted message until the next full
+        reload.
+
+        :param chat: The chat the message was removed from.
+        :param message_doc_id: ``doc_id`` of the removed message.
+        """
+        try:
+            self.event_manager.message_removed_event(
+                chat=chat, message_doc_id=message_doc_id
+            )
+        except Exception:  # pragma: no cover - notifications are best effort
+            logger.exception(
+                "Could not emit message removed event for chat '%s' message '%s'",
+                getattr(chat, "id", None),
+                message_doc_id,
+            )
+
     def _persist_chat_messages(
         self,
         chat: Chat,
@@ -988,7 +1040,9 @@ class ChatManager:
             message.doc_id,
             message.role,
         )
-        return self._persist_chat_messages(chat, cost_message=message)
+        saved = self._persist_chat_messages(chat, cost_message=message)
+        self._emit_message_event(chat=chat, message=message)
+        return saved
 
     def update_message(self, chat: Chat, message: Message) -> Chat:
         """
@@ -1024,7 +1078,9 @@ class ChatManager:
             message.doc_id,
             found,
         )
-        return self._persist_chat_messages(chat, cost_message=message)
+        saved = self._persist_chat_messages(chat, cost_message=message)
+        self._emit_message_event(chat=chat, message=message)
+        return saved
 
     def update_chat_metadata(self, chat: Chat, metadata: dict) -> Chat:
         """
@@ -1073,7 +1129,9 @@ class ChatManager:
         logger.info(
             "remove_message: chat='%s' message='%s'", chat.id, message_doc_id
         )
-        return manager.save_chat(chat=chat)
+        saved = manager.save_chat(chat=chat)
+        self._emit_message_removed_event(chat=saved, message_doc_id=message_doc_id)
+        return saved
 
     # -------------------------------------------------------------------------
     # Full-chat persistence
@@ -1329,6 +1387,16 @@ class ChatManager:
             shutil.rmtree(board_path, ignore_errors=True)
         self.kanban_store.remove_board(kanban_title)
 
+        # The board catalogue is cached by every client: announce the deletion
+        # so the other tabs/users reload it (best effort).
+        emit_collection_event(
+            COLLECTION_BOARDS,
+            ACTION_DELETED,
+            {"name": kanban_title, "title": kanban_title},
+            settings=self.settings,
+            source="chat_manager",
+        )
+
     def chat_count(self) -> int:
         """Return the total number of chat files on disk."""
         return len(self.chat_paths())
@@ -1437,6 +1505,17 @@ class ChatManager:
         :param kanban: Kanban dict to save.
         """
         self.kanban_store.save(kanban)
+
+        # One request rewrites the whole catalogue (boards + their columns), so
+        # the event is intentionally coarse: clients reload it and work out the
+        # differences. Best effort: the document is already persisted.
+        emit_collection_event(
+            COLLECTION_BOARDS,
+            ACTION_CHANGED,
+            {"boards": list(((kanban or {}).get("boards") or {}).keys())},
+            settings=self.settings,
+            source="chat_manager",
+        )
 
     # -------------------------------------------------------------------------
     # Chat querying

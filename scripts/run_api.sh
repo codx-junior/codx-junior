@@ -35,7 +35,7 @@ fi
 
 if [ "$DEBUG" == "" ]; then
   echo "Running PROD api"
-  uvicorn codx.junior.main:app --workers ${WEB_CONCURRENCY:-8} --host 0.0.0.0 --port $API_PORT
+  uvicorn codx.junior.main:app --workers ${WEB_CONCURRENCY:-1} --host 0.0.0.0 --port $API_PORT
 elif [ "$CODX_JUNIOR_API_RELOAD" == "1" ] || [ "$CODX_JUNIOR_API_RELOAD" == "true" ]; then
   # Opt-in source reload for development ONLY. Never enable it when the AI
   # agents edit the project itself: every file change restarts uvicorn and
@@ -46,5 +46,5 @@ else
   # DEBUG=1 only raises logging/verbosity here: the API is supervised by
   # supervisor/Docker and must not restart itself while a turn is running.
   echo "Running DEBUG api (no source reload; set CODX_JUNIOR_API_RELOAD=1 to enable)"
-  uvicorn codx.junior.main:app --workers ${WEB_CONCURRENCY:-8} --host 0.0.0.0 --port $API_PORT
+  uvicorn codx.junior.main:app --workers ${WEB_CONCURRENCY:-1} --host 0.0.0.0 --port $API_PORT
 fi

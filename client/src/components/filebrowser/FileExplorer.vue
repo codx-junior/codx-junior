@@ -111,10 +111,30 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
       </div>
     </div>
 
+    <!-- Clipboard: what copy / cut left waiting for a paste (Ctrl+V) -->
+    <div
+      class="alert py-1 px-2 flex items-center gap-2 text-xs bg-base-200 border border-base-300 rounded-lg"
+      v-if="hasClipboard"
+    >
+      <i :class="clipboard.mode === 'cut' ? 'fa-solid fa-scissors' : 'fa-solid fa-clone'"></i>
+      <span class="flex-1 truncate">
+        {{ clipboard.paths.length }} item{{ clipboard.paths.length > 1 ? 's' : '' }}
+        {{ clipboard.mode === 'cut' ? 'cut' : 'copied' }} — paste into the folder being viewed
+      </span>
+      <button class="btn btn-xs btn-outline btn-primary gap-1" @click="pasteSelection">
+        <i class="fa-solid fa-paste"></i> Paste here
+      </button>
+      <button class="btn btn-xs btn-ghost" title="Clear the clipboard" @click="clearClipboard">
+        <i class="fa-regular fa-circle-xmark"></i>
+      </button>
+    </div>
+
     <!-- Directory tree listing -->
     <div 
       ref="listContainer"
-      class="grow overflow-auto border border-base-100 rounded-lg relative"
+      tabindex="0"
+      class="grow overflow-auto border border-base-100 rounded-lg relative outline-none focus-visible:ring-1 focus-visible:ring-primary/40"
+      @keydown="onKeyDown"
       @mousedown="onSelectionMouseDown"
       @dragover.prevent="onDragOver"
       @dragleave.prevent="onDragLeave"
@@ -440,7 +460,21 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
       :canCreateProject="canCreateProject"
       :gitAvailable="gitAvailable"
       :gitStatus="contextGitStatus"
+      :clipboardCount="hasClipboard ? clipboard.paths.length : 0"
+      :clipboardMode="clipboard ? clipboard.mode : 'copy'"
+      :canExtract="canExtract"
+      :isSingleFile="isSingleFileSelected"
       @upload="handleContextUpload"
+      @upload-folder="handleContextUploadFolder"
+      @copy="handleContextCopy"
+      @cut="handleContextCut"
+      @paste="handleContextPaste"
+      @duplicate="handleContextDuplicate"
+      @copy-to="handleContextCopyTo"
+      @compress="handleContextCompress"
+      @extract="handleContextExtract"
+      @download="handleContextDownload"
+      @refresh="refresh"
       @create="handleContextCreate"
       @create-project="handleContextCreateProject"
       @rename="handleContextRename"
@@ -461,12 +495,28 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
       @change="onUploadInputChange"
     />
 
-    <!-- Create File/Folder Dialog -->
+    <!-- Hidden picker used by the "Upload folder" context menu action: the
+         browser reports the relative subfolders through webkitRelativePath -->
+    <input
+      ref="uploadFolderInput"
+      type="file"
+      webkitdirectory
+      directory
+      multiple
+      class="hidden"
+      @change="onUploadFolderChange"
+    />
+
+    <!-- Create file/folder and rename dialog: a single name field, also used
+         instead of the native prompt() — see handleContextRename -->
     <CreateFileDialog
       :isVisible="showCreateDialog"
       :isDir="createDialogIsDir"
+      :mode="createDialogMode"
+      :initialName="createDialogInitialName"
       @create="onCreateDialogSubmit"
-      @cancel="showCreateDialog = false"
+      @rename="onRenameDialogSubmit"
+      @cancel="closeCreateDialog"
     />
 
     <!-- Confirmation: the shared project dialog (base <modal>), replacing the
@@ -491,6 +541,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
       :isVisible="showMoveDialog"
       :sources="moveSources"
       :startPath="getAbsolutePath(currentPath)"
+      :mode="moveDialogMode"
       @move="onMoveConfirm"
       @cancel="showMoveDialog = false"
     />
@@ -539,6 +590,12 @@ const GIT_STATUS_RANK = { '?': 1, A: 2, C: 3, R: 4, T: 5, D: 6, M: 7, U: 8 }
 
 // Toolbar view modes, in cycling order
 const VIEW_MODES = ['list', 'grid', 'preview']
+
+// Archive formats the backend can create / extract (see files.archive and
+// files.extract). Longest first: a name is matched against the whole list.
+const ARCHIVE_EXTENSIONS = [
+  '.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.tbz2', '.txz', '.zip', '.tar'
+]
 
 // Delay used to coalesce the backend file events: a single save emits several
 // of them (write + reload) and a bulk operation emits one per file.
@@ -593,8 +650,19 @@ export default {
       gitRepoRoot: null,
       showCreateDialog: false,
       createDialogIsDir: false,
+      // 'create' | 'rename': the same dialog asks for the new name
+      createDialogMode: 'create',
+      createDialogInitialName: '',
+      // Entry being renamed, set by handleContextRename
+      renameSourcePath: '',
+      renameSourceName: '',
       showMoveDialog: false,
       moveSources: [],
+      // 'move' | 'copy' for the folder picker (see MoveDialog)
+      moveDialogMode: 'move',
+      // Copy / cut clipboard: { mode: 'copy' | 'cut', paths: [...] }. Paste
+      // reads it, so a copy survives navigating to another folder.
+      clipboard: null,
       // Slide show overlay state (see openSlideShow)
       showSlideShow: false,
       slideShowFiles: [],
@@ -753,6 +821,18 @@ export default {
       if (this.selectedEntries.length === 1) return this.gitStatusFor(this.selectedEntries[0])
       return this.gitStatusForPath(this.getAbsolutePath(this.currentPath))
     },
+    // True when the copy / cut clipboard holds something to paste
+    hasClipboard() {
+      return !!this.clipboard?.paths?.length
+    },
+    // Single selected file: the target of Download and Extract
+    isSingleFileSelected() {
+      return this.selectedEntries.length === 1 && !this.selectedEntries[0].is_dir
+    },
+    // The single selected entry is an archive the backend can extract
+    canExtract() {
+      return this.isSingleFileSelected && this.isArchiveName(this.selectedEntries[0].name)
+    },
     visibleEntries() {
       return this.entries
         .filter(e => e.name?.trim())
@@ -797,6 +877,17 @@ export default {
     },
     getFileExtension(fileName) {
       return fileName.split('.').pop()?.toLowerCase() || ''
+    },
+    // True when the name is an archive the backend can extract
+    isArchiveName(name) {
+      const lower = String(name || '').toLowerCase()
+      return ARCHIVE_EXTENSIONS.some(extension => lower.endsWith(extension))
+    },
+    // Name of the archive without its (compound) extension: `a.tar.gz` → `a`
+    archiveBaseName(name) {
+      const lower = String(name || '').toLowerCase()
+      const extension = ARCHIVE_EXTENSIONS.find(item => lower.endsWith(item))
+      return extension ? String(name).slice(0, name.length - extension.length) : String(name || '')
     },
     getFileIcon(entry) {
       if (entry.is_dir) {
@@ -996,6 +1087,74 @@ export default {
     clearSelection() {
       this.selectedEntries = []
       this.lastSelectedIndex = null
+    },
+    // Ctrl+A: every entry of the current listing becomes selected
+    selectAllEntries() {
+      this.selectedEntries = [...this.visibleEntries]
+      this.lastSelectedIndex = this.visibleEntries.length - 1
+    },
+    /**
+     * Keyboard shortcuts of the explorer (the listing container is focusable).
+     *
+     * Ctrl/Cmd + C / X / V / A, Delete, F2 (rename), F5 (refresh), Escape
+     * (clear) and Enter (open the first selected entry). Keys typed into an
+     * input, a textarea or an editor are never intercepted, and nothing is
+     * handled while a dialog of the explorer is open.
+     */
+    onKeyDown(event) {
+      if (event.target?.closest?.('input, textarea, select, [contenteditable="true"]')) return
+      if (this.showCreateDialog || this.showMoveDialog || this.confirmRequest || this.showSlideShow) return
+
+      const meta = event.ctrlKey || event.metaKey
+      const key = event.key
+      const lower = key.length === 1 ? key.toLowerCase() : key
+
+      if (meta && lower === 'c') {
+        event.preventDefault()
+        this.setClipboard('copy')
+        return
+      }
+      if (meta && lower === 'x') {
+        event.preventDefault()
+        this.setClipboard('cut')
+        return
+      }
+      if (meta && lower === 'v') {
+        event.preventDefault()
+        this.pasteSelection()
+        return
+      }
+      if (meta && lower === 'a') {
+        event.preventDefault()
+        this.selectAllEntries()
+        return
+      }
+      if (key === 'Delete') {
+        event.preventDefault()
+        this.handleContextDelete()
+        return
+      }
+      if (key === 'F2') {
+        event.preventDefault()
+        this.handleContextRename()
+        return
+      }
+      if (key === 'F5') {
+        event.preventDefault()
+        this.refresh()
+        return
+      }
+      if (key === 'Escape') {
+        this.clearSelection()
+        this.closeContextMenu()
+        return
+      }
+      if (key === 'Enter') {
+        const entry = this.selectedEntries[0]
+        if (!entry) return
+        event.preventDefault()
+        this.handleEntryClick(entry, { ctrlKey: false, metaKey: false, shiftKey: false })
+      }
     },
     /**
      * Entry click.
@@ -1447,9 +1606,90 @@ export default {
         input.value = ''
       }
     },
+    // "Upload folder": same picker, but the whole folder tree is recreated
+    handleContextUploadFolder() {
+      this.closeContextMenu()
+      this.$refs.uploadFolderInput?.click()
+    },
+    async onUploadFolderChange(event) {
+      const input = event.target
+      try {
+        await this.uploadFolderFiles(input.files)
+      } finally {
+        input.value = ''
+      }
+    },
+    /**
+     * Upload a picked folder keeping its subfolders.
+     *
+     * The browser reports each file's location inside the picked folder through
+     * `webkitRelativePath` (`folder/sub/file.txt`). The folders are created first
+     * (create_file also creates the missing parents) and every file is then
+     * uploaded into its own folder, so the tree lands under the folder being
+     * viewed instead of flattening every file into it.
+     */
+    async uploadFolderFiles(fileList) {
+      const files = Array.from(fileList || [])
+      if (!files.length) return
+
+      const targetPath = this.getAbsolutePath(this.currentPath)
+      const relativeDir = (file) => (file.webkitRelativePath || file.name)
+        .split('/')
+        .slice(0, -1)
+        .join('/')
+
+      const directories = [...new Set(files.map(relativeDir).filter(Boolean))]
+        // Parents before children, so a missing parent is never an error
+        .sort((a, b) => a.split('/').length - b.split('/').length)
+
+      this.isUploading = true
+      this.uploadProgress = 0
+      this.uploadProgressBytes = 0
+      this.uploadTotalBytes = files.reduce((sum, file) => sum + file.size, 0)
+      this.uploadingFileName = `${files.length} file${files.length > 1 ? 's' : ''}`
+      this.error = null
+
+      try {
+        for (const directory of directories) {
+          try {
+            await this.$api.files.create(this.normalizePath(`${targetPath}/${directory}`), true)
+          } catch (ex) {
+            // Already there: the upload below is what matters
+          }
+        }
+
+        let uploadedBytes = 0
+        for (const file of files) {
+          const directory = relativeDir(file)
+          await this.$api.files.upload(
+            file,
+            directory ? this.normalizePath(`${targetPath}/${directory}`) : targetPath
+          )
+          uploadedBytes += file.size
+          this.uploadProgressBytes = uploadedBytes
+          this.uploadProgress = Math.round((uploadedBytes / (this.uploadTotalBytes || 1)) * 100)
+        }
+
+        this.$ui.addNotification({
+          text: `Uploaded ${files.length} file${files.length > 1 ? 's' : ''}`
+        })
+        await this.refresh()
+      } catch (error) {
+        console.error('Folder upload error', error)
+        this.error = `Failed to upload the folder: ${error?.response?.data?.detail || error.message}`
+      } finally {
+        this.isUploading = false
+        this.uploadProgress = 0
+        this.uploadProgressBytes = 0
+        this.uploadTotalBytes = 0
+        this.uploadingFileName = ''
+      }
+    },
     handleContextCreate({ isDir }) {
       this.closeContextMenu()
       this.createDialogIsDir = isDir
+      this.createDialogMode = 'create'
+      this.createDialogInitialName = ''
       this.showCreateDialog = true
     },
     /**
@@ -1489,8 +1729,14 @@ export default {
         this.error = `Could not open the new project dialog: ${error.message}`
       }
     },
-    async onCreateDialogSubmit({ name }) {
+    // Hide the dialog and forget the mode it was opened with
+    closeCreateDialog() {
       this.showCreateDialog = false
+      this.createDialogMode = 'create'
+      this.createDialogInitialName = ''
+    },
+    async onCreateDialogSubmit({ name }) {
+      this.closeCreateDialog()
       const parentPath = this.getAbsolutePath(this.currentPath)
       const newPath = this.normalizePath(`${parentPath}/${name}`)
       
@@ -1576,21 +1822,33 @@ export default {
       if (this.selectedEntries.length !== 1) return
       
       const entry = this.selectedEntries[0]
-      const oldName = entry.name
-      const newName = prompt('Enter new name:', oldName)
-      
-      if (!newName || newName === oldName) return
-      
-      const oldPath = this.entryPath(entry)
-      const parentPath = oldPath.substring(0, oldPath.lastIndexOf('/'))
-      const newPath = this.normalizePath(`${parentPath}/${newName}`)
-      
+      // Ask for the new name with the shared dialog, never the native prompt()
+      this.renameSourcePath = this.entryPath(entry)
+      this.renameSourceName = entry.name
+      this.createDialogIsDir = !!entry.is_dir
+      this.createDialogMode = 'rename'
+      this.createDialogInitialName = entry.name
+      this.showCreateDialog = true
+    },
+    /**
+     * Rename submitted by the create dialog (single name field).
+     *
+     * The dialog replaces the native `prompt()` that used to ask for the name.
+     */
+    async onRenameDialogSubmit({ name }) {
+      const oldPath = this.renameSourcePath
+      const oldName = this.renameSourceName
+      this.closeCreateDialog()
+      if (!oldPath || !name || name === oldName) return
+
+      const newPath = this.normalizePath(`${this.parentFolderPath(oldPath)}/${name}`)
+
       try {
         await this.$api.files.rename(oldPath, newPath)
         await this.refresh()
       } catch (error) {
         console.error('Error renaming file', error)
-        this.error = `Failed to rename file: ${error.message}`
+        this.error = `Failed to rename: ${error?.response?.data || error.message}`
       }
     },
     // Opens the folder picker for the current selection (one or many entries)
@@ -1598,6 +1856,7 @@ export default {
       this.closeContextMenu()
       if (!this.selectedEntries.length) return
       this.moveSources = this.selectedEntries.map(entry => this.entryPath(entry))
+      this.moveDialogMode = 'move'
       this.showMoveDialog = true
     },
     /**
@@ -1657,6 +1916,299 @@ export default {
         text: `Copied ${relative ? 'relative' : 'absolute'} path${paths.length > 1 ? 's' : ''}`
       })
     },
+
+    // ── Clipboard: copy / cut / paste / duplicate ───────────────────────────
+    /**
+     * Remember the selection for a later paste.
+     *
+     * Nothing is transferred here: the paths stay in `clipboard` until the user
+     * pastes them, so a copy survives navigating to another folder.
+     */
+    setClipboard(mode) {
+      const paths = this.selectedEntries.map(entry => this.entryPath(entry))
+      if (!paths.length) return
+      this.clipboard = { mode, paths }
+      this.$ui.addNotification({
+        text: `${mode === 'cut' ? 'Cut' : 'Copied'} ${paths.length} item${paths.length > 1 ? 's' : ''}`
+      })
+    },
+    handleContextCopy() {
+      this.closeContextMenu()
+      this.setClipboard('copy')
+    },
+    handleContextCut() {
+      this.closeContextMenu()
+      this.setClipboard('cut')
+    },
+    clearClipboard() {
+      this.clipboard = null
+    },
+    // Context menu / banner "Paste": the destination is the folder being viewed
+    handleContextPaste() {
+      this.closeContextMenu()
+      this.pasteSelection()
+    },
+    async pasteSelection() {
+      const clipboard = this.clipboard
+      if (!clipboard?.paths?.length) return
+
+      const target = this.getAbsolutePath(this.currentPath)
+      const targetPath = this.normalizePath(target)
+      const mode = clipboard.mode === 'cut' ? 'move' : 'copy'
+      // Cutting and pasting inside the same folder has nothing to move
+      const paths = mode === 'move'
+        ? clipboard.paths.filter(path => this.normalizePath(this.parentFolderPath(path)) !== targetPath)
+        : clipboard.paths
+      if (!paths.length) {
+        this.$ui.addNotification({ text: 'The items are already in this folder' })
+        this.clearClipboard()
+        return
+      }
+      const result = await this.transferEntries(paths, target, { mode })
+      // A cut clipboard is consumed once the move went through; a copy stays
+      // available so the same selection can be pasted into several folders.
+      if (mode === 'move' && result) this.clearClipboard()
+      if (!result) return
+      this.clearSelection()
+      await this.refresh()
+    },
+    // "Duplicate": copy the selection into the folder being viewed; a taken
+    // name is numbered by the backend ("notes (1).md")
+    async handleContextDuplicate() {
+      this.closeContextMenu()
+      if (!this.selectedEntries.length) return
+      const sources = this.selectedEntries.map(entry => this.entryPath(entry))
+      const result = await this.transferEntries(
+        sources,
+        this.getAbsolutePath(this.currentPath),
+        { mode: 'copy' }
+      )
+      if (!result) return
+      this.clearSelection()
+      await this.refresh()
+    },
+    // "Copy to…": same folder picker as Move, in copy mode
+    handleContextCopyTo() {
+      this.closeContextMenu()
+      if (!this.selectedEntries.length) return
+      this.moveSources = this.selectedEntries.map(entry => this.entryPath(entry))
+      this.moveDialogMode = 'copy'
+      this.showMoveDialog = true
+    },
+    /**
+     * Copy or move a list of paths into `targetDir`, asking before overwriting.
+     *
+     * Copies never clash: the backend numbers a taken destination
+     * (`notes (1).md`), so pasting the same file twice keeps both. A move
+     * reports the clashing names in `conflicts` (HTTP 200) and the batch is
+     * retried with `overwrite=true` once the user confirms in the dialog.
+     *
+     * @param {string[]} sources - Paths to transfer.
+     * @param {string} targetDir - Destination folder.
+     * @param {Object} [options] - Options.
+     * @param {string} [options.mode] - 'copy' (default) or 'move'.
+     * @param {string} [options.nameSuffix] - Suffix added to the copied names.
+     * @returns {Promise<Object|null>} The backend result, null on failure.
+     */
+    async transferEntries(sources, targetDir, { mode = 'copy', nameSuffix = '' } = {}) {
+      const paths = (sources || []).filter(Boolean)
+      if (!paths.length) return null
+
+      const isMove = mode === 'move'
+      const verb = isMove ? 'Moved' : 'Copied'
+      const send = (overwrite) => isMove
+        ? this.$api.files.moveMany(paths, targetDir, { overwrite })
+        : this.$api.files.copy(paths, targetDir, { overwrite, nameSuffix })
+
+      this.error = null
+      try {
+        let result = await send(false)
+
+        const conflicts = result?.conflicts || []
+        if (conflicts.length) {
+          const accepted = await this.confirmAction({
+            title: 'Overwrite items?',
+            message: `${conflicts.length} item${conflicts.length > 1 ? 's' : ''} in the destination folder ${conflicts.length > 1 ? 'have' : 'has'} the same name${conflicts.length > 1 ? 's' : ''}.`,
+            hint: 'The existing items are replaced and cannot be recovered.',
+            icon: 'fa-triangle-exclamation',
+            iconClass: 'text-warning',
+            confirmLabel: 'Overwrite',
+            confirmClass: 'btn-warning'
+          })
+          if (!accepted) {
+            this.$ui.addNotification({
+              text: `Skipped ${conflicts.length} existing item${conflicts.length > 1 ? 's' : ''}`
+            })
+            return result
+          }
+          result = await send(true)
+        }
+
+        const done = (result?.items || []).length
+        const failed = (result?.failed || []).length
+        this.$ui.addNotification({
+          text: `${verb} ${done} item${done === 1 ? '' : 's'} to ${this.relativeFolderLabel(targetDir)}`
+        })
+        if (failed) {
+          this.error = `Could not transfer ${failed} item${failed > 1 ? 's' : ''}`
+        }
+        return result
+      } catch (error) {
+        console.error(`Error ${isMove ? 'moving' : 'copying'} files`, error)
+        this.error = `Failed to ${isMove ? 'move' : 'copy'} items: ${error?.response?.data?.detail || error.message}`
+        return null
+      }
+    },
+    // `/src/components` style label of a folder, for the notifications
+    relativeFolderLabel(path) {
+      const relative = this.getRelativePath(path)
+      return relative === '.' ? '/' : `/${relative}`
+    },
+    // `/src/main.js` style label of a file, for the notifications
+    relativePathLabel(path) {
+      const relative = this.getRelativePath(path)
+      return relative === '.' ? path : `/${relative}`
+    },
+
+    // ── Archives ────────────────────────────────────────────────────────────
+    /**
+     * Compress the selection into an archive created next to it.
+     *
+     * The format comes from the Compress submenu (zip / tar.gz / tar) and the
+     * name is derived by the backend, so the archive lands beside the entries.
+     */
+    async handleContextCompress({ format }) {
+      this.closeContextMenu()
+      const sources = this.selectedEntries.map(entry => this.entryPath(entry))
+      if (!sources.length) return
+
+      try {
+        const result = await this.$api.files.archive(sources, { format })
+        this.$ui.addNotification({
+          text: `Created ${this.relativePathLabel(result.abs_archive_path || result.archive_path)}`
+        })
+        this.clearSelection()
+        await this.refresh()
+      } catch (error) {
+        if (error?.response?.status === 409) {
+          const accepted = await this.confirmAction({
+            title: 'Overwrite archive?',
+            message: 'An archive with the same name already exists in this folder.',
+            hint: 'The existing archive is replaced.',
+            icon: 'fa-triangle-exclamation',
+            iconClass: 'text-warning',
+            confirmLabel: 'Overwrite',
+            confirmClass: 'btn-warning'
+          })
+          if (!accepted) return
+          try {
+            const result = await this.$api.files.archive(sources, { format, overwrite: true })
+            this.$ui.addNotification({
+              text: `Created ${this.relativePathLabel(result.abs_archive_path || result.archive_path)}`
+            })
+            this.clearSelection()
+            await this.refresh()
+          } catch (retryError) {
+            console.error('Error creating archive', retryError)
+            this.error = `Failed to compress: ${retryError?.response?.data?.detail || retryError.message}`
+          }
+          return
+        }
+        console.error('Error creating archive', error)
+        this.error = `Failed to compress: ${error?.response?.data?.detail || error.message}`
+      }
+    },
+    /**
+     * Extract the selected archive.
+     *
+     * `here`      → the archive's own folder.
+     * `folder`    → a sibling folder named after the archive (`dist.zip` → `dist`).
+     *
+     * A destination that already holds entries answers 409: the user is asked
+     * once and the extraction is retried with `overwrite=true`.
+     */
+    async handleContextExtract({ mode }) {
+      this.closeContextMenu()
+      const entry = this.selectedEntries[0]
+      if (!entry || entry.is_dir) return
+
+      const archivePath = this.entryPath(entry)
+      const archiveFolder = this.parentFolderPath(archivePath)
+      const targetDir = mode === 'folder'
+        ? this.normalizePath(`${archiveFolder}/${this.archiveBaseName(entry.name)}`)
+        : archiveFolder
+
+      try {
+        if (mode === 'folder') {
+          try {
+            await this.$api.files.create(targetDir, true)
+          } catch (ex) {
+            // Folder already exists: extracting into it is the intent anyway
+          }
+        }
+
+        let result = await this.$api.files.extract(archivePath, { targetDir })
+        if (result?.failed || result?.conflicts) {
+          const accepted = await this.confirmAction({
+            title: 'Overwrite extracted files?',
+            message: 'The destination folder already contains files from this archive.',
+            hint: 'Existing files are replaced.',
+            icon: 'fa-triangle-exclamation',
+            iconClass: 'text-warning',
+            confirmLabel: 'Overwrite',
+            confirmClass: 'btn-warning'
+          })
+          if (!accepted) return
+          result = await this.$api.files.extract(archivePath, { targetDir, overwrite: true })
+        }
+
+        const count = result?.extracted ?? 0
+        this.$ui.addNotification({
+          text: `Extracted ${count} entr${count === 1 ? 'y' : 'ies'} into ${this.relativeFolderLabel(result?.abs_target_dir || targetDir)}`
+        })
+        this.clearSelection()
+        await this.refresh()
+      } catch (error) {
+        if (error?.response?.status === 409) {
+          const accepted = await this.confirmAction({
+            title: 'Overwrite extracted files?',
+            message: 'Some entries of this archive already exist in the destination folder.',
+            hint: 'Existing files are replaced.',
+            icon: 'fa-triangle-exclamation',
+            iconClass: 'text-warning',
+            confirmLabel: 'Overwrite',
+            confirmClass: 'btn-warning'
+          })
+          if (!accepted) return
+          try {
+            const result = await this.$api.files.extract(archivePath, { targetDir, overwrite: true })
+            this.$ui.addNotification({ text: `Extracted ${result.extracted} entries` })
+            this.clearSelection()
+            await this.refresh()
+          } catch (retryError) {
+            console.error('Error extracting archive', retryError)
+            this.error = `Failed to extract: ${retryError?.response?.data?.detail || retryError.message}`
+          }
+          return
+        }
+        console.error('Error extracting archive', error)
+        this.error = `Failed to extract: ${error?.response?.data?.detail || error.message}`
+      }
+    },
+    // Download the selected file through the streaming endpoint
+    handleContextDownload() {
+      this.closeContextMenu()
+      const entry = this.selectedEntries[0]
+      if (!entry || entry.is_dir) return
+
+      const link = document.createElement('a')
+      link.href = this.$api.files.getFileDownloadUrl(this.entryPath(entry))
+      link.download = entry.name
+      link.rel = 'noopener'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+    },
     /**
      * Append the selected files/folders (or the current folder) to `.gitignore`.
      *
@@ -1690,7 +2242,13 @@ export default {
     async onMoveConfirm(targetPath) {
       this.showMoveDialog = false
       const sources = this.moveSources
+      const mode = this.moveDialogMode
       this.moveSources = []
+      this.moveDialogMode = 'move'
+      if (mode === 'copy') {
+        await this.transferEntries(sources, targetPath, { mode: 'copy' })
+        return
+      }
       await this.moveEntries(sources, targetPath)
     },
     /**

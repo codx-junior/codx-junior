@@ -12,8 +12,10 @@ import shlex
 import subprocess
 import base64
 import shutil
+import tarfile
 import threading
 import time
+import zipfile
 
 from datetime import datetime
 from typing import TYPE_CHECKING, Dict, List, Optional, Pattern, Tuple
@@ -41,6 +43,32 @@ DEFAULT_MAX_TOTAL_SIZE = 4 * DEFAULT_MAX_FILE_SIZE  # 4 GB
 
 # Binary file extensions
 BINARY_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'svg', 'zip', 'tar', 'gz', 'woff', 'woff2', 'ttf', 'eot', 'pdf'}
+
+# Archive formats the engine can create and extract. The list is ordered longest
+# suffix first so that "backup.tar.gz" is matched as ".tar.gz" and never as
+# ".gz" on its own.
+ARCHIVE_EXTENSIONS = [
+    ".tar.gz",
+    ".tar.bz2",
+    ".tar.xz",
+    ".tgz",
+    ".tbz2",
+    ".txz",
+    ".tar",
+    ".zip",
+]
+# tarfile write mode for each tar flavour
+TAR_WRITE_MODES = {
+    ".tar": "w",
+    ".tar.gz": "w:gz",
+    ".tgz": "w:gz",
+    ".tar.bz2": "w:bz2",
+    ".tbz2": "w:bz2",
+    ".tar.xz": "w:xz",
+    ".txz": "w:xz",
+}
+# Format used when the caller does not ask for a specific one
+DEFAULT_ARCHIVE_EXTENSION = ".zip"
 
 
 class GitIgnoreManager:
@@ -1622,6 +1650,637 @@ class FileEngine:
         except OSError as ex:
             logger.error("Error renaming file: %s", ex)
             raise
+
+    # ------------------------------------------------------------------
+    # Copy / move
+    # ------------------------------------------------------------------
+
+    def _transfer_name(self, abs_source: str, name_suffix: str = "") -> str:
+        """
+        Build the destination name of a copied / moved entry.
+
+        The optional ``name_suffix`` is inserted before the extension of a file
+        (``notes.md`` + ``" (copy)"`` -> ``notes (copy).md``) and appended to a
+        folder name, which is what the explorer's "Duplicate" action needs.
+
+        Args:
+            abs_source: Absolute path of the source entry.
+            name_suffix: Text appended to the name.
+
+        Returns:
+            Destination name (without any directory part).
+        """
+        name = os.path.basename(abs_source.rstrip(os.sep)) or "item"
+        if not name_suffix:
+            return name
+        if os.path.isdir(abs_source):
+            return f"{name}{name_suffix}"
+        stem, extension = os.path.splitext(name)
+        return f"{stem}{name_suffix}{extension}"
+
+    def _unique_path(self, destination: str, is_dir: bool = False) -> str:
+        """
+        Return a free path next to ``destination`` by numbering the name.
+
+        ``notes.md`` -> ``notes (1).md`` -> ``notes (2).md``, and ``dist`` ->
+        ``dist (1)``, which is what pasting a file into its own folder needs.
+
+        Args:
+            destination: Absolute path that is already taken.
+            is_dir: The entry is a folder, so the whole name is numbered.
+
+        Returns:
+            Absolute path that does not exist yet.
+        """
+        parent = os.path.dirname(destination)
+        name = os.path.basename(destination.rstrip(os.sep))
+        if is_dir:
+            stem, extension = name, ""
+        else:
+            stem, extension = os.path.splitext(name)
+
+        # An already numbered name keeps counting from there: "notes (1).md"
+        # becomes "notes (2).md" instead of "notes (1) (1).md".
+        match = re.match(r"^(.*) \((\d+)\)$", stem)
+        if match:
+            stem, index = match.group(1), int(match.group(2)) + 1
+        else:
+            index = 1
+
+        while True:
+            candidate = os.path.join(parent, f"{stem} ({index}){extension}")
+            if not os.path.exists(candidate):
+                return candidate
+            index += 1
+
+    async def _transfer_files(
+        self,
+        sources: List[str],
+        target_dir: str,
+        overwrite: bool = False,
+        move: bool = False,
+        name_suffix: str = "",
+        auto_rename: bool = False,
+    ) -> dict:
+        """
+        Copy or move several entries into ``target_dir`` (shared implementation).
+
+        Every source is resolved to the project that owns it and every entry is
+        handled independently, so one failure never aborts the whole batch:
+
+        - with ``auto_rename`` (copies) a destination that is already taken gets
+          a numbered name instead of colliding,
+        - otherwise a destination that already exists is reported in
+          ``conflicts`` instead of being overwritten, unless ``overwrite`` is True,
+        - moving/copying a folder into itself (or into one of its descendants)
+          is rejected,
+        - entries whose destination is the source itself are rejected.
+
+        Args:
+            sources: Paths to copy/move (relative to any known project or absolute).
+            target_dir: Destination folder.
+            overwrite: Replace the existing destinations instead of reporting them.
+            move: Move instead of copy.
+            name_suffix: Optional suffix applied to the destination name.
+            auto_rename: Number the name of a colliding copy instead of
+                reporting it as a conflict (``notes (1).md``).
+
+        Returns:
+            Dict with action, target_dir, total, items, conflicts and failed.
+
+        Raises:
+            ValueError: If the target folder is invalid or does not exist.
+        """
+        abs_target_dir, target_project = self.get_valid_project_file_path(target_dir)
+        if not os.path.isdir(abs_target_dir):
+            raise ValueError(f"Target folder not found: {target_dir}")
+
+        transfered: List[dict] = []
+        conflicts: List[dict] = []
+        failed: List[dict] = []
+        sources = [source for source in (sources or []) if source]
+
+        for source in sources:
+            try:
+                abs_source, _source_project, _rel_path = self.resolve_file_target(source)
+            except ValueError as ex:
+                failed.append({"source": source, "error": str(ex)})
+                continue
+
+            if not os.path.exists(abs_source):
+                failed.append({"source": source, "error": "Source not found"})
+                continue
+
+            is_dir = os.path.isdir(abs_source)
+            destination = os.path.join(
+                abs_target_dir, self._transfer_name(abs_source, name_suffix)
+            )
+
+            # A folder can never be copied/moved inside its own tree
+            if is_dir and self._is_path_within(abs_target_dir, abs_source):
+                failed.append({
+                    "source": abs_source,
+                    "error": "A folder cannot be copied or moved inside itself",
+                })
+                continue
+
+            if move and os.path.normpath(destination) == os.path.normpath(abs_source):
+                failed.append({
+                    "source": abs_source,
+                    "error": "The source and the destination are the same path",
+                })
+                continue
+
+            # Copies never collide: a taken destination (the source itself too,
+            # when a file is pasted into its own folder) gets a numbered name.
+            if auto_rename and not overwrite and os.path.exists(destination):
+                destination = self._unique_path(destination, is_dir=is_dir)
+            elif os.path.exists(destination):
+                if not overwrite:
+                    conflicts.append({"source": abs_source, "destination": destination})
+                    continue
+                try:
+                    if os.path.isdir(destination):
+                        shutil.rmtree(destination)
+                    else:
+                        os.remove(destination)
+                except OSError as ex:
+                    failed.append({"source": abs_source, "error": str(ex)})
+                    continue
+
+            try:
+                if move:
+                    shutil.move(abs_source, destination)
+                elif is_dir:
+                    shutil.copytree(abs_source, destination)
+                else:
+                    shutil.copy2(abs_source, destination)
+            except (OSError, shutil.Error) as ex:
+                logger.error("Error transferring %s to %s: %s", abs_source, destination, ex)
+                failed.append({"source": abs_source, "error": str(ex)})
+                continue
+
+            # The tree changed: cached searches must follow the transfer
+            self._invalidate_search_cache(abs_source)
+            self._invalidate_search_cache(destination)
+            logger.info(
+                "%s %s to %s (project %s)",
+                "Moved" if move else "Copied",
+                abs_source,
+                destination,
+                target_project.project_name,
+            )
+            transfered.append({
+                "source": abs_source,
+                "destination": destination,
+                "is_dir": is_dir,
+                "project": target_project.project_name,
+            })
+
+        return {
+            "action": "move" if move else "copy",
+            "target_dir": abs_target_dir,
+            "total": len(sources),
+            "items": transfered,
+            "conflicts": conflicts,
+            "failed": failed,
+        }
+
+    async def copy_files(
+        self,
+        sources: List[str],
+        target_dir: str,
+        overwrite: bool = False,
+        name_suffix: str = "",
+        auto_rename: bool = True,
+    ) -> dict:
+        """
+        Copy files and folders into ``target_dir``.
+
+        A copy is never destructive: when the destination name is taken the copy
+        gets a numbered name (``notes.md`` -> ``notes (1).md``), so pasting the
+        same file twice in a folder keeps both.
+
+        Args:
+            sources: Paths to copy (relative to any known project or absolute).
+            target_dir: Destination folder.
+            overwrite: Replace the destinations that already exist.
+            name_suffix: Optional suffix appended to the copied names.
+            auto_rename: Number a colliding destination instead of reporting it
+                in ``conflicts`` (default). Set False for the old behaviour.
+
+        Returns:
+            Dict with action, target_dir, total, items, conflicts and failed.
+
+        Raises:
+            ValueError: If the target folder is invalid or does not exist.
+        """
+        return await self._transfer_files(
+            sources=sources,
+            target_dir=target_dir,
+            overwrite=overwrite,
+            move=False,
+            name_suffix=name_suffix,
+            auto_rename=auto_rename,
+        )
+
+    async def move_files(
+        self,
+        sources: List[str],
+        target_dir: str,
+        overwrite: bool = False,
+    ) -> dict:
+        """
+        Move files and folders into ``target_dir``.
+
+        Unlike :meth:`rename_file` (one entry at a time) this is a batch: every
+        entry is reported on its own, so a conflicting name does not stop the
+        rest of the selection from being moved.
+
+        Args:
+            sources: Paths to move (relative to any known project or absolute).
+            target_dir: Destination folder.
+            overwrite: Replace the destinations that already exist.
+
+        Returns:
+            Dict with action, target_dir, total, items, conflicts and failed.
+
+        Raises:
+            ValueError: If the target folder is invalid or does not exist.
+        """
+        return await self._transfer_files(
+            sources=sources,
+            target_dir=target_dir,
+            overwrite=overwrite,
+            move=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Archives (zip / tar.gz / tar.bz2 / tar.xz)
+    # ------------------------------------------------------------------
+
+    def get_archive_extension(self, path: str) -> Optional[str]:
+        """
+        Return the archive extension matching ``path`` (``.zip``, ``.tar.gz``...).
+
+        Args:
+            path: File name or path to inspect.
+
+        Returns:
+            The matched extension (leading dot included), or None when the name
+            is not a supported archive.
+        """
+        name = os.path.basename(str(path or "")).lower()
+        for extension in ARCHIVE_EXTENSIONS:
+            if name.endswith(extension) and len(name) > len(extension):
+                return extension
+        return None
+
+    def is_archive(self, path: str) -> bool:
+        """
+        Check whether ``path`` names a supported archive (zip / tar flavours).
+
+        Args:
+            path: File name or path to inspect.
+
+        Returns:
+            True when the extension is one of ``ARCHIVE_EXTENSIONS``.
+        """
+        return self.get_archive_extension(path) is not None
+
+    def _archive_extension_for_format(self, archive_format: Optional[str]) -> str:
+        """
+        Normalize a requested archive format (``zip``, ``tar.gz``...) to an extension.
+
+        Args:
+            archive_format: Format asked by the caller, with or without dot.
+
+        Returns:
+            One of ``ARCHIVE_EXTENSIONS``; ``.zip`` when nothing is requested.
+
+        Raises:
+            ValueError: If the requested format is not supported.
+        """
+        requested = str(archive_format or "").strip().lower().lstrip(".")
+        if not requested:
+            return DEFAULT_ARCHIVE_EXTENSION
+        extension = f".{requested}"
+        if extension not in ARCHIVE_EXTENSIONS:
+            raise ValueError(
+                "Unsupported archive format '%s'. Supported: %s"
+                % (archive_format, ", ".join(ARCHIVE_EXTENSIONS))
+            )
+        return extension
+
+    def _zip_arcname(self, arcname: str, relative_path: str = "") -> str:
+        """
+        Join archive-internal names with forward slashes (zip/tar convention).
+
+        Args:
+            arcname: Base name inside the archive.
+            relative_path: Optional path relative to the archived folder.
+
+        Returns:
+            Portable archive path.
+        """
+        if not relative_path:
+            return arcname.replace(os.sep, "/")
+        return os.path.join(arcname, relative_path).replace(os.sep, "/")
+
+    def _add_to_zip(
+        self, archive: zipfile.ZipFile, abs_source: str, arcname: str
+    ) -> None:
+        """
+        Add a file or a whole folder tree to an open ZipFile.
+
+        Args:
+            archive: Open ZipFile being written.
+            abs_source: Absolute path of the file or folder to add.
+            arcname: Name the entry must have inside the archive.
+        """
+        if not os.path.isdir(abs_source):
+            archive.write(abs_source, arcname)
+            return
+
+        archive.write(abs_source, arcname)
+        for root, dirs, files in os.walk(abs_source):
+            dirs.sort()
+            for directory in dirs:
+                abs_dir = os.path.join(root, directory)
+                archive.write(
+                    abs_dir,
+                    self._zip_arcname(arcname, os.path.relpath(abs_dir, abs_source)),
+                )
+            for file in files:
+                abs_file = os.path.join(root, file)
+                archive.write(
+                    abs_file,
+                    self._zip_arcname(arcname, os.path.relpath(abs_file, abs_source)),
+                )
+
+    async def create_archive(
+        self,
+        sources: List[str],
+        archive_path: Optional[str] = None,
+        archive_format: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """
+        Compress files and folders into a zip / tar archive.
+
+        When ``archive_path`` is omitted the archive is created next to the
+        selection: ``<name>.zip`` for a single entry and ``<folder>.zip`` for a
+        whole selection (the name of the folder they live in).
+
+        Args:
+            sources: Paths to compress (files or folders).
+            archive_path: Optional destination archive path.
+            archive_format: Optional format (``zip``, ``tar``, ``tar.gz``,
+                ``tar.bz2``, ``tar.xz``); inferred from ``archive_path`` otherwise.
+            overwrite: Replace an existing archive.
+
+        Returns:
+            Dict with archive_path, abs_archive_path, format, sources and the
+            size / modification time of the created archive.
+
+        Raises:
+            ValueError: If nothing is selected, the format is unsupported or the
+                archive would be created inside a folder being compressed.
+            FileNotFoundError: If one of the sources does not exist.
+            FileExistsError: If the archive exists and ``overwrite`` is False.
+        """
+        sources = [source for source in (sources or []) if source]
+        if not sources:
+            raise ValueError("No files or folders to compress")
+
+        resolved: List[str] = []
+        for source in sources:
+            abs_source, _source_project, _rel_path = self.resolve_file_target(source)
+            if not os.path.exists(abs_source):
+                raise FileNotFoundError(f"Path not found: {source}")
+            resolved.append(abs_source)
+
+        if archive_path:
+            extension = self.get_archive_extension(archive_path)
+            if extension is None:
+                raise ValueError(
+                    "Unsupported archive extension in '%s'. Supported: %s"
+                    % (archive_path, ", ".join(ARCHIVE_EXTENSIONS))
+                )
+        else:
+            extension = self._archive_extension_for_format(archive_format)
+            parent_dir = os.path.dirname(resolved[0])
+            if len(resolved) == 1:
+                base_name = os.path.basename(resolved[0].rstrip(os.sep)) or "archive"
+            else:
+                base_name = os.path.basename(parent_dir.rstrip(os.sep)) or "archive"
+            archive_path = os.path.join(parent_dir, f"{base_name}{extension}")
+
+        abs_archive_path, archive_project = self.get_valid_project_file_path(archive_path)
+
+        if os.path.exists(abs_archive_path):
+            if not overwrite:
+                raise FileExistsError(f"Archive already exists: {archive_path}")
+            os.remove(abs_archive_path)
+
+        # The archive cannot be written inside a folder it is compressing
+        for abs_source in resolved:
+            if os.path.isdir(abs_source) and self._is_path_within(
+                abs_archive_path, abs_source
+            ):
+                raise ValueError(
+                    "The archive cannot be created inside the folder being compressed: %s"
+                    % abs_source
+                )
+
+        os.makedirs(os.path.dirname(abs_archive_path), exist_ok=True)
+        entries = [
+            (abs_source, os.path.basename(abs_source.rstrip(os.sep)) or "item")
+            for abs_source in resolved
+        ]
+
+        try:
+            if extension == ".zip":
+                with zipfile.ZipFile(abs_archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                    for abs_source, arcname in entries:
+                        self._add_to_zip(archive, abs_source, arcname)
+            else:
+                with tarfile.open(abs_archive_path, TAR_WRITE_MODES[extension]) as archive:
+                    for abs_source, arcname in entries:
+                        archive.add(abs_source, arcname=arcname, recursive=True)
+        except (OSError, zipfile.BadZipFile, tarfile.TarError) as ex:
+            logger.error("Error creating archive %s: %s", abs_archive_path, ex)
+            # Never leave a half written archive behind
+            if os.path.exists(abs_archive_path):
+                try:
+                    os.remove(abs_archive_path)
+                except OSError:
+                    logger.debug("Could not remove the failed archive %s", abs_archive_path)
+            raise OSError(f"Error creating archive {archive_path}: {ex}") from ex
+
+        self._invalidate_search_cache(abs_archive_path)
+        logger.info(
+            "Created archive %s with %d entr%s (project %s)",
+            abs_archive_path,
+            len(entries),
+            "y" if len(entries) == 1 else "ies",
+            archive_project.project_name,
+        )
+        info = self.get_file_info(abs_archive_path)
+        return {
+            "archive_path": archive_path,
+            "abs_archive_path": abs_archive_path,
+            "format": extension,
+            "sources": resolved,
+            "file_project": archive_project.project_name,
+            "file_project_path": archive_project.abs_project_path,
+            **info,
+        }
+
+    def _archive_members(self, abs_archive_path: str, extension: str) -> List[Tuple[str, bool]]:
+        """
+        List ``(name, is_dir)`` of the entries stored in an archive.
+
+        Args:
+            abs_archive_path: Absolute path of the archive.
+            extension: Archive extension (see ``ARCHIVE_EXTENSIONS``).
+
+        Returns:
+            The archive entries, in archive order.
+        """
+        if extension == ".zip":
+            with zipfile.ZipFile(abs_archive_path) as archive:
+                return [(info.filename, info.is_dir()) for info in archive.infolist()]
+        with tarfile.open(abs_archive_path, "r:*") as archive:
+            return [(member.name, member.isdir()) for member in archive.getmembers()]
+
+    async def extract_archive(
+        self,
+        archive_path: str,
+        target_dir: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> dict:
+        """
+        Extract a zip / tar archive into a folder.
+
+        Every member is validated before anything is written: an entry whose
+        path escapes the destination (the "zip slip" attack) aborts the whole
+        extraction instead of writing outside the folder.
+
+        Args:
+            archive_path: Archive to extract.
+            target_dir: Destination folder (the archive's folder when omitted).
+            overwrite: Extract over existing files instead of reporting them.
+
+        Returns:
+            Dict with archive_path, target_dir, extracted (number of entries),
+            files (first entries) and the project owning the destination.
+
+        Raises:
+            FileNotFoundError: If the archive does not exist.
+            ValueError: If the format is unsupported or a member escapes the
+                destination folder.
+            FileExistsError: If the destination already has files and
+                ``overwrite`` is False.
+        """
+        abs_archive_path, _archive_project, _rel_path = self.resolve_file_target(archive_path)
+        if not os.path.isfile(abs_archive_path):
+            raise FileNotFoundError(f"Archive not found: {archive_path}")
+
+        extension = self.get_archive_extension(abs_archive_path)
+        if extension is None:
+            raise ValueError(
+                "Unsupported archive format: %s. Supported: %s"
+                % (os.path.basename(abs_archive_path), ", ".join(ARCHIVE_EXTENSIONS))
+            )
+
+        destination = target_dir or os.path.dirname(abs_archive_path)
+        abs_destination, destination_project = self.get_valid_project_file_path(destination)
+
+        try:
+            members = self._archive_members(abs_archive_path, extension)
+        except (OSError, zipfile.BadZipFile, tarfile.TarError) as ex:
+            logger.error("Error reading archive %s: %s", abs_archive_path, ex)
+            raise OSError(f"Error reading archive {archive_path}: {ex}") from ex
+
+        existing: List[str] = []
+        for name, _is_dir in members:
+            relative = str(name or "").replace("\\", "/").lstrip("/")
+            if not relative:
+                continue
+            target_path = os.path.normpath(os.path.join(abs_destination, relative))
+            if not self._is_path_within(target_path, abs_destination):
+                raise ValueError(
+                    "Refusing to extract '%s': it escapes the destination folder" % name
+                )
+            if os.path.exists(target_path):
+                existing.append(relative)
+
+        if existing and not overwrite:
+            preview = ", ".join(existing[:5])
+            raise FileExistsError(
+                "%d entr%s already exist%s in the destination folder: %s%s"
+                % (
+                    len(existing),
+                    "y" if len(existing) == 1 else "ies",
+                    "s" if len(existing) == 1 else "",
+                    preview,
+                    "..." if len(existing) > 5 else "",
+                )
+            )
+
+        os.makedirs(abs_destination, exist_ok=True)
+
+        try:
+            if extension == ".zip":
+                with zipfile.ZipFile(abs_archive_path) as archive:
+                    for info in archive.infolist():
+                        archive.extract(info, abs_destination)
+            else:
+                with tarfile.open(abs_archive_path, "r:*") as archive:
+                    self._extract_tar_members(archive, abs_destination)
+        except (OSError, zipfile.BadZipFile, tarfile.TarError) as ex:
+            logger.error("Error extracting archive %s: %s", abs_archive_path, ex)
+            raise OSError(f"Error extracting archive {archive_path}: {ex}") from ex
+
+        self._invalidate_search_cache(abs_destination)
+        logger.info(
+            "Extracted %s into %s (%d entries, project %s)",
+            abs_archive_path,
+            abs_destination,
+            len(members),
+            destination_project.project_name,
+        )
+        return {
+            "archive_path": archive_path,
+            "abs_archive_path": abs_archive_path,
+            "target_dir": destination,
+            "abs_target_dir": abs_destination,
+            "format": extension,
+            "extracted": len(members),
+            "files": [name for name, _is_dir in members[:50]],
+            "file_project": destination_project.project_name,
+            "file_project_path": destination_project.abs_project_path,
+        }
+
+    def _extract_tar_members(
+        self, archive: tarfile.TarFile, abs_destination: str
+    ) -> None:
+        """
+        Extract every member of an open tar archive into ``abs_destination``.
+
+        The ``data`` filter (Python 3.12+) strips ownership, permissions and
+        device files from the extracted tree; older interpreters fall back to the
+        plain extraction (the zip-slip check already ran in ``extract_archive``).
+
+        Args:
+            archive: Open TarFile.
+            abs_destination: Absolute destination folder.
+        """
+        try:
+            archive.extractall(abs_destination, filter="data")
+        except TypeError:
+            archive.extractall(abs_destination)
 
     async def reset_file(self, file_path: str) -> dict:
         """

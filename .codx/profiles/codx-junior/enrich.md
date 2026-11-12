@@ -47,3 +47,24 @@ Reliable discovery:
 - `project_read_file(pattern=...)` finds symbols inside a file reliably.
 
 Client conventions: `@` alias → `client/src`. `$storex`, `$projects`, `$project`, `$ui` etc. are global computed props from a mixin in `client/src/main.ts`, so any Options-API component can use them. Settings pages are Options API-friendly; `ProjectSettings.vue` is `<script setup>`.
+
+## Brand & design source of truth (codx-junior)
+
+Design documentation for this project lives in `design/` (project `codx-junior-design`); read `design/README.md` first.
+
+Hard rules:
+- Brand magenta is **#CC0099** (secondary **#8F008F**, accent/pink **#FF69B4**). `#CC049C` is a retired near-miss; **indigo #6366F1 is NOT part of the brand** (it survives only in an old `Designer` profile).
+- Brand text on the dark canvas must use pink `#FF69B4` (5.5:1) or the OKLCH-boosted primary `oklch(65% .32 320)`; `#CC0099` as text on `#1F2937` is only 3.1:1 and fails WCAG AA. `#8F008F` is fill/gradient only (1.8:1 on dark).
+- Only two themes are allowed: `codx-junior-dark` (default) and `codx-junior-light`. Do not offer all 35 daisyUI themes.
+- `client/src/assets/daisy-override.css`, `client/src/assets/themes/*.css` and `client/src/assets/logo.svg` are dead/scaffolding code (the svg is the Vue logo) — safe to delete, do not build on them.
+- Interface = system UI font; anything machine-generated (paths, hashes, diffs, counts) = monospace. No third family.
+- `isMobile` is decided in JS at `window.innerWidth <= 1024`, so tablets get the mobile shell; verify layouts with `isMobile` true AND false.
+- z-index ladder: chrome 50, backdrop 100, toast 130, nav 150, **modal 160** (currently a bug at 50), popper 200.
+- Use tokens from `design/tokens/design-tokens.json`; no raw hex or arbitrary px in components.
+
+## Verifying code in this project (node/python)
+
+- Verifying JS/ESM syntax of `client/**`: run it inside container `codx-junior-default-workspace` (has `node`, mounts the whole project at `/home/codx-junior-projects/...`). `codx-junior-api` has Python but NO node; `codx-junior-client` is nginx-only and `codx-junior-docs` has node but no project mount.
+  - `docker exec` runs without a shell: copy to a `.mjs` first (two calls, no `;`): `cp <file> /tmp/x.mjs` then `node --check /tmp/x.mjs`. `node --check` on a `.js` file fails on `import` (CommonJS mode).
+- Verifying Python: `python3 -m py_compile <files>` in `codx-junior-api` (exit 0 = ok).
+- NEVER restart the `codx-junior-api` container to pick up a code change: the harness/AI processing of the current chat runs inside it, so a restart kills the running turn.

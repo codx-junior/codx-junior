@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: "codx-junior"
-  text: "We bridge the gap between rapid AI automation and elite human expertise."
-  tagline: "We bridge the gap between rapid AI automation and elite human expertise."
+  text: "Documentation for codx-junior."
+  tagline: "Documentation for codx-junior."
   actions:
     - theme: brand
       text: "Get started"

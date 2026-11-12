@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from slugify import slugify
 from langchain_core.documents import Document
 
+from codx.junior.runtime import runtime_file
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.knowledge.knowledge_db import KnowledgeDB
 from codx.junior.knowledge.knowledge_graph import DependencyGraph
@@ -18,7 +19,8 @@ class WikiDomains:
         self.settings = settings
         self.db = db
         self.ai = ai
-        self.domain_map_file = os.path.join(settings.codx_path, "domain_map.json")
+        # Generated cache: keep it out of the repository working tree.
+        self.domain_map_file = runtime_file(settings.codx_path, "domain_map.json")
         self._wiki_profile_text = None
 
     def detect_domains(self, graph: DependencyGraph, source_map: Dict) -> List[Dict]:

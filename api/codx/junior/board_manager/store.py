@@ -6,9 +6,12 @@ Two files live under ``<codx_path>/board_manager``:
 * ``state.json`` — one record per board (last run, actions, report, cost). It is
   written atomically while holding a project-level ``fcntl`` lock, so the API
   process (status/read, wake) and the background worker (write) never lose each
-  other's update.
+  other's update. It lives under ``<codx_path>/board_manager`` because it is
+  project data worth keeping.
 * ``worker.json`` — heartbeat of the background worker, used by the UI to say
-  whether automatic reviews can run.
+  whether automatic reviews can run. Heartbeats and locks churn on every tick,
+  so they live in the project runtime folder (``/tmp`` by default) and never
+  inside the repository.
 
 The board **configuration** is not stored here: it lives on the board document
 (``tasks/boards/<id>/board.json``) and is written by the normal board settings
@@ -33,6 +36,8 @@ try:  # POSIX only; the container always has it.
     import fcntl
 except ImportError:  # pragma: no cover - non POSIX fallback
     fcntl = None
+
+from codx.junior.runtime import runtime_dir
 
 from . import constants as C
 from .models import ManagerState, utcnow_iso
@@ -60,9 +65,16 @@ class BoardManagerStore:
         self.codx_path = str(codx_path or "")
         self.base_path = os.path.join(self.codx_path, C.BOARD_MANAGER_DIR)
         self.state_path = os.path.join(self.base_path, C.STATE_FILE)
-        self.worker_path = os.path.join(self.base_path, C.WORKER_FILE)
-        self.lock_path = os.path.join(self.base_path, C.LOCK_FILE)
-        self.locks_path = os.path.join(self.base_path, C.LOCKS_DIR)
+        # The heartbeat and the locks are rewritten on every tick: they live in
+        # the project runtime folder so the repository never changes.
+        self.runtime_path = (
+            runtime_dir(self.codx_path, C.BOARD_MANAGER_DIR)
+            if self.codx_path
+            else self.base_path
+        )
+        self.worker_path = os.path.join(self.runtime_path, C.WORKER_FILE)
+        self.lock_path = os.path.join(self.runtime_path, C.LOCK_FILE)
+        self.locks_path = os.path.join(self.runtime_path, C.LOCKS_DIR)
         self._thread_lock = threading.RLock()
 
     # -- low level --------------------------------------------------------

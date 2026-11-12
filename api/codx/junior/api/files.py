@@ -602,6 +602,245 @@ async def rename_file(request: Request):
         return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=str(ex))
 
 
+def _path_list(value) -> list:
+    """
+    Normalize the ``sources`` payload of the copy / move / archive endpoints.
+
+    Args:
+        value: A single path, or a list of paths.
+
+    Returns:
+        List of non-empty paths.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    return [path for path in value if path]
+
+
+@router.post("/files/copy")
+async def copy_files(request: Request):
+    """
+    Copy files and folders into another folder.
+
+    Body params:
+    - sources: List of paths to copy (relative to any known project, or
+      absolute). A single path is accepted as well (required)
+    - target_dir: Destination folder (required)
+    - overwrite: Replace the entries already present in the destination
+      (default false)
+    - name_suffix: Optional suffix appended to the copied name, before the
+      extension of a file (`" (copy)"`), used by the explorer's "Duplicate"
+    - auto_rename: Number the name of a colliding copy instead of reporting it
+      (default true): pasting `notes.md` again creates `notes (1).md`
+
+    Returns:
+        Dict with 'items' (copied entries with source and destination),
+        'conflicts' (destinations that already exist and were not overwritten),
+        'failed' (per entry errors) and 'total'.
+
+    Nothing is overwritten silently: a colliding destination is renamed
+    (`notes (1).md`) unless `auto_rename` is disabled, and then it is reported in
+    'conflicts' (HTTP 200) so the caller can ask the user and retry with
+    `overwrite=true`.
+    """
+    try:
+        data = await request.json()
+        sources = _path_list(data.get("sources"))
+        target_dir = data.get("target_dir")
+        overwrite = bool(data.get("overwrite", False))
+        name_suffix = data.get("name_suffix") or ""
+        auto_rename = bool(data.get("auto_rename", True))
+
+        if not sources:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, content="Missing 'sources' parameter")
+        if not target_dir:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, content="Missing 'target_dir' parameter")
+
+        codx_junior_session = request.state.codx_junior_session
+        file_engine = codx_junior_session.get_file_engine()
+
+        logger.info("Copying %d item(s) to %s", len(sources), target_dir)
+        return await file_engine.copy_files(
+            sources=sources,
+            target_dir=target_dir,
+            overwrite=overwrite,
+            name_suffix=name_suffix,
+            auto_rename=auto_rename,
+        )
+
+    except ValueError as ex:
+        logger.warning("Invalid copy request: %s", ex)
+        return Response(status_code=status.HTTP_400_BAD_REQUEST, content=str(ex))
+    except FileNotFoundError as ex:
+        logger.warning("Copy source not found: %s", ex)
+        return Response(status_code=status.HTTP_404_NOT_FOUND, content=str(ex))
+    except Exception as ex:
+        logger.error("Error copying files: %s", ex)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=str(ex))
+
+
+@router.post("/files/move")
+async def move_files(request: Request):
+    """
+    Move files and folders into another folder (batch version of /files/rename).
+
+    Body params:
+    - sources: List of paths to move (relative to any known project, or
+      absolute). A single path is accepted as well (required)
+    - target_dir: Destination folder (required)
+    - overwrite: Replace the entries already present in the destination
+      (default false)
+
+    Returns:
+        Same payload as /files/copy: 'items', 'conflicts', 'failed' and 'total'.
+
+    Every entry is handled on its own: a conflicting name is reported in
+    'conflicts' while the rest of the selection is still moved.
+    """
+    try:
+        data = await request.json()
+        sources = _path_list(data.get("sources"))
+        target_dir = data.get("target_dir")
+        overwrite = bool(data.get("overwrite", False))
+
+        if not sources:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, content="Missing 'sources' parameter")
+        if not target_dir:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, content="Missing 'target_dir' parameter")
+
+        codx_junior_session = request.state.codx_junior_session
+        file_engine = codx_junior_session.get_file_engine()
+
+        logger.info("Moving %d item(s) to %s", len(sources), target_dir)
+        return await file_engine.move_files(
+            sources=sources,
+            target_dir=target_dir,
+            overwrite=overwrite,
+        )
+
+    except ValueError as ex:
+        logger.warning("Invalid move request: %s", ex)
+        return Response(status_code=status.HTTP_400_BAD_REQUEST, content=str(ex))
+    except FileNotFoundError as ex:
+        logger.warning("Move source not found: %s", ex)
+        return Response(status_code=status.HTTP_404_NOT_FOUND, content=str(ex))
+    except Exception as ex:
+        logger.error("Error moving files: %s", ex)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=str(ex))
+
+
+@router.post("/files/archive")
+async def create_archive(request: Request):
+    """
+    Compress files and folders into a zip / tar archive.
+
+    Body params:
+    - sources: List of paths to compress (files or folders). A single path is
+      accepted as well (required)
+    - archive_path: Destination archive (optional). Derived from the selection
+      when omitted: `<name>.zip` for one entry, `<folder>.zip` for many
+    - format: Archive format (optional): zip, tar, tar.gz, tgz, tar.bz2,
+      tbz2, tar.xz, txz. Inferred from `archive_path` otherwise (zip default)
+    - overwrite: Replace an existing archive (default false)
+
+    Returns:
+        Dict with the created archive path, format, size and modification time.
+    """
+    try:
+        data = await request.json()
+        sources = _path_list(data.get("sources"))
+        archive_path = data.get("archive_path") or None
+        archive_format = data.get("format") or None
+        overwrite = bool(data.get("overwrite", False))
+
+        if not sources:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, content="Missing 'sources' parameter")
+
+        codx_junior_session = request.state.codx_junior_session
+        file_engine = codx_junior_session.get_file_engine()
+
+        logger.info(
+            "Compressing %d item(s) into %s (format: %s)",
+            len(sources),
+            archive_path or "<derived>",
+            archive_format or "<inferred>",
+        )
+        return await file_engine.create_archive(
+            sources=sources,
+            archive_path=archive_path,
+            archive_format=archive_format,
+            overwrite=overwrite,
+        )
+
+    except FileExistsError as ex:
+        logger.warning("Archive already exists: %s", ex)
+        return Response(status_code=status.HTTP_409_CONFLICT, content=str(ex))
+    except FileNotFoundError as ex:
+        logger.warning("Archive source not found: %s", ex)
+        return Response(status_code=status.HTTP_404_NOT_FOUND, content=str(ex))
+    except ValueError as ex:
+        logger.warning("Invalid archive request: %s", ex)
+        return Response(status_code=status.HTTP_400_BAD_REQUEST, content=str(ex))
+    except Exception as ex:
+        logger.error("Error creating archive: %s", ex)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=str(ex))
+
+
+@router.post("/files/extract")
+async def extract_archive(request: Request):
+    """
+    Extract a zip / tar archive.
+
+    Body params:
+    - path: Archive to extract (required)
+    - target_dir: Destination folder (optional, the archive's folder by default)
+    - overwrite: Extract over the existing files (default false). Without it the
+      request fails with 409 listing the entries that already exist, so the
+      caller can confirm and retry
+
+    Returns:
+        Dict with 'extracted' (number of entries), 'target_dir', 'format' and
+        the first extracted paths.
+
+    Supported formats: .zip, .tar, .tar.gz / .tgz, .tar.bz2 / .tbz2,
+    .tar.xz / .txz. Members that would escape the destination folder are
+    rejected before anything is written.
+    """
+    try:
+        data = await request.json()
+        path = data.get("path")
+        target_dir = data.get("target_dir") or None
+        overwrite = bool(data.get("overwrite", False))
+
+        if not path:
+            return Response(status_code=status.HTTP_400_BAD_REQUEST, content="Missing 'path' parameter")
+
+        codx_junior_session = request.state.codx_junior_session
+        file_engine = codx_junior_session.get_file_engine()
+
+        logger.info("Extracting %s into %s", path, target_dir or "<archive folder>")
+        return await file_engine.extract_archive(
+            archive_path=path,
+            target_dir=target_dir,
+            overwrite=overwrite,
+        )
+
+    except FileExistsError as ex:
+        logger.warning("Extraction destination is not empty: %s", ex)
+        return Response(status_code=status.HTTP_409_CONFLICT, content=str(ex))
+    except FileNotFoundError as ex:
+        logger.warning("Archive not found: %s", ex)
+        return Response(status_code=status.HTTP_404_NOT_FOUND, content=str(ex))
+    except ValueError as ex:
+        logger.warning("Invalid extraction request: %s", ex)
+        return Response(status_code=status.HTTP_400_BAD_REQUEST, content=str(ex))
+    except Exception as ex:
+        logger.error("Error extracting archive: %s", ex)
+        return Response(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content=str(ex))
+
+
 @router.post("/files/upload")
 async def upload_file(
     request: Request,

@@ -1,6 +1,7 @@
 import os
 import subprocess
 import logging
+import tempfile
 
 HOST_USER = os.environ.get("HOST_USER") or os.environ.get("USER") 
 
@@ -38,6 +39,15 @@ LANGUAGE_PARSER_MAPPING = {
 }
 
 LOGS_FOLDER = os.environ.get("CODX_JUNIOR_API_LOGS", "/tmp/codx-junior-logs")
+
+# Ephemeral runtime folder shared by the platform subsystems: locks, worker
+# heartbeats, atomic temp files and rebuildable caches (project atlas,
+# dependency graph, wiki settings). It lives OUTSIDE the project on purpose so
+# the repository working tree never churns while the platform runs.
+RUNTIME_FOLDER = os.environ.get(
+    "CODX_JUNIOR_RUNTIME_PATH",
+    os.path.join(tempfile.gettempdir(), "codx-junior-runtime")
+)
 
 # Global path for analytics data, shared across all projects.
 # Defaults to /home/codx-junior/analytics when the env var is not set.

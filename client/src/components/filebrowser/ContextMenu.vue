@@ -60,6 +60,27 @@
         <span>New codx-junior project</span>
       </button>
 
+      <!-- Upload the contents of a whole folder (keeps the relative paths) -->
+      <button
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleUploadFolder"
+        title="Upload a whole folder, keeping its subfolders"
+      >
+        <i class="fa-regular fa-folder-open w-4"></i>
+        <span>Upload folder</span>
+      </button>
+
+      <!-- Paste what was copied / cut (see the explorer's clipboard) -->
+      <button
+        v-if="clipboardCount > 0"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handlePaste"
+        :title="`Paste the ${clipboardCount} ${clipboardMode === 'cut' ? 'cut' : 'copied'} item(s) into this folder`"
+      >
+        <i class="fa-solid fa-paste w-4"></i>
+        <span>Paste {{ clipboardCount }} item{{ clipboardCount > 1 ? 's' : '' }}</span>
+      </button>
+
       <!-- Git actions, grouped in a submenu (see the panel below) -->
       <div class="divider my-1" v-if="gitAvailable"></div>
       <button
@@ -86,6 +107,50 @@
       </button>
 
       <div class="divider my-1" v-if="hasSelection"></div>
+
+      <!-- Copy the selection to the clipboard (paste it anywhere with Ctrl+V) -->
+      <button
+        v-if="hasSelection"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleCopy"
+        title="Copy the selected items to the clipboard (Ctrl+C)"
+      >
+        <i class="fa-regular fa-clone w-4"></i>
+        <span>Copy{{ isMultiSelect ? ` (${selectionCount})` : '' }}</span>
+      </button>
+
+      <!-- Cut the selection: it is moved on paste -->
+      <button
+        v-if="hasSelection"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleCut"
+        title="Cut the selected items, they are moved when pasted (Ctrl+X)"
+      >
+        <i class="fa-solid fa-scissors w-4"></i>
+        <span>Cut{{ isMultiSelect ? ` (${selectionCount})` : '' }}</span>
+      </button>
+
+      <!-- Duplicate in the same folder -->
+      <button
+        v-if="hasSelection"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleDuplicate"
+        title="Duplicate the selected items in this folder"
+      >
+        <i class="fa-solid fa-copy w-4"></i>
+        <span>Duplicate{{ isMultiSelect ? ` (${selectionCount})` : '' }}</span>
+      </button>
+
+      <!-- Copy to another folder (opens the folder picker) -->
+      <button
+        v-if="hasSelection"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleCopyTo"
+        title="Copy the selected items to another folder"
+      >
+        <i class="fa-solid fa-folder-plus w-4"></i>
+        <span>Copy to…{{ isMultiSelect ? ` (${selectionCount})` : '' }}</span>
+      </button>
 
       <!-- Rename -->
       <button
@@ -120,6 +185,59 @@
         <span>Go to folder</span>
       </button>
 
+      <div class="divider my-1" v-if="hasSelection"></div>
+
+      <!-- Compress the selection into an archive (format submenu, see the panel below) -->
+      <button
+        v-if="hasSelection"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center justify-between gap-2 transition-colors"
+        :class="submenu === 'compress' && 'bg-base-200'"
+        aria-haspopup="menu"
+        :aria-expanded="submenu === 'compress'"
+        title="Compress the selected items into an archive"
+        @click.stop="toggleSubmenu('compress', $event)"
+        @mouseenter="openSubmenu('compress', $event)"
+        @mouseleave="scheduleCloseSubmenu"
+      >
+        <span class="flex items-center gap-2">
+          <i class="fa-regular fa-file-zipper w-4"></i>
+          <span>Compress</span>
+        </span>
+        <i class="fa-solid fa-chevron-right text-[10px] opacity-60"></i>
+      </button>
+
+      <!-- Extract the archive under the cursor -->
+      <button
+        v-if="canExtract"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleExtract('here')"
+        title="Extract the archive into this folder"
+      >
+        <i class="fa-solid fa-box-open w-4"></i>
+        <span>Extract here</span>
+      </button>
+
+      <button
+        v-if="canExtract"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleExtract('folder')"
+        title="Extract the archive into a folder named after it"
+      >
+        <i class="fa-solid fa-folder-open w-4"></i>
+        <span>Extract to folder</span>
+      </button>
+
+      <!-- Download the file under the cursor -->
+      <button
+        v-if="isSingleFile"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleDownload"
+        title="Download this file"
+      >
+        <i class="fa-solid fa-download w-4"></i>
+        <span>Download</span>
+      </button>
+
       <div class="divider my-1"></div>
 
       <!-- Copy the absolute path (selection, or the current folder on blank area) -->
@@ -151,6 +269,18 @@
       >
         <i class="fa-solid fa-trash w-4"></i>
         <span>Delete {{ isMultiSelect ? `(${selectionCount})` : '' }}</span>
+      </button>
+
+      <div class="divider my-1"></div>
+
+      <!-- Reload the folder being viewed -->
+      <button
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        @click="handleRefresh"
+        title="Reload this folder (F5)"
+      >
+        <i class="fa-solid fa-arrows-rotate w-4"></i>
+        <span>Refresh</span>
       </button>
     </div>
 
@@ -184,6 +314,35 @@
         <span>{{ action.label }}</span>
       </button>
     </div>
+
+    <!-- Compress submenu: the archive formats offered for the selection (same
+         placement rules as the Git submenu above) -->
+    <div
+      v-if="isVisible && submenu === 'compress'"
+      ref="submenu"
+      class="fixed z-[110] bg-base-100 border border-base-content/10 rounded-lg shadow-xl py-1 min-w-44 max-w-[calc(100vw-1rem)] max-h-[calc(100vh-1rem)] overflow-y-auto"
+      :style="submenuStyle"
+      role="menu"
+      @click.stop
+      @contextmenu.prevent.stop
+      @mouseenter="keepSubmenu"
+    >
+      <div class="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wide opacity-50 flex items-center gap-1">
+        <i class="fa-regular fa-file-zipper"></i>
+        <span>Archive format</span>
+      </div>
+
+      <button
+        v-for="format in archiveFormats"
+        :key="format.id"
+        class="w-full px-4 py-2 text-sm text-left hover:bg-base-200 flex items-center gap-2 transition-colors"
+        :title="format.title"
+        @click="handleCompress(format.id)"
+      >
+        <i :class="[format.icon, 'w-4']"></i>
+        <span>{{ format.label }}</span>
+      </button>
+    </div>
   </Teleport>
 </template>
 
@@ -193,6 +352,33 @@ const VIEWPORT_MARGIN = 8
 
 export default {
   name: 'ContextMenu',
+  // Every action is reported to the explorer (FileExplorer) which owns the
+  // clipboard, the dialogs and the backend calls. Declared explicitly because
+  // the menu renders a fragment (Teleport with several roots): without it the
+  // listeners would be fallthrough attributes and Vue warns that they cannot
+  // be inherited.
+  emits: [
+    'upload',
+    'upload-folder',
+    'create',
+    'create-project',
+    'git-action',
+    'rename',
+    'move',
+    'go-to-folder',
+    'copy-path',
+    'copy-relative-path',
+    'delete',
+    'copy',
+    'cut',
+    'paste',
+    'duplicate',
+    'copy-to',
+    'compress',
+    'extract',
+    'download',
+    'refresh'
+  ],
   props: {
     isVisible: {
       type: Boolean,
@@ -231,6 +417,26 @@ export default {
     gitStatus: {
       type: Object,
       default: null
+    },
+    // Number of items waiting in the explorer clipboard (copy / cut)
+    clipboardCount: {
+      type: Number,
+      default: 0
+    },
+    // 'copy' (or 'cut') mode of the clipboard, used by the Paste label
+    clipboardMode: {
+      type: String,
+      default: 'copy'
+    },
+    // True when the single selected entry is an archive the backend can extract
+    canExtract: {
+      type: Boolean,
+      default: false
+    },
+    // True when the single selected entry is a file (so it can be downloaded)
+    isSingleFile: {
+      type: Boolean,
+      default: false
     }
   },
   data() {
@@ -277,6 +483,30 @@ export default {
           label: `Add to .gitignore${suffix}`,
           icon: 'fa-solid fa-ban',
           title: 'Add the selected items (or this folder) to .gitignore'
+        }
+      ]
+    },
+    // Archive formats offered by the "Compress" submenu
+    archiveFormats() {
+      const suffix = this.isMultiSelect ? ` (${this.selectionCount})` : ''
+      return [
+        {
+          id: 'zip',
+          label: `Zip (.zip)${suffix}`,
+          icon: 'fa-regular fa-file-zipper',
+          title: 'Create a .zip archive next to the selection'
+        },
+        {
+          id: 'tar.gz',
+          label: `Tar gzip (.tar.gz)${suffix}`,
+          icon: 'fa-regular fa-file-zipper',
+          title: 'Create a .tar.gz archive next to the selection'
+        },
+        {
+          id: 'tar',
+          label: `Tar (.tar)${suffix}`,
+          icon: 'fa-regular fa-file-zipper',
+          title: 'Create a .tar archive next to the selection'
         }
       ]
     }
@@ -416,6 +646,10 @@ export default {
     handleUpload() {
       this.$emit('upload')
     },
+    // Whole folder upload: the explorer keeps the relative subfolders
+    handleUploadFolder() {
+      this.$emit('upload-folder')
+    },
     handleCreate(isDir) {
       this.$emit('create', { isDir })
     },
@@ -442,6 +676,36 @@ export default {
     },
     handleDelete() {
       this.$emit('delete')
+    },
+    // Clipboard: copy / cut / paste / duplicate
+    handleCopy() {
+      this.$emit('copy')
+    },
+    handleCut() {
+      this.$emit('cut')
+    },
+    handlePaste() {
+      this.$emit('paste')
+    },
+    handleDuplicate() {
+      this.$emit('duplicate')
+    },
+    handleCopyTo() {
+      this.$emit('copy-to')
+    },
+    // Archives
+    handleCompress(format) {
+      this.closeSubmenu()
+      this.$emit('compress', { format })
+    },
+    handleExtract(mode) {
+      this.$emit('extract', { mode })
+    },
+    handleDownload() {
+      this.$emit('download')
+    },
+    handleRefresh() {
+      this.$emit('refresh')
     }
   }
 }

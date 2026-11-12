@@ -126,17 +126,48 @@ async def connect(sid, env):
 @sio.on("disconnect")
 async def disconnect(sid):
     logger.info("Client Disconnected: "+" "+str(sid))
-    if USERS.get(sid):
-        del USERS[sid]
-    send_online_users(sid)  
+    # Only a socket that logged in changes the online list. Sockets that never
+    # sent `codx-junior-login` (the background worker sockets, health probes,
+    # connections dropped mid-handshake) reconnect constantly and every
+    # announcement is broadcast to every client: announcing them flooded the
+    # browsers with identical `codx-junior-online-users` events.
+    if USERS.pop(sid, None):
+        send_online_users(sid)
 
-def send_online_users(sid):
+# Signature of the last broadcast list; an unchanged list is never re-sent.
+_online_users_signature = None
+
+def get_online_users():
+    """Online users, one entry per logged user (several tabs = one entry)."""
+    users = {}
+    for io_sid, session in list(USERS.items()):
+        user = session.get("user") or {}
+        username = user.get("username")
+        if not username or username in users:
+            continue
+        users[username] = {
+          "username": username,
+          "avatar": user.get("avatar"),
+          "sid": io_sid
+        }
+    return list(users.values())
+
+def send_online_users(sid=None, force=False):
+    """
+    Broadcast the online user list to every client.
+
+    A reconnect (socket dropped and logged in again, the background worker
+    reconnecting) does not change the human list, so the event is only emitted
+    when the list really changes. Previously every connect/disconnect produced
+    a broadcast and the (broken) filter always sent an empty list.
+    """
+    global _online_users_signature
+    online_users = get_online_users()
+    signature = tuple((user["username"], user["avatar"] or "") for user in online_users)
+    if not force and signature == _online_users_signature:
+        return
+    _online_users_signature = signature
     channel = SessionChannel(sio=sio, sid=sid)
-    online_users = [{
-      "username": USERS[sid]["user"].get("username"),
-      "avatar": USERS[sid]["user"].get("avatar"),
-      "sid": sid
-    } for sid in USERS.keys() if USERS.get("sid",{}).get("user")]
     channel.send_event('codx-junior-online-users', { "users": online_users })
 
 @sio.on("codx-junior-ping")
@@ -155,7 +186,9 @@ async def on_background_event(sid, data: dict):
 @sio.on("codx-junior-login")
 def io_login(sid, data: dict):
     USERS[sid] = data
-    send_online_users(sid)
+    # A client that just joined must receive the list even when it did not
+    # change it (a second tab of an already online user).
+    send_online_users(sid, force=True)
 
 @sio.on("codx-junior-meet")
 async def io_meet_event(sid, data: dict = None):

@@ -1,5 +1,8 @@
 from codx.junior.sio.session_channel import SessionChannel
 from codx.junior.db import Chat, Message
+from codx.junior.events.collection_events import (
+    emit_collection_event,
+)
 
 class EventManager:
     def __init__(self,
@@ -27,13 +30,73 @@ class EventManager:
     def send_knowled_event(self, **kwargs):
         self.channel.send_event('knowledge-event', self.event_data(kwargs))
 
+    # Chat fields left OUT of a `chat-event` payload. The conversation is sent
+    # one message at a time by `message_event`: shipping it again on every save
+    # would exceed the socket frame limit for a long chat (a streaming turn
+    # saves the chat every few seconds).
+    CHAT_EVENT_EXCLUDED_FIELDS = {'messages'}
+
+    @classmethod
+    def chat_event_payload(cls, chat: Chat) -> dict:
+        """
+        Serialize *chat* for a `chat-event`.
+
+        The event carries the CHANGED DATA, not just the chat reference: clients
+        used to receive only ``{ id, owner_project_id }`` and answered every
+        "changed" event with a full ``GET /chats`` request. During an AI turn
+        that request was fired again for every persisted streaming chunk.
+
+        The messages are excluded on purpose (see
+        :attr:`CHAT_EVENT_EXCLUDED_FIELDS`); they travel on
+        :meth:`message_event`.
+
+        :param chat: The chat to serialize.
+        :return: The chat document, without its conversation.
+        """
+        try:
+            return chat.model_dump(exclude=cls.CHAT_EVENT_EXCLUDED_FIELDS)
+        except AttributeError:
+            # DEFENSIVE: not a pydantic model — keep the old, minimal payload.
+            return {
+                'id': getattr(chat, 'id', None),
+                'owner_project_id': getattr(chat, 'owner_project_id', None),
+            }
+
     def chat_event(self, chat: Chat, message: str = None, event_type: str = None):
-        self.channel.send_event('chat-event', self.event_data({ 'chat': { 'id': chat.id, 'owner_project_id': chat.owner_project_id }, 'text': message, 'type': event_type }))
+        """
+        Emit a chat change event carrying the chat document.
+
+        Clients merge the payload in place and no longer request the chat for
+        every event (see :meth:`chat_event_payload`).
+        """
+        self.channel.send_event('chat-event', self.event_data({
+            'chat': self.chat_event_payload(chat),
+            'text': message,
+            'type': event_type
+        }))
         # self.log_info(f"SEND MESSAGE {message}- SENT!")
 
     def message_event(self, chat: Chat, message: Message):
         self.channel.send_event('message-event', self.event_data({ 'chat': { 'id': chat.id, 'owner_project_id': chat.owner_project_id }, 'message': message.model_dump() }))
         # self.log_info(f"SEND MESSAGE {message.role} {message.doc_id}- SENT!")
+
+    def message_removed_event(self, chat: Chat, message_doc_id: str):
+        """
+        Announce that a message was REMOVED from *chat*.
+
+        A removal has no message content to stream, so ``save_chat``'s
+        "changed" event alone cannot tell a client which message disappeared
+        (that event never carries the conversation). Without this event another
+        client would keep the deleted message on screen until the next full
+        reload.
+
+        :param chat: The chat the message was removed from.
+        :param message_doc_id: ``doc_id`` of the removed message.
+        """
+        self.channel.send_event('message-event', self.event_data({
+            'chat': { 'id': chat.id, 'owner_project_id': chat.owner_project_id },
+            'message_removed_id': message_doc_id
+        }))
 
     def orchestration_event(self, payload: dict):
         """
@@ -61,6 +124,34 @@ class EventManager:
         self.channel.send_event(
             'codx-junior-board-manager',
             self.event_data(payload),
+        )
+
+    def collection_event(self, collection: str, action: str, item: dict = None, **extra):
+        """
+        Announce that a cached collection changed (profiles, projects, teams...).
+
+        Unlike the other events, this one is **broadcast to every client**: a
+        collection is global state, so answering only the caller's session would
+        leave the other clients stale. See
+        :mod:`codx.junior.events.collection_events` for the payload shape.
+
+        Args:
+            collection: Collection name (``profiles``, ``projects``, ``teams``,
+                ``boards``) — see ``COLLECTIONS`` in ``collection_events``.
+            action: What happened (``created``, ``updated``, ``upserted``,
+                ``deleted``, ``changed``).
+            item: Identifying fields of the affected item.
+            **extra: Additional payload fields.
+
+        Returns:
+            ``True`` when the event was queued (best effort, never raises).
+        """
+        return emit_collection_event(
+            collection=collection,
+            action=action,
+            item=item,
+            codx_path=self.codx_path,
+            **extra,
         )
 
     def wiki_event(self, message: str):

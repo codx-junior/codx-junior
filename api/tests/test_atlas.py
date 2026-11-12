@@ -272,7 +272,7 @@ class AtlasIgnorePatternsTestCase(unittest.TestCase):
             def main():
                 return 1
         """)
-        self.project.write("vendor/lib/helper.py", """
+        self.project.write("libs/helper.py", """
             def helper():
                 return 2
         """)
@@ -291,14 +291,14 @@ class AtlasIgnorePatternsTestCase(unittest.TestCase):
         )
 
     def test_indexer_skips_the_project_ignore_patterns(self):
-        paths = self._indexer(ignore_patterns=lambda: [".codx", "vendor/"])._list_files()
+        paths = self._indexer(ignore_patterns=lambda: [".codx", "libs/"])._list_files()
         self.assertIn("app/main.py", paths)
-        self.assertNotIn("vendor/lib/helper.py", paths)
+        self.assertNotIn("libs/helper.py", paths)
 
     def test_indexer_indexes_everything_without_ignore_patterns(self):
         paths = self._indexer()._list_files()
         self.assertIn("app/main.py", paths)
-        self.assertIn("vendor/lib/helper.py", paths)
+        self.assertIn("libs/helper.py", paths)
 
 
 class AtlasPolicyTestCase(unittest.TestCase):

@@ -17,6 +17,14 @@ export CODX_JUNIOR_WEB_PORT=${CODX_JUNIOR_WEB_PORT:-19981}
 # codx-junior API background port
 export CODX_JUNIOR_API_PORT_BACKGROUND=${CODX_JUNIOR_API_PORT_BACKGROUND:-19984}
 
+# uvicorn workers for the API (`uvicorn --workers`)
+# socket.io keeps its connected users and its rooms IN PROCESS memory: with more
+# than one worker a session dies as soon as the next request is served by a
+# different worker (400 + reconnect loop) and events only reach the clients
+# connected to the same worker. Keep it at 1 unless a shared socket.io manager
+# (e.g. AsyncRedisManager) is configured in api/codx/junior/sio/sio.py.
+export WEB_CONCURRENCY=${WEB_CONCURRENCY:-1}
+
 export CODX_JUNIOR_STATIC_FOLDER=${CODX_JUNIOR_STATIC_FOLDER:-~/codx-junior-static}
 
 # llmfactory server port

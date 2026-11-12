@@ -21,6 +21,11 @@ from codx.junior.context import (
     AICodeGenerator
 )
 from codx.junior.db import Chat, Message
+from codx.junior.events.collection_events import (
+    ACTION_DELETED,
+    COLLECTION_PROJECTS,
+    emit_collection_event
+)
 from codx.junior.events.event_manager import EventManager
 from codx.junior.knowledge.knowledge_keywords import KnowledgeKeywords
 from codx.junior.knowledge.knowledge_milvus import Knowledge
@@ -179,8 +184,23 @@ class CODXJuniorSession:
 
     def delete_project(self) -> None:
         """Delete the project directory."""
-        shutil.rmtree(self.settings.codx_path)
-        logger.error("PROJECT REMOVED %s", self.settings.codx_path)
+        project_id = self.settings.project_id
+        project_name = self.settings.project_name
+        codx_path = self.settings.codx_path
+        shutil.rmtree(codx_path)
+        logger.error("PROJECT REMOVED %s", codx_path)
+
+        # The project is gone: every client must drop it from its cached list
+        # (and leave the screen when it was the active one). Best effort: the
+        # folder is already removed.
+        emit_collection_event(
+            COLLECTION_PROJECTS,
+            ACTION_DELETED,
+            {"project_id": project_id, "project_name": project_name},
+            codx_path=codx_path,
+            project_id=project_id,
+            source="session",
+        )
 
     # -------------------------------------------------------------------------
     # Manager factories

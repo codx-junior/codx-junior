@@ -10,6 +10,12 @@ from typing import Any, Dict, List, Optional, Set
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.model.model import Profile
 from codx.junior.utils.utils import write_file
+from codx.junior.events.collection_events import (
+    ACTION_DELETED,
+    ACTION_UPSERTED,
+    COLLECTION_PROFILES,
+    emit_collection_event
+)
 
 from codx.junior.project.project_discover import (
     find_project_parents,
@@ -560,6 +566,17 @@ class ProfileManager:
             profile_data['parsed_content'] = None
             f.write(json.dumps(profile_data, indent=2))
 
+        # Every client caches the profile list: announce the change so the
+        # other tabs/users reload it instead of rendering a stale list. Best
+        # effort: the write already succeeded.
+        emit_collection_event(
+            COLLECTION_PROFILES,
+            ACTION_UPSERTED,
+            {"name": profile.name},
+            settings=self.settings,
+            source="profile_manager",
+        )
+
     def delete_profile(self, profile_name):
         # Delete profile in new folder structure
         profile_folder = os.path.join(self.profiles_path, profile_name)
@@ -581,6 +598,14 @@ class ProfileManager:
                 if os.path.isfile(old_markdown_path):
                     os.remove(old_markdown_path)
                     logger.info(f"Deleted old format markdown: {old_markdown_path}")
+
+        emit_collection_event(
+            COLLECTION_PROFILES,
+            ACTION_DELETED,
+            {"name": profile_name},
+            settings=self.settings,
+            source="profile_manager",
+        )
 
     # -------------------------------------------------------------------------
     # Learned rules: short instructions stored in `enrich.md`

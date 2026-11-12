@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Dict, List, Optional
 
+from codx.junior.runtime import runtime_file
 from codx.junior.settings import CODXJuniorSettings
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,8 @@ class DependencyGraph:
     def __init__(self, settings: CODXJuniorSettings):
         self.settings = settings
         self.project_path = settings.abs_project_path
-        self.graph_file = os.path.join(settings.codx_path, "dependency_graph.json")
+        # Rebuildable cache: it belongs to the runtime folder, not the repo.
+        self.graph_file = runtime_file(settings.codx_path, "dependency_graph.json")
         self._graph: Dict = {}
 
     def build(self, file_paths: List[str]) -> Dict:

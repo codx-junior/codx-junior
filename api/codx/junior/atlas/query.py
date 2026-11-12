@@ -27,6 +27,9 @@ import time
 from collections import deque
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from codx.junior.runtime import runtime_file
+
+from .constants import ATLAS_DB_FILENAME, ATLAS_DIRNAME
 from .indexer import AtlasIndexer
 from .models import AtlasHealth, AtlasPacket, Evidence
 from .related import child_paths
@@ -113,10 +116,13 @@ class ProjectAtlas:
         self.root = os.path.abspath(getattr(settings, "abs_project_path", "") or ".")
         codx_path = getattr(settings, "codx_path", None) or os.path.join(self.root, ".codx")
         self.codx_path = os.path.abspath(codx_path)
-        self.db_path = os.path.join(self.codx_path, "atlas", "atlas.db")
+        # The index is a rebuildable cache: keep it in the runtime folder
+        # (``/tmp`` by default) so the project tree never churns.
+        self.db_path = runtime_file(self.codx_path, ATLAS_DIRNAME, ATLAS_DB_FILENAME)
         self.indexer = AtlasIndexer(
             root=self.root,
             db_path=self.db_path,
+            codx_path=self.codx_path,
             project_name=getattr(settings, "project_name", "") or os.path.basename(self.root),
             max_files=int(getattr(settings, "project_atlas_max_files", 5000) or 5000),
             ttl_seconds=int(getattr(settings, "project_atlas_ttl_seconds", 5) or 5),
@@ -125,7 +131,11 @@ class ProjectAtlas:
             # Honor the project's own definition of "project content" (the
             # wiki folder, ``knowledge_file_ignore``, child projects, ...). It is
             # resolved lazily, on the first index build.
-            ignore_patterns=lambda: settings.get_ignore_patterns(),
+            ignore_patterns=(
+                (lambda: settings.get_ignore_patterns())
+                if callable(getattr(settings, "get_ignore_patterns", None))
+                else None
+            ),
         )
         self._store: Optional[AtlasStore] = None
         self._file_cache: Dict[str, List[str]] = {}
@@ -1078,10 +1088,15 @@ class ProjectAtlas:
 
 
 def atlas_db_path(settings: Any) -> str:
-    """Return the SQLite path for a project without opening the index."""
+    """
+    Return the SQLite path for a project without opening the index.
+
+    The database is a rebuildable cache, so it lives in the project runtime
+    folder (``/tmp`` by default) and never inside the repository.
+    """
     root = os.path.abspath(getattr(settings, "abs_project_path", "") or ".")
     codx_path = getattr(settings, "codx_path", None) or os.path.join(root, ".codx")
-    return os.path.join(os.path.abspath(codx_path), "atlas", "atlas.db")
+    return runtime_file(os.path.abspath(codx_path), ATLAS_DIRNAME, ATLAS_DB_FILENAME)
 
 
 def atlas_ready(settings: Any) -> bool:

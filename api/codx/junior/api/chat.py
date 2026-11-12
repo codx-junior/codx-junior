@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Request, Response, Depends, HTTPException
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -206,43 +207,148 @@ async def chat_cancel(request: Request, data: Optional[dict] = None):
 @router.get("/chat/processing")
 def chat_processing(request: Request):
     """
-    List the chat turns currently processing for the request project.
+    Live state of the chat turns of the request project.
 
-    Includes turns left behind by a restart (``status`` queued/running), so a
-    client can render the "processing" state and offer a stop action even when
-    the turn's original process is gone.
+    This is the SAME payload broadcast over the ``codx-junior-chat-turns``
+    socket event, so a client needs it only once (on open / after a reconnect)
+    and never has to poll:
 
-    Returns:
-        ``{ "turns": [ {turn_id, chat_id, status, attempts, started_at,
-        updated_at, error} ] }``
+        { "codx_path": "...", "stale_seconds": 600.0,
+          "turns": [ { "turn_id", "chat_id", "status", "attempts",
+                       "max_attempts", "started_at", "updated_at",
+                       "heartbeat_at", "heartbeat_age", "stale_seconds",
+                       "stalled", "alive", "error", "pid", "host" } ] }
+
+    ``stalled`` is True when the turn made no progress for ``stale_seconds``:
+    the message rendered as "processing" is DEAD (hung AI request, a tool
+    blocked forever, a deadlocked thread) and the server stops and restarts it.
+    ``alive`` is False when no live process owns the turn any more.
     """
     manager, settings = _resolve_chat_manager(request)
     if settings is None or not getattr(settings, "codx_path", None):
         return {"turns": [], "error": "codx_path is required"}
 
     try:
-        from codx.junior.chat.turn_store import get_turn_store
+        from codx.junior.chat.turn_watch import turn_snapshot
 
-        store = get_turn_store(settings.codx_path)
-        live_turn_ids = set(store.live_turn_ids())
-        turns = [
-            {
-                "turn_id": record.turn_id,
-                "chat_id": record.chat_id,
-                "status": record.status,
-                "attempts": record.attempts,
-                "max_attempts": record.max_attempts,
-                "started_at": record.started_at,
-                "updated_at": record.updated_at,
-                "error": record.error,
-                "alive": record.turn_id in live_turn_ids,
-            }
-            for record in store.list_active()
-        ]
-        return {"turns": turns}
+        return turn_snapshot(settings.codx_path)
     except Exception as ex:
         logger.exception("chat_processing: could not list durable turns: %s", ex)
         return {"turns": [], "error": str(ex)}
+
+
+@router.post("/chat/turn/rerun")
+async def chat_turn_rerun(request: Request, data: Optional[dict] = None):
+    """
+    Re-run the last turn of a chat whose execution died.
+
+    This backs the client "re-run" action: the message that stayed on
+    "processing" (or failed after the recovery attempts) is repaired into a
+    terminal state and the SAME request is executed again through the normal
+    chat pipeline (profiles, tools, knowledge, streaming, cost).
+
+    A turn that is really running is never duplicated: only a dead turn
+    (stalled or orphaned) can be re-run.
+
+    Expected payload:
+        { "chat_id": "<chat id>" }
+
+    Returns:
+        { "started": true,  "chat_id": ..., "repaired_messages": n }
+        { "started": false, "reason": "already_running" | "<error>" }
+    """
+    data = data or {}
+    chat_id = data.get("chat_id") or request.query_params.get("chat_id")
+    if not chat_id:
+        return {"started": False, "error": "missing chat_id"}
+
+    manager, settings = _resolve_chat_manager(request, data)
+    if settings is None or not getattr(settings, "codx_path", None):
+        return {"started": False, "error": "codx_path is required"}
+
+    try:
+        from codx.junior.chat.turn_store import (
+            get_turn_store,
+            repair_incomplete_messages,
+        )
+        from codx.junior.chat.turn_watch import publish_turn_states
+
+        store = get_turn_store(settings.codx_path)
+
+        for record in store.find_active(chat_id=chat_id):
+            if store.is_stale(record):
+                # Dead turn: it will be stopped below.
+                continue
+            alive = store.is_owned(record.turn_id)
+            if not alive:
+                # A free lock is an orphan; a held one is a live runner.
+                if store.claim(record):
+                    store.release(record.turn_id)
+                else:
+                    alive = True
+            if alive:
+                return {
+                    "started": False,
+                    "reason": "already_running",
+                    "turn_id": record.turn_id,
+                }
+
+        chat = manager.find_by_id(chat_id) if manager is not None else None
+        if chat is None:
+            return {"started": False, "error": f"chat '{chat_id}' not found"}
+
+        # Stop whatever is left so a recovery sweep cannot resume it, then turn
+        # every orphaned "processing" message into a terminal one.
+        store.cancel_chat(chat_id, reason="Superseded by a manual re-run")
+        repaired = repair_incomplete_messages(
+            chat,
+            manager,
+            note="",
+            error="The turn was restarted",
+            skip_turn_ids=store.live_turn_ids(),
+        )
+
+        session = getattr(request.state, "codx_junior_session", None)
+        if session is None:
+            from codx.junior.engine import CODXJuniorSession
+
+            session = CODXJuniorSession(
+                settings=settings,
+                codx_path=settings.codx_path,
+                user=getattr(request.state, "user", None),
+            )
+
+        owner_project_id = getattr(chat, "owner_project_id", None)
+
+        async def _run_turn() -> None:
+            """Execute the re-run without blocking the HTTP response."""
+            try:
+                await session.chat_with_project(
+                    chat_id=chat_id,
+                    owner_project_id=owner_project_id,
+                )
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.exception(
+                    "chat_turn_rerun: chat '%s' failed to re-run: %s", chat_id, ex
+                )
+            finally:
+                publish_turn_states(settings.codx_path, force=True)
+
+        asyncio.create_task(_run_turn())
+        publish_turn_states(settings.codx_path, force=True)
+        logger.info(
+            "chat_turn_rerun: chat '%s' re-run started (repaired %d message(s))",
+            chat_id,
+            repaired,
+        )
+        return {
+            "started": True,
+            "chat_id": chat_id,
+            "repaired_messages": repaired,
+        }
+    except Exception as ex:
+        logger.exception("chat_turn_rerun: could not re-run chat '%s': %s", chat_id, ex)
+        return {"started": False, "error": str(ex)}
 
 
 @router.get("/chats/recent")

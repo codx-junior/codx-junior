@@ -31,6 +31,18 @@ continue without re-running the same tools. The summary request is
 best-effort, does not count towards the loop limits, and its token usage is
 recorded separately with the ``tool-analysis`` tag.
 
+Tool-Limit Continuation (harness tasks)
+The tool limits are a **guardrail**, not a stop condition for harness work. On
+a harness turn (orchestration worker, run supervisor, delegated subagent or the
+``codx-junior`` harness profile) that reaches a limit, the agent does NOT end
+the turn: it injects a "path rethink" notice carrying every fact already
+collected (deterministic ledger, no extra AI call) plus the instruction to use
+fewer tools, change approach, or ask the user for the exact decision it needs,
+and it renews the guard with a smaller budget (``TOOL_LIMIT_CONTINUATIONS``).
+The turn only stops when the continuations are exhausted, and that stop is
+reported as "needs a human decision" instead of a silent failure. Plain chats
+keep the previous behaviour (stop + tool-usage summary).
+
 Cost-Limit Handling
 Every round (iteration) computes its cost in cxjcoins from the provider usage
 and the model price settings, accumulates it into the chat total and reports it
@@ -119,6 +131,12 @@ from codx.junior.ai.smol.constants import (
     ESTIMATION_COST_EXCEEDED_MSG,
     DEFAULT_TOOL_TIMEOUT_SECONDS,
     ENV_TOOL_TIMEOUT_SECONDS,
+    TOOL_LIMIT_CONTINUATIONS,
+    TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS,
+    TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
+    TOOL_LIMIT_FACTS_MAX_CHARS,
+    TOOL_LIMIT_RETHINK_TEMPLATE,
+    TOOL_LIMIT_RETHINK_LOGS_LABEL,
 )
 from codx.junior.ai.smol.loop_guard import LoopGuard, ToolLoopError
 from codx.junior.ai.smol.messages import (
@@ -226,6 +244,14 @@ PROFILE_LEARNING_TOOL: str = "profile_learning"
 # take part in the turn. It is consumed by the agent (never forwarded to the
 # provider) and drives the profile tool injection.
 PROFILES_HEADER: str = "profiles"
+
+# The harness profile: a chat handled by it is a harness task, expected to
+# resolve itself. Together with the orchestration roles (worker/supervisor) it
+# enables the tool-limit CONTINUATION (see TOOL_LIMIT_CONTINUATIONS).
+HARNESS_PROFILE: str = "codx-junior"
+
+# Config key a caller can use to force the tool-limit policy (True/False).
+CONTINUE_ON_TOOL_LIMIT_KEY: str = "continue_on_tool_limit"
 
 # Sentinel returned to the model when a tool produces no output.
 # An empty or None tool message causes the model to re-issue the same call.
@@ -828,6 +854,77 @@ class SmolAgent:
             return resolved
         return []
 
+    # ── Tool-limit policy (harness continuation) ──────────────────────────────
+
+    def _continuation_enabled(
+        self,
+        config: Dict[str, Any],
+        orchestration_info: Optional[Dict[str, Any]],
+        profile_names: List[str],
+    ) -> bool:
+        """
+        Decide whether a tool limit CONTINUES the turn instead of stopping it.
+
+        The tool limits are a guardrail against rabbit holes, not a stop
+        condition for harness work: an orchestrated run (its supervisor, a step
+        worker or a delegated subagent) and a chat handled by the harness
+        profile are expected to resolve themselves, so they get a course
+        correction instead of a dead end. A plain chat keeps the previous
+        behaviour (stop and summarise the tool usage).
+
+        Args:
+            config:             Chat configuration dict.
+            orchestration_info: Parsed ``orchestration`` header (or None).
+            profile_names:      Profiles taking part in the turn.
+
+        Returns:
+            True when the turn must be continued after a tool limit.
+        """
+        explicit = config.get(CONTINUE_ON_TOOL_LIMIT_KEY)
+        if explicit is not None:
+            return bool(explicit)
+        if orchestration_info:
+            return True
+        return any(
+            str(name or "").strip().lower().lstrip("@") == HARNESS_PROFILE
+            for name in (profile_names or [])
+        )
+
+    def _build_tool_limit_rethink(
+        self,
+        openai_messages: List[Dict[str, Any]],
+        loop_error: str,
+        attempt: int,
+    ) -> str:
+        """
+        Build the "path rethink" notice injected when a tool limit is reached.
+
+        The notice is deterministic (no AI request and no extra cost): it
+        explains that the guardrail tripped, hands back every fact the tools
+        already produced so nothing must be re-discovered, and forces a path
+        change — fewer calls, act on what is known, or ask the user for the
+        exact decision that is missing.
+
+        Args:
+            openai_messages: Current OpenAI-format conversation (this run only).
+            loop_error:      The LoopGuard message that tripped.
+            attempt:         Continuation number (1-based).
+
+        Returns:
+            The notice content, injected as a user message of THIS turn only.
+        """
+        facts = self._tool_usage_fallback(self._collect_tool_usage(openai_messages))
+        facts = (facts or "").strip()
+        if len(facts) > TOOL_LIMIT_FACTS_MAX_CHARS:
+            facts = facts[:TOOL_LIMIT_FACTS_MAX_CHARS].rstrip() + "\n… (more facts omitted)"
+        return TOOL_LIMIT_RETHINK_TEMPLATE.format(
+            loop_error=loop_error,
+            facts=facts or "(no tool returned data yet)",
+            attempt=attempt,
+            attempts=TOOL_LIMIT_CONTINUATIONS,
+            max_calls=TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
+        )
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     async def chat(
@@ -846,10 +943,13 @@ class SmolAgent:
         if the model requests the same tool with identical arguments.
 
         Loop limits are handled gracefully: instead of raising, the run is
-        stopped and a summary of the tools used is appended to the assistant
-        answer (see :meth:`_summarize_tool_usage`). This keeps the work in the
-        persisted message so the next iteration can continue without repeating
-        the same tools.
+        continued for a harness task (the facts already collected are handed
+        back with a "rethink the path" instruction and a smaller budget, see
+        :meth:`_build_tool_limit_rethink`), and only then stopped with a
+        summary of the tools used appended to the assistant answer (see
+        :meth:`_summarize_tool_usage`). This keeps the work in the persisted
+        message so the next iteration can continue without repeating the same
+        tools.
 
         Cost limits are handled gracefully too: every round's cost (plus any
         cost reported by tools via :attr:`ToolResponse.cost`) is accumulated and
@@ -937,10 +1037,14 @@ class SmolAgent:
           re-emit tool output (the first execution already delivered it).
 
         Loop limits:
-        - When LoopGuard raises, the loop is broken gracefully (no exception
-          propagates) and a summary of the tools used is appended to
-          ``thinking_content`` so it is streamed to the user and persisted in
-          the final answer.
+        - A harness turn (orchestration worker/supervisor, delegated subagent or
+          the harness profile) that reaches a tool limit is CONTINUED: the
+          facts already collected are injected back with a "rethink the path"
+          instruction and the guard is renewed with a smaller budget.
+        - When the continuations are exhausted (or the turn is a plain chat),
+          LoopGuard stops the loop gracefully (no exception propagates) and a
+          summary of the tools used is appended to ``thinking_content`` so it
+          is streamed to the user and persisted in the final answer.
 
         Cost limits:
         - Every round is priced in cxjcoins from provider usage + model prices
@@ -1010,6 +1114,21 @@ class SmolAgent:
         # Initialize tool cache for this conversation.
         # Cached results bypass LoopGuard checks and don't count towards limits.
         tool_cache = ToolCache()
+
+        # ── Tool-limit continuation (harness tasks) ───────────────
+        # The tool limits are a GUARDRAIL against rabbit holes, not a stop
+        # condition for harness work: a worker/supervisor turn that runs out of
+        # tool budget is CONTINUED in the same turn (the facts it already
+        # collected + a smaller budget) so the run resolves itself instead of
+        # dying. Plain chats, and harness turns whose continuations are
+        # exhausted, stop as before.
+        continue_on_tool_limit: bool = self._continuation_enabled(
+            config=config,
+            orchestration_info=orchestration_info,
+            profile_names=profile_names,
+        )
+        tool_limit_continuations: int = 0
+        tool_limit_note: str = ""
 
         # Chat cost budget: seed the accumulated chat cost from Chat.cost, the
         # deletion-safe accumulator maintained by ChatManager. Falling back to
@@ -1181,10 +1300,61 @@ class SmolAgent:
                 except ToolLoopError as ex:
                     # Limits reached: do NOT let the exception abort the run
                     # (that would discard every tool result gathered so far).
+                    #
+                    # A harness turn is CONTINUED instead of stopped: the tool
+                    # limit is a guardrail against rabbit holes, not the end of
+                    # the task. The model receives the facts it already
+                    # collected plus a "rethink the path" instruction, and the
+                    # guard is renewed with a smaller budget so it can finish
+                    # the work without repeating a single call.
+                    if (
+                        continue_on_tool_limit
+                        and tool_limit_continuations < TOOL_LIMIT_CONTINUATIONS
+                    ):
+                        tool_limit_continuations += 1
+                        rethink = self._build_tool_limit_rethink(
+                            openai_messages=openai_messages,
+                            loop_error=str(ex),
+                            attempt=tool_limit_continuations,
+                        )
+                        # Request-only: the notice belongs to this turn's
+                        # reasoning and is never persisted in the chat history.
+                        openai_messages.append({"role": "user", "content": rethink})
+                        loop_guard.renew(
+                            max_iterations=TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS,
+                            max_tool_calls=TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
+                        )
+                        # Surface the course correction on the card/turn. Tool
+                        # logs render collapsed, so the chat stays clean.
+                        run_context.emit(
+                            AgentEventType.TOOL_LOGS,
+                            tool=TOOL_LIMIT_RETHINK_LOGS_LABEL,
+                            tool_call_id=f"tool-limit-{tool_limit_continuations}",
+                            logs=[rethink],
+                        )
+                        logger.warning(
+                            "SmolAgent: tool loop limit reached at round %d (%s); "
+                            "continuation %d/%d granted with a renewed budget",
+                            loop_guard.rounds,
+                            str(ex),
+                            tool_limit_continuations,
+                            TOOL_LIMIT_CONTINUATIONS,
+                        )
+                        continue
+
+                    # Limits reached: do NOT let the exception abort the run
+                    # (that would discard every tool result gathered so far).
                     # Stop the loop and summarise the tools used so the work
                     # survives in the response message and can be reused in the
                     # next iteration without re-executing the same tools.
                     loop_limit_error = str(ex)
+                    if continue_on_tool_limit:
+                        # The harness turn used every continuation: say it
+                        # explicitly so the step is reported as "needs a human
+                        # decision" instead of as a silent failure.
+                        tool_limit_note = ORCHESTRATION.TOOL_LIMIT_EXHAUSTED_NOTE.format(
+                            attempts=tool_limit_continuations
+                        )
                     logger.warning(
                         "SmolAgent: tool loop limit reached at round %d (%s); "
                         "stopping gracefully and summarising tool usage",
@@ -1424,6 +1594,20 @@ class SmolAgent:
                 len(cost_limit_error),
             )
 
+        # A harness turn that used its whole tool budget (the round budget plus
+        # every continuation) says it explicitly: the facts it collected are in
+        # the summary above, but a HUMAN DECISION is required to continue. The
+        # orchestration executor detects this notice and reports the step as
+        # blocked instead of failed, so the run keeps the evidence.
+        if tool_limit_note:
+            thinking_content += tool_limit_note
+            send_callback(tool_limit_note, True)
+            logger.warning(
+                "SmolAgent: harness turn exhausted its tool budget (%d "
+                "continuation(s)); reporting that a human decision is required",
+                tool_limit_continuations,
+            )
+
         # thinking_content (the model's own reasoning text) is streamed live via
         # send_callback during tool rounds AND is included in the final AIMessage
         # so that chat_engine.py persists it correctly. Tool output is NOT part
@@ -1490,7 +1674,7 @@ class SmolAgent:
             content=combined_content,
             messages=messages,
             cost=cost_info,
-            iterations=loop_guard.rounds,
+            iterations=loop_guard.total_rounds,
             tools_used=tools_were_used,
             tools=[
                 ToolRunSummary(

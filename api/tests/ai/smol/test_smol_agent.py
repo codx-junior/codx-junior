@@ -791,4 +791,127 @@ class TestSmolAgentBasicChat:
                 # Note: Not called in basic flow, but method exists for future use
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# TOOL-LIMIT CONTINUATION (harness robustness)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# The tool limits are a guardrail, not a stop condition: a harness turn gets a
+# deterministic "rethink the path" notice carrying the facts already collected,
+# plus a renewed (smaller) budget. A plain chat keeps the old behaviour.
+
+
+def _tool_round_messages():
+    """Conversation with one executed tool call (the facts to hand back)."""
+    return [
+        {"role": "user", "content": "Fix the failing loop guard test"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "function": {
+                        "name": "project_locate",
+                        "arguments": '{"query": "LoopGuard"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": "api/codx/junior/ai/smol/loop_guard.py:101 LoopGuard",
+        },
+    ]
+
+
+def test_continuation_enabled_for_harness_profile(smol_agent):
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info=None, profile_names=["codx-junior"]
+    ) is True
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info=None, profile_names=["@codx-junior", "x"]
+    ) is True
+
+
+def test_continuation_enabled_for_orchestrated_turns(smol_agent):
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info={"role": "worker"}, profile_names=[]
+    ) is True
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info={"role": "supervisor"}, profile_names=[]
+    ) is True
+
+
+def test_continuation_disabled_for_plain_chat(smol_agent):
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info=None, profile_names=["software_developer"]
+    ) is False
+
+
+def test_continuation_config_override_wins(smol_agent):
+    assert smol_agent._continuation_enabled(
+        config={"continue_on_tool_limit": True},
+        orchestration_info=None,
+        profile_names=[],
+    ) is True
+    assert smol_agent._continuation_enabled(
+        config={"continue_on_tool_limit": False},
+        orchestration_info={"role": "supervisor"},
+        profile_names=["codx-junior"],
+    ) is False
+
+
+def test_tool_limit_rethink_carries_the_collected_facts(smol_agent):
+    notice = smol_agent._build_tool_limit_rethink(
+        openai_messages=_tool_round_messages(),
+        loop_error="max iterations (12) exceeded",
+        attempt=1,
+    )
+
+    assert "DIFFERENT path" in notice
+    assert "max iterations (12) exceeded" in notice
+    # The facts already collected are handed back, so nothing must be re-run.
+    assert "project_locate" in notice
+    assert "loop_guard.py:101" in notice
+    # The model is told which continuation this is and its smaller budget.
+    assert "continuation 1 of 2" in notice
+    assert "STOP calling tools" in notice
+
+
+def test_tool_limit_rethink_is_bounded(smol_agent):
+    from codx.junior.ai.smol.constants import TOOL_LIMIT_FACTS_MAX_CHARS
+
+    messages = [
+        {"role": "user", "content": "big task"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": f"call-{i}",
+                    "function": {
+                        "name": "project_read_file",
+                        "arguments": f'{{"file_path": "file_{i}.py"}}',
+                    },
+                }
+                for i in range(60)
+            ],
+        },
+    ]
+    messages += [
+        {
+            "role": "tool",
+            "tool_call_id": f"call-{i}",
+            "content": "x" * 2000,
+        }
+        for i in range(60)
+    ]
+
+    notice = smol_agent._build_tool_limit_rethink(
+        openai_messages=messages, loop_error="too many calls", attempt=2
+    )
+
+    # The notice must never explode the context window.
+    assert len(notice) < TOOL_LIMIT_FACTS_MAX_CHARS + 4000
+
+
 # Made with ❤️ by codx-junior

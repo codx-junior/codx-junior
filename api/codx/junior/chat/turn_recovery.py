@@ -44,6 +44,7 @@ from .turn_store import (
     get_turn_store,
     repair_incomplete_messages,
 )
+from .turn_watch import publish_turn_states
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +232,10 @@ class ChatTurnRecovery:
                         recovered.append(record.turn_id)
                     elif outcome == "failed":
                         failed.append(record.turn_id)
+                # Push the live state (running / stalled / gone) to the clients:
+                # a message that died must not stay "processing" without the
+                # browser polling for it.
+                publish_turn_states(codx_path)
             except Exception as ex:  # pragma: no cover - defensive
                 logger.exception(
                     "Chat turn recovery failed for project '%s': %s",
@@ -270,12 +275,22 @@ class ChatTurnRecovery:
         """
         if record.turn_id in self._inflight:
             return None
-        if store.is_owned(record.turn_id):
-            return None
         if store.cancel_requested(record.turn_id):
             if store.claim(record):
                 store.finalize(record, "cancelled", error="Stopped by user")
                 self._audit(record, "turn_cancelled", reason="Stopped by user")
+            return None
+
+        # A turn that stopped making progress is DEAD even when its flock is
+        # still held: a hung AI request, a tool blocked on a socket read or a
+        # deadlocked thread never release the lock, so `is_owned` cannot see it
+        # and the client keeps rendering "processing" forever. Stop it and
+        # restart the work.
+        if store.is_stale(record):
+            return self._restart_stalled(settings, store, record)
+
+        if store.is_owned(record.turn_id):
+            # A live turn of THIS process owns it and is still working.
             return None
 
         if record.attempts >= record.max_attempts:
@@ -329,6 +344,95 @@ class ChatTurnRecovery:
                 pool.submit(self._run_in_thread, settings, store, record)
             except RuntimeError:  # pool shutting down
                 self._run_in_thread(settings, store, record)
+        return "recovered"
+
+    def _restart_stalled(
+        self,
+        settings: Any,
+        store: ChatTurnStore,
+        record: ChatTurnRecord,
+    ) -> Optional[str]:
+        """
+        Stop a turn that stopped making progress and restart its execution.
+
+        The ``flock`` cannot tell "working" from "hung", so the verdict is
+        taken on the heartbeat: no progress for ``stale_seconds``. The dead turn
+        is stopped (durable cancel marker + repaired response message), recorded
+        as failed and — while the attempt bound allows it — the SAME request is
+        run again immediately, so the user gets an answer instead of a message
+        frozen on "processing".
+
+        Args:
+            settings: Project settings.
+            store: Store that owns the record.
+            record: The stalled record.
+
+        Returns:
+            ``"recovered"`` (restarted), ``"failed"`` (bound reached) or None.
+        """
+        age = int(store.activity_age(record))
+        limit = int(store.stale_seconds)
+        reason = f"no progress for {age}s (stall limit {limit}s)"
+        logger.warning(
+            "Chat turn recovery: turn '%s' of chat '%s' is STALLED (%s) — "
+            "stopping it and restarting the turn",
+            record.turn_id,
+            record.chat_id,
+            reason,
+        )
+        # Ask the owner (possibly another process) to unwind through its
+        # cancellation path; the durable marker also stops a later sweep from
+        # resuming this turn id again.
+        store.request_cancel(record.turn_id)
+        self._audit(
+            record,
+            "turn_stalled",
+            reason=reason,
+            heartbeat_age=age,
+            stale_seconds=limit,
+            attempts=record.attempts,
+            max_attempts=record.max_attempts,
+        )
+        self._repair_chat(settings, record, note=FAILED_NOTE)
+        store.fail(record, f"The turn stalled: {reason}")
+
+        if record.attempts >= record.max_attempts:
+            self._failed += 1
+            self._notify(
+                record,
+                f"codx-junior stopped a stalled turn in chat '{record.chat_id}' "
+                f"({reason}) and could not restart it any more "
+                f"({record.attempts}/{record.max_attempts} attempts). "
+                "Re-run the message to try again.",
+            )
+            return "failed"
+
+        # Restart as a FRESH turn: the engine creates a new durable record (a
+        # new turn id) while this one keeps its own files, so a late
+        # finalization of the hung runner cannot delete the restarted work.
+        record.meta_data = {
+            **(record.meta_data or {}),
+            "fresh": True,
+            "stalled_at": record.updated_at,
+            "stalled_reason": reason,
+        }
+        record.attempts += 1
+        with self._inflight_lock:
+            self._inflight.add(record.turn_id)
+        pool = self._pool
+        if pool is None:
+            self._run_in_thread(settings, store, record)
+        else:
+            try:
+                pool.submit(self._run_in_thread, settings, store, record)
+            except RuntimeError:  # pool shutting down
+                self._run_in_thread(settings, store, record)
+        self._notify(
+            record,
+            f"codx-junior detected a stalled turn in chat '{record.chat_id}' "
+            f"({reason}) and restarted it "
+            f"(attempt {record.attempts}/{record.max_attempts}).",
+        )
         return "recovered"
 
     def _audit(self, record: ChatTurnRecord, event_type: str, **data: Any) -> None:
@@ -463,6 +567,11 @@ class ChatTurnRecovery:
         from codx.junior.model.model import CodxUser
 
         store = get_turn_store(record.codx_path)
+        # A stalled turn is restarted as a NEW turn (its own durable record)
+        # while this one is already finalized: `fresh` tells the engine to
+        # create it and to carry the attempt counter over, so the retry bound
+        # still applies.
+        fresh = bool((record.meta_data or {}).get("fresh"))
         if store.cancel_requested(record.turn_id):
             logger.info(
                 "Chat turn recovery: turn '%s' was stopped before it could be "
@@ -555,7 +664,7 @@ class ChatTurnRecovery:
             append_references=bool(record.append_references),
             chat_mode=record.chat_mode,
             system=record.system,
-            turn_id=record.turn_id,
+            turn_id=None if fresh else record.turn_id,
             turn_attempt=record.attempts,
             turn_codx_path=record.codx_path,
         )

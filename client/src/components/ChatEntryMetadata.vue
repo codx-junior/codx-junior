@@ -1,5 +1,6 @@
 <script setup>
 import moment from 'moment'
+import { formatGenerationTime } from '../utils/duration.js'
 </script>
 
 <template>
@@ -31,7 +32,7 @@ import moment from 'moment'
         <p class="text-[10px] text-base-content/60 mb-1">
           <i class="fa-solid fa-hourglass-end"></i> Duration
         </p>
-        <p class="text-sm font-bold text-success">{{ formatDuration(metadata?.time_taken) }}</p>
+        <p class="text-sm font-bold text-success">{{ formatGenerationTime(metadata?.time_taken) }}</p>
         <p class="text-[9px] text-base-content/50 mt-0.5">{{ metadata?.time_taken?.toFixed(2) }}s</p>
       </div>
     </div>
@@ -99,7 +100,7 @@ import moment from 'moment'
       <div class="space-y-1 text-xs">
         <div class="flex justify-between">
           <span class="text-base-content/60">Total Duration:</span>
-          <span class="font-semibold">{{ metadata?.time_taken?.toFixed(2) }}s</span>
+          <span class="font-semibold">{{ formatGenerationTime(metadata?.time_taken) }}</span>
         </div>
         <div v-if="metadata?.first_chunk_time_taken" class="flex justify-between">
           <span class="text-base-content/60">Time to First Token:</span>
@@ -143,11 +144,6 @@ export default {
     lifecycleCount: Number
   },
   methods: {
-    formatDuration(seconds) {
-      if (!seconds) return '0s'
-      const baseMoment = moment({ h: 0, m: 0, s: 0, ms: 0 })
-      return baseMoment.add(Math.floor(seconds), 'seconds').format('mm:ss')
-    },
     formatTime(timestamp) {
       return moment(timestamp).format('HH:mm:ss')
     },

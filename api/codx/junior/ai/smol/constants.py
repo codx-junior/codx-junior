@@ -55,6 +55,55 @@ TOOL_CALLS_EXCEEDED_ERROR_MSG: str = (
     "Try using fewer tools or simpler operations."
 )
 
+# ── Tool-limit continuation (harness tasks) ───────────────────────────────────
+# The tool limits above are a GUARDRAIL against rabbit holes, never a stop
+# condition for harness work. When a harness turn (an orchestration worker, the
+# run supervisor, a delegated subagent or the `codx-junior` harness profile) hits
+# them, the turn is CONTINUED instead of ended: the model is told that it used
+# too many tools, receives every fact already collected (deterministic ledger,
+# no extra AI call) and must rethink its path with a smaller budget. A harness
+# task is expected to resolve itself, so it only stops when the work is done or
+# a human decision is required.
+
+# How many course corrections a harness turn may get before it stops.
+TOOL_LIMIT_CONTINUATIONS: int = 2
+
+# Budget granted after a course correction: the model must adapt its path, not
+# spend the same allowance again (fewer, better calls).
+TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS: int = 6
+TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS: int = 3
+
+# Maximum characters of the deterministic "facts already collected" ledger
+# embedded in the course-correction notice.
+TOOL_LIMIT_FACTS_MAX_CHARS: int = 6000
+
+# The course-correction notice injected into the conversation (request only: it
+# is never persisted in the chat). ``{...}`` placeholders are filled by
+# SmolAgent._build_tool_limit_rethink.
+TOOL_LIMIT_RETHINK_TEMPLATE: str = (
+    "## ⛔ Tool budget spent — continue with a DIFFERENT path\n\n"
+    "You requested more tools than this turn's guardrail allows: {loop_error}\n\n"
+    "This is a GUARDRAIL, not a stop: your work is NOT lost and the task is NOT "
+    "over. The tool calls you were about to make were not executed.\n\n"
+    "### Facts already collected (do NOT call tools to obtain them again)\n"
+    "{facts}\n\n"
+    "### What you must do now (continuation {attempt} of {attempts})\n"
+    "1. Do NOT repeat any call listed above: its result is here and in the "
+    "conversation. Repeating it burns the budget without adding facts.\n"
+    "2. Pick the SINGLE smallest next action that moves the task forward and do "
+    "it with at most {max_calls} tool calls in this round (batch independent "
+    "reads in one call).\n"
+    "3. If the guardrail tripped because you were investigating the WRONG path, "
+    "say so and switch approach instead of digging deeper.\n"
+    "4. State what is confirmed, what is ruled out and the next concrete step in "
+    "your text, not only through tool calls.\n"
+    "5. If you cannot progress without a human decision (missing credential, "
+    "ambiguous requirement, destructive or infrastructural action, sandbox you "
+    "cannot change), STOP calling tools and answer with: the confirmed facts, "
+    "the exact question/decision you need from the user and what you will do "
+    "next once answered.\n"
+)
+
 # ── Tool usage summary (generated only when the tool loop breaks) ─────────────
 # When LoopGuard stops a run, the tool conversation (the results the model saw)
 # would otherwise be discarded. A single lightweight request to the project's
@@ -93,6 +142,9 @@ TOOL_ANALYSIS_SYSTEM_PROMPT: str = (
     "Be factual and specific. Never invent information absent from the tool "
     "results. Keep it under ~300 words."
 )
+
+# Heading used in logs/events when a tool limit triggers a course correction.
+TOOL_LIMIT_RETHINK_LOGS_LABEL: str = "tool-limit-continuation"
 
 # Fallback note appended when the summary cannot be produced by the model.
 # It still lists the tools already executed so the next iteration is never

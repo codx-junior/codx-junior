@@ -13,6 +13,7 @@ import ChatAttachmentPreview from './chat/ChatAttachmentPreview.vue'
 import ChatEntryToolSummary from './chat/ChatEntryToolSummary.vue'
 import ChatMessageEvents from './chat/ChatMessageEvents.vue'
 import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
+import { formatElapsed } from '../utils/duration.js'
 </script>
 
 <template>
@@ -78,7 +79,31 @@ import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
             class="text-[11px] tabular-nums"
             :class="isChannel ? 'text-base-content/60' : 'text-base-content/40'"
           >{{ formatDate(displayMessage.updated_at) }}</span>
-          <span v-if="timeTaken" class="hidden @lg/panel:inline text-[11px] text-base-content/40 tabular-nums">{{ timeTaken }}</span>
+          <!-- Generation time of the AI response (`00m 12s`).
+               - streaming (`!isDone`): LIVE counter — elapsed since the run
+                 started (`meta_data.start_time`, or the message creation time)
+                 up to now, ticking once per second, so the wait is visible while
+                 it happens.
+               - finished (`isDone`): the total reported in
+                 `meta_data.time_taken`, carried by the clock icon's tooltip
+                 instead of taking header width.
+               Never gated on the panel width: on a narrow panel this header is
+               the only place the duration can be seen. -->
+          <span
+            v-if="isAssistant && !isDone && liveTimeTaken"
+            class="inline-flex items-center gap-1 text-[11px] text-info/70 tabular-nums"
+            :title="`Generating… ${liveTimeTaken}`"
+          >
+            <i class="fa-regular fa-clock text-[10px]" aria-hidden="true"></i>{{ liveTimeTaken }}
+          </span>
+          <i
+            v-else-if="timeTaken"
+            class="fa-regular fa-clock text-[11px] cursor-help"
+            :class="isChannel ? 'text-base-content/50' : 'text-base-content/40'"
+            :title="`Generated in ${timeTaken}`"
+            :aria-label="`Generated in ${timeTaken}`"
+            role="img"
+          ></i>
 
           <!-- Seen double-check (other users' messages only) -->
           <button
@@ -752,6 +777,10 @@ export default {
       seenProgressValue: 0,
       seenDuration: 2500,
       progressInterval: null,
+      // Live generation timer of the header (see `startClock`): `clockNow` is
+      // the moving reference the elapsed time is measured against.
+      clockNow: Date.now(),
+      clockInterval: null,
       intersectionObserver: null,
       // Code block selection for bulk save (lives here so CodeViewers stay dumb)
       selectedCodeBlockKeys: [],
@@ -924,17 +953,30 @@ export default {
     code_patches() {
       return this.improvementData?.code_patches
     },
+    // ── Generation time of the AI response (header) ──────────────────────
+    // Start of the run: reported in the metadata, falling back to the message
+    // creation time so the live counter works from the very first render.
+    // Epochs may arrive in seconds or milliseconds, so both are accepted.
+    responseStartedAt() {
+      const start = this.displayMessage.meta_data?.start_time
+        || this.displayMessage.created_at
+      if (!start) return null
+      const timestamp = typeof start === 'number' ? start : moment(start).valueOf()
+      if (!Number.isFinite(timestamp)) return null
+      return timestamp < 1e12 ? timestamp * 1000 : timestamp
+    },
+    // LIVE counter of a response that is still running: elapsed time from the
+    // start of the run up to `clockNow`, which `startClock()` refreshes once per
+    // second. Rendered as `00m 12s`.
+    liveTimeTaken() {
+      if (this.isDone || !this.responseStartedAt) return null
+      return formatElapsed((this.clockNow - this.responseStartedAt) / 1000)
+    },
+    // Total generation time reported by the server once the message is done:
+    // `meta_data.time_taken` (seconds), rendered as `00m 12s`.
     timeTaken() {
-      if (!this.displayMessage.meta_data) return null
-      let timeTaken = '--'
-      if (this.displayMessage.meta_data?.time_taken) {
-        const seconds = Math.floor(this.displayMessage.meta_data.time_taken)
-        const baseMoment = moment({ h: 0, m: 0, s: 0, ms: 0 })
-        timeTaken = baseMoment.add(seconds, 'seconds').format('mm:ss')
-      } else if (this.displayMessage.meta_data?.start_time) {
-        timeTaken = moment(this.displayMessage.meta_data?.start_time).fromNow()
-      }
-      return timeTaken ? `${this.displayMessage.meta_data.model} ${timeTaken}` : null
+      const seconds = this.displayMessage.meta_data?.time_taken
+      return seconds ? formatElapsed(seconds) : null
     },
     chatProject() {
       if (this.chat.project_id) {
@@ -1122,6 +1164,13 @@ export default {
       this.extractImprovementData()
     },
     isDone() {
+      // The run finished: freeze the header timer on the reported total (it is
+      // started again if the message ever streams once more).
+      if (this.isDone) {
+        this.stopClock()
+      } else {
+        this.startClock()
+      }
       if (this.isDone && !this.isMyMessage && this.isFocused && !this.isMessageSeen) {
         this.startSeenTracking()
       } else if (!this.isDone) {
@@ -1626,6 +1675,25 @@ export default {
         this.stopProgressTracking()
       }
     },
+    // ─────────────────────────────────────────────────────────────
+    // Header generation timer (live while the response streams)
+    // ─────────────────────────────────────────────────────────────
+    // Refreshes `clockNow` once per second so `liveTimeTaken` advances on its
+    // own. Only a running response needs it: once `isDone` flips, the total
+    // comes from the metadata and the interval is cleared.
+    startClock() {
+      this.clockNow = Date.now()
+      if (this.isDone || this.clockInterval) return
+      this.clockInterval = setInterval(() => {
+        this.clockNow = Date.now()
+      }, 1000)
+    },
+    stopClock() {
+      if (this.clockInterval) {
+        clearInterval(this.clockInterval)
+        this.clockInterval = null
+      }
+    },
     startSeenTracking() {
       if (this.hasSeen || this.isMessageSeen || !this.isDone) return
       this.seenProgressValue = 0
@@ -1727,9 +1795,11 @@ export default {
     this.collapsed = this.isCollapsed || this.displayMessage.hide
     this.extractImprovementData()
     this.resetSeenTracking()
+    this.startClock()
     this.setupIntersectionObserver()
   },
   beforeUnmount() {
+    this.stopClock()
     this.stopProgressTracking()
     if (this.intersectionObserver) {
       this.intersectionObserver.disconnect()

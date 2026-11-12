@@ -886,4 +886,61 @@ def test_orchestrator_add_step_tool_updates_the_plan(tmp_path):
     assert "1 step" in added.user_response
     assert '"status": "step_added"' in added.llm_response
 
+
+# ---------------------------------------------------------------------------
+# Tool-limit handling (a harness step never dies from a tool limit)
+# ---------------------------------------------------------------------------
+
+
+def test_executor_reports_a_tool_limit_stop_as_blocked():
+    """A worker that spent its tool budget needs a human/narrower step."""
+    from codx.junior.orchestration.executor import StepExecutor
+
+    content = (
+        "I mapped the API but did not finish.\n\n### \u26d4 "
+        f"{C.TOOL_LIMIT_STOP_MARKER}\n\nA human decision is required."
+    )
+    result = StepResult(status="done", summary="mapped the API only")
+
+    downgraded = StepExecutor._downgrade_on_tool_limit(result, content)
+
+    assert downgraded.status == C.STEP_STATUS_BLOCKED
+    assert "tool budget" in (downgraded.error or "").lower()
+
+
+def test_executor_keeps_done_without_the_tool_limit_marker():
+    from codx.junior.orchestration.executor import StepExecutor
+
+    result = StepExecutor._downgrade_on_tool_limit(
+        StepResult(status="done", summary="all good"),
+        "Work finished and verified.",
+    )
+
+    assert result.status == C.STEP_STATUS_DONE
+    assert not result.error
+
+
+def test_executor_does_not_promote_other_statuses():
+    from codx.junior.orchestration.executor import StepExecutor
+
+    result = StepExecutor._downgrade_on_tool_limit(
+        StepResult(status="failed", summary="boom"),
+        f"### {C.TOOL_LIMIT_STOP_MARKER}",
+    )
+
+    assert result.status == "failed"
+
+
+def test_prompts_carry_the_tool_budget_discipline():
+    """The workers must know the limit is a guardrail, not a dead end."""
+    from codx.junior.orchestration import prompts
+
+    assert "Tool budget" in prompts.STEP_SYSTEM_PROMPT
+    assert "Tool budget exhausted" in prompts.SUPERVISOR_SYSTEM_PROMPT
+
+    run = RunState(name="r", objective="o")
+    step = normalize_steps([{"title": "A", "objective": "a"}])[0]
+    assert "tool budget" in prompts.build_step_contract(run, step).lower()
+    assert "tool budget" in prompts.build_delegate_contract("do it").lower()
+
 # Made with ❤️ by codx-junior

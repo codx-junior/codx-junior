@@ -428,6 +428,32 @@ carries compressed results, never the raw tool output.
   serialized with an inter-process lock (`.codx/.cost-rollup.lock`), fixing a
   latent race in `ChatManager._roll_up_cost_to_root`.
 
+#### The tool budget inside a step
+
+The per-step tool limits of `SmolAgent` (`max_iterations`, `max_tool_calls`) are
+a **guardrail against rabbit holes, never a stop condition** for harness work:
+
+* a harness turn (step worker, run supervisor, delegated subagent or a chat of
+  the `codx-junior` profile) that reaches a limit is **continued**: the agent
+  injects a deterministic "rethink the path" notice carrying every fact already
+  collected (no extra AI call) and renews the guard with a *smaller* budget
+  (`TOOL_LIMIT_CONTINUATIONS`, default 2,
+  `TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS/_MAX_TOOL_CALLS`).
+  `LoopGuard.renew` resets the budget while `total_rounds` keeps the whole turn
+  measurable,
+* the notice forbids repeating a call whose result is already in the
+  conversation, caps the next round and offers the human escape hatch: state
+  the confirmed facts and the exact decision needed,
+* only when the continuations are exhausted does the turn stop, and the answer
+  then carries `constants.TOOL_LIMIT_STOP_MARKER` (`Tool budget exhausted`),
+* the executor maps that stop to a **`blocked`** step
+  (`StepExecutor._downgrade_on_tool_limit`), never to `failed`: the evidence is
+  kept, the card goes to *On hold* and the supervisor replans it narrower or
+  reports the human decision it needs,
+* a plain chat (no orchestration, no harness profile) keeps the previous
+  behaviour: stop and append the tool-usage summary.
+  `config["continue_on_tool_limit"]` forces either policy.
+
 ### 4.8 Board / sprint mapping
 
 | Step status | Chat.status | Board column (phase) | Sprint column |
@@ -463,6 +489,9 @@ are native codx-junior views.
 * never repeat the exact same failed step; honest blocked report instead of
   looping,
 * respect budget; reserve the final round,
+* a step stopped with `Tool budget exhausted` is **blocked**, not failed: replan
+  it narrower (fewer files, one explicit decision) instead of retrying the same
+  approach,
 * short visible answer; detail in tool arguments.
 
 Each round's user message (`build_supervisor_prompt`) includes the reason
@@ -474,6 +503,9 @@ Each round's user message (`build_supervisor_prompt`) includes the reason
 * own one step; the contract is complete; do not ask questions,
 * inspect before changing; keep changes scoped and reviewable,
 * verify (tests/build/manual) and say how,
+* the tool limits are a guardrail: continue with the facts you already have,
+  never repeat a call, batch reads, and report what you need when it trips more
+  than once,
 * finish with the JSON result object.
 
 `prompts.build_delivery_report`, `build_budget_report`, `build_stall_report`,
@@ -879,6 +911,7 @@ object and, when the model ignores the contract, uses the raw answer (status
 | `cache=False` for control tools | stateful tools must observe fresh state |
 | Worker baseline tools | isolated workers must be able to act even without a profile |
 | No recursive delegation | finite tree, predictable budget |
+| Tool-limit continuation for harness turns | a harness task must resolve itself: the limit is a guardrail against rabbit holes, not a stop condition |
 | No new queue/Celery | existing daemon-thread pattern is enough and already deployed |
 | Reuse `SmolAgent` for each turn | streaming, tools, budget and crash safety already solved |
 

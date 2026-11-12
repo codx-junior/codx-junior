@@ -154,6 +154,26 @@ DEFAULT_SUPERVISOR_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_DELEGATE_TASKS = 8
 DEFAULT_DELEGATE_CONCURRENCY = 2
 
+# ── Tool-limit stops ─────────────────────────────────────────────────────────
+# A harness turn never stops just because it reached its tool budget: the agent
+# CONTINUES it (the facts already collected plus a smaller budget) as many times
+# as configured (``ai/smol/constants.TOOL_LIMIT_CONTINUATIONS``). Only when those
+# continuations are exhausted does the turn end, and the answer then carries the
+# marker below. The executor turns that stop into a BLOCKED step (a human
+# decision is required) instead of a failed one, so the work and its evidence are
+# kept and the supervisor replans instead of retrying the same approach.
+TOOL_LIMIT_STOP_MARKER = "Tool budget exhausted"
+TOOL_LIMIT_EXHAUSTED_NOTE = (
+    "\n\n### ⛔ Tool budget exhausted\n\n"
+    "This turn used its complete tool budget: every round allowed by the model "
+    "settings plus {attempts} course correction(s) granted after the guardrail "
+    "tripped. The facts collected are listed above and remain in the "
+    "conversation.\n\n"
+    "**A human decision is required to continue**: narrower instructions, a "
+    "credential, an environment change or an explicit go-ahead for a "
+    "destructive step.\n"
+)
+
 # Result contract: the worker must finish with this JSON object. The parser in
 # ``models.parse_step_result`` also accepts a fenced JSON block.
 STEP_RESULT_STATUSES = ("done", "blocked", "failed")

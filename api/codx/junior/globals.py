@@ -49,6 +49,14 @@ RUNTIME_FOLDER = os.environ.get(
     os.path.join(tempfile.gettempdir(), "codx-junior-runtime")
 )
 
+# Global path for the calendar store (agenda / calendar manager), shared across
+# all projects: one agenda, many projects. Projects are a filter, never a
+# namespace, so the data cannot live inside a project's .codx.
+CODX_JUNIOR_CALENDAR_PATH = os.environ.get(
+    "CODX_JUNIOR_CALENDAR_PATH",
+    "/home/codx-junior/calendar"
+)
+
 # Global path for analytics data, shared across all projects.
 # Defaults to /home/codx-junior/analytics when the env var is not set.
 ANALYTICS_DATA_PATH = os.environ.get(

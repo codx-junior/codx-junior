@@ -46,6 +46,12 @@ const updatingTimeouts = {}
 export const state = () => ({
   chats: {},
   activeChatId: null,
+  // Live state of the ACTIVE turn of each chat, pushed by the server over
+  // Socket.IO (`codx-junior-chat-turns`). The server is the only writer: the
+  // client never decides on its own that a message died.
+  chatTurns: {},
+  // Stall window of the server: a turn without progress for this long is dead.
+  chatTurnsStaleSeconds: 600,
   chatEvents: {},
   chatLoadingStatus: {}, // { [chatId]: ENTITY_STATUS }
   needsReload: {}, // { [chatId]: true } chat only carries a summary (last message) and must be fully reloaded before display
@@ -387,6 +393,18 @@ export const getters = getterTree(state, {
       })
   },
 
+  // Live server state of the turn of `chatId` (null when it has no active turn).
+  // `stalled` means the execution stopped making progress: the message is DEAD
+  // even though the server still holds its lock, and it can be re-run.
+  chatTurn: state => (chatId) => {
+    return (chatId && state.chatTurns[chatId]) || null
+  },
+  // True when the turn of `chatId` is dead (stalled, or without a live owner).
+  isChatTurnStalled: (state, getters) => (chatId) => {
+    const turn = getters.chatTurn(chatId)
+    return !!turn && (turn.stalled === true || turn.alive === false)
+  },
+
   isChatUpdating: state => (chatId) => {
     return (state.chatEvents[chatId]?.updatingCount || 0) > 0 ||
       state.chatLoadingStatus[chatId] === ENTITY_STATUS.LOADING
@@ -479,6 +497,17 @@ export const mutations = mutationTree(state, {
 
   setRecentChatsLoading(state, loading) {
     state.recentChatsLoading = loading
+  },
+
+  // Replace the turn state of the project with the server snapshot (socket
+  // event or GET /chat/processing). Finished turns simply disappear from it.
+  setChatTurns(state, { turns, staleSeconds } = {}) {
+    const next = {}
+    ;(turns || []).forEach(turn => {
+      if (turn?.chat_id) next[turn.chat_id] = turn
+    })
+    state.chatTurns = next
+    if (staleSeconds) state.chatTurnsStaleSeconds = staleSeconds
   },
 
   setChatLoadingStatus(state, { chatId, status }) {
@@ -1253,6 +1282,17 @@ export const actions = actionTree(
       if (!chatId) return
       $storex.chats.setChatUpdating({ chatId, updating: true })
     },
+    // Server snapshot of the project's ACTIVE turns, pushed over Socket.IO
+    // (`codx-junior-chat-turns`) whenever a turn starts, finishes or stops
+    // making progress. No polling timer is involved.
+    onChatTurnsEvent({ state }, data = {}) {
+      if (!Array.isArray(data?.turns)) return
+      $storex.chats.setChatTurns({
+        turns: data.turns,
+        staleSeconds: data.stale_seconds || state.chatTurnsStaleSeconds
+      })
+    },
+
     async onChatEvent({ state }, { event, data }) {
       const {
         chat: chatData,

@@ -2690,11 +2690,26 @@ class ChatEngine:
             #      every event change (merge-safe ChatManager methods, with a
             #      defensive save_chat fallback) and streams it.
             # ------------------------------------------------------------------
+            # Progress heartbeat of the durable turn: the recovery worker uses it
+            # to tell a SLOW turn from a DEAD one (hung LLM request, blocked
+            # tool, deadlocked thread) and restart the execution instead of
+            # leaving the client on "Processing request, please wait...".
+            _turn_store = (
+                get_turn_store(turn_record.codx_path)
+                if turn_record is not None
+                else None
+            )
+            _turn_progress = (
+                (lambda: _turn_store.touch(turn_record))
+                if _turn_store is not None
+                else None
+            )
             event_bridge = ChatEventBridge(
                 chat=chat,
                 response_message=response_message,
                 chat_manager=self.get_chat_manager(project_id=chat.owner_project_id),
                 event_manager=self.event_manager,
+                progress_callback=_turn_progress,
             )
             run_context = AgentRunContext(
                 project_id=self.settings.project_id or "",

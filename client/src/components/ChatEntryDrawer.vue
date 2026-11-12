@@ -2,6 +2,7 @@
 import ChatEntryEventCard from './ChatEntryEventCard.vue'
 import ChatEntryToolCard from './ChatEntryToolCard.vue'
 import ChatEntryMetadata from './ChatEntryMetadata.vue'
+import { formatGenerationTime } from '../utils/duration.js'
 </script>
 
 <template>
@@ -87,7 +88,7 @@ import ChatEntryMetadata from './ChatEntryMetadata.vue'
         <div class="flex justify-between items-center">
           <span>{{ totalEvents }} event{{ totalEvents !== 1 ? 's' : '' }}</span>
           <span v-if="metadata?.time_taken" class="text-success">
-            <i class="fa-solid fa-hourglass-end"></i> {{ formatDuration(metadata.time_taken) }}
+            <i class="fa-solid fa-hourglass-end"></i> {{ formatGenerationTime(metadata.time_taken) }}
           </span>
         </div>
       </div>
@@ -99,8 +100,6 @@ import ChatEntryMetadata from './ChatEntryMetadata.vue'
 </template>
 
 <script>
-import moment from 'moment'
-
 export default {
   props: {
     isOpen: Boolean,
@@ -150,11 +149,6 @@ export default {
     },
     toggleExpanded(eventId) {
       this.expandedId = this.expandedId === eventId ? null : eventId
-    },
-    formatDuration(seconds) {
-      if (!seconds) return '0s'
-      const baseMoment = moment({ h: 0, m: 0, s: 0, ms: 0 })
-      return baseMoment.add(Math.floor(seconds), 'seconds').format('mm:ss')
     }
   }
 }

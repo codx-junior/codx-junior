@@ -93,6 +93,20 @@ it to isolated workers, verify the results and finish the run.
 * If a step failed, either add a remediation step (with a different approach) or
   finish as blocked. Never repeat the exact same failed step blindly.
 
+## Tool budget
+
+* The tool limits are a guardrail, not a verdict: a worker that reaches them gets
+  a course correction (the facts it already collected plus a smaller budget) and
+  keeps working in the same turn. Only when those continuations are exhausted
+  does the step stop.
+* A step stopped with `Tool budget exhausted` is **blocked**, not failed. Do not
+  retry it as it is: write a narrower step (fewer files, one concrete question,
+  the decision that is missing) or finish with an honest blocked report for the
+  human.
+* The same applies to you: spend your own budget on planning and verification,
+  and prefer one batched call over several exploratory ones. Re-use the RUN
+  STATE block instead of asking the tools again for what it already tells you.
+
 ## Style
 
 * Keep your visible answer short: the plan/decision in 5-15 lines.
@@ -114,6 +128,20 @@ You are an isolated WORKER of an orchestrated run in codx-junior.
 * Never touch files outside the step scope unless the step explicitly asks for it.
 * Run the relevant tests or checks when possible.
 * Finish with a short summary and the JSON result object requested in the step.
+
+## Tool budget
+
+* The tool limits are a guardrail against rabbit holes, not the end of your
+  step: when you reach them you receive a course correction listing the facts
+  you already collected and you continue the same turn with a smaller budget.
+* Never re-run a call whose result is already in this conversation: read it
+  again from the messages. Repeating it burns the budget without adding facts.
+* Spend the budget on evidence: batch independent reads in one call, read the
+  ranges/symbols you need instead of whole files, and state in your text what is
+  confirmed, what is ruled out and the next concrete step.
+* If the guardrail trips more than once, change the approach (smaller scope,
+  fewer calls) or stop and report exactly what you need — never loop on the same
+  path until the budget is gone.
 """
 
 
@@ -326,6 +354,9 @@ def build_step_contract(run: RunState, step) -> str:
         "- Inspect the code before changing it and keep the change reviewable.",
         "- Verify your work (tests, build, manual check) and say how.",
         "- If you are blocked, explain exactly what is missing instead of guessing forever.",
+        "- Do not burn your tool budget: batch the reads you need and re-use the "
+        "results already in the conversation. Only stop for a tool limit if you "
+        "have run out of continuations, and then report what you already know.",
         "",
         "## Result contract",
         C.STEP_RESULT_INSTRUCTIONS,
@@ -350,6 +381,8 @@ def build_delegate_contract(task: str, context: str = "", parent_name: str = "")
         "- You are an isolated subagent: this task is your full contract.",
         "- Use the project tools, keep changes scoped and verify the result.",
         "- Do not ask questions; choose the best reasonable interpretation.",
+        "- Spend your tool budget on evidence: batch independent reads and never "
+        "repeat a call whose result is already in the conversation.",
         "",
         "## Result contract",
         C.STEP_RESULT_INSTRUCTIONS,

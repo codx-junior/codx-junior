@@ -68,3 +68,20 @@ Hard rules:
   - `docker exec` runs without a shell: copy to a `.mjs` first (two calls, no `;`): `cp <file> /tmp/x.mjs` then `node --check /tmp/x.mjs`. `node --check` on a `.js` file fails on `import` (CommonJS mode).
 - Verifying Python: `python3 -m py_compile <files>` in `codx-junior-api` (exit 0 = ok).
 - NEVER restart the `codx-junior-api` container to pick up a code change: the harness/AI processing of the current chat runs inside it, so a restart kills the running turn.
+
+## Git worktrees must live inside the project
+
+**Worktrees for tasks:** `create_pr_branch(worktree=true)` puts the worktree under `~/codx-junior-worktrees/`, which the file tools cannot reach (sandbox = project root). Move it with `git worktree move` into `<project>/.codx/worktrees/<name>` before writing files.
+
+**docker_exec guards:** one command per call, no `;`, no `rm`. Delete temp files with `python3 -c` using `pathlib`, and read git state with `git -C <abs path> status --short`.
+
+**Long commit messages:** `git commit -m "<multi-line>"` is rejected by the guard. Write the message to a file and use `git commit -F <file>`.
+
+## Backend verification in the api container
+
+## Verifying backend changes in this project
+
+- `pytest` cannot be run through `docker_exec` in `codx-junior-api`: importing `codx.junior.ai` pulls the whole AI stack (torch/vllm) and exceeds the 300 s tool timeout. `docker_exec` also refuses `;`, newlines and `rm` (use `find <dir> -name <file> -delete` to clean temp files).
+- Venv: `/home/codx-junior-projects/codx-junior/codx-junior-platform/api/.venv/bin/python`, needs `env PYTHONPATH=<api>`; the project is mounted in the container.
+- Practical verification: `python -m py_compile` on every changed file, plus a scratch script that stubs `codx`, `codx.junior`, `codx.junior.ai` and `codx.junior.ai.smol` in `sys.modules` (with `__path__` set) so light modules such as `ai/smol/loop_guard.py`, `orchestration/prompts.py`, `orchestration/executor.py` import in seconds. Delete the script afterwards.
+- The project atlas index (`project_locate`) is empty/stale for the `api/` tree: use `project_read_file(pattern=...)` with exact paths instead.

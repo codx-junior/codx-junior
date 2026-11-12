@@ -414,6 +414,39 @@ class Chat(BaseModel):
         description="Manual ordering index within a board column"
     )
 
+    # ── Calendar (agenda) fields ───────────────────────────────────────────
+    # Additive and defaulted: existing task files load unchanged and the
+    # existing /api/chats/metadata endpoint persists them (it setattrs
+    # declared fields), so no migration is needed. `due_date` keeps its
+    # deadline meaning; `scheduled_start/end` is the work block drawn on the
+    # calendar (see design/06-calendar/01-analysis.md §5.4).
+    calendar_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Calendars this task is pinned to, beyond the implicit "
+            "'codx-junior' system calendar. The task is ONE item with N "
+            "memberships, never a copy per calendar."
+        )
+    )
+    scheduled_start: Optional[str] = Field(
+        default=None,
+        description=(
+            "Start of the work block on the calendar (ISO datetime). "
+            "None means the task is only drawn on its due date."
+        )
+    )
+    scheduled_end: Optional[str] = Field(
+        default=None,
+        description="End of the work block on the calendar (ISO datetime)"
+    )
+    all_day: bool = Field(
+        default=False,
+        description=(
+            "The work block is an all-day marker instead of a time slot "
+            "(used together with scheduled_start/end)."
+        )
+    )
+
     columns: List[KanbanColumn] = Field(default=[])
     chat_index: Optional[int] = Field(default=0)
     url: str = Field(default='')

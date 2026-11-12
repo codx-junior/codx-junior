@@ -1,0 +1,286 @@
+{
+  "version": 1,
+  "run_id": "538c5048-ecae-4693-ad5e-f9fb8c724c0d",
+  "name": "Calendar manager M0",
+  "objective": "Implement milestone M0 of the Agenda/Calendar manager as specified in design/06-calendar/01-analysis.md (\u00a716 \"M0 \u2014 global foundations\"), committing NOTHING beyond what the design specifies.\n\nContext the workers must read first:\n- design/06-calendar/01-analysis.md \u2014 \u00a73 (domain model: Calendar scope/owner/audience, CalendarEvent, Occurrence), \u00a74.1 (global storage layout, month shards), \u00a74.3 (CompanyStore conventions), \u00a75 (backend API contract), \u00a75.4 (additive Chat fields), \u00a711.1 (per-request ACL), Appendix A (exact file map).\n- design/06-calendar/03-fixtures/calendar-fixture.json \u2014 version-2 canonical dataset in API shape with expected_filters / expected_reminders assertions.\n- design/06-calendar/02-prototype/index.html \u2014 the verified interactive prototype: source of truth for the UI layout and behaviour.\n\nLocked decisions: D1 the calendar store is GLOBAL ($CODX_JUNIOR_CALENDAR_PATH, default /home/codx-junior/calendar) and projects are only a FILTER; D2 calendars have scope private|team|workspace|system|external with per-request ACL; D3 meets are scheduled from the calendar (M1, out of M0); D4 Google/ICS is out of scope.\n\nM0 scope = global path + models + atomic JSON store + service with ACL and filtered query + /api/calendar router + additive Chat fields + Pinia store + CalendarView (month/week/day/agenda, project filter, scope-grouped sidebar, event editor) + wiring + backend tests. M0 has NO new dependency, NO background work, NO recurrence expansion (recurrence fields exist but expansion is M3), NO meet scheduling (M1), NO reminders thread (M2).\n\nHard constraints:\n- Additive only to existing shared files (globals.py, db.py, api.js, store/index.js, router/index.ts, apps.js, appComponentsMap.js). Never rename or remove existing fields, endpoints or components.\n- Nothing in the calendar router may use settings.codx_path as a data root.\n- Existing test suite must keep passing; tests must never write to the real /home/codx-junior/calendar.\n\nAcceptance (from \u00a716, verified against the fixture): user \"marta\" never sees the Work/Personal private calendars; a team calendar is readable by a reader member and not writable by it; the project filter reproduces expected_filters exactly (9 / 2 / 1, total 12, OR semantics); fixture-driven backend tests are green.",
+  "main_chat_id": "d137ae60-e72f-4107-8ee6-9ebbb163449d",
+  "status": "running",
+  "config": {
+    "budget_cxjcoins": 4000.0,
+    "per_step_budget": 900.0,
+    "supervisor_reserve": 500.0,
+    "max_steps": 6,
+    "max_rounds": 4,
+    "max_parallel": 3,
+    "max_attempts": 2,
+    "stagnation_limit": 3,
+    "step_timeout_seconds": 1800,
+    "supervisor_timeout_seconds": 900,
+    "step_mode": "chat",
+    "supervisor_profiles": [
+      "codx-junior"
+    ],
+    "default_profiles": [],
+    "board": "Orchestration",
+    "sprint": "Run: Calendar manager M0",
+    "columns": {
+      "backlog": "Backlog",
+      "running": "In progress",
+      "done": "Done",
+      "blocked": "Blocked"
+    },
+    "verification": "supervisor",
+    "created_by": "gbrian"
+  },
+  "steps": [
+    {
+      "id": "m0-foundation",
+      "title": "M0 backend foundation: global path, models, atomic JSON store",
+      "objective": "Build the M0 backend foundation exactly as specified. Read design/06-calendar/01-analysis.md \u00a73 (domain model), \u00a74.1 (global layout + month shards), \u00a74.3 (CompanyStore conventions), \u00a75.4 (Chat fields), and Appendix A before writing code.\n\n1) api/codx/junior/globals.py \u2014 add, in the existing style and beside the other global folder constants:\n   CODX_JUNIOR_CALENDAR_PATH = os.environ.get(\"CODX_JUNIOR_CALENDAR_PATH\", \"/home/codx-junior/calendar\")\n   Do not change any existing constant.\n\n2) New package api/codx/junior/calendar/__init__.py exporting the public names (Calendar, CalendarEvent, Occurrence, CalendarStore, ...).\n\n3) api/codx/junior/calendar/model.py \u2014 pydantic models, following the naming/style of api/codx/junior/meets/model.py and api/codx/junior/kanban/model.py:\n   - ReminderRule {channel: str = \"popup\", minutes_before: int = 10}\n   - CalendarMember {user: str, role: \"owner\"|\"writer\"|\"reader\"}\n   - Calendar \u2014 every field of \u00a73.1: id, name, color, description=\"\", scope (Literal private|team|workspace|system|external), owner, audience: Optional[dict]=None, timezone=\"UTC\", read_only=False, provider=\"local\", default_reminders: List[ReminderRule], members: List[CalendarMember], visible=True, order=0, created_at, updated_at. Property is_read_only = read_only or scope in (\"system\",\"external\").\n   - Recurrence \u2014 fields present but UNUSED in M0 (RRULE string + overrides list); declare it so M3 is additive.\n   - CalendarEvent \u2014 every field of \u00a73.2 with the \u00a73.2 invariants 1-6 documented in the docstring; calendar_ids non-empty + deduplicated (validator), project_id Optional[str], start/end ISO strings, all_day, timezone, recurrence Optional, reminders, status, visibility, source, refs, guests, created_by, created_at, updated_at, revision=1.\n   - Occurrence \u2014 \u00a73.3 including calendar_id (singular, the colour carrier), is_recurring_instance, original_start, overdue, read_only.\n   - Payloads: CalendarCreate, CalendarUpdate (all fields optional), EventQuery {calendar_ids?, from_, to, projects?, q?, sources?, include_hidden?} using alias \"from\" for from_, EventCreate, EventUpdate.\n\n4) api/codx/junior/calendar/store.py \u2014 CalendarStore with the exact conventions of api/codx/junior/company/store.py: create dirs on demand, flock around writes, atomic tmp file + os.replace, tolerate missing/corrupt JSON (log a warning, return empty, never raise). Root from globals.CODX_JUNIOR_CALENDAR_PATH, overridable via constructor arg for tests. Layout per \u00a74.1: calendars.json, events/<YYYY-MM>.json, delivered.json, prefs/<username>.json. Methods at least: list_calendars / get_calendar / save_calendar / delete_calendar, list_events_month / list_events_range (reads the requested months PLUS one month either side, per \u00a74.4) / get_event / save_event / delete_event, get_prefs / save_prefs, read_delivered / write_delivered. Event shard key = start month in UTC.\n\n5) api/codx/junior/db.py \u2014 ADD to the Chat model, additive and defaulted so existing task files load unchanged: calendar_ids: List[str] = Field(default_factory=list), scheduled_start: Optional[str] = None, scheduled_end: Optional[str] = None, all_day: bool = False. Change nothing else; due_date keeps its deadline meaning.\n\nDo not create service.py, the router, or any client file \u2014 those are the next steps.\n\nAcceptance: a short runnable smoke check proves it works \u2014 point CODX_JUNIOR_CALENDAR_PATH at a temp dir, save+reload a calendar and an event, assert the event lands in the right month shard and that a corrupt shard returns [] instead of raising. Paste the command and its output. Also confirm `python -c \"import codx.junior.db\"` still imports.",
+      "acceptance": "Model and store import cleanly; the temp-dir round-trip smoke check passes (calendar + event persisted, correct month shard, corrupt file tolerated); Chat still imports with the four new defaulted fields; globals.py gains only the new constant.",
+      "profile": "software_developer",
+      "depends_on": [],
+      "files": [
+        "api/codx/junior/globals.py",
+        "api/codx/junior/db.py",
+        "api/codx/junior/company/store.py",
+        "design/06-calendar/01-analysis.md"
+      ],
+      "context": "",
+      "priority": "high",
+      "mode": "task",
+      "status": "done",
+      "attempts": 1,
+      "chat_id": "56c098da-1459-4f8e-8371-648e83c109c8",
+      "board": "Orchestration",
+      "column": "Done",
+      "chat_status": "done",
+      "result": {
+        "status": "done",
+        "summary": "M0 backend foundation of the calendar manager: added CODX_JUNIOR_CALENDAR_PATH to globals.py; created the new api/codx/junior/calendar package with model.py (Calendar with scope/owner/audience/members + is_read_only/member_role, CalendarEvent with calendar_ids invariant, Recurrence stored verbatim, Occurrence, ReminderRule, and the CalendarCreate/CalendarUpdate/EventQuery(from alias)/EventCreate/EventUpdate payloads), store.py (global root resolution env\u2192globals\u2192default, atomic tmp+fsync+os.replace writes, flock/thread-safe re-entrant lock, calendars.json + events/<YYYY-MM>.json shards + delivered.json + prefs/<user>.json, range reads padded one month either side, corrupt/missing JSON tolerated) and __init__.py re-exporting the public names; added the four additive, defaulted Chat fields (calendar_ids, scheduled_start, scheduled_end, all_day) to db.py. No service.py, router or client file was created.",
+        "files": [
+          "api/codx/junior/globals.py",
+          "api/codx/junior/db.py",
+          "api/codx/junior/calendar/__init__.py",
+          "api/codx/junior/calendar/model.py",
+          "api/codx/junior/calendar/store.py",
+          "api/tests/test_calendar_store.py",
+          "api/tests/_manual_calendar_smoke.py"
+        ],
+        "verification": "Ran inside the codx-junior-api container against this worktree: (1) `python -m pytest api/tests/test_calendar_store.py -q` \u2192 15 passed (round-trip, month shard placement, padded range read, corrupt shard \u2192 [], event moved between shards, prefs/delivered, env-var root, EventQuery `from` alias, Chat defaults, and the design fixture loading unchanged: 6 calendars + 8 events, member roles owner/writer/reader, system+external read-only). (2) `python api/tests/_manual_calendar_smoke.py` (CODX_JUNIOR_CALENDAR_PATH pointed at a mkdtemp) printed: Chat defaults calendar_ids=[] scheduled_start=None scheduled_end=None all_day=False; event -> shard 2026-02; shards on disk ['2026-02.json']; corrupt shard [] (no exception); repaired shard 1 event; OK. (3) `python -c \"import codx.junior.db\"` implicit via the smoke script's `from codx.junior.db import Chat` (and pytest). (4) test_kanban_search.py + calendar tests \u2192 22 passed. (5) git diff of the two shared files is additive only (globals.py +8, db.py +33). Nothing writes to /home/codx-junior/calendar.",
+        "followups": [
+          "Next step: api/codx/junior/calendar/service.py \u2014 per-request ACL (\u00a711.1: private/team/workspace/system/external, reader vs writer), project filter with OR semantics ('personal' = project_id None) and the codx-junior projection (\u00a74.6, cached + capped at 12 projects).",
+          "Next step: api/codx/junior/api/calendar.py router (\u00a75: calendars, prefs, projects, POST /events/query, events CRUD with If-Match revision, quick parse) \u2014 auto-discovered, must not use settings.codx_path as data root; plus COLLECTIONS entries in events/collection_events.py.",
+          "M2: reminders tick in background.py using read_delivered/write_delivered; M3: RRULE expansion (python-dateutil) on the already-declared Recurrence model.",
+          "Unrelated pre-existing breakage: api/codx/junior/chat/chat_event_bridge.py line ~190 has an uncommitted syntax error from another change, so engine-importing tests (test_meets.py, test_orchestration.py) cannot collect in this worktree \u2014 not touched by this step."
+        ],
+        "cost_cxjcoins": 0.51265755,
+        "duration_seconds": 791.8476160019636,
+        "error": "",
+        "raw_content": "I'll start by orienting myself in the project and reading the reference files for style conventions.Now I have the full picture. Let me write the global path constant first.Now the additive `Chat` fields in `db.py`:## Summary\n\n**What was built (M0 backend foundation only \u2014 no service, router or client):**\n\n1. **`api/codx/junior/globals.py`** \u2014 one new constant beside the other global folders, nothing else touched:\n   `CODX_JUNIOR_CALENDAR_PATH = os.environ.get(\"CODX_JUNIOR_CALENDAR_PATH\", \"/home/codx-junior/calendar\")`\n2. **`api/codx/junior/calendar/model.py`** \u2014 pydantic v2 (same style as `meets/model.py` + `company/models.py`):\n   `ReminderRule`, `CalendarMember`, `Calendar` (every \u00a73.1 field + `is_read_only`, `member_role`, `member_usernames`), `Recurrence` (stored verbatim, M3 is additive), `CalendarEvent` (every \u00a73.2 field, invariants 1\u20136 documented, `calendar_ids` non-empty + de-duplicated validator, `shard_month`), `Occurrence` (\u00a73.3), payloads `CalendarCreate`, `CalendarUpdate`, `EventQuery` (`from_` aliased to `from`, `populate_by_name`), `EventCreate`, `EventUpdate`; date helpers `now_iso/new_id/parse_iso/month_key/shift_month/months_between`.\n3. **`api/codx/junior/calendar/store.py`** \u2014 `CalendarStore` with the `company/store.py` conventions: root = env \u2192 `globals` \u2192 default, constructor override for tests, atomic `tmp`+`fsync`+`os.replace`, `flock` (reused `codx.junior.utils.file_lock.interprocess_lock`, re-entrant per thread), validated path segments, tolerant reads (corrupt/missing \u2192 `[]`/`{}` + warning, never raise). Layout \u00a74.1: `calendars.json`, `events/<YYYY-MM>.json`, `delivered.json`, `prefs/<username>.json`; range reads the window months **plus one month either side** and returns only overlapping events; moving an event's `start` moves the document between shards.\n4. **`api/codx/junior/db.py`** \u2014 four additive, defaulted `Chat` fields (`calendar_ids`, `scheduled_start`, `scheduled_end`, `all_day`); `due_date` untouched.\n5. **Tests** \u2014 `api/tests/test_calendar_store.py` (15 cases, incl. the design fixture validating unchanged) and `api/tests/_manual_calendar_smoke.py` (the acceptance smoke check, following the `_manual_*` convention already in `api/tests/`).\n\n**Verification** (run inside the `codx-junior-api` container, against this worktree):\n- `python -m pytest .../api/tests/test_calendar_store.py -q` \u2192 `15 passed`\n- `python .../api/tests/_manual_calendar_smoke.py` \u2192 prints `Chat defaults: calendar_ids=[] scheduled_start=None scheduled_end=None all_day=False`, `event: Spec review -> shard 2026-02`, `shards on disk: ['2026-02.json']`, `corrupt shard: [] (no exception)`, `OK` (the `Calendar store could not read ...` line is the expected warning). Never touches `/home/codx-junior/calendar` \u2014 root is a `mkdtemp`.\n- `test_kanban_search.py` + calendar tests \u2192 `22 passed`.\n- `git diff` limited to `globals.py` (+8) and `db.py` (+33).\n\n**Note / blocked-ish environment fact:** `api/tests/test_meets.py` and `test_orchestration.py` cannot collect in this worktree because of a **pre-existing, unrelated** uncommitted syntax error in `api/codx/junior/chat/chat_event_bridge.py:190` (`self.progress_callback = progress_callback (idempotency enforced here,`) \u2014 another in-flight change, outside this step's scope, so I left it untouched.\n\n{\"status\":\"done\",\"summary\":\"M0 backend foundation of the calendar manager: added CODX_JUNIOR_CALENDAR_PATH to globals.py; created the new api/codx/junior/calendar package with model.py (Calendar with scope/owner/audience/members + is_read_only/member_role, CalendarEvent with calendar_ids invariant, Recurrence stored verbatim, Occurrence, ReminderRule, and the CalendarCreate/CalendarUpdate/EventQuery(from alias)/EventCreate/EventUpdate payloads), store.py (global root resolution env\u2192globals\u2192default, atomic tmp+fsync+os.replace writes, flock/thread-safe re-entrant lock, calendars.json + events/<YYYY-MM>.json shards + delivered.json + prefs/<user>.json, range reads padded one month either side, corrupt/missing JSON tolerated) and __init__.py re-exporting the public names; added the four additive, defaulted Chat fields (calendar_ids, scheduled_start, scheduled_end, all_day) to db.py. No service.py, router or client file was created.\",\"files\":[\"api/codx/junior/globals.py\",\"api/codx/junior/db.py\",\"api/codx/junior/calendar/__init__.py\",\"api/codx/junior/calendar/model.py\",\"api/codx/junior/calendar/store.py\",\"api/tests/test_calendar_store.py\",\"api/tests/_manual_calendar_smoke.py\"],\"verification\":\"Ran inside the codx-junior-api container against this worktree: (1) `python -m pytest api/tests/test_calendar_store.py -q` \u2192 15 passed (round-trip, month shard placement, padded range read, corrupt shard \u2192 [], event moved between shards, prefs/delivered, env-var root, EventQuery `from` alias, Chat defaults, and the design fixture loading unchanged: 6 calendars + 8 events, member roles owner/writer/reader, system+external read-only). (2) `python api/tests/_manual_calendar_smoke.py` (CODX_JUNIOR_CALENDAR_PATH pointed at a mkdtemp) printed: Chat defaults calendar_ids=[] scheduled_start=None scheduled_end=None all_day=False; event -> shard 2026-02; shards on disk ['2026-02.json']; corrupt shard [] (no exception); repaired shard 1 event; OK. (3) `python -c \\\"import codx.junior.db\\\"` implicit via the smoke script's `from codx.junior.db import Chat` (and pytest). (4) test_kanban_search.py + calendar tests \u2192 22 passed. (5) git diff of the two shared files is additive only (globals.py +8, db.py +33). Nothing writes to /home/codx-junior/calendar.\",\"followups\":[\"Next step: api/codx/junior/calendar/service.py \u2014 per-request ACL (\u00a711.1: private/team/workspace/system/external, reader vs writer), project filter with OR semantics ('personal' = project_id None) and the codx-junior projection (\u00a74.6, cached + capped at 12 projects).\",\"Next step: api/codx/junior/api/calendar.py router (\u00a75: calendars, prefs, projects, POST /events/query, events CRUD with If-Match revision, quick parse) \u2014 auto-discovered, must not use settings.codx_path as data root; plus COLLECTIONS entries in events/collection_events.py.\",\"M2: reminders tick in background.py using read_delivered/write_delivered; M3: RRULE expansion (python-dateutil) on the already-declared Recurrence model.\",\"Unrelated pre-existing breakage: api/codx/junior/chat/chat_event_bridge.py line ~190 has an uncommitted syntax error from another change, so engine-importing tests (test_meets.py, test_orchestration.py) cannot collect in this worktree \u2014 not touched by this step.\"]}"
+      },
+      "error": "",
+      "created_at": "2026-11-12T16:04:30.143163+00:00",
+      "updated_at": "2026-11-12T16:17:55.847420+00:00",
+      "started_at": "2026-11-12T16:04:43.300372+00:00",
+      "finished_at": "2026-11-12T16:17:55.847405+00:00"
+    },
+    {
+      "id": "m0-service-api",
+      "title": "M0 service (ACL + filtered query) and /api/calendar router",
+      "objective": "Add the service layer and the HTTP router on top of the foundation from the previous step. Read design/06-calendar/01-analysis.md \u00a75 (full API contract), \u00a75.2 (projects[] filter semantics), \u00a75.3 (errors + collection events), \u00a711.1 (ACL table) and api/codx/junior/api/meets.py + management.py for the request.state.codx_junior_session pattern, then write:\n\n1) api/codx/junior/calendar/service.py \u2014 CalendarService(store, viewer, settings?) with:\n   - ACL. can_view(calendar): private -> owner == viewer only; team -> audience members contain viewer (audience = {kind:\"team\", project, name, members[]}); workspace/system/external -> every authenticated user. can_write(calendar): owner or writer member; workspace requires an installation admin (reuse the existing user/role resolution, do not invent one); system/external never writable. Never leak a private calendar's name, colour or events to a non-owner \u2014 filter at the calendar list, not only at the event level.\n   - query(EventQuery): resolve visible calendars -> apply projects[] AFTER visibility and BEFORE any expansion, with exactly these semantics: absent or [] = no project filtering; [\"personal\"] matches project_id is None; several ids = OR. Return {range, calendars, projects, occurrences[], counts{by_calendar,by_source,by_project}, warnings[], truncated_projects[]}. One occurrence per event; calendar_id = first visible membership (colour carrier), full calendar_ids kept. No recurrence expansion in M0 \u2014 a recurring event yields ONE occurrence at its stored start.\n   - create/update/delete event with the \u00a73.2 invariants enforced: non-empty deduplicated calendar_ids, all ids must resolve (unknown_calendar), end > start unless all_day, system/external-only write -> 409 read_only_calendar, revision increments on every write, If-Match mismatch -> 409 revision_mismatch. delete_calendar -> 409 calendar_in_use unless move_to given.\n   - prefs per user (prefs/<username>.json): hidden calendars, order, week_start; and projects() returning [{project_id, name, role}] for the filter bar.\n\n2) api/codx/junior/api/calendar.py \u2014 module-level `router = APIRouter()` (auto-discovered and mounted at /api by api/codx/junior/api/__init__.py). Implement every route of \u00a75.1 and \u00a75.2 at the documented paths and methods, including POST /api/calendar/events/query as the main read, GET /calendars/{id}/share, GET /calendar/projects, GET+PUT /calendar/prefs. Use HTTPException with the \u00a75.3 string error codes. After each successful write, emit_collection_event with a new COLLECTION_CALENDAR_EVENTS constant added to events/collection_events.py (additive, plus its COLLECTIONS entry).\n\n3) Hard constraint: the data root is globals.CODX_JUNIOR_CALENDAR_PATH. Nothing in this router may use settings.codx_path as a storage root; request.state.codx_junior_session is used for authentication/identity only.\n\nDo not write tests or client files.\n\nAcceptance: the app imports and the calendar routes are registered at the documented paths \u2014 print the route table (method + path) from the FastAPI app and paste it; confirm no occurrence of settings.codx_path in the two new files.",
+      "acceptance": "App imports; printed route table matches \u00a75.1/\u00a75.2 exactly (method + path); ACL helpers covered by reading the code (private invisible to non-owner, team reader cannot write, system/external read-only); projects[] semantics implemented as absent/[] = all, personal = null, several = OR; zero settings.codx_path usage in calendar/service.py and api/calendar.py.",
+      "profile": "software_developer",
+      "depends_on": [
+        "m0-foundation"
+      ],
+      "files": [
+        "api/codx/junior/calendar/service.py",
+        "api/codx/junior/api/calendar.py",
+        "api/codx/junior/api/meets.py",
+        "api/codx/junior/api/management.py",
+        "api/codx/junior/api/__init__.py",
+        "api/codx/junior/events/collection_events.py"
+      ],
+      "context": "",
+      "priority": "high",
+      "mode": "task",
+      "status": "running",
+      "attempts": 1,
+      "chat_id": "71d0e1d6-25df-4a9c-b923-83f0085d6f59",
+      "board": "Orchestration",
+      "column": "In progress",
+      "chat_status": "doing",
+      "result": null,
+      "error": "",
+      "created_at": "2026-11-12T16:04:30.143215+00:00",
+      "updated_at": "2026-11-12T16:18:10.801191+00:00",
+      "started_at": "2026-11-12T16:18:10.801178+00:00",
+      "finished_at": ""
+    },
+    {
+      "id": "m0-backend-tests",
+      "title": "M0 backend tests driven by the v2 fixture",
+      "objective": "Write api/tests/test_calendar_store.py and api/tests/test_calendar_service.py (pytest, matching the style of the existing tests under api/tests/).\n\nSeed each test from design/06-calendar/03-fixtures/calendar-fixture.json \u2014 do not retype the dataset by hand. Load the fixture, write it into a pytest tmp_path store (constructor arg or monkeypatched CODX_JUNIOR_CALENDAR_PATH); NEVER touch the real /home/codx-junior/calendar.\n\nCover at minimum:\n1) Store: round-trip calendar and event; month shard file naming; list_events_range reads the \u00b11 month overlap; corrupt JSON tolerated; concurrent write does not corrupt the file (two sequential writes with flock).\n2) Visibility ACL: viewer \"marta\" does not see the Work/Personal private calendars nor their events (assert absence of ids AND absence of titles); the owner does see them; a team calendar is visible to a reader and a reader's write is rejected; a system/external calendar is visible but read_only.\n3) Project filter: assert expected_filters from the fixture verbatim \u2014 projects [\"codx-junior-platform\"] -> 9 occurrences with by_source {native:2, meet:5, task:1, orchestration:1}; the second filter -> 2; [\"personal\"] -> 1; unfiltered total 12; and that combining two project ids is an OR (sums, never intersects).\n4) Write paths: unknown_calendar, read_only_calendar, revision_mismatch (If-Match with a stale revision), calendar_in_use without move_to, and that move_to rehomes the events.\n\nIf a test exposes a real bug in the service or the store, fix it minimally and say exactly what you changed and why in your result.\n\nAcceptance: run the suite the way this project runs pytest (inspect api/pyproject.toml / api/Makefile for the configured command) and paste the summary line plus the pass count. Zero failures, zero errors, and no writes outside tmp dirs. Also confirm the pre-existing tests still pass.",
+      "acceptance": "Both new test files pass with 0 failures / 0 errors in the project's configured pytest invocation; the assertions reproduce expected_filters (9 / 2 / 1, total 12, OR semantics) and the marta privacy rule verbatim from the fixture; no test writes to /home/codx-junior/calendar; pre-existing tests still green.",
+      "profile": "software_developer",
+      "depends_on": [
+        "m0-service-api"
+      ],
+      "files": [
+        "api/tests/test_calendar_store.py",
+        "api/tests/test_calendar_service.py",
+        "design/06-calendar/03-fixtures/calendar-fixture.json"
+      ],
+      "context": "",
+      "priority": "medium",
+      "mode": "task",
+      "status": "pending",
+      "attempts": 0,
+      "chat_id": "",
+      "board": "",
+      "column": "",
+      "chat_status": "",
+      "result": null,
+      "error": "",
+      "created_at": "2026-11-12T16:04:30.143236+00:00",
+      "updated_at": "2026-11-12T16:04:30.143239+00:00",
+      "started_at": "",
+      "finished_at": ""
+    },
+    {
+      "id": "m0-frontend",
+      "title": "M0 UI: CalendarView, grids, sidebar, project filter, store and wiring",
+      "objective": "Build the M0 client, porting the verified prototype design/06-calendar/02-prototype/index.html (open it first \u2014 it is the visual and behavioural source of truth) onto the real stack. Read client/src/store/planning.js, client/src/api/modules/meets.js, client/src/api/api.js, client/src/store/index.js, client/src/config/apps.js, appComponentsMap.js and router/index.ts to copy the existing conventions exactly.\n\n1) client/src/api/modules/calendar.js \u2014 thin module over the \u00a75 endpoints (calendars CRUD + share, projects, prefs, events query/create/get/update/delete).\n2) client/src/store/calendar.js \u2014 Pinia store like planning.js: state (calendars, occurrences, counts, range, projects, activeProjects, view, cursor, loading, error), getters (visibleCalendars grouped by scope: My calendars / Shared with me / codx-junior / Other, filteredOccurrences), actions (loadCalendars, loadProjects, loadRange, setView, shift, toggleCalendar, setProjectFilter, createEvent, updateEvent, deleteEvent, loadPrefs, savePrefs). The project filter is multi-select and ORs, defaulting to All; persist the choice via prefs.\n3) client/src/views/CalendarView.vue + client/src/components/calendar/* as listed in Appendix A \u2014 month grid (chips, max N per day then +more), week grid (hour rows, positioned blocks, today line), day view (the cursor day, correct weekday label), agenda list, scope-grouped sidebar with colour toggles, project filter bar with a filtered/total counter, event editor modal (title, calendars multi-select, project selector, start/end, all-day, reminders, guests) and a popover on chip click. Multi-calendar chips show extra-membership badges.\n4) Wiring, all additive: apps.js 'calendar' entry, appComponentsMap.js lazy component, router/index.ts route '/:projectName/calendar', api.js calendarModule + lazy getter, store/index.js calendar module.\n\nConstraints: no new npm dependency, no CDN; follow the existing design tokens (--codx-primary #cc0099) and component style already in client/src; the server returns occurrences already expanded, so the client does no date maths beyond formatting.\n\nAcceptance: the client builds \u2014 run the project's own build/lint script (check client/package.json) and paste the command and result. List every file created and every existing file modified. If the build reports errors that already exist on HEAD, say so explicitly and prove it.",
+      "acceptance": "Client build (or the project's configured lint/typecheck) succeeds and the command + result are reported; every Appendix A client file exists; apps.js / appComponentsMap.js / router/index.ts / api.js / store/index.js changes are additive only; no new npm dependency in package.json; a route /:projectName/calendar resolves to CalendarView.",
+      "profile": "web_master",
+      "depends_on": [
+        "m0-service-api"
+      ],
+      "files": [
+        "client/src/views/CalendarView.vue",
+        "client/src/components/calendar/CalendarSidebar.vue",
+        "client/src/components/calendar/MonthGrid.vue",
+        "client/src/components/calendar/WeekGrid.vue",
+        "client/src/components/calendar/AgendaList.vue",
+        "client/src/components/calendar/EventEditor.vue",
+        "client/src/components/calendar/EventPopover.vue",
+        "client/src/store/calendar.js",
+        "client/src/api/modules/calendar.js",
+        "client/src/config/apps.js",
+        "client/src/config/appComponentsMap.js",
+        "client/src/router/index.ts",
+        "client/src/api/api.js",
+        "client/src/store/index.js",
+        "design/06-calendar/02-prototype/index.html"
+      ],
+      "context": "",
+      "priority": "high",
+      "mode": "task",
+      "status": "pending",
+      "attempts": 0,
+      "chat_id": "",
+      "board": "",
+      "column": "",
+      "chat_status": "",
+      "result": null,
+      "error": "",
+      "created_at": "2026-11-12T16:04:30.143263+00:00",
+      "updated_at": "2026-11-12T16:04:30.143267+00:00",
+      "started_at": "",
+      "finished_at": ""
+    },
+    {
+      "id": "m0-verify",
+      "title": "Verify M0 against the \u00a716 acceptance criteria",
+      "objective": "Independently verify milestone M0. Do NOT fix anything \u2014 produce evidence and a verdict, so the supervisor can decide on remediation.\n\nRead design/06-calendar/01-analysis.md \u00a716 (the M0 row and its Acceptance column), \u00a75 (API contract) and \u00a711.1 (ACL), then check the delivered code against them.\n\nFor each acceptance criterion, give PASS / FAIL / PARTIAL with the concrete evidence (file:line, test name, command output):\n1) Two users: viewer marta never sees the Work and Personal private calendars, neither in GET /api/calendar/calendars nor in the occurrences of a query covering their date range.\n2) A team calendar is readable by a reader member and a reader's write is rejected.\n3) The project filter reproduces expected_filters in design/06-calendar/03-fixtures/calendar-fixture.json exactly (9 / 2 / 1, total 12, OR semantics).\n4) Fixture-driven backend tests are green; pre-existing tests still pass.\n5) The client builds and the wiring is additive only (diff apps.js, appComponentsMap.js, router/index.ts, api.js, store/index.js \u2014 no removed or renamed existing lines).\n6) Design conformance: no use of settings.codx_path as a calendar data root; CODX_JUNIOR_CALENDAR_PATH honoured; no new dependency added; no background thread or recurrence expansion snuck into M0.\n\nRun the tests and the build yourself rather than trusting the previous steps' reports. End with a short list of deviations from the design, ordered by severity.",
+      "acceptance": "A per-criterion PASS/FAIL/PARTIAL table with file:line or command evidence produced from the reviewer's own runs, plus a severity-ordered deviation list; no files modified by this step.",
+      "profile": "reviewer",
+      "depends_on": [
+        "m0-backend-tests",
+        "m0-frontend"
+      ],
+      "files": [],
+      "context": "",
+      "priority": "high",
+      "mode": "task",
+      "status": "pending",
+      "attempts": 0,
+      "chat_id": "",
+      "board": "",
+      "column": "",
+      "chat_status": "",
+      "result": null,
+      "error": "",
+      "created_at": "2026-11-12T16:04:30.143288+00:00",
+      "updated_at": "2026-11-12T16:04:30.143292+00:00",
+      "started_at": "",
+      "finished_at": ""
+    }
+  ],
+  "created_at": "2026-11-12T16:04:05.571040+00:00",
+  "updated_at": "2026-11-12T16:18:12.812713+00:00",
+  "started_at": "2026-11-12T16:04:05.646992+00:00",
+  "finished_at": "",
+  "rounds": 0,
+  "supervisor_rounds": 0,
+  "step_runs": 1,
+  "stagnant_rounds": 0,
+  "pending_supervisor": false,
+  "wake_requested": false,
+  "spent_cxjcoins": 4.618835849999999,
+  "last_error": "",
+  "stop_reason": "",
+  "report_written": false,
+  "last_report": "",
+  "report_generation": 0,
+  "notification_sent": false,
+  "events": [
+    {
+      "at": "2026-11-12T16:04:30.143415+00:00",
+      "type": "plan_updated",
+      "message": "Plan updated: 5 step(s)",
+      "data": {
+        "steps": [
+          "m0-foundation",
+          "m0-service-api",
+          "m0-backend-tests",
+          "m0-frontend",
+          "m0-verify"
+        ]
+      }
+    },
+    {
+      "at": "2026-11-12T16:04:43.532428+00:00",
+      "type": "step_started",
+      "message": "Step 'M0 backend foundation: global path, models, atomic JSON store' started (attempt 1)",
+      "data": {
+        "step_id": "m0-foundation",
+        "chat_id": "56c098da-1459-4f8e-8371-648e83c109c8",
+        "attempt": 1
+      }
+    },
+    {
+      "at": "2026-11-12T16:17:59.837182+00:00",
+      "type": "step_finished",
+      "message": "Step 'M0 backend foundation: global path, models, atomic JSON store' finished: done",
+      "data": {
+        "step_id": "m0-foundation",
+        "chat_id": "56c098da-1459-4f8e-8371-648e83c109c8",
+        "status": "done",
+        "cost": 0.51265755,
+        "summary": "M0 backend foundation of the calendar manager: added CODX_JUNIOR_CALENDAR_PATH to globals.py; created the new api/codx/junior/calendar package with model.py (Calendar with scope/owner/audience/members + is_read_only/member_role, CalendarEvent with calendar_ids invariant, Recurrence stored verbatim, Occurrence, ReminderRule, and the CalendarCreate/CalendarUpdate/EventQuery(from alias)/EventCreate/EventUpdate payloads), store.py (global root resolution env\u2192globals\u2192default, atomic tmp+fsync+os.replace writes, flock/thread-safe re-entrant lock, calendars.json + events/<YYYY-MM>.json shards + delivered.json + prefs/<user>.json, range reads padded one month either side, corrupt/missing JSON tolerated) and __init__.py re-exporting the public names; added the four additive, defaulted Chat fields (calendar_ids, scheduled_start, scheduled_end, all_day) to db.py. No service.py, router or client file was created."
+      }
+    },
+    {
+      "at": "2026-11-12T16:18:12.265063+00:00",
+      "type": "step_started",
+      "message": "Step 'M0 service (ACL + filtered query) and /api/calendar router' started (attempt 1)",
+      "data": {
+        "step_id": "m0-service-api",
+        "chat_id": "71d0e1d6-25df-4a9c-b923-83f0085d6f59",
+        "attempt": 1
+      }
+    }
+  ]
+}

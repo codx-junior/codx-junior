@@ -5,6 +5,7 @@ import ChatFileList from './ChatFileList.vue'
 import ChatInputBox from './ChatInputBox.vue'
 import ChatFileSelectorModal from './ChatFileSelectorModal.vue'
 import ChatMessageList from './ChatMessageList.vue'
+import ChatTurnAlert from './ChatTurnAlert.vue'
 import ChatIntelliSense from './ChatIntelliSense.vue'
 import ChatFilePreview from './ChatFilePreview.vue'
 import ChatProfileSelector from './ChatProfileSelector.vue'
@@ -123,6 +124,16 @@ import { extractCodeBlocks } from '@/utils/codeBlockExtractor'
       <div class="grow flex gap-2 min-h-0 overflow-hidden" v-show="!isPRView">
 
         <div class="flex flex-col min-h-0 min-w-0" :class="previewFile ? 'w-1/2' : 'w-full'">
+
+          <!-- Dead turn: the message still renders as "processing" but the
+               server reports that the execution stopped making progress (or
+               that the process running it is gone). -->
+          <ChatTurnAlert
+            v-if="chatTurn"
+            :turn="chatTurn"
+            :chat="chat"
+            :project="chatProject"
+          />
 
           <!-- ── Unified scroll container: messages + composer ── -->
           <ChatMessageList
@@ -407,6 +418,12 @@ export default {
     // immediately on send and auto-resets on a timeout if the server never replies.
     isProcessing() {
       return !!this.chat?.id && this.$chats.isChatUpdating(this.chat.id)
+    },
+    // Live server state of the turn of this chat (null when nothing is running).
+    // A stalled or orphaned turn means the reply will NEVER arrive: the
+    // ChatTurnAlert notice then offers the re-run action.
+    chatTurn() {
+      return this.chat?.id ? this.$chats.chatTurn(this.chat.id) : null
     },
     aiModels() {
       return this.isTopic ? [] : this.$projects.ai.models || []

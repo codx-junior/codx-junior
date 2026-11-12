@@ -39,6 +39,7 @@ import logging
 import os
 import socket
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -64,6 +65,21 @@ ACTIVE_STATUSES = frozenset({STATUS_QUEUED, STATUS_RUNNING})
 # the client never sees an endless "processing" state.
 ENV_MAX_ATTEMPTS = "CODX_JUNIOR_CHAT_TURN_MAX_ATTEMPTS"
 DEFAULT_MAX_ATTEMPTS = 3
+
+# A turn that makes NO progress for this long is DEAD even when its lock is
+# still held by a live process: a hung LLM request, a tool blocked on a socket
+# read or a deadlocked thread never release the ``flock``, so the "owner died"
+# heuristic cannot see it — the client just keeps rendering "processing".
+# The recovery worker compares the turn heartbeat (updated on every streamed
+# chunk and every tool event) against this window, stops the execution and
+# restarts it.
+ENV_STALE_SECONDS = "CODX_JUNIOR_CHAT_TURN_STALE_SECONDS"
+DEFAULT_STALE_SECONDS = 600.0
+
+# Minimum seconds between heartbeat writes of the same turn (progress ticks are
+# frequent: one per streamed chunk and per tool event).
+ENV_HEARTBEAT_INTERVAL = "CODX_JUNIOR_CHAT_TURN_HEARTBEAT_INTERVAL"
+DEFAULT_HEARTBEAT_INTERVAL = 10.0
 
 # Note appended to an interrupted response message. The message is hidden from
 # the prompt history (it is not a real assistant answer), but keeping the note
@@ -104,6 +120,36 @@ def _env_int(name: str, default: int) -> int:
         return max(1, int(raw))
     except (TypeError, ValueError):
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a non-negative float environment setting with a safe fallback."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_iso(stamp: Optional[str]) -> float:
+    """
+    Convert an ISO-8601 timestamp to epoch seconds (``0`` when unparsable).
+
+    Args:
+        stamp: Timestamp written by :func:`_now`.
+
+    Returns:
+        Epoch seconds, or 0 when the value is empty/invalid.
+    """
+    raw = str(stamp or "").strip()
+    if not raw:
+        return 0.0
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _hostname() -> str:
@@ -158,6 +204,10 @@ class ChatTurnRecord(BaseModel):
     created_at: str = Field(default_factory=_now)
     updated_at: str = Field(default_factory=_now)
     started_at: Optional[str] = Field(default=None)
+    heartbeat_at: Optional[str] = Field(
+        default=None,
+        description="Last progress tick; the stall detector compares it to `now`.",
+    )
     finished_at: Optional[str] = Field(default=None)
     error: Optional[str] = Field(default=None)
     pid: int = Field(default=0, description="Owning process id (diagnostics only).")
@@ -183,6 +233,14 @@ class ChatTurnStore:
         self.directory = os.path.join(self.codx_path, TURN_DIRNAME)
         self._locks: Dict[str, int] = {}
         self._locks_lock = threading.Lock()
+        # Stall detection: a turn without progress for `stale_seconds` is
+        # considered dead even when its lock is still held.
+        self.stale_seconds = _env_float(ENV_STALE_SECONDS, DEFAULT_STALE_SECONDS)
+        self.heartbeat_interval = _env_float(
+            ENV_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_INTERVAL
+        )
+        # turn_id -> monotonic timestamp of the last heartbeat write.
+        self._heartbeat_ts: Dict[str, float] = {}
 
     # -- paths ------------------------------------------------------------
 
@@ -353,6 +411,122 @@ class ChatTurnStore:
             return True
         return False
 
+    # -- progress / stall detection ---------------------------------------
+
+    def touch(self, record: ChatTurnRecord, *, force: bool = False) -> bool:
+        """
+        Record PROGRESS on *record* (throttled heartbeat).
+
+        Called on every streamed chunk and every tool event of a running turn.
+        The heartbeat is what separates a *slow* turn from a *dead* one: a turn
+        whose heartbeat does not advance for :attr:`stale_seconds` is stopped
+        and restarted by the recovery worker.
+
+        Args:
+            record: The running turn record.
+            force: Write even when the throttle interval did not elapse.
+
+        Returns:
+            True when the heartbeat was persisted.
+        """
+        if record is None:
+            return False
+        now = time.time()
+        last = self._heartbeat_ts.get(record.turn_id, 0.0)
+        if not force and (now - last) < self.heartbeat_interval:
+            return False
+        self._heartbeat_ts[record.turn_id] = now
+        record.heartbeat_at = _now()
+        try:
+            self.save(record)
+        except OSError as ex:  # pragma: no cover - defensive
+            logger.warning(
+                "ChatTurnStore: cannot persist heartbeat of turn '%s': %s",
+                record.turn_id,
+                ex,
+            )
+            return False
+        return True
+
+    def activity_age(self, record: ChatTurnRecord) -> float:
+        """
+        Seconds since the last observed progress of *record*.
+
+        Args:
+            record: The turn record.
+
+        Returns:
+            Age in seconds (0 when no timestamp can be read).
+        """
+        stamp = (
+            record.heartbeat_at
+            or record.updated_at
+            or record.started_at
+            or record.created_at
+        )
+        started = _parse_iso(stamp)
+        if not started:
+            return 0.0
+        return max(0.0, time.time() - started)
+
+    def is_stale(
+        self,
+        record: ChatTurnRecord,
+        stale_seconds: Optional[float] = None,
+    ) -> bool:
+        """
+        Return True when *record* is active but stopped making progress.
+
+        Args:
+            record: The turn record.
+            stale_seconds: Override of :attr:`stale_seconds` (0 disables).
+
+        Returns:
+            True when the turn must be considered dead.
+        """
+        if record is None or record.status not in ACTIVE_STATUSES:
+            return False
+        limit = float(
+            self.stale_seconds if stale_seconds is None else stale_seconds
+        )
+        if limit <= 0:
+            return False
+        return self.activity_age(record) > limit
+
+    def describe(
+        self,
+        record: ChatTurnRecord,
+        alive: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        Build the client-facing state of *record*.
+
+        Args:
+            record: The turn record.
+            alive: Cross-process lock probe result (``None`` = not probed).
+
+        Returns:
+            JSON-serialisable description used by the API and the socket event.
+        """
+        age = self.activity_age(record)
+        return {
+            "turn_id": record.turn_id,
+            "chat_id": record.chat_id,
+            "status": record.status,
+            "attempts": record.attempts,
+            "max_attempts": record.max_attempts,
+            "started_at": record.started_at,
+            "updated_at": record.updated_at,
+            "heartbeat_at": record.heartbeat_at,
+            "heartbeat_age": round(age, 1),
+            "stale_seconds": round(float(self.stale_seconds), 1),
+            "stalled": self.is_stale(record),
+            "alive": alive,
+            "error": record.error,
+            "pid": record.pid,
+            "host": record.host,
+        }
+
     # -- lifecycle --------------------------------------------------------
 
     def begin(
@@ -441,6 +615,7 @@ class ChatTurnStore:
             record.attempts,
             record.max_attempts,
         )
+        self._publish()
         return record
 
     def mark_running(
@@ -463,6 +638,7 @@ class ChatTurnStore:
         if attempts is not None:
             record.attempts = int(attempts)
         record.started_at = record.started_at or _now()
+        record.heartbeat_at = _now()
         record.pid = os.getpid()
         record.host = _hostname()
         record.error = None
@@ -475,6 +651,24 @@ class ChatTurnStore:
                 ex,
             )
         return record
+
+    def _publish(self) -> None:
+        """
+        Push the live turn state of this project to connected clients.
+
+        Best effort: the state of a chat turn is also served by the REST API,
+        so a broadcast failure must never break the turn itself.
+        """
+        try:
+            from .turn_watch import publish_turn_states
+
+            publish_turn_states(self.codx_path)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.debug(
+                "ChatTurnStore: could not publish turn states of '%s': %s",
+                self.codx_path,
+                ex,
+            )
 
     def complete(self, record: ChatTurnRecord) -> None:
         """Finish *record* successfully and release its lock."""
@@ -515,6 +709,7 @@ class ChatTurnStore:
                 record.turn_id,
                 ex,
             )
+        self._heartbeat_ts.pop(record.turn_id, None)
         self.release(record.turn_id)
         # A terminal record has no recovery value: remove it (and its marker)
         # so a growing directory never looks like pending work.
@@ -530,6 +725,8 @@ class ChatTurnStore:
             status,
             record.chat_id,
         )
+        # The client must stop showing "processing" without polling.
+        self._publish()
 
     # -- cancellation -----------------------------------------------------
 

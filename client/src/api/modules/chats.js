@@ -114,6 +114,20 @@ export const chatsModule = (API) => ({
     return API.post(`/api/chat/cancel`, { token_id: cancellationTokenId })
   },
 
+  // Live state of the project's chat turns (running / stalled / orphaned).
+  // The client does not poll: the `codx-junior-chat-turns` socket event pushes
+  // the same payload whenever a turn starts, finishes or stops progressing.
+  // This one-shot read only covers opening a chat / reconnecting.
+  getTurnStates() {
+    return API.get('/api/chat/processing')
+  },
+
+  // Re-run the last turn of a chat whose execution died server side (the
+  // message stayed on "processing" or failed after the recovery attempts).
+  rerunTurn(chatId) {
+    return API.post('/api/chat/turn/rerun', { chat_id: chatId })
+  },
+
   async getChatLogs({ id }) {
     return API.get(`/api/chats/logs?chat_id=${id}`)
   },

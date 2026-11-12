@@ -56,3 +56,30 @@ def test_all_cached_rounds_still_count_towards_depth():
     assert guard.rounds == 3
     with pytest.raises(ToolLoopError):
         guard.check(_tool_calls(99))
+
+
+def test_renew_grants_a_new_budget_without_hiding_the_total():
+    """A course correction resets the budget, not the turn accounting."""
+    guard = LoopGuard(max_iterations=2, max_tool_calls=5)
+
+    for round_index in range(2):
+        guard.check(_tool_calls(round_index))
+    with pytest.raises(ToolLoopError):
+        guard.check(_tool_calls(99))
+
+    # Two accepted rounds plus the rejected one: the turn stays measurable.
+    assert guard.total_rounds == 3
+
+    guard.renew(max_iterations=1, max_tool_calls=2)
+
+    assert guard.rounds == 0
+    assert guard.max_iterations == 1
+    assert guard.max_tool_calls == 2
+    # The work already done is still measurable.
+    assert guard.total_rounds == 3
+
+    # The renewed budget is usable, and the same call is allowed again because
+    # the loop fingerprints were cleared.
+    guard.check(_tool_calls(99))
+    assert guard.rounds == 1
+    assert guard.total_rounds == 4

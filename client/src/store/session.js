@@ -152,6 +152,14 @@ export const actions = actionTree(
         $storex.orchestration.onSocketEvent(data)
       }
 
+      // ──── CHAT TURNS (processing / stalled messages) ───────
+      // The server publishes the live state of the project's chat turns:
+      // a message whose turn stopped making progress is DEAD (hung request,
+      // blocked tool, dead process) and the chat offers a re-run action.
+      // This is what replaces polling `/chat/processing`.
+      if (event === 'codx-junior-chat-turns') {
+        $storex.chats.onChatTurnsEvent(data)
+      }
       if (type === 'notification') {
         $storex.ui.addNotification(data)
       }

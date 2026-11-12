@@ -15,7 +15,9 @@ the other steps. That is the context-isolation property that lets a run handle
 complex work without exhausting a single context window.
 
 The module imports the heavy AI stack lazily and accepts an injectable
-``runner`` so the orchestration service can be tested offline.
+``runner`` so the orchestration service can be tested offline. A worker that
+exhausted its tool budget is reported as ``blocked`` (it needs a narrower step
+or a human decision), never as a silent failure.
 
 Made with ❤️ by codx-junior
 """
@@ -249,6 +251,7 @@ class StepExecutor:
             duration_seconds=duration,
         )
         result = self._downgrade_on_budget(result, content)
+        result = self._downgrade_on_tool_limit(result, content)
         logger.info(
             "Orchestration: step '%s' finished status=%s cost=%.6f duration=%.1fs",
             step.id,
@@ -267,6 +270,36 @@ class StepExecutor:
             result.status = C.STEP_STATUS_BLOCKED
             result.error = (
                 "The worker reached its step budget before completing the work"
+            )
+        return result
+
+    @staticmethod
+    def _downgrade_on_tool_limit(result: StepResult, content: str) -> StepResult:
+        """
+        Mark a step BLOCKED when the worker exhausted its tool budget.
+
+        The tool limits are a guardrail, not a verdict on the work: the agent
+        already continued the turn with the facts it had collected
+        (``ai/smol`` tool-limit continuation) and only stopped when those
+        continuations were exhausted. Reporting the step as ``failed`` would
+        throw away that evidence and look like a wrong approach; ``blocked``
+        keeps the card on hold and makes the supervisor replan it (smaller
+        step, more context) or escalate the human decision it needs.
+
+        Args:
+            result: Parsed step result.
+            content: Final assistant text of the worker card.
+
+        Returns:
+            The (possibly downgraded) result.
+        """
+        if result.status != C.STEP_STATUS_DONE:
+            return result
+        if C.TOOL_LIMIT_STOP_MARKER in (content or ""):
+            result.status = C.STEP_STATUS_BLOCKED
+            result.error = (
+                "The worker exhausted its tool budget before finishing: it needs "
+                "a narrower step or a human decision"
             )
         return result
 
@@ -318,7 +351,9 @@ class StepExecutor:
             cost_cxjcoins=cost,
             duration_seconds=duration,
         )
-        return self._downgrade_on_budget(result, content)
+        return self._downgrade_on_tool_limit(
+            self._downgrade_on_budget(result, content), content
+        )
 
     async def run_supervisor(
         self,

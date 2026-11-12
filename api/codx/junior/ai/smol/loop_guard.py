@@ -101,6 +101,10 @@ class LoopGuard:
         self.max_tool_calls: int = max_tool_calls or DEFAULT_MAX_TOOL_CALLS
         self.max_identical_rounds: int = max_identical_rounds
         self.rounds: int = 0
+        # Every round of the whole turn, never reset by :meth:`renew`. Reports
+        # and analytics use it so a course correction does not hide how much
+        # work the model actually did.
+        self.total_rounds: int = 0
         self.fingerprints: List[str] = []
 
         logger.debug(
@@ -127,6 +131,7 @@ class LoopGuard:
         """
         if not checked:
             self.rounds += 1
+            self.total_rounds += 1
 
     def check(self, tool_calls: Dict[str, Dict[str, Any]]) -> None:
         """
@@ -147,6 +152,7 @@ class LoopGuard:
         """
         # 1. Depth guard: check iteration count
         self.rounds += 1
+        self.total_rounds += 1
         if self.rounds > self.max_iterations:
             logger.error(
                 "LoopGuard: max iterations (%d) exceeded at round %d",
@@ -198,6 +204,40 @@ class LoopGuard:
             self.rounds,
             num_tool_calls,
             fingerprint[:12],
+        )
+
+    def renew(
+        self,
+        max_iterations: Optional[int] = None,
+        max_tool_calls: Optional[int] = None,
+    ) -> None:
+        """
+        Grant a fresh tool budget after a course correction.
+
+        The tool limits are a guardrail, not a stop condition: when a harness
+        turn reaches one of them the agent injects a "path rethink" notice with
+        the facts already collected and calls this method so the model can
+        CONTINUE in the same turn with a tighter budget.
+
+        Only the per-budget counters are reset. ``total_rounds`` keeps growing,
+        so the whole turn is still measurable in the report and analytics.
+
+        Args:
+            max_iterations: New depth budget (None keeps the current one).
+            max_tool_calls: New breadth budget per round (None keeps the current one).
+        """
+        self.rounds = 0
+        self.fingerprints.clear()
+        if max_iterations is not None and max_iterations > 0:
+            self.max_iterations = int(max_iterations)
+        if max_tool_calls is not None and max_tool_calls > 0:
+            self.max_tool_calls = int(max_tool_calls)
+        logger.info(
+            "LoopGuard renewed: max_iterations=%d, max_tool_calls=%d "
+            "(total rounds so far: %d)",
+            self.max_iterations,
+            self.max_tool_calls,
+            self.total_rounds,
         )
 
 # Made with ❤️ by codx-junior

@@ -167,6 +167,7 @@ class ChatEventBridge:
         response_message: Message,
         chat_manager,
         event_manager,
+        progress_callback=None,
     ) -> None:
         """
         :param chat: The in-memory chat being processed (shared reference).
@@ -182,6 +183,11 @@ class ChatEventBridge:
         self.response_message: Message = response_message
         self.chat_manager = chat_manager
         self.event_manager = event_manager
+        # Progress heartbeat of the durable turn record (optional). Called on
+        # every event and on every persisted streaming flush, so the recovery
+        # worker can tell a SLOW turn from a DEAD one (no progress) and restart
+        # the execution instead of leaving the chat on "processing" forever.
+        self.progress_callback = progress_callback
         # ADDED: doc_ids already inserted on disk (idempotency enforced here,
         # covers the response message AND any auxiliary message).
         self._persisted_doc_ids: Set[str] = set()
@@ -198,6 +204,26 @@ class ChatEventBridge:
     def response_persisted(self) -> bool:
         """True when the response message has already been inserted on disk."""
         return self.response_message.doc_id in self._persisted_doc_ids
+
+    # ── Progress heartbeat ─────────────────────────────────────────────
+
+    def _progress(self) -> None:
+        """
+        Report PROGRESS to the turn heartbeat (never raises).
+
+        A turn that stops reporting progress stopped working: the recovery
+        worker sees the stale heartbeat, stops it and restarts the execution.
+        """
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback()
+        except Exception as ex:  # pragma: no cover - a heartbeat never kills a run
+            logger.debug(
+                "ChatEventBridge: progress callback failed for chat '%s': %s",
+                self.chat.id,
+                ex,
+            )
 
     # ── Event entry point ──────────────────────────────────────────────────────
 
@@ -224,6 +250,9 @@ class ChatEventBridge:
                 self.chat.id,
                 ex,
             )
+        finally:
+            # Every handled event is PROGRESS of the run.
+            self._progress()
 
     # ── Tool events ────────────────────────────────────────────────────────────
 
@@ -396,6 +425,8 @@ class ChatEventBridge:
             self.chat.id,
         )
         self._persist_message(self.response_message)
+        # Persisted content is progress: refresh the turn heartbeat.
+        self._progress()
         return True
 
     def _persist_message(self, message: Message) -> None:

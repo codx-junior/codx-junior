@@ -98,6 +98,23 @@ class EventManager:
             'message_removed_id': message_doc_id
         }))
 
+    def chat_turn_event(self, payload: dict):
+        """
+        Emit the live state of the project's chat turns.
+
+        The payload carries every active turn with its ``stalled`` flag (no
+        progress for ``stale_seconds``) and ``alive`` (the lock owner is still
+        running) plus the ``stale_seconds`` window itself. Clients subscribe to
+        ``codx-junior-chat-turns`` and never poll: a message that is still
+        "processing" but whose turn is stalled gets a re-run action.
+
+        :param payload: ``{"turns": [...], "stale_seconds": n}``.
+        """
+        self.channel.send_event(
+            'codx-junior-chat-turns',
+            self.event_data(payload),
+        )
+
     def orchestration_event(self, payload: dict):
         """
         Emit an orchestration-run event to connected clients.

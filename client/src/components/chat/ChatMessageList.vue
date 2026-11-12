@@ -5,6 +5,7 @@ import ChatEntryToolCard from '@/components/ChatEntryToolCard.vue'
 import ChatEntryMetadata from '@/components/ChatEntryMetadata.vue'
 import ChatAttachmentCard from '@/components/ChatAttachmentCard.vue'
 import ChatMiniMap from '@/components/chat/ChatMiniMap.vue'
+import { formatGenerationTime } from '@/utils/duration.js'
 </script>
 
 <template>
@@ -98,7 +99,7 @@ import ChatMiniMap from '@/components/chat/ChatMiniMap.vue'
         <div class="flex justify-between items-center">
           <span>{{ activeMessageData.totalEvents }} item{{ activeMessageData.totalEvents !== 1 ? 's' : '' }}</span>
           <span v-if="activeMessageData.metadata?.time_taken" class="text-success">
-            <i class="fa-solid fa-hourglass-end"></i> {{ formatDuration(activeMessageData.metadata.time_taken) }}
+            <i class="fa-solid fa-hourglass-end"></i> {{ formatGenerationTime(activeMessageData.metadata.time_taken) }}
           </span>
         </div>
       </div>
@@ -264,8 +265,6 @@ import ChatMiniMap from '@/components/chat/ChatMiniMap.vue'
 </template>
 
 <script>
-import moment from 'moment'
-
 export default {
   props: [
     'chat',
@@ -550,11 +549,6 @@ export default {
       if (this.activeMessageData && this.activeMessageData.attachments) {
         this.activeMessageData.attachments.splice(idx, 1)
       }
-    },
-    formatDuration(seconds) {
-      if (!seconds) return '0s'
-      const baseMoment = moment({ h: 0, m: 0, s: 0, ms: 0 })
-      return baseMoment.add(Math.floor(seconds), 'seconds').format('mm:ss')
     },
 
     // ─────────────────────────────────────────────────────────────

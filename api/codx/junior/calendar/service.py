@@ -131,7 +131,10 @@ _QUICK_DURATION = re.compile(
 _QUICK_LOCATION = re.compile(r"@([^\s,]+)")
 _QUICK_DATE = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
-_DAY_TOKENS = ("tomorrow", "today")
+#: Standalone words that move the draft to another day. ``tom`` is matched
+#: case-sensitively (so a guest called *Tom* is not eaten) and counts as
+#: *tomorrow*, which is what the design example uses.
+_DAY_TOKENS = ("tomorrow", "today", "tom")
 
 #: Keys the preferences document owns. Anything else is preserved verbatim, so
 #: a later milestone can add a key without migrating the file.
@@ -1082,6 +1085,31 @@ class CalendarService:
 
     # -- events: read ------------------------------------------------------
 
+    def event_payload(self, event: CalendarEvent) -> Dict[str, Any]:
+        """
+        Serialise an event for the API, masking what the viewer may not read.
+
+        The memberships are reduced to the calendars the viewer may see, the
+        details of a ``visibility: private`` event of somebody else are masked
+        (the slot stays visible so overlapping meetings keep their place, §11.1)
+        and ``can_write`` is resolved here instead of in the client.
+
+        Args:
+            event: Event to serialise.
+
+        Returns:
+            The event document plus ``can_write``.
+        """
+        memberships = self._visible_memberships(event) or list(event.calendar_ids)
+        payload = event.model_dump()
+        payload["calendar_ids"] = memberships
+        if self._is_masked(event, memberships):
+            payload.update(
+                {"title": "Private", "description": "", "location": "", "guests": []}
+            )
+        payload["can_write"] = bool(self._writable_memberships(memberships))
+        return payload
+
     def get_event(self, event_id: str) -> CalendarEvent:
         """
         Return the raw event document (the editor needs the rule, not the
@@ -1316,7 +1344,6 @@ class CalendarService:
             )
 
         merged = {**current.model_dump(), **changes}
-        merged.pop("id", None)
 
         calendars = self._resolve_calendars(merged.get("calendar_ids") or [])
         # The viewer must be able to write both the old and the new memberships:

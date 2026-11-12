@@ -26,6 +26,28 @@ function _buildLogsQS(params) {
   return parts.length ? `?${parts.join('&')}` : ''
 }
 
+/**
+ * Build a query string for the log explorer (repeatable params).
+ *
+ * Array values (source, level) are emitted as repeated params —
+ * `source=a&source=b` — which is what FastAPI expects for `List[str] = Query()`.
+ * Undefined/null/empty values are omitted.
+ */
+function _buildExplorerQS(params) {
+  const parts = []
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    if (Array.isArray(value)) {
+      value
+        .filter((item) => item !== undefined && item !== null && item !== '')
+        .forEach((item) => parts.push(`${key}=${encodeURIComponent(item)}`))
+      return
+    }
+    parts.push(`${key}=${encodeURIComponent(value)}`)
+  })
+  return parts.length ? `?${parts.join('&')}` : ''
+}
+
 export const logsModule = (API) => ({
   // ── Application logs ───────────────────────────────────────────────────
 
@@ -175,5 +197,119 @@ export const logsModule = (API) => ({
         })
       }
     }
+  },
+
+  // ── Application log explorer (Loki/Graylog style) ──────────────────────
+  //
+  // Server-side exploration of the application log files
+  // (`api/codx/junior/api/log_explorer.py`). The browser sends filters and
+  // receives at most ONE page of entries plus the aggregations it renders,
+  // never a whole log file.
+  explorer: {
+    /**
+     * List the log files the explorer can query (newest first).
+     * @returns {Promise<object>} { sources: [{ id, name, path, size_bytes, mtime, kind, entries_estimate }] }
+     */
+    sources() {
+      return API.get('/api/logs/explorer/sources')
+    },
+
+    /**
+     * Filtered, paged query. Everything (filtering, sorting, pagination,
+     * histogram and facets) happens server-side.
+     * @param {object} opts
+     * @param {string[]} [opts.source]           - Source ids (repeatable; defaults to the newest file)
+     * @param {string}   [opts.q]                - Query text (free text, "phrase", level=error,warn, logger~"re", -negation)
+     * @param {number|string} [opts.start]       - Inclusive start, epoch ms or ISO-8601
+     * @param {number|string} [opts.end]         - Inclusive end, epoch ms or ISO-8601
+     * @param {string[]} [opts.level]            - Level filter (repeatable)
+     * @param {number}   [opts.minMs]            - Keep only entries slower than this (ms)
+     * @param {number}   [opts.page=1]           - Page number (1-based)
+     * @param {number}   [opts.pageSize=100]     - Entries per page (backend caps at 1000)
+     * @param {string}   [opts.order='desc']     - 'desc' (newest first) or 'asc'
+     * @param {number}   [opts.histogramBuckets] - Number of histogram buckets (max 200)
+     * @returns {Promise<object>} { entries, total, page, page_size, has_more, histogram, facets, stats }
+     */
+    query({ source, q, start, end, level, minMs, page, pageSize, order, histogramBuckets } = {}) {
+      const qs = _buildExplorerQS({
+        source,
+        q,
+        start,
+        end,
+        level,
+        min_ms: minMs,
+        page,
+        page_size: pageSize,
+        order,
+        histogram_buckets: histogramBuckets,
+      })
+      return API.get(`/api/logs/explorer/query${qs}`)
+    },
+
+    /**
+     * One entry with its verbatim raw text.
+     * @param {string} id - Entry id (`<source>#<line index>`)
+     * @param {string} [source] - Source id, when the id lost its source part
+     * @returns {Promise<object>} Full entry including `raw`
+     */
+    entry(id, source) {
+      const qs = _buildExplorerQS({ source })
+      return API.get(`/api/logs/explorer/entry/${encodeURIComponent(id)}${qs}`)
+    },
+
+    /**
+     * Entries surrounding an entry (ascending file order).
+     * @param {string} id - Anchor entry id
+     * @param {object} [opts]
+     * @param {string} [opts.source] - Source id, when the id lost its source part
+     * @param {number} [opts.before=10] - Preceding entries
+     * @param {number} [opts.after=10]  - Following entries
+     * @returns {Promise<object>} { entries: [...] }
+     */
+    context(id, { source, before = 10, after = 10 } = {}) {
+      const qs = _buildExplorerQS({ source, before, after })
+      return API.get(`/api/logs/explorer/context/${encodeURIComponent(id)}${qs}`)
+    },
+
+    /**
+     * Poll a source for new entries.
+     * @param {object} [opts]
+     * @param {string} [opts.source]      - Source id (defaults to the newest file)
+     * @param {string} [opts.sinceCursor] - Cursor returned by the previous poll
+     * @returns {Promise<object>} { cursor, entries: [...] }
+     */
+    tail({ source, sinceCursor } = {}) {
+      const qs = _buildExplorerQS({ source, since_cursor: sinceCursor })
+      return API.get(`/api/logs/explorer/tail${qs}`)
+    },
+
+    /**
+     * API-analysis aggregation over the same window and filters as `query`.
+     * Returns request counts, error rate, latency percentiles, the busiest and
+     * slowest endpoints, the status distribution and the profiler summary.
+     * @param {object} [opts]
+     * @param {string[]} [opts.source]           - Source ids (repeatable)
+     * @param {string}   [opts.q]                - Query text
+     * @param {number|string} [opts.start]       - Inclusive start (epoch ms or ISO-8601)
+     * @param {number|string} [opts.end]         - Inclusive end (epoch ms or ISO-8601)
+     * @param {string[]} [opts.level]            - Level filter (repeatable)
+     * @param {number}   [opts.minMs]            - Keep only entries slower than this (ms)
+     * @param {number}   [opts.top=10]           - Rows in the ranked lists (max 100)
+     * @param {number}   [opts.histogramBuckets] - Number of histogram buckets
+     * @returns {Promise<object>} { summary, histogram, endpoints, slowest, status, profiler, stats }
+     */
+    insights({ source, q, start, end, level, minMs, top, histogramBuckets } = {}) {
+      const qs = _buildExplorerQS({
+        source,
+        q,
+        start,
+        end,
+        level,
+        min_ms: minMs,
+        top,
+        histogram_buckets: histogramBuckets,
+      })
+      return API.get(`/api/logs/explorer/insights${qs}`)
+    },
   }
 })

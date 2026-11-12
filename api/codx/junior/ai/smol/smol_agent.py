@@ -332,6 +332,26 @@ Use xml envelope per file with the changes like in the example:
 
 
 
+def _iso_utc(epoch_seconds: float) -> str:
+    """
+    Format an epoch timestamp as an ISO-8601 UTC string.
+
+    Used by the timing instrumentation (tool invocations and provider calls),
+    where a wall-clock timestamp is needed next to the monotonic duration: the
+    clock says *when* it happened (so lines from different components can be
+    merged into one time frame) while the duration stays immune to clock jumps.
+
+    Args:
+        epoch_seconds: Value from ``time.time()``.
+
+    Returns:
+        An ISO-8601 string with millisecond precision and a ``Z`` suffix.
+    """
+    return datetime.utcfromtimestamp(epoch_seconds).strftime(
+        "%Y-%m-%dT%H:%M:%S.%f"
+    )[:-3] + "Z"
+
+
 def _get_analytics() -> Analytics:
     """Return (creating if necessary) the module-level Analytics singleton."""
     global _analytics_instance
@@ -1987,12 +2007,25 @@ class SmolAgent:
             chat_id,
             run_context.run_id,
         )
+        # ── Provider/network timing ──
+        # `request_started` is taken IMMEDIATELY before the HTTP call, so the
+        # three measurements below separate the two very different waits a turn
+        # pays for:
+        #   request_headers_ms — sending the payload and receiving the response
+        #                        headers (network + provider admission/queueing),
+        #   first_token_ms     — how long the model "thinks" before the first
+        #                        streamed chunk,
+        #   stream_ms          — receiving the actual content (throughput).
+        request_started = time.monotonic()
+        first_chunk_at: Optional[float] = None
+        chunk_count = 0
         try:
             response_stream = self.client.chat.completions.create(
                 **kwargs,
                 messages=openai_messages,
                 extra_headers=headers,
             )
+            request_headers_ms = (time.monotonic() - request_started) * 1000
         except Exception as ex:
             # VERBOSE AI ERROR LOGGING (request phase): without this a failed
             # connection produced nothing diagnosable — the raised message is a
@@ -2017,6 +2050,9 @@ class SmolAgent:
 
         try:
             for chunk in run_context.guard_stream(response_stream):
+                chunk_count += 1
+                if first_chunk_at is None:
+                    first_chunk_at = time.monotonic()
                 # Bridge the legacy token onto the runtime token so both
                 # cancellation paths converge on AgentCancelled.
                 if cancellation_token and cancellation_token.is_cancelled:
@@ -2085,6 +2121,35 @@ class SmolAgent:
 
         send_callback("", True)
         content = "".join(content_parts)
+
+        # Time frame: one line per completion with the wall-clock window, the
+        # provider wait and the receive (network) phase. Analysing a slow run is
+        # now a matter of summing these lines instead of guessing.
+        total_ms = (time.monotonic() - request_started) * 1000
+        first_token_ms = (
+            (first_chunk_at - request_started) * 1000 if first_chunk_at else None
+        )
+        stream_ms = (
+            (time.monotonic() - first_chunk_at) * 1000 if first_chunk_at else None
+        )
+        logger.info(
+            "SmolAgent: LLM timing model=%s provider=%s base_url=%s "
+            "request_ms=%.0f first_token_ms=%s stream_ms=%s total_ms=%.0f "
+            "chunks=%d chars=%d tool_calls=%d request_id=%s chat_id=%s run=%s",
+            self.model,
+            self.llm_settings.provider or "?",
+            self.base_url,
+            request_headers_ms,
+            f"{first_token_ms:.0f}" if first_token_ms is not None else "n/a",
+            f"{stream_ms:.0f}" if stream_ms is not None else "n/a",
+            total_ms,
+            chunk_count,
+            len(content),
+            len(accumulator.tool_calls),
+            request_id,
+            chat_id,
+            run_context.run_id,
+        )
 
         # Archive the complete message exchange after successful streaming
         # Captures complete forensic data: request kwargs, tool definitions, system prompt
@@ -2425,6 +2490,7 @@ class SmolAgent:
         result_preview: str = ""
         result: Union[str, ToolResponse] = ""
         tool_start = time.monotonic()
+        tool_started_at = time.time()
         # Emit a COPY of the parsed args: `params` is mutated later (settings
         # injection) and listeners may keep a reference to the payload.
         run_context.emit(
@@ -2432,6 +2498,7 @@ class SmolAgent:
             tool=func_name,
             tool_call_id=tool_call_id,
             args=dict(params),
+            started_at=_iso_utc(tool_started_at),
         )
 
         try:
@@ -2581,7 +2648,25 @@ class SmolAgent:
 
         finally:
             duration_ms = (time.monotonic() - tool_start) * 1000
-            duration_seconds = time.monotonic() - tool_start
+            duration_seconds = duration_ms / 1000.0
+            tool_finished_at = time.time()
+            # One line per tool invocation with the WALL-CLOCK window it occupied
+            # plus its duration: this is what makes a time frame possible (when
+            # did the tool run, how long did it take) without correlating several
+            # log sources by hand.
+            logger.info(
+                "SmolAgent: tool '%s' %s started_at=%s finished_at=%s "
+                "duration_ms=%.0f timeout_s=%s chat_id=%s request_id=%s run=%s",
+                func_name,
+                "ok" if success else ("timed_out" if timed_out else "error"),
+                _iso_utc(tool_started_at),
+                _iso_utc(tool_finished_at),
+                duration_ms,
+                f"{tool_timeout_seconds:g}" if tool_timeout_seconds else "none",
+                chat_id,
+                request_id,
+                run_context.run_id,
+            )
 
             if success:
                 # Surface the dual-response tool's user-facing output on the
@@ -2598,6 +2683,8 @@ class SmolAgent:
                     AgentEventType.TOOL_END,
                     tool=func_name,
                     tool_call_id=tool_call_id,
+                    started_at=_iso_utc(tool_started_at),
+                    finished_at=_iso_utc(tool_finished_at),
                     duration_ms=duration_ms,
                     result=result_preview,
                     output=tool_output,
@@ -2616,6 +2703,8 @@ class SmolAgent:
                     AgentEventType.TOOL_ERROR,
                     tool=func_name,
                     tool_call_id=tool_call_id,
+                    started_at=_iso_utc(tool_started_at),
+                    finished_at=_iso_utc(tool_finished_at),
                     duration_ms=duration_ms,
                     error=error_message,
                     timeout=timed_out,
@@ -2672,6 +2761,29 @@ class SmolAgent:
                 chat_id=chat_id,
                 request_id=request_id,
             )
+
+            # Harness time frame: a harness turn registers the invocation in the
+            # append-only harness journal (start, end, duration) so the UI can
+            # build a per-run timeline without parsing the application logs.
+            if getattr(self, "harness", False):
+                try:
+                    from codx.junior.harness.audit import record_audit
+
+                    record_audit(
+                        str(getattr(self.settings, "codx_path", "") or ""),
+                        "tool_call",
+                        tool=func_name,
+                        tool_call_id=tool_call_id,
+                        chat_id=chat_id,
+                        request_id=request_id,
+                        started_at=_iso_utc(tool_started_at),
+                        finished_at=_iso_utc(tool_finished_at),
+                        duration_ms=round(duration_ms, 1),
+                        status="ok" if success else "error",
+                        timed_out=timed_out,
+                    )
+                except Exception as ex:  # audit must never break the turn
+                    logger.debug("SmolAgent: could not audit tool timing: %s", ex)
 
     # ── Tool usage summary (generated only when the tool loop breaks) ──────────
 

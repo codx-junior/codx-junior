@@ -21,7 +21,12 @@ export const APP_COMPONENTS_MAP = {
   'workspace': lazy(() => import('../components/windowManager/AppWindow.vue')),
   'browser-sessions': lazy(() => import('../components/browsers/BrowsersSessionManager.vue')),
   'browser-viewer': lazy(() => import('../components/browsers/BrowserViewer.vue')),
-  'log-viewer': lazy(() => import('../components/LogViewer.vue')),
+  // Application-log explorer (Loki/Graylog style): server-side query, paging,
+  // histogram and facets plus a virtualized list. The legacy raw viewer
+  // (`components/LogViewer.vue`) stays on disk — the `metrics` app still renders
+  // it (components/metrics/MetricsViewer.vue) — but the Logs app now opens the
+  // explorer instead.
+  'log-viewer': lazy(() => import('../components/logs/explorer/LogExplorer.vue')),
   'knowledge': lazy(() => import('../views/KnowledgeView.vue')),
   'knowledge_settings': lazy(() => import('../views/KnowledgeSettings.vue')),
   'team': lazy(() => import('../views/TeamView.vue')),
@@ -31,6 +36,7 @@ export const APP_COMPONENTS_MAP = {
   'docs': lazy(() => import('../views/DocsView.vue')),
   'global-settings': lazy(() => import('../views/GlobalSettings.vue')),
   'tasks': lazy(() => import('../components/kanban/board/KanbanBoardView.vue')),
+  'calendar': lazy(() => import('../views/CalendarView.vue')),
   'harness': lazy(() => import('../views/HarnessView.vue')),
   'metrics': lazy(() => import('../components/metrics/MetricsViewer.vue')),
   'account': lazy(() => import('../components/security/AccountSettings.vue')),

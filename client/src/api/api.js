@@ -13,6 +13,7 @@ import { workspacesModule } from './modules/workspaces'
 import { browsersModule } from './modules/browsers'
 import { computersModule } from './modules/computers'
 import { meetsModule } from './modules/meets'
+import { calendarModule } from './modules/calendar'
 import { infraModule } from './modules/infra'
 import { repoModule } from './modules/repo'
 import { consoleModule } from './modules/console'
@@ -810,6 +811,18 @@ const initializeAPI = ({ project, user } = {}) => {
         API._companiesModule = companiesModule(API)
       }
       return API._companiesModule
+    },
+
+    /**
+     * Agenda / Calendar manager: ONE global agenda across every project
+     * (`design/06-calendar/01-analysis.md`, decision D1 — projects are only a
+     * FILTER, never a data root). See api/modules/calendar.js.
+     */
+    get calendar() {
+      if (!API._calendarModule) {
+        API._calendarModule = calendarModule(API)
+      }
+      return API._calendarModule
     },
 
     get meets() {

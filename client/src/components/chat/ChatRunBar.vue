@@ -77,6 +77,19 @@
 
     <!-- Controls -->
     <div class="ml-auto flex items-center gap-1.5 shrink-0">
+      <!-- Jump to the harness diagnosis of THIS task: the flow of the plan, the
+           step cards, the timeline and the audit journal. The run id and the
+           chat id travel in the query so the harness view selects the task
+           instead of opening its default run. -->
+      <button
+        v-if="hasRun"
+        class="btn btn-xs btn-ghost gap-1"
+        title="Open this task in the harness view (flow, timeline and audit)"
+        @click="openHarness"
+      >
+        <i class="fa-solid fa-bolt"></i>
+        Harness
+      </button>
       <button
         v-if="canStart"
         class="btn btn-xs btn-primary gap-1"
@@ -256,6 +269,27 @@ export default {
     shortRunId() {
       const id = String(this.runId || '')
       return id.length > 12 ? `${id.slice(0, 8)}…` : id
+    }
+  },
+  methods: {
+    /**
+     * Open the harness view for THIS task.
+     *
+     * The run id (process id shown on the bar) and the chat id travel in the
+     * query string, so the harness view selects this run and opens the task in
+     * its side panel instead of showing its default run.
+     */
+    openHarness() {
+      const runId = String(this.runId || '')
+      const chatId = String(this.chat?.id || '')
+      if (!runId && !chatId) return
+      this.$router.push({
+        name: 'harness',
+        query: {
+          ...(runId ? { run: runId } : {}),
+          ...(chatId ? { chat: chatId } : {})
+        }
+      })
     }
   }
 }

@@ -19,6 +19,7 @@ import * as kanban from './kanban'
 import * as planning from './planning'
 import * as browsers from './browsers'
 import * as meets from './meets'
+import * as calendar from './calendar'
 import * as orchestration from './orchestration'
 
 const modules = { 
@@ -37,6 +38,7 @@ const modules = {
   planning,
   browsers,
   meets,
+  calendar,
   orchestration
 }
 const storePattern = {

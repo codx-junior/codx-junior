@@ -1,5 +1,6 @@
 """TEMPORARY verification script for the M0 calendar service + router (deleted after use)."""
 
+import importlib.util
 import os
 import sys
 import tempfile
@@ -13,17 +14,67 @@ os.environ["CODX_JUNIOR_CALENDAR_PATH"] = ROOT
 
 from fastapi import FastAPI  # noqa: E402
 
-from codx.junior.api import discover_routers  # noqa: E402
+FAILURES = []
+PASSED = []
+VERBOSE = os.environ.get("CHECK_VERBOSE") == "1"
+
+
+def check(name, condition, detail=""):
+    if condition:
+        PASSED.append(name)
+        if VERBOSE:
+            print(f"[ok  ] {name} {detail}", flush=True)
+        return
+    FAILURES.append(f"{name} {detail}")
+    print(f"[FAIL] {name} {detail}", flush=True)
+
+
+def _safe_404(fn):
+    """Return True when *fn* raises a 404 CalendarError."""
+    try:
+        fn()
+    except Exception as ex:  # noqa: BLE001
+        return getattr(ex, "code", None) == "not_found" and ex.status_code == 404
+    return False
+
+
+# ---------------------------------------------------------------------------
+# 1. The router module, loaded exactly as `discover_routers` would find it
+#    (a module of `codx/junior/api/` exporting `router`).
+#    `codx.junior.api.__init__` pulls the whole engine in, so the module is
+#    loaded by path here; the contract discover_routers checks is verified
+#    explicitly below.
+# ---------------------------------------------------------------------------
+API_PACKAGE_DIR = os.path.join(API_ROOT, "codx", "junior", "api")
+ROUTER_PATH = os.path.join(API_PACKAGE_DIR, "calendar.py")
+
+spec = importlib.util.spec_from_file_location("codx_calendar_router_probe", ROUTER_PATH)
+router_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(router_module)
+
+print("=== discovery contract (codx/junior/api/__init__.py) ===", flush=True)
+print(f"file                : {os.path.relpath(ROUTER_PATH, API_ROOT)}", flush=True)
+print(f"in api package      : {os.path.dirname(ROUTER_PATH) == API_PACKAGE_DIR}", flush=True)
+print(f"exports 'router'    : {hasattr(router_module, 'router')}", flush=True)
+print(f"router prefix/tags  : {router_module.router.prefix!r} {router_module.router.tags}", flush=True)
+print(f"router routes       : {len(router_module.router.routes)}", flush=True)
+for _r in router_module.router.routes:
+    print(f"  raw {sorted(getattr(_r, 'methods', []))} {getattr(_r, 'path', None)!r}", flush=True)
+check("module exports a module-level router", hasattr(router_module, "router"))
+check(
+    "module lives in the auto-discovered api package",
+    os.path.dirname(ROUTER_PATH) == API_PACKAGE_DIR
+    and not os.path.basename(ROUTER_PATH).startswith("test_"),
+)
 
 APP = FastAPI()
-DISCOVERED = discover_routers()
-for _config in DISCOVERED:
-    APP.include_router(_config["router"], prefix=_config["prefix"])
+APP.include_router(router_module.router, prefix="/api")  # what load_routers() does
+print(f"app routes          : {len(APP.routes)}", flush=True)
+for _route in APP.routes:
+    print("  app", sorted(getattr(_route, "methods", [])), getattr(_route, "path", None), flush=True)
 
-print("=== discovered modules ===")
-print(", ".join(sorted(config["module"] for config in DISCOVERED)))
 print()
-print("=== /api/calendar route table ===")
+print("=== FastAPI route table (the calendar routes) ===", flush=True)
 for _route in APP.routes:
     _path = getattr(_route, "path", "")
     if "/calendar" not in _path:
@@ -31,9 +82,41 @@ for _route in APP.routes:
     _methods = ",".join(
         sorted(m for m in getattr(_route, "methods", set()) if m not in ("HEAD", "OPTIONS"))
     )
-    print(f"{_methods:20s} {_path}")
-print()
+    print(f"{_methods:22s} {_path}", flush=True)
+print(flush=True)
 
+CALENDAR_ROUTES = {
+    (method, route.path)
+    for route in APP.routes
+    for method in getattr(route, "methods", set())
+    if "/calendar" in getattr(route, "path", "")
+}
+EXPECTED_ROUTES = {
+    ("GET", "/api/calendar/calendars"),
+    ("POST", "/api/calendar/calendars"),
+    ("PUT", "/api/calendar/calendars/{calendar_id}"),
+    ("DELETE", "/api/calendar/calendars/{calendar_id}"),
+    ("GET", "/api/calendar/calendars/{calendar_id}/share"),
+    ("GET", "/api/calendar/projects"),
+    ("GET", "/api/calendar/prefs"),
+    ("PUT", "/api/calendar/prefs"),
+    ("POST", "/api/calendar/events/query"),
+    ("GET", "/api/calendar/events/{event_id}"),
+    ("POST", "/api/calendar/events"),
+    ("PUT", "/api/calendar/events/{event_id}"),
+    ("DELETE", "/api/calendar/events/{event_id}"),
+    ("POST", "/api/calendar/events/{event_id}/snooze"),
+    ("POST", "/api/calendar/events/quick"),
+}
+check(
+    "route table matches §5.1 + §5.2",
+    CALENDAR_ROUTES - {("HEAD", p) for _, p in CALENDAR_ROUTES} == EXPECTED_ROUTES,
+    str(sorted(EXPECTED_ROUTES ^ {r for r in CALENDAR_ROUTES if r[0] != "HEAD"})),
+)
+
+# ---------------------------------------------------------------------------
+# 2. Service: ACL, query and writes against a throw-away calendar root.
+# ---------------------------------------------------------------------------
 from codx.junior.calendar.model import (  # noqa: E402
     Calendar,
     CalendarCreate,
@@ -48,24 +131,6 @@ from codx.junior.calendar.model import (  # noqa: E402
 from codx.junior.calendar.service import CalendarError, CalendarService  # noqa: E402
 from codx.junior.calendar.store import CalendarStore  # noqa: E402
 from codx.junior.model.user import CodxUser  # noqa: E402
-
-FAILURES = []
-
-
-def check(name, condition, detail=""):
-    status = "ok  " if condition else "FAIL"
-    print(f"[{status}] {name} {detail}")
-    if not condition:
-        FAILURES.append(name)
-
-
-def _safe_404(fn):
-    """Return True when *fn* raises a 404 CalendarError."""
-    try:
-        fn()
-    except CalendarError as ex:
-        return ex.status_code == 404
-    return False
 
 
 def raises(name, code, status, fn):
@@ -197,9 +262,7 @@ EVT_RECURRING = save_event(
     recurrence=Recurrence(rrule="FREQ=WEEKLY;BYDAY=MO,WE"),
 )
 
-# ---------------------------------------------------------------------------
-print()
-print("=== ACL: who sees which calendar (§11.1) ===")
+print("=== ACL: who sees which calendar (§11.1) ===", flush=True)
 ALICE_SERVICE = CalendarService(STORE, ALICE)
 MARTA_SERVICE = CalendarService(STORE, MARTA)
 JORDI_SERVICE = CalendarService(STORE, JORDI)
@@ -222,21 +285,20 @@ check(
     == {CAL_ALLHANDS.id, CAL_CODX.id, CAL_ICS.id},
 )
 check(
-    "marta cannot even resolve a private calendar (404, not 403)",
+    "a private calendar of another user answers 404 (not 403)",
     _safe_404(lambda: MARTA_SERVICE.get_calendar(CAL_WORK.id)),
 )
 check("team writer can write", MARTA_SERVICE.can_write(CAL_TEAM))
 check("team reader can read", JORDI_SERVICE.can_view(CAL_TEAM))
 check("team reader cannot write", not JORDI_SERVICE.can_write(CAL_TEAM))
 check("non-member cannot write the team calendar", not BOB_SERVICE.can_write(CAL_TEAM))
-check("workspace calendar: owner writes", not ALICE_SERVICE.can_write(CAL_ALLHANDS))
+check("workspace calendar: non-owner does not write", not ALICE_SERVICE.can_write(CAL_ALLHANDS))
 check("workspace calendar: admin writes", ADMIN_SERVICE.can_write(CAL_ALLHANDS))
 check("system calendar is read-only for admins", not ADMIN_SERVICE.can_write(CAL_CODX))
 check("external calendar is read-only", not ADMIN_SERVICE.can_write(CAL_ICS))
 
-# ---------------------------------------------------------------------------
 print()
-print("=== query: one occurrence per event, project filter (§5.2) ===")
+print("=== query: one occurrence per event, project filter (§5.2) ===", flush=True)
 
 
 def query(service, projects=None, **kwargs):
@@ -258,7 +320,10 @@ check(
     sum(full["counts"]["by_source"].values()) == len(full["occurrences"]),
 )
 check("by_calendar counts add up", sum(full["counts"]["by_calendar"].values()) == 5)
-check("by_project uses 'personal' for project_id None", "personal" in full["counts"]["by_project"])
+check(
+    "by_project uses 'personal' for project_id None",
+    "personal" in full["counts"]["by_project"],
+)
 check("range echoes UTC", full["range"]["from"] == "2026-02-09T00:00:00Z")
 check("warnings empty", full["warnings"] == [])
 check("truncated_projects empty (projection is M1)", full["truncated_projects"] == [])
@@ -289,7 +354,11 @@ check(
 
 marta_query = query(MARTA_SERVICE)
 marta_ids = {occurrence["event_id"] for occurrence in marta_query["occurrences"]}
-check("marta sees the team + workspace events only", marta_ids == {EVT_TEAM.id, EVT_ACME.id}, str(marta_ids))
+check(
+    "marta sees the team + workspace events only",
+    marta_ids == {EVT_TEAM.id, EVT_ACME.id},
+    str(marta_ids),
+)
 acme_for_marta = [o for o in marta_query["occurrences"] if o["event_id"] == EVT_ACME.id][0]
 check(
     "an invisible membership is not leaked in calendar_ids",
@@ -298,9 +367,7 @@ check(
 )
 check(
     "alice sees both memberships (multi-calendar item)",
-    sorted(
-        [o for o in full["occurrences"] if o["event_id"] == EVT_ACME.id][0]["calendar_ids"]
-    )
+    sorted([o for o in full["occurrences"] if o["event_id"] == EVT_ACME.id][0]["calendar_ids"])
     == sorted([CAL_ALLHANDS.id, CAL_WORK.id]),
 )
 check(
@@ -308,7 +375,6 @@ check(
     acme_for_marta["read_only"] is True,
 )
 
-# private masking (§11.1) - evt_personal is 'default' visibility, mask it explicitly
 EVT_SECRET = save_event(
     title="Secret 1:1",
     calendar_ids=[CAL_TEAM.id],
@@ -317,16 +383,20 @@ EVT_SECRET = save_event(
     start="2026-02-11T12:00:00Z",
     end="2026-02-11T12:30:00Z",
 )
-masked = [o for o in query(MARTA_SERVICE)["occurrences"] if o["event_id"] == EVT_SECRET.id]
+masked = [o for o in query(JORDI_SERVICE)["occurrences"] if o["event_id"] == EVT_SECRET.id]
 check("private event keeps its slot for a reader", len(masked) == 1)
-check("private event masks its title", masked and masked[0]["title"] == "Private")
+check("private event masks its title for a reader", bool(masked) and masked[0]["title"] == "Private")
+check(
+    "private event stays readable for a writer of its calendar",
+    [o for o in query(MARTA_SERVICE)["occurrences"] if o["event_id"] == EVT_SECRET.id][0]["title"]
+    == "Secret 1:1",
+)
 check(
     "private event is readable by its creator",
     [o for o in query(ALICE_SERVICE)["occurrences"] if o["event_id"] == EVT_SECRET.id][0]["title"]
     == "Secret 1:1",
 )
 
-# calendar_ids filter + warnings
 filtered = query(MARTA_SERVICE, calendar_ids=[CAL_TEAM.id, CAL_WORK.id])
 check("calendar_ids filter keeps only visible ids", len(filtered["occurrences"]) == 2)
 check(
@@ -334,9 +404,8 @@ check(
     any("unknown_calendar" in warning for warning in filtered["warnings"]),
 )
 
-# ---------------------------------------------------------------------------
 print()
-print("=== writes: §3.2 invariants and §5.3 errors ===")
+print("=== writes: §3.2 invariants and §5.3 errors ===", flush=True)
 raises(
     "unknown_calendar (404)",
     "unknown_calendar",
@@ -420,7 +489,9 @@ raises(
     "range wider than 92 days is rejected",
     "invalid_range",
     400,
-    lambda: query(ALICE_SERVICE, **{"from": "2026-01-01T00:00:00Z", "to": "2026-06-01T00:00:00Z"}),
+    lambda: query(
+        ALICE_SERVICE, **{"from": "2026-01-01T00:00:00Z", "to": "2026-06-01T00:00:00Z"}
+    ),
 )
 
 created = ALICE_SERVICE.create_event(
@@ -445,15 +516,13 @@ raises(
     "revision_mismatch (409)",
     "revision_mismatch",
     409,
-    lambda: ALICE_SERVICE.update_event(
-        created.id, EventUpdate(title="stale"), expected_revision=7
-    ),
+    lambda: ALICE_SERVICE.update_event(created.id, EventUpdate(title="stale"), expected_revision=7),
 )
 updated = ALICE_SERVICE.update_event(created.id, EventUpdate(title="Renamed"))
 check("update increments the revision", updated.revision == 2)
 check("update applies the change", updated.title == "Renamed")
 check(
-    "update via body revision also works",
+    "update via the body revision also works",
     ALICE_SERVICE.update_event(created.id, EventUpdate(title="Again", revision=2)).revision == 3,
 )
 raises(
@@ -470,7 +539,6 @@ raises(
     lambda: ALICE_SERVICE.get_event(created.id),
 )
 
-# calendars write path
 raises(
     "system calendar cannot be created (409)",
     "read_only_calendar",
@@ -481,7 +549,9 @@ raises(
     "workspace calendar needs an admin (403)",
     "read_only_calendar",
     403,
-    lambda: ALICE_SERVICE.create_calendar(CalendarCreate(name="All hands 2", scope="workspace")),
+    lambda: ALICE_SERVICE.create_calendar(
+        CalendarCreate(name="All hands 2", scope="workspace")
+    ),
 )
 team_cal = ALICE_SERVICE.create_calendar(
     CalendarCreate(
@@ -519,10 +589,8 @@ raises(
     409,
     lambda: ALICE_SERVICE.delete_calendar(CAL_WORK.id),
 )
-deleted = ALICE_SERVICE.delete_calendar(team_cal.id)
-check("empty calendar is deleted", deleted.id == team_cal.id)
+check("empty calendar is deleted", ALICE_SERVICE.delete_calendar(team_cal.id).id == team_cal.id)
 
-# delete with move_to
 MOVING = ALICE_SERVICE.create_calendar(CalendarCreate(name="Moving"))
 STORE.save_event(
     CalendarEvent(
@@ -535,18 +603,20 @@ STORE.save_event(
 ALICE_SERVICE.delete_calendar(MOVING.id, move_to=CAL_PERSONAL.id)
 check(
     "move_to rescues the events",
-    any(
-        MOVING.id not in event.calendar_ids
+    all(
+        event.calendar_ids == [CAL_PERSONAL.id]
         for event in STORE.list_events_month("2026-02")
         if event.title == "To be moved"
     ),
 )
 
-# ---------------------------------------------------------------------------
 print()
-print("=== prefs / projects / snooze / quick add ===")
+print("=== prefs / projects / snooze / quick add ===", flush=True)
 DEFAULT_PREFS = ALICE_SERVICE.get_prefs()
-check("prefs defaults", DEFAULT_PREFS == {"hidden_calendars": [], "order": {}, "week_start": "monday"})
+check(
+    "prefs defaults",
+    DEFAULT_PREFS == {"hidden_calendars": [], "order": {}, "week_start": "monday"},
+)
 check("initial visibility hides the ICS calendar", CAL_ICS.id in ALICE_SERVICE.hidden_calendar_ids())
 saved = ALICE_SERVICE.save_prefs({"hidden_calendars": [CAL_ICS.id], "week_start": "sunday"})
 check("prefs round-trip", saved["week_start"] == "sunday")
@@ -571,13 +641,22 @@ draft = ALICE_SERVICE.quick_add("Lunch Ana tom 13:00 1h @Café")["draft"]
 check("quick add parses the location", draft["location"] == "Café", str(draft["location"]))
 check("quick add parses the time", draft["start"].endswith("13:00:00Z"), draft["start"])
 check("quick add parses the duration", draft["end"].endswith("14:00:00Z"), draft["end"])
-check("quick add picks a writable calendar", draft["calendar_ids"] == [CAL_WORK.id], str(draft["calendar_ids"]))
+check(
+    "quick add picks a writable calendar",
+    draft["calendar_ids"] == [CAL_WORK.id],
+    str(draft["calendar_ids"]),
+)
 check("quick add keeps the title", draft["title"] == "Lunch Ana", str(draft["title"]))
 check("quick add does not persist", ALICE_SERVICE.quick_add("Call")["persisted"] is False)
-
 check("orphans are reported", isinstance(ALICE_SERVICE.orphan_events(), list))
-check("nothing was written to the real calendar folder", ROOT.startswith(tempfile.gettempdir()))
 
 print()
 print("ROOT:", ROOT)
-print("FAILURES:", FAILURES or "none")
+print(f"PASSED: {len(PASSED)}  FAILED: {len(FAILURES)}")
+for _failure in FAILURES:
+    print(f"  FAILED {_failure}")
+
+# The socket.io emitter thread started on import is not a daemon thread: without
+# an explicit exit the interpreter would never return from this script.
+sys.stdout.flush()
+os._exit(0 if not FAILURES else 1)

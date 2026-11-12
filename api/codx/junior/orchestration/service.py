@@ -686,6 +686,7 @@ class OrchestrationService:
         *,
         actor_chat_id: Optional[str] = None,
         main_chat: Optional[Any] = None,
+        accept_failures: bool = False,
     ) -> RunState:
         """
         Mark a run as completed and publish the delivery report.
@@ -693,6 +694,18 @@ class OrchestrationService:
         Only the main task may finish a run (when ``actor_chat_id`` is given).
         The report is written immediately, so it survives even if the worker is
         not running.
+
+        Truthfulness guard: a run is NEVER reported as completed while it still
+        has failed or unreachable steps. The caller must either fix them or pass
+        ``accept_failures=True``, which finalises the run as FAILED with an honest
+        partial-delivery report (never as a clean delivery).
+
+        Args:
+            run_id: Run to finish.
+            summary: Delivery report written by the supervisor.
+            actor_chat_id: Chat performing the call (must be the main task).
+            main_chat: Live main-task object to append the report to.
+            accept_failures: Publish a partial report instead of failing the call.
         """
         run = self.get(run_id)
         self._assert_actor(run, actor_chat_id)
@@ -702,6 +715,49 @@ class OrchestrationService:
             raise PlanError("finish requires a summary for the delivery report")
         if run.status in C.TERMINAL_RUN_STATUSES and run.status != C.RUN_STATUS_COMPLETED:
             raise PlanError(f"Run '{run.name}' is already {run.status}")
+
+        # -- truthfulness guard -------------------------------------------
+        # A step that failed (or that can never become ready because a dependency
+        # failed) means the objective is NOT achieved. Reporting "completed" in
+        # that situation was the worst failure mode of the harness: the run looked
+        # green while part of the work was missing.
+        unresolved = [
+            step for step in run.steps if step.status == C.STEP_STATUS_FAILED
+        ] + blocked_steps(run)
+        if unresolved and not accept_failures:
+            titles = ", ".join(f"'{step.title}'" for step in unresolved[:5])
+            raise PlanError(
+                f"This run cannot be reported as completed: {len(unresolved)} "
+                f"step(s) failed or are unreachable ({titles}). Retry them, add a "
+                "remediation step, or finish again with accept_failures=true to "
+                "publish an HONEST partial report (the run is then reported as "
+                "failed, never as completed)."
+            )
+        if unresolved:
+            titles = ", ".join(f"'{step.title}'" for step in unresolved[:8])
+            summary = (
+                f"⚠️ **PARTIAL DELIVERY — the run is NOT complete.**\n\n"
+                f"{len(unresolved)} step(s) failed or are unreachable: {titles}.\n\n"
+                f"{summary}"
+            )
+            run.stop_reason = summary
+            # Publish the report on the LIVE main chat first: the agent engine
+            # saves THAT object at the end of the turn and would otherwise
+            # overwrite the copy `_finalize` loads from disk.
+            self._append_report(
+                run,
+                prompts.build_delivery_report(run, summary),
+                main_chat=main_chat,
+            )
+            return self._finalize(
+                run,
+                C.RUN_STATUS_FAILED,
+                prompts.build_delivery_report(run, summary),
+                chat_status="rejected",
+                column_phase="blocked",
+                error="Run finished with unresolved steps (partial delivery)",
+            )
+
         run.status = C.RUN_STATUS_COMPLETED
         run.stop_reason = summary
         run.finished_at = run.finished_at or utcnow_iso()
@@ -1025,7 +1081,29 @@ class OrchestrationService:
         )
 
         if action["action"] == "dispatch":
-            await self._run_steps(run, main_chat, spendable)
+            # Run consecutive batches inside the SAME tick. Each batch already
+            # executes its ready steps concurrently, but the next batch used to
+            # wait for the next worker cycle (ticks are seconds apart) even when
+            # independent steps were ready: a run with several batches paid that
+            # delay once per batch. The loop is bounded so one tick can never
+            # monopolise the worker, and it stops as soon as the run needs the
+            # supervisor (verify/replan), a human control call or the budget.
+            batches = 0
+            while (
+                action["action"] == "dispatch"
+                and batches < C.DEFAULT_MAX_BATCHES_PER_TICK
+            ):
+                await self._run_steps(run, main_chat, spendable)
+                batches += 1
+                if run.is_terminal() or run.status in (
+                    C.RUN_STATUS_PAUSED,
+                    C.RUN_STATUS_STOPPED,
+                ):
+                    return run
+                spendable = self._admission(run)
+                if spendable is not None and spendable <= 0:
+                    return self._finalize_budget(run)
+                action = next_actions(run)
             return run
 
         if action["action"] == "supervisor":

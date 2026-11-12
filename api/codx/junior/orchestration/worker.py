@@ -34,7 +34,11 @@ from typing import Any, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 DEFAULT_TICK_SECONDS = 5.0
-DEFAULT_MAX_RUNS = 2
+# A run is a thread of the pool, so this is also the number of runs that can
+# advance at the same time. Two was the bottleneck: with several harness tasks in
+# flight the third one only started after another finished, which is exactly the
+# "a simple task takes hours" symptom.
+DEFAULT_MAX_RUNS = 4
 MAX_TICK_SECONDS = 300.0
 
 

@@ -145,12 +145,25 @@ DEFAULT_WORKER_TOOLS = (
 DEFAULT_BOARD = "Orchestration"
 DEFAULT_MAX_STEPS = 30
 DEFAULT_MAX_ROUNDS = 40
-DEFAULT_MAX_PARALLEL = 2
+# Independent steps run CONCURRENTLY, so a wider batch is the cheapest way to
+# shorten a run. Each step is its own chat/turn, so the limit is set by the
+# worker pool (CODX_JUNIOR_ORCHESTRATION_MAX_RUNS) and the budget, not by the
+# model.
+DEFAULT_MAX_PARALLEL = 4
 MAX_PARALLEL_LIMIT = 4
 DEFAULT_MAX_ATTEMPTS = 2
 DEFAULT_STAGNATION_LIMIT = 3
-DEFAULT_STEP_TIMEOUT_SECONDS = 1800
-DEFAULT_SUPERVISOR_TIMEOUT_SECONDS = 900
+# A step is ONE worker turn. 30 minutes was long enough that a wedged turn
+# (blocked tool, dead provider socket) consumed half a run's wall-clock time
+# before reporting anything; 15 minutes is plenty for a focused step and the
+# supervisor replans whatever does not finish.
+DEFAULT_STEP_TIMEOUT_SECONDS = 900
+# The supervisor turn only plans/verifies: it never needs 15 minutes.
+DEFAULT_SUPERVISOR_TIMEOUT_SECONDS = 600
+# Consecutive step batches executed inside ONE worker tick. Without it a run
+# with several independent batches waited for the next tick (seconds apart)
+# between every batch.
+DEFAULT_MAX_BATCHES_PER_TICK = 3
 DEFAULT_MAX_DELEGATE_TASKS = 8
 DEFAULT_DELEGATE_CONCURRENCY = 2
 

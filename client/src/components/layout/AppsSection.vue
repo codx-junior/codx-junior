@@ -89,6 +89,18 @@ import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
         @click="handleNavigateToPlanning"
       />
 
+      <!-- Agenda / Calendar manager: ONE global agenda across every project
+           (design/06-calendar/01-analysis.md, decision D1) — the projects are
+           a FILTER of the view, never a data root. Registered as 'calendar' in
+           config/apps.js, so this opens a dockview panel on desktop and the
+           "/:projectName/calendar" route in single / mobile mode. -->
+      <NavItem
+        icon="fa-regular fa-calendar-days"
+        label="Calendar"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToCalendar"
+      />
+
       <!-- Cross-project management dashboard: what is happening, what is
            stuck and when it ships — across EVERY project, with a time filter
            (last 7 days by default), blockers, delivery forecast, team load and
@@ -290,6 +302,13 @@ export default {
     },
     handleNavigateToPlanning() {
       this.openApp('planning')
+    },
+    // Opens the global agenda (calendar manager). It is registered as
+    // 'calendar' in config/apps.js, so the unified opener shows a dockview
+    // panel on desktop and navigates to "/:projectName/calendar" in
+    // single / mobile mode (see views/CalendarView.vue).
+    handleNavigateToCalendar() {
+      this.openApp('calendar')
     },
     // Opens the cross-project management dashboard. It is registered as
     // 'management-dashboard' in config/apps.js, so this single call opens a

@@ -97,6 +97,16 @@ export const MOBILE_APP_GROUPS = [
         tone: 'info'
       },
       {
+        // Agenda / Calendar manager — ONE global agenda across every project;
+        // the project filter lives inside the screen (decision D1). Opens the
+        // "/:projectName/calendar" route (config/apps.js → calendar).
+        key: 'calendar',
+        title: 'Calendar',
+        description: 'Agenda, events and reminders',
+        icon: 'fa-regular fa-calendar-days',
+        tone: 'warning'
+      },
+      {
         key: 'company',
         title: 'Company',
         description: 'Teams, people and missions',
@@ -331,6 +341,7 @@ export const MOBILE_ROUTE_TITLES = {
   'chat-workspace': 'Chat',
   'new-chat': 'New chat',
   kanban: 'Task manager',
+  calendar: 'Calendar',
   harness: 'Harness',
   messenger: 'Messenger',
   meet: 'Meet',

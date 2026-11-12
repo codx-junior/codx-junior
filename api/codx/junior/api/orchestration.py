@@ -94,6 +94,10 @@ class FinishRequest(BaseModel):
     """Completion payload (becomes the delivery report)."""
 
     summary: str
+    # A run with failed/unreachable steps is never reported as completed: the
+    # service rejects the call unless the caller accepts a PARTIAL delivery (the
+    # run is then finalised as failed and the report keeps the gaps visible).
+    accept_failures: bool = False
 
 
 class ControlRequest(BaseModel):
@@ -246,7 +250,11 @@ def api_finish_run(
     """Mark a run completed and publish the delivery report."""
     try:
         service = _service(request)
-        service.finish(run_id, payload.summary)
+        service.finish(
+            run_id,
+            payload.summary,
+            accept_failures=bool(payload.accept_failures),
+        )
         return service.status(run_id, include_events=False)
     except Exception as ex:
         raise _failure(ex)

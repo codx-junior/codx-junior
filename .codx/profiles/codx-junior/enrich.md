@@ -85,3 +85,12 @@ Hard rules:
 - Venv: `/home/codx-junior-projects/codx-junior/codx-junior-platform/api/.venv/bin/python`, needs `env PYTHONPATH=<api>`; the project is mounted in the container.
 - Practical verification: `python -m py_compile` on every changed file, plus a scratch script that stubs `codx`, `codx.junior`, `codx.junior.ai` and `codx.junior.ai.smol` in `sys.modules` (with `__path__` set) so light modules such as `ai/smol/loop_guard.py`, `orchestration/prompts.py`, `orchestration/executor.py` import in seconds. Delete the script afterwards.
 - The project atlas index (`project_locate`) is empty/stale for the `api/` tree: use `project_read_file(pattern=...)` with exact paths instead.
+
+## apply_file_changes line-collapse gotcha
+
+Batch edits (`apply_file_changes`) can collapse the line right after an inserted banner comment onto the `//` comment line, silently commenting out the statement (real case: `// ── Transport state ──  const loading = ref(false)` in `client/src/composables/useLogExplorer.js` → `ReferenceError: loading is not defined` at `useLogExplorer()` return, blank Logs app). `vite build` and `node --check` do NOT catch it.
+
+After any multi-line batch edit of JS/Vue/Python files:
+- re-read the edited region (`sed -n a,bp` / `project_read_file` with line numbers) and confirm every declaration still starts its own line;
+- scan for swallowed statements: regex `//\s*[^\n]*\b(const |let |return |function )` (JS) and `#.*\b(self\.|return |raise |def )` (Python);
+- cross-check that every key returned by a composable is actually declared (that is how this bug surfaces).

@@ -22,8 +22,15 @@ DEFAULT_MAX_TOOL_CALLS: int = 5
 # * then DEFAULT_TOOL_TIMEOUT_SECONDS.
 #
 # ``0`` (or a negative value) disables the timeout for a tool.
+#
+# The default is deliberately SHORT: a harness turn pays for this timeout in
+# wall-clock time, and a tool that needs minutes (docker build, full test suite)
+# is almost always waiting on something the agent cannot fix by waiting longer.
+# A timed-out tool returns a clear error to the model, which then changes
+# strategy instead of blocking the step. Slow-but-legitimate tools must declare
+# their own ``timeout_seconds`` in the tool registry.
 ENV_TOOL_TIMEOUT_SECONDS: str = "CODX_JUNIOR_TOOL_TIMEOUT_SECONDS"
-DEFAULT_TOOL_TIMEOUT_SECONDS: float = 300.0
+DEFAULT_TOOL_TIMEOUT_SECONDS: float = 120.0
 
 # Maximum number of sequential tool-call rounds (each round may contain
 # multiple parallel tool calls) before aborting the conversation.

@@ -181,6 +181,15 @@ ORCHESTRATOR_TOOL_JSON = {
                     "type": "string",
                     "description": "Delivery/stop summary (action='finish').",
                 },
+                "accept_failures": {
+                    "type": "boolean",
+                    "description": (
+                        "action='finish' only: publish a PARTIAL delivery report "
+                        "even when steps failed or are unreachable. Without it, "
+                        "finish is rejected while any step is failed/blocked and "
+                        "the run is then reported as failed, never as completed."
+                    ),
+                },
             },
             "required": ["action"],
         },
@@ -372,6 +381,7 @@ async def orchestrator(
     step_id: Optional[str] = None,
     step_ids: Optional[List[str]] = None,
     summary: Optional[str] = None,
+    accept_failures: Optional[bool] = None,
     settings: Any = None,
     session: Any = None,
 ) -> ToolResponse:
@@ -519,18 +529,31 @@ async def orchestrator(
     if action == "finish":
         if not summary:
             raise ValueError("action='finish' requires a 'summary' delivery report")
-        run = service.finish(run_id, summary, actor_chat_id=chat.id, main_chat=chat)
+        run = service.finish(
+            run_id,
+            summary,
+            actor_chat_id=chat.id,
+            main_chat=chat,
+            accept_failures=bool(accept_failures),
+        )
         # Keep the IN-MEMORY chat in sync: the engine saves this object at the
-        # end of the turn and would otherwise overwrite the completed mirror.
-        chat.status = "done"
+        # end of the turn and would otherwise overwrite the terminal mirror.
+        completed = run.status == "completed"
+        chat.status = "done" if completed else "rejected"
         chat.run_status = run.status
-        chat.progress = 100
+        chat.progress = 100 if completed else run.progress()
         return ToolResponse(
-            user_response="✅ Run marked as **completed**. The delivery report is on the main task.",
+            user_response=(
+                "✅ Run marked as **completed**. The delivery report is on the main task."
+                if completed
+                else "⚠️ The run was closed as **failed** (partial delivery): the "
+                     "report lists the steps that did not complete."
+            ),
             llm_response=_json({
-                "status": "completed",
+                "status": run.status,
                 "run_id": run.run_id,
                 "progress": run.progress(),
+                "counts": run.counts(),
             }),
         )
 

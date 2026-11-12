@@ -87,6 +87,15 @@ export const APPS = {
     route: () => ({ name: 'kanban', query: { view: 'planning' } })
   },
 
+  // Agenda / Calendar manager — ONE global agenda across every project
+  // (design/06-calendar/01-analysis.md, decision D1): the projects are a FILTER
+  // of the view, never a data root. Desktop mode → dockview panel; single/mobile
+  // mode → "/:projectName/calendar" (see router/index.ts + views/CalendarView.vue).
+  calendar: {
+    id: 'calendar', title: 'Calendar', component: 'calendar', icon: 'fa-regular fa-calendar-days',
+    route: () => ({ name: 'calendar' })
+  },
+
   // Native harness observability: runs, worker/watchdog health and the
   // append-only audit journal of every piece of work handled by the
   // @codx-junior profile. Read-only view over /api/harness/*.

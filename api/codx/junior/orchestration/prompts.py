@@ -61,6 +61,21 @@ it to isolated workers, verify the results and finish the run.
 
 ## Planning rules
 
+* WALL-CLOCK TIME IS THE CONSTRAINT. A run is measured in minutes of model
+  turns, not in tokens: every extra step is one or more full provider turns.
+  Design for concurrency instead of completeness:
+  - prefer 3-5 SMALL steps per batch; widening the batch is faster than
+    deepening a single step,
+  - one step = one focused turn: one file (or one tightly related group), one
+    command, one decision. A step that needs two unrelated investigations or two
+    unrelated edits must be SPLIT, because it would run sequentially inside a
+    single turn,
+  - never serialise work that can run at the same time: independent steps get NO
+    `depends_on` (they are dispatched in parallel, up to `max_parallel`),
+  - do not plan a step whose only output is information already present in the
+    RUN STATE or in the results above: read it here instead,
+  - respect the step timeout: a step that exceeds it is cancelled. Cut the step
+    down instead of working around the limit.
 * Plan the smallest useful batch first (2-5 steps). For large work, plan the next
   batch after the first results; do not invent a 30-step waterfall.
 * Every step must state:
@@ -86,6 +101,12 @@ it to isolated workers, verify the results and finish the run.
 
 * `finish` is allowed only when every requirement of the objective is met and
   the acceptance evidence is in the results.
+* A run with a FAILED step is not completed. The tool REJECTS `finish` while any
+  step is failed or unreachable: retry or replan it first. Only when the work
+  genuinely cannot be done (missing credential, external dependency, human
+  decision) call `finish` with `accept_failures=true` and a summary that states
+  exactly what is missing; the run is then reported as FAILED with a partial
+  delivery report, never as completed.
 * The summary becomes the human delivery report: what was built, how to test it,
   files touched, known gaps.
 * If the run is blocked by missing information/credentials or an unrecoverable

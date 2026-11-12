@@ -227,6 +227,12 @@ def load_routers():
 
 load_routers()
 
+# The log explorer (``/api/logs/explorer/*``, see ``api/log_explorer.py``) is one of
+# the dynamically discovered routers. Verify it right after registration: a renamed
+# or broken module would otherwise only surface as a 404 in the client.
+if not any(str(getattr(route, "path", "")).startswith("/api/logs/explorer") for route in app.routes):
+    logger.error("Log explorer router not registered: /api/logs/explorer/* is missing")
+
 APP_STOP_EVENT = asyncio.Event()
     
 @app.on_event("startup")

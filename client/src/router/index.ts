@@ -238,6 +238,12 @@ const router = createRouter({
     { path: '/:projectName/vibe-coding', name: 'vibe-coding', component: AppRouteView, meta: { app: 'vibe-coding' } },
     { path: '/:projectName/wiki', name: 'wiki', component: AppRouteView, meta: { app: 'wiki' } },
     { path: '/:projectName/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs' } },
+    // Agenda / Calendar manager — ONE global agenda across every project
+    // (design/06-calendar/01-analysis.md, decision D1): the projects are a
+    // FILTER of the view, never a data root. Same pattern as every other app:
+    // <AppRouteView> resolves meta.app from config/appComponentsMap.js, and on
+    // desktop the very same key opens a dockview panel (config/apps.js).
+    { path: '/:projectName/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', ...mobile('Calendar', 'more') } },
     { path: '/:projectName/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
     { path: '/:projectName/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
     { path: '/:projectName/knowledge-settings', name: 'knowledge-settings', component: AppRouteView, meta: { app: 'knowledge_settings' } },

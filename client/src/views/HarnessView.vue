@@ -11,18 +11,34 @@
  * - what the delivery/stop report says,
  * - and whether the project has a worker able to advance it at all.
  *
+ * The layout is a resizable splitter (components/layout/VerticalSplitter.vue):
+ * the run list on the left and the run diagnosis on the right. Selecting a task
+ * (the main task, a step card or a delegated card) opens it in a THIRD panel
+ * next to the diagnosis instead of navigating away, so the flow, the timeline
+ * and the conversation of the task can be read at the same time.
+ *
+ * Deep links: `?run=<run_id>` (and/or `?chat=<chat_id>`) preselect the run and
+ * open the task panel. That is what the "Harness" button of the task bar
+ * (components/chat/ChatRunBar.vue) and any external link use.
+ *
  * Read-only except for the run controls (start / pause / stop); the data comes
  * from `GET /api/orchestration` and `GET /api/harness/*`.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { $storex } from '@/store'
 import HarnessRunList from '@/components/harness/HarnessRunList.vue'
 import HarnessRunDetail from '@/components/harness/HarnessRunDetail.vue'
-import { formatTime } from '@/components/harness/harnessStatus'
+import HarnessAuditJournal from '@/components/harness/HarnessAuditJournal.vue'
+import VerticalSplitter from '@/components/layout/VerticalSplitter.vue'
+import ChatView from '@/views/ChatView.vue'
+
+const route = useRoute()
 
 // The project-scoped API instance carries the codx_path of the active project
 // (the harness endpoints are project scoped).
 const api = computed(() => $storex.projects.activeProject?.$api || $storex.api)
+const isMobile = computed(() => $storex.ui.isMobile)
 
 const status = ref(null)
 const runs = ref([])
@@ -42,16 +58,26 @@ const loading = ref(false)
 const error = ref('')
 const live = ref(true)
 
-const AUDIT_EVENTS = [
-  { value: '', label: 'All events' },
-  { value: 'task_requested', label: 'task_requested' },
-  { value: 'run_event', label: 'run_event (run lifecycle)' },
-  { value: 'notification_sent', label: 'notification_sent' },
-  { value: 'worker_stalled', label: 'worker_stalled' },
-  { value: 'worker_restarted', label: 'worker_restarted' },
-  { value: 'worker_recovered', label: 'worker_recovered' },
-  { value: 'error', label: 'error' }
-]
+// ── Panels ────────────────────────────────────────────────────────────────
+// `?run=` / `?chat=` are applied ONCE, so the polling refresh never fights a
+// selection the user made by hand.
+const routeApplied = ref(false)
+// Chat opened in the task panel (empty = the panel is closed).
+const openedChatId = ref('')
+const taskChat = computed(() =>
+  openedChatId.value ? ($storex.chats.chats?.[openedChatId.value] || null) : null
+)
+
+// Sizes are percentages (radix-vue). The list stays narrow, the diagnosis owns
+// the rest; with a task open the diagnosis and the conversation share the pane.
+const listPanels = {
+  left: { defaultSize: 22, minSize: 12, collapsible: false },
+  right: { defaultSize: 78, minSize: 40, collapsible: false }
+}
+const taskPanels = {
+  left: { defaultSize: 55, minSize: 25, collapsible: false },
+  right: { defaultSize: 45, minSize: 25, collapsible: true }
+}
 
 let refreshTimer = null
 
@@ -73,8 +99,15 @@ async function refresh() {
     status.value = statusData
     // `GET /api/orchestration` answers `{ runs: [...] }`.
     runs.value = Array.isArray(runsData) ? runsData : (runsData?.runs || [])
+    const requested = await resolveRequestedTarget()
+    if (requested?.runId) {
+      selectedRunId.value = requested.runId
+    }
     if (!selectedRunId.value && runs.value.length) {
       selectedRunId.value = runs.value[0].run_id
+    }
+    if (requested?.chatId) {
+      await openTask(requested.chatId)
     }
     if (selectedRunId.value) {
       await loadRun(selectedRunId.value)
@@ -84,6 +117,49 @@ async function refresh() {
   } finally {
     loading.value = false
   }
+}
+
+/**
+ * Resolve the run/task requested by the URL, once per mount.
+ *
+ * Accepts `?run=<run_id>` (the run process id shown on a task), and
+ * `?chat=<chat_id>` for a main task or a step card. When only a chat id is
+ * given the owning run is looked up (the run that has it as `main_chat_id` or
+ * as a step card), so a link from any card lands on the right run.
+ *
+ * @returns {Promise<{runId: string, chatId: string}|null>} Target to select.
+ */
+async function resolveRequestedTarget() {
+  if (routeApplied.value) return null
+  routeApplied.value = true
+  const runParam = String(route.query.run || '').trim()
+  const chatParam = String(route.query.chat || '').trim()
+  if (!runParam && !chatParam) return null
+  const direct = runs.value.find(
+    item =>
+      item.run_id === runParam ||
+      item.run_id === chatParam ||
+      item.main_chat_id === runParam ||
+      item.main_chat_id === chatParam
+  )
+  if (direct) {
+    return { runId: direct.run_id, chatId: chatParam }
+  }
+  // A step (or delegated) card: find the run that owns it. The scan is bounded
+  // and only runs on a deep link, so it never costs anything on a normal visit.
+  if (chatParam && api.value) {
+    for (const candidate of runs.value.slice(0, 15)) {
+      try {
+        const detail = await api.value.orchestration.get(candidate.run_id)
+        if ((detail.steps || []).some(step => step.chat_id === chatParam)) {
+          return { runId: candidate.run_id, chatId: chatParam }
+        }
+      } catch (ex) {
+        // Ignore a run that fails to load and keep scanning.
+      }
+    }
+  }
+  return null
 }
 
 /** Load the full detail (plan, step results, next action, worker). */
@@ -108,8 +184,36 @@ async function loadRun(runId) {
 async function selectRun(runId) {
   if (!runId || runId === selectedRunId.value) return
   selectedRunId.value = runId
+  // The open task belongs to the previous run: close the panel.
+  openedChatId.value = ''
   await loadRun(runId)
   await loadAudit(true)
+}
+
+/**
+ * Open a task (main task, step card or delegated card) in the task panel.
+ *
+ * The chat is loaded through the store so the panel renders the SAME reactive
+ * object the rest of the UI uses (streaming updates, cost, status).
+ */
+async function openTask(chatId) {
+  if (!chatId) return
+  openedChatId.value = chatId
+  if ($storex.chats.chats?.[chatId]) return
+  try {
+    await $storex.chats.loadChat({ id: chatId })
+  } catch (ex) {
+    error.value = errorMessage(ex)
+  }
+}
+
+function closeTask() {
+  openedChatId.value = ''
+}
+
+/** Open the task of the panel in the full chat screen (mobile / deep work). */
+function openFullTask() {
+  if (openedChatId.value) $storex.ui.openChat({ id: openedChatId.value })
 }
 
 /** Read the append-only audit journal (optionally scoped to the run). */
@@ -153,45 +257,6 @@ async function onControl({ action, runId }) {
   }
 }
 
-function openTask(chatId) {
-  if (!chatId) return
-  $storex.ui.openChat({ id: chatId })
-}
-
-/** One-line human summary of an audit entry. */
-function auditText(entry) {
-  if (entry.event === 'task_requested') {
-    return `@codx-junior requested by ${entry.user || '?'} in chat ${entry.chat_id || '?'}`
-  }
-  if (entry.event === 'run_event') {
-    const runEvent = entry.run_event || ''
-    const extra = ['step_finished', 'step_started', 'step_dispatched', 'step_retried'].includes(runEvent)
-      ? ` step ${entry.step_id || '?'}`
-      : ''
-    return `${runEvent} · run ${entry.run_id || '?'}${extra} · ${entry.message || ''}`
-  }
-  if (entry.event === 'notification_sent') {
-    return `user notified · run ${entry.run_id || '?'} (${entry.status || ''})`
-  }
-  if (entry.event === 'worker_stalled') {
-    return `worker stalled · project ${entry.project || '?'} · ${entry.active_runs?.length || 0} active run(s)`
-  }
-  if (entry.event === 'worker_restarted') {
-    return `worker restarted · ${entry.method || ''} · ${entry.project || ''}`
-  }
-  if (entry.event === 'worker_recovered') {
-    return `worker recovered · pid ${entry.pid ?? '?'}`
-  }
-  if (entry.event === 'error') {
-    return `${entry.message || entry.error || JSON.stringify(entry)}`
-  }
-  return JSON.stringify(entry)
-}
-
-function reloadAuditScope() {
-  loadAudit(true)
-}
-
 onMounted(() => {
   refresh()
   loadAudit()
@@ -208,7 +273,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="h-full overflow-y-auto p-4 flex flex-col gap-4">
+  <div class="h-full flex flex-col gap-3 p-4 overflow-hidden">
     <!-- Header -->
     <div class="flex items-center justify-between gap-2 flex-wrap">
       <div>
@@ -270,65 +335,88 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Runs + diagnosis -->
-    <div class="grid grid-cols-1 xl:grid-cols-[20rem_minmax(0,1fr)] gap-3 items-start">
-      <HarnessRunList
-        :runs="runs"
-        :selected-run-id="selectedRunId"
-        :loading="loading"
-        @select="selectRun"
-        @refresh="refresh"
-      />
-      <HarnessRunDetail
-        :run="run"
-        :loading="runLoading"
-        :error="runError"
-        :busy="controlBusy"
-        @open-chat="openTask"
-        @refresh="loadRun(selectedRunId)"
-        @control="onControl"
-      />
-    </div>
+    <!-- Runs + diagnosis + task: resizable panels (VerticalSplitter) ---------
+         Left: the run list. Right: the diagnosis, split again when a task is
+         open so the conversation of the card sits next to the plan, the timeline
+         and the audit journal. -->
+    <VerticalSplitter
+      class="flex-1 min-h-0"
+      :split="!isMobile"
+      show-handle
+      persist-key="harness-view"
+      :panels="listPanels"
+    >
+      <template #left>
+        <div class="h-full overflow-y-auto pr-1">
+          <HarnessRunList
+            :runs="runs"
+            :selected-run-id="selectedRunId"
+            :loading="loading"
+            @select="selectRun"
+            @refresh="refresh"
+          />
+        </div>
+      </template>
 
-    <!-- Audit journal -->
-    <section class="flex flex-col gap-2 pb-4">
-      <div class="flex items-center justify-between gap-2 flex-wrap">
-        <h2 class="font-semibold text-sm uppercase tracking-wide text-base-content/60">Audit journal</h2>
-        <div class="flex items-center gap-2">
-          <select v-model="auditScope" class="select select-bordered select-xs" @change="reloadAuditScope">
-            <option value="run">This task</option>
-            <option value="all">Whole project</option>
-          </select>
-          <select v-model="auditEvent" class="select select-bordered select-xs" @change="loadAudit()">
-            <option v-for="option in AUDIT_EVENTS" :key="option.value" :value="option.value">
-              {{ option.label }}
-            </option>
-          </select>
-        </div>
-      </div>
-      <div v-if="!audit.length" class="text-sm text-base-content/50 bg-base-200 rounded-box p-4">
-        No audited events yet.
-      </div>
-      <div v-else class="flex flex-col gap-1 bg-base-200 rounded-box p-2 max-h-96 overflow-y-auto">
-        <div
-          v-for="(entry, index) in audit"
-          :key="`${entry.ts}-${index}`"
-          class="flex items-start gap-2 text-sm px-2 py-1 rounded hover:bg-base-300"
+      <template #right>
+        <VerticalSplitter
+          class="h-full"
+          :split="!isMobile"
+          :show-right="!!openedChatId"
+          show-handle
+          persist-key="harness-task"
+          :panels="taskPanels"
         >
-          <span class="badge badge-xs badge-outline shrink-0 mt-0.5">{{ entry.event }}</span>
-          <span class="text-xs shrink-0 text-base-content/50 mt-0.5">{{ formatTime(entry.ts) }}</span>
-          <span class="text-xs break-all">{{ auditText(entry) }}</span>
-        </div>
-        <button
-          v-if="audit.length >= 50"
-          class="btn btn-xs btn-ghost"
-          :disabled="loadingAudit"
-          @click="loadAudit(false)"
-        >
-          <i v-if="loadingAudit" class="fa-solid fa-spinner animate-spin"></i>
-          Load more
-        </button>
-      </div>
-    </section>
+          <template #left>
+            <div class="h-full overflow-y-auto flex flex-col gap-3 lg:pl-2">
+              <HarnessRunDetail
+                :run="run"
+                :loading="runLoading"
+                :error="runError"
+                :busy="controlBusy"
+                @open-chat="openTask"
+                @refresh="loadRun(selectedRunId)"
+                @control="onControl"
+              />
+              <HarnessAuditJournal
+                :entries="audit"
+                :loading="loadingAudit"
+                v-model:event="auditEvent"
+                v-model:scope="auditScope"
+                @load="loadAudit(true)"
+                @load-more="loadAudit(false)"
+              />
+            </div>
+          </template>
+
+          <!-- Third panel: the selected task, without leaving the harness -->
+          <template #right>
+            <div v-if="openedChatId" class="h-full min-w-0 flex flex-col border-l border-base-300">
+              <div class="flex items-center gap-2 px-2 py-1 border-b border-base-300">
+                <i class="fa-solid fa-clipboard-check text-primary text-xs"></i>
+                <span class="text-xs font-semibold truncate">{{ taskChat?.name || 'Task' }}</span>
+                <div class="ml-auto flex items-center gap-1">
+                  <button
+                    class="btn btn-ghost btn-xs"
+                    title="Open the task in the full chat screen"
+                    @click="openFullTask"
+                  >
+                    <i class="fa-solid fa-up-right-from-square"></i>
+                  </button>
+                  <button class="btn btn-ghost btn-xs" title="Close the task panel" @click="closeTask">
+                    <i class="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+              </div>
+              <ChatView v-if="taskChat" :chat="taskChat" class="flex-1 min-h-0" />
+              <div v-else class="flex-1 flex items-center justify-center gap-2 text-sm text-base-content/50">
+                <span class="loading loading-spinner loading-sm"></span>
+                Loading task…
+              </div>
+            </div>
+          </template>
+        </VerticalSplitter>
+      </template>
+    </VerticalSplitter>
   </div>
 </template>

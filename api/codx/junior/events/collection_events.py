@@ -75,13 +75,20 @@ COLLECTION_PROJECTS = "projects"
 COLLECTION_PROFILES = "profiles"
 COLLECTION_TEAMS = "teams"
 COLLECTION_BOARDS = "boards"
+# The global agenda (design/06-calendar): the calendars and their events. They
+# are installation-wide, so the project travels in the payload when it matters.
+COLLECTION_CALENDARS = "calendars"
+COLLECTION_CALENDAR_EVENTS = "calendar_events"
 
 COLLECTIONS = frozenset({
     COLLECTION_PROJECTS,
     COLLECTION_PROFILES,
     COLLECTION_TEAMS,
     COLLECTION_BOARDS,
+    COLLECTION_CALENDARS,
+    COLLECTION_CALENDAR_EVENTS,
 })
+
 
 # Action of a single-item change.
 ACTION_CREATED = "created"

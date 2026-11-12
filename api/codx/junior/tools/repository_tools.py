@@ -1046,6 +1046,11 @@ def repository_overview(**kwargs) -> ToolResponse:
     staged = info.get("staged") or []
     unstaged = info.get("unstaged") or []
     remote_url = info.get("remote_url") or ""
+    if remote_url:
+        # Never echo credentials: a remote such as
+        # https://user:token@github.com/org/repo would otherwise be copied into
+        # the conversation, into task cards and from there into git history.
+        remote_url = re.sub(r"//[^/@]+@", "//***@", remote_url)
     ahead = info.get("ahead") or 0
     behind = info.get("behind") or 0
 

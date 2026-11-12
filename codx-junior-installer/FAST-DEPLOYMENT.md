@@ -282,3 +282,73 @@ Design — one compose base, additive overlays:
 So the DEV stack keeps every project, watcher and hot reload, while the trial path
 never pays for it.
 
+---
+
+## 7. What is implemented (demo tier)
+
+Everything below is in the tree now; nothing here requires the user to build
+anything.
+
+### 7.1 New: `codx-junior-installer/demo/` — the trial deployment
+
+| File | Purpose |
+|---|---|
+| `demo/up.sh` | one command: validates the settings, creates `.env`, pulls (or `--build`s) the image, starts the stack, waits for health, applies the AI provider |
+| `demo/docker-compose.yaml` | **one** service on port 19981 + optional `--profile knowledge` (Milvus). No Traefik, no LocalAI, no client container, no init containers, no `docker.sock` by default |
+| `demo/Dockerfile` | two stages: `node:22-slim` compiles the SPA, `python:3.11-slim` runs it. No torch/vLLM/Playwright/TeX/Tesseract/Firefox, no Node at runtime |
+| `demo/nginx.conf` | serves the built SPA and proxies `/api` (+ socket.io websocket) to `127.0.0.1:19980` — this is what removes Traefik and the second web server |
+| `demo/supervisord.conf` | `api` + `api-background` + nginx in a single container (the two API containers of the old compose) |
+| `demo/entrypoint.sh` | creates the folders, warns about missing settings, execs supervisord. **Installs nothing** |
+| `demo/.env.example` | the whole settings surface, grouped required/optional |
+| `demo/README.md` | the documentation: what you must pass, provider presets, what is auto-configured, what is left out, operations, troubleshooting |
+
+### 7.2 Zero-touch AI configuration
+
+* `api/codx/junior/bootstrap.py` (new) — provider presets (openai, deepseek,
+  gemini, openrouter, mistral, groq, ollama, custom), builds the `AIProvider` +
+  `AIModel` entries and fills the five global model slots. Idempotent (skips an
+  already configured installation), non-destructive, offline, never fatal.
+* `api/codx/junior/api/bootstrap.py` (new router, auto-discovered) —
+  `GET /api/bootstrap` (state, dry run) and `POST /api/bootstrap/apply`
+  (loopback only unless `CODX_JUNIOR_BOOTSTRAP_ALLOW_REMOTE=1`).
+* `api/codx/junior/app.py` — calls the bootstrap on startup inside a try/except,
+  so a broken environment cannot prevent the API from booting.
+
+### 7.3 Build cost
+
+* `.dockerignore` at the **repository root** (the build context is the repo root):
+  excludes `node_modules`, `dist`, `.codx`, `.git`, `api/wiki`, `api/docs`,
+  `design`, `docs`, `wiki`, tests and the installer-only assets. Markdown is *not*
+  blanket-excluded because the runtime loads Markdown prompts.
+* `api/pyproject.toml` — `torch`, `sentence-transformers`, `playwright` and
+  `vllm` moved from `dependencies` to the extras `local-models`, `browser`,
+  `vllm` and `full`. Verified: `torch` has **no** import in the code, `playwright`
+  is referenced only by a test, `vllm_cpu_ai.py` is deprecated and
+  `sentence_transformers` is already imported lazily with a friendly message.
+* `scripts/install_api.sh` — installs `.[local-models,browser]` by default, so the
+  full deployment keeps today's behaviour; a slim image passes
+  `CODX_JUNIOR_API_EXTRAS=""`.
+* `scripts/run_api.sh` — the recursive `chown` and `uv sync` now only run when
+  `CODX_JUNIOR_SKIP_INSTALL != 1`. This was the 30 s+ cost of every container start.
+
+### 7.4 Documentation
+
+* `demo/README.md` — the settings reference (required vs optional, presets table,
+  what codx-junior configures itself, what is left out, dev deployment,
+  troubleshooting).
+* `docs/getting-started.md` — the demo is now the first path; the full stack is
+  described as the self-hosted deployment.
+
+### 7.5 Still open (in the order I would do it)
+
+1. Publish `codxjunior/codx-junior:demo` from CI so `demo/up.sh` is pull-only for
+   real (`--build` exists as a fallback until then).
+2. `knowledge_lancedb.py` adapter (§6.1) so the trial tier can have RAG without a
+   second container; today `--profile knowledge` is the only option.
+3. Embedding dimension stored in the index metadata (dim change ⇒ reindex) —
+   needed before 1536d provider embeddings are mixed with the 384d local model.
+4. Image models (`image_generation_model` / `image_vision_model`) in the bootstrap
+   presets, for the providers that support them.
+5. Server tier: apply the same profile split (`proxy`, `local-models`, `knowledge`,
+   `dev`) to `codx-junior/docker-compose.yaml`.
+

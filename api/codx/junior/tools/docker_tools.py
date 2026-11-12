@@ -69,6 +69,9 @@ COMPOSE_FILE_NAMES = [
 # instead of operating on the project's own stack.
 COMPOSE_SUB_DIRS = ["scripts", "docker", "deploy", "devops"]
 
+# Accepted extensions of an explicitly targeted compose file.
+COMPOSE_FILE_SUFFIXES = (".yml", ".yaml")
+
 # First argument tokens a diagnostic ``docker exec`` may not start with: they
 # destroy data or the container itself and are never needed to inspect a
 # running service.
@@ -231,8 +234,100 @@ def _find_compose_file(project_dir: Optional[str]) -> Optional[str]:
     return None
 
 
+def _resolve_project_path(
+    project_dir: str, path: str, field_name: str = "path"
+) -> "tuple[Optional[str], Optional[str]]":
+    """
+    Resolve a path relative to the project, rejecting anything outside it.
+
+    Docker build contexts, Dockerfiles and compose files all live inside the
+    project; resolving them here keeps every build tool from reading an arbitrary
+    host location.
+
+    Args:
+        project_dir: Absolute project directory.
+        path: Relative (to the project) or absolute path.
+        field_name: Field name used in the error message.
+
+    Returns:
+        Tuple ``(resolved_path, error)``; ``error`` is ``None`` on success.
+    """
+    candidate = (path or "").strip()
+    if not candidate:
+        return None, f"{field_name} is empty"
+    if any(token in candidate for token in ("|", ";", "&", "`", "$", ">", "<")):
+        return None, f"{field_name} contains unsafe characters: {path!r}"
+
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(project_dir, candidate)
+    candidate = os.path.realpath(candidate)
+    root = os.path.realpath(project_dir)
+
+    if os.path.commonpath([candidate, root]) != root:
+        return None, f"{field_name} must stay inside the project ({project_dir}): {path!r}"
+    return candidate, None
+
+
+def _resolve_compose_file(project_dir: str, compose_file: str) -> "tuple[Optional[str], Optional[str]]":
+    """
+    Resolve an explicit compose file path, keeping it inside the project.
+
+    A project can hold several stacks (for example ``docker-compose.yaml`` at the
+    root plus ``codx-junior-installer/demo/docker-compose.yaml``). When the caller
+    targets one of them explicitly, the path is resolved relative to the project
+    directory and must stay inside it, so the tool can never read a compose file
+    from an arbitrary location on the host.
+
+    Args:
+        project_dir: Absolute project directory.
+        compose_file: Explicit compose file (relative to the project or absolute).
+
+    Returns:
+        Tuple ``(resolved_path, error)``; ``error`` is ``None`` on success.
+    """
+    candidate, error = _resolve_project_path(project_dir, compose_file, "compose_file")
+    if error:
+        return None, error
+    if not os.path.isfile(candidate):
+        return None, f"compose file not found: {compose_file!r}"
+    if not candidate.endswith(COMPOSE_FILE_SUFFIXES):
+        return None, (
+            f"compose_file must end with {', '.join(COMPOSE_FILE_SUFFIXES)}: {compose_file!r}"
+        )
+    return candidate, None
+
+
+def _compose_profile_args(profiles: Optional[List[str]]) -> List[str]:
+    """
+    Build the ``--profile`` arguments of a compose command.
+
+    Compose profiles are how a stack ships optional services (the demo keeps
+    Milvus in the ``knowledge`` profile), so the tools need to activate them.
+
+    Args:
+        profiles: Profile names to activate.
+
+    Returns:
+        List of command arguments (``["--profile", name, ...]``).
+
+    Raises:
+        ValueError: If a profile name contains unsafe characters.
+    """
+    args: List[str] = []
+    for profile in profiles or []:
+        name = (profile or "").strip()
+        if not name:
+            continue
+        if not re.match(r"^[a-zA-Z0-9_\-\.]+$", name):
+            raise ValueError(f"invalid compose profile name: {profile!r}")
+        args.extend(["--profile", name])
+    return args
+
+
 def _compose_context(
-    settings: Optional[CODXJuniorSettings], tool_name: str
+    settings: Optional[CODXJuniorSettings],
+    tool_name: str,
+    compose_file: Optional[str] = None,
 ) -> "tuple[Optional[str], Optional[str], Optional[str]]":
     """
     Resolve the project directory and compose file for a compose command.
@@ -240,6 +335,9 @@ def _compose_context(
     Args:
         settings: Project settings.
         tool_name: Calling tool name (used in error messages).
+        compose_file: Optional explicit compose file (relative to the project).
+                      When omitted the first compose file found in the project
+                      root or in the usual deployment sub directories is used.
 
     Returns:
         Tuple ``(project_dir, compose_file, error)``. ``error`` is ``None`` on
@@ -251,6 +349,11 @@ def _compose_context(
             f"{tool_name}: no valid project directory (got {project_dir!r}). "
             "The Docker command must run from the project root."
         )
+    if compose_file:
+        resolved, error = _resolve_compose_file(project_dir, compose_file)
+        if error:
+            return project_dir, None, f"{tool_name}: {error}"
+        return project_dir, resolved, None
     compose_file = _find_compose_file(project_dir)
     if not compose_file:
         return project_dir, None, (
@@ -860,6 +963,215 @@ def docker_images(**kwargs) -> ToolResponse:
         )
 
 
+def docker_build(
+    image: str,
+    dockerfile: Optional[str] = None,
+    context: Optional[str] = None,
+    build_args: Optional[Dict[str, str]] = None,
+    target: Optional[str] = None,
+    no_cache: bool = False,
+    pull: bool = False,
+    platform: Optional[str] = None,
+    timeout: int = 1800,
+    **kwargs,
+) -> ToolResponse:
+    """
+    Build a Docker image from a Dockerfile (``docker build``).
+
+    This is the missing half of the deployment loop: the compose tools could
+    build a stack but nothing could build a single image with an explicit tag,
+    so a multi-stage image (like ``codx-junior-installer/demo/Dockerfile``) had
+    to be built outside the assistant and never got verified.
+
+    Both ``dockerfile`` and ``context`` are resolved inside the project and may
+    not escape it. Build arguments are passed as ``--build-arg`` pairs (never
+    through a shell).
+
+    Args:
+        image: Tag to assign to the built image (e.g. ``codxjunior/codx-junior:demo``).
+        dockerfile: Dockerfile path relative to the project (default: the
+                    ``Dockerfile`` inside ``context``).
+        context: Build context relative to the project (default: project root).
+        build_args: ``--build-arg`` key/value pairs.
+        target: Build only the given multi-stage target.
+        no_cache: Disable the build cache (``--no-cache``).
+        pull: Always pull newer base images (``--pull``).
+        platform: Target platform (e.g. ``linux/amd64``).
+        timeout: Seconds before the build is killed (60-3600, default: 1800).
+        **kwargs: Additional arguments including:
+            - settings (CODXJuniorSettings): Project settings (required).
+            - user (CodxUser): Current user (for audit logging).
+
+    Returns:
+        ToolResponse: Build result with the command and its output.
+
+    Raises:
+        ValueError: If inputs contain invalid or unsafe values.
+        RuntimeError: If the build command cannot be executed.
+
+    Example:
+        >>> docker_build(
+        ...     "codxjunior/codx-junior:demo",
+        ...     dockerfile="codx-junior-installer/demo/Dockerfile",
+        ... )
+        # Builds the demo image from the project root context
+    """
+    settings: CODXJuniorSettings = kwargs.get("settings")
+    user: CodxUser = kwargs.get("user")
+
+    if not settings:
+        raise Exception("Invalid project settings")
+
+    try:
+        project_dir = _project_cwd(settings)
+        if not project_dir or not os.path.isdir(project_dir):
+            raise ValueError(f"no valid project directory (got {project_dir!r})")
+
+        _validate_input(image, "image", allow_patterns=[r"^[a-zA-Z0-9_\-\.:/@]+$"])
+        if not isinstance(timeout, int) or timeout < 60 or timeout > 3600:
+            raise ValueError("timeout must be integer between 60-3600 seconds")
+
+        context_dir = project_dir
+        if context:
+            resolved_context, error = _resolve_project_path(project_dir, context, "context")
+            if error:
+                raise ValueError(error)
+            if not os.path.isdir(resolved_context):
+                raise ValueError(f"context is not a directory: {context!r}")
+            context_dir = resolved_context
+
+        dockerfile_path = None
+        if dockerfile:
+            resolved_dockerfile, error = _resolve_project_path(
+                project_dir, dockerfile, "dockerfile"
+            )
+            if error:
+                raise ValueError(error)
+            if not os.path.isfile(resolved_dockerfile):
+                raise ValueError(f"dockerfile not found: {dockerfile!r}")
+            dockerfile_path = resolved_dockerfile
+
+        command = ["docker", "build", "-t", image]
+        if dockerfile_path:
+            command.extend(["-f", dockerfile_path])
+        for key, value in (build_args or {}).items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise ValueError("build_args must be a map of strings")
+            _validate_input(key, f"build_arg_key_{key}")
+            _validate_input(value, f"build_arg_value_{key}")
+            command.extend(["--build-arg", f"{key}={value}"])
+        if target:
+            _validate_input(target, "target", allow_patterns=[r"^[a-zA-Z0-9_\-\.]+$"])
+            command.extend(["--target", target])
+        if no_cache:
+            command.append("--no-cache")
+        if pull:
+            command.append("--pull")
+        if platform:
+            _validate_input(platform, "platform", allow_patterns=[r"^[a-zA-Z0-9_\-\./]+$"])
+            command.extend(["--platform", platform])
+        command.append(context_dir)
+
+        operation = " ".join(command)
+        result = _safe_exec_docker(command, timeout=timeout, cwd=project_dir)
+
+        if not result.ok:
+            logger.error("Docker build failed for %s: %s", image, result.stderr)
+            return ToolResponse(
+                user_response=f"❌ Build failed for `{image}`\n\n{_command_failure(operation, result)}",
+                llm_response=(
+                    f"`{operation}` failed with exit code {result.returncode}.\n"
+                    f"stderr:\n{(result.stderr or '').strip()[-4000:]}\n"
+                    f"stdout (tail):\n{(result.stdout or '').strip()[-4000:]}"
+                )
+            )
+
+        logger.info(
+            "Built image %s by user %s", image, user.username if user else "unknown"
+        )
+
+        output = (result.stdout or "").strip()
+        tail = "\n".join(output.splitlines()[-25:]) if output else ""
+        return ToolResponse(
+            user_response=_format_command_feedback(operation, tail),
+            llm_response=(
+                f"Built image `{image}` successfully (exit 0).\n"
+                f"Command: `{operation}`\n"
+                f"Output (tail):\n{tail or '_(no output)_'}"
+            )
+        )
+
+    except Exception as e:
+        logger.exception("Error in docker_build: %s", str(e))
+        return ToolResponse(
+            user_response=f"❌ Error: {str(e)}",
+            llm_response=f"Failed to build image {image}: {str(e)}"
+        )
+
+
+def docker_pull(image: str, timeout: int = 1800, **kwargs) -> ToolResponse:
+    """
+    Pull a Docker image from the registry (``docker pull``).
+
+    Needed by the pull-only deployment path: it makes the download explicit and
+    observable instead of hiding it inside ``docker run``/``compose up``, and it
+    can be measured (the pull dominates the first-run time).
+
+    Args:
+        image: Image reference with an optional tag (``repo/name:tag``).
+        timeout: Seconds before the pull is killed (60-3600, default: 1800).
+        **kwargs: Additional arguments including:
+            - settings (CODXJuniorSettings): Project settings (required).
+            - user (CodxUser): Current user (for audit logging).
+
+    Returns:
+        ToolResponse: Pull result with the command and its output.
+
+    Example:
+        >>> docker_pull("codxjunior/codx-junior:demo")
+        # Downloads the demo image
+    """
+    settings: CODXJuniorSettings = kwargs.get("settings")
+    user: CodxUser = kwargs.get("user")
+
+    if not settings:
+        raise Exception("Invalid project settings")
+
+    try:
+        _validate_input(image, "image", allow_patterns=[r"^[a-zA-Z0-9_\-\.:/@]+$"])
+        if not isinstance(timeout, int) or timeout < 60 or timeout > 3600:
+            raise ValueError("timeout must be integer between 60-3600 seconds")
+
+        command = ["docker", "pull", image]
+        operation = " ".join(command)
+        result = _safe_exec_docker(command, timeout=timeout, cwd=_project_cwd(settings))
+
+        if not result.ok:
+            logger.error("Docker pull failed for %s: %s", image, result.stderr)
+            return ToolResponse(
+                user_response=f"❌ Pull failed for `{image}`\n\n{_command_failure(operation, result)}",
+                llm_response=(
+                    f"`{operation}` failed with exit code {result.returncode}.\n"
+                    f"stderr: {(result.stderr or '').strip()[-4000:]}"
+                )
+            )
+
+        logger.info("Pulled image %s by user %s", image, user.username if user else "unknown")
+
+        output = (result.stdout or "") + (result.stderr or "")
+        return ToolResponse(
+            user_response=_format_command_feedback(operation, output.strip()),
+            llm_response=f"Pulled `{image}` successfully.\nOutput:\n{output.strip()[-4000:]}"
+        )
+
+    except Exception as e:
+        logger.exception("Error in docker_pull: %s", str(e))
+        return ToolResponse(
+            user_response=f"❌ Error: {str(e)}",
+            llm_response=f"Failed to pull image {image}: {str(e)}"
+        )
+
+
 def docker_run(image: str, container_name: str, **kwargs) -> ToolResponse:
     """
     Run a Docker container from an image.
@@ -1373,7 +1685,9 @@ def docker_compose_start(service: Optional[str] = None, **kwargs) -> ToolRespons
         raise Exception("Invalid project settings")
 
     try:
-        project_dir, compose_file, error = _compose_context(settings, "docker_compose_start")
+        project_dir, compose_file, error = _compose_context(
+            settings, "docker_compose_start", kwargs.get("compose_file")
+        )
         if error:
             return ToolResponse(user_response=f"❌ {error}", llm_response=error)
 
@@ -1443,7 +1757,9 @@ def docker_compose_stop(service: Optional[str] = None, timeout: int = 10, **kwar
         raise Exception("Invalid project settings")
 
     try:
-        project_dir, compose_file, error = _compose_context(settings, "docker_compose_stop")
+        project_dir, compose_file, error = _compose_context(
+            settings, "docker_compose_stop", kwargs.get("compose_file")
+        )
         if error:
             return ToolResponse(user_response=f"❌ {error}", llm_response=error)
 
@@ -1516,7 +1832,9 @@ def docker_compose_restart(service: Optional[str] = None, timeout: int = 10, **k
         raise Exception("Invalid project settings")
 
     try:
-        project_dir, compose_file, error = _compose_context(settings, "docker_compose_restart")
+        project_dir, compose_file, error = _compose_context(
+            settings, "docker_compose_restart", kwargs.get("compose_file")
+        )
         if error:
             return ToolResponse(user_response=f"❌ {error}", llm_response=error)
 
@@ -1587,12 +1905,15 @@ def docker_compose_build(service: Optional[str] = None, **kwargs) -> ToolRespons
     """
     settings: CODXJuniorSettings = kwargs.get("settings")
     user: CodxUser = kwargs.get("user")
+    no_cache = kwargs.get("no_cache", False)
 
     if not settings:
         raise Exception("Invalid project settings")
 
     try:
-        project_dir, compose_file, error = _compose_context(settings, "docker_compose_build")
+        project_dir, compose_file, error = _compose_context(
+            settings, "docker_compose_build", kwargs.get("compose_file")
+        )
         if error:
             return ToolResponse(user_response=f"❌ {error}", llm_response=error)
 
@@ -1600,6 +1921,8 @@ def docker_compose_build(service: Optional[str] = None, **kwargs) -> ToolRespons
             _validate_input(service, "service", allow_patterns=[r"^[a-zA-Z0-9_\-\.]+$"])
 
         command = _compose_base() + ["-f", compose_file, "build"]
+        if no_cache:
+            command.append("--no-cache")
         if service:
             command.append(service)
 
@@ -1673,19 +1996,22 @@ def docker_compose_up(
     """
     settings: CODXJuniorSettings = kwargs.get("settings")
     user: CodxUser = kwargs.get("user")
+    profiles = kwargs.get("profiles") or []
 
     if not settings:
         raise Exception("Invalid project settings")
 
     try:
-        project_dir, compose_file, error = _compose_context(settings, "docker_compose_up")
+        project_dir, compose_file, error = _compose_context(
+            settings, "docker_compose_up", kwargs.get("compose_file")
+        )
         if error:
             return ToolResponse(user_response=f"❌ {error}", llm_response=error)
 
         if service:
             _validate_input(service, "service", allow_patterns=[r"^[a-zA-Z0-9_\-\.]+$"])
 
-        command = _compose_base() + ["-f", compose_file, "up"]
+        command = _compose_base() + ["-f", compose_file] + _compose_profile_args(profiles) + ["up"]
         if detach:
             command.append("-d")
         if build:
@@ -1867,7 +2193,7 @@ def docker_compose_service(action: str, service: str, **kwargs) -> ToolResponse:
         # Runs migration command
     """
     action = action.lower().strip()
-    valid_actions = ["build", "up", "start", "stop", "restart", "run"]
+    valid_actions = ["build", "up", "down", "start", "stop", "restart", "run"]
 
     if action not in valid_actions:
         return ToolResponse(
@@ -1890,6 +2216,16 @@ def docker_compose_service(action: str, service: str, **kwargs) -> ToolResponse:
                 build=build,
                 detach=detach,
                 remove_orphans=remove_orphans,
+                **kwargs,
+            )
+        elif action == "down":
+            remove_volumes = kwargs.pop("remove_volumes", False)
+            remove_orphans = kwargs.pop("remove_orphans", True)
+            profiles = kwargs.pop("profiles", None)
+            return docker_compose_down(
+                remove_volumes=remove_volumes,
+                remove_orphans=remove_orphans,
+                profiles=profiles,
                 **kwargs,
             )
         elif action == "start":
@@ -2026,6 +2362,90 @@ DOCKER_IMAGES_TOOL_JSON = {
         "parameters": {
             "type": "object",
             "properties": {}
+        }
+    }
+}
+
+DOCKER_BUILD_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "docker_build",
+        "description": (
+            "Build a Docker image from a Dockerfile and tag it (docker build). "
+            "Use it to verify a deployment image (trial/demo images, multi-stage "
+            "builds) and to measure the real build time. The build context and "
+            "the Dockerfile must live inside the project."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image": {
+                    "type": "string",
+                    "description": "Tag for the built image (e.g. 'codxjunior/codx-junior:demo')"
+                },
+                "dockerfile": {
+                    "type": "string",
+                    "description": (
+                        "Dockerfile path relative to the project "
+                        "(e.g. 'codx-junior-installer/demo/Dockerfile'), default: Dockerfile in the context"
+                    )
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Build context relative to the project (default: project root)"
+                },
+                "build_args": {
+                    "type": "object",
+                    "description": "Build arguments (--build-arg) as key/value pairs"
+                },
+                "target": {
+                    "type": "string",
+                    "description": "Build only this stage of a multi-stage Dockerfile"
+                },
+                "no_cache": {
+                    "type": "boolean",
+                    "description": "Do not use the build cache (default: false)"
+                },
+                "pull": {
+                    "type": "boolean",
+                    "description": "Always attempt to pull a newer base image (default: false)"
+                },
+                "platform": {
+                    "type": "string",
+                    "description": "Target platform (e.g. 'linux/amd64')"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds before the build is killed (60-3600, default: 1800)"
+                }
+            },
+            "required": ["image"]
+        }
+    }
+}
+
+DOCKER_PULL_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "docker_pull",
+        "description": (
+            "Pull a Docker image from its registry and report the download time. "
+            "Use it to prepare a pull-only deployment and to measure how long the "
+            "first download takes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "image": {
+                    "type": "string",
+                    "description": "Image reference with optional tag (e.g. 'codxjunior/codx-junior:demo')"
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Timeout in seconds before the pull is killed (60-3600, default: 1800)"
+                }
+            },
+            "required": ["image"]
         }
     }
 }
@@ -2242,6 +2662,45 @@ DOCKER_COMPOSE_RESTART_TOOL_JSON = {
     }
 }
 
+DOCKER_COMPOSE_DOWN_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "docker_compose_down",
+        "description": (
+            "Stop and remove a docker-compose stack (docker-compose down). "
+            "Volumes are kept unless remove_volumes is true, because they hold the "
+            "project data and the AI settings."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remove_volumes": {
+                    "type": "boolean",
+                    "description": "Also delete named volumes (destructive, default: false)"
+                },
+                "remove_orphans": {
+                    "type": "boolean",
+                    "description": "Remove containers of services no longer defined (default: true)"
+                },
+                "profiles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Compose profiles the stack was started with (e.g. ['knowledge'])"
+                },
+                "compose_file": {
+                    "type": "string",
+                    "description": (
+                        "Explicit compose file inside the project; needed when the project "
+                        "holds several stacks "
+                        "(e.g. 'codx-junior-installer/demo/docker-compose.yaml')"
+                    )
+                }
+            },
+            "required": []
+        }
+    }
+}
+
 DOCKER_CONTAINER_TOOL_JSON = {
     "type": "function",
     "function": {
@@ -2361,11 +2820,12 @@ DOCKER_COMPOSE_SERVICE_TOOL_JSON = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["build", "up", "start", "stop", "restart", "run"],
+                    "enum": ["build", "up", "down", "start", "stop", "restart", "run"],
                     "description": (
                         "Action to perform:\n"
                         "  - 'build': Build service images (all if service is empty)\n"
                         "  - 'up': Build and start services (all if service is empty)\n"
+                        "  - 'down': Stop and remove the stack (volumes kept unless remove_volumes)\n"
                         "  - 'start': Start a stopped service (or all if service is empty)\n"
                         "  - 'stop': Stop a service (or all if service is empty)\n"
                         "  - 'restart': Restart a service (or all if service is empty)\n"
@@ -2403,6 +2863,30 @@ DOCKER_COMPOSE_SERVICE_TOOL_JSON = {
                 "remove_orphans": {
                     "type": "boolean",
                     "description": "For up action: remove orphan containers (default: true)"
+                },
+                "compose_file": {
+                    "type": "string",
+                    "description": (
+                        "Explicit compose file inside the project, for projects that hold "
+                        "several stacks (e.g. 'codx-junior-installer/demo/docker-compose.yaml'). "
+                        "Defaults to the first compose file found in the project."
+                    )
+                },
+                "profiles": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "For up action: compose profiles to activate "
+                        "(e.g. ['knowledge'] to include the optional Milvus service)"
+                    )
+                },
+                "no_cache": {
+                    "type": "boolean",
+                    "description": "For build action: do not use the build cache (default: false)"
+                },
+                "remove_volumes": {
+                    "type": "boolean",
+                    "description": "For down action: also delete named volumes (destructive, default: false)"
                 }
             },
             "required": ["action", "service"]

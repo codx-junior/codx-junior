@@ -250,6 +250,17 @@ async def startup_event():
         start_harness_watchdog(stop_event=APP_STOP_EVENT)
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the harness watchdog: %s", ex)
+    # Zero-touch AI configuration: when the container is created with provider
+    # environment variables (CODX_JUNIOR_AI_PROVIDER / CODX_JUNIOR_AI_API_KEY,
+    # see codx/junior/bootstrap.py) create the provider and its models so a demo
+    # installation is usable without opening the settings page. Idempotent: it
+    # does nothing once a provider has been configured.
+    try:
+        from codx.junior.bootstrap import bootstrap_ai_from_env
+
+        bootstrap_ai_from_env()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to run the AI bootstrap: %s", ex)
     logger.info("FASTAPI startup")
 
 

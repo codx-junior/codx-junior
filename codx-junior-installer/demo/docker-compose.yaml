@@ -1,0 +1,92 @@
+# =============================================================================
+# codx-junior — DEMO deployment (tier 1)
+#
+#   cd codx-junior-installer/demo && ./up.sh
+#
+# One container: API + background worker + web client (nginx) in the same
+# image, published on 19981. No Traefik, no LocalAI, no Milvus, no init
+# containers, no build on the user's machine (the image is pulled).
+#
+# Optional, opt-in and additive — they are never started by default:
+#   --profile knowledge     Milvus, required by knowledge/RAG search
+#
+# Settings live in `.env` (see .env.example and README.md).
+# =============================================================================
+name: codx-junior-demo
+
+services:
+  codx-junior:
+    image: ${CODX_JUNIOR_IMAGE:-codxjunior/codx-junior:demo}
+    build:
+      context: ../..
+      dockerfile: codx-junior-installer/demo/Dockerfile
+    container_name: codx-junior-demo
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${CODX_JUNIOR_WEB_PORT:-19981}:19981"
+    environment:
+      # Keep socket.io stable: more than one uvicorn worker breaks the
+      # in-process session state (see set_env.sh).
+      WEB_CONCURRENCY: "1"
+      ANONYMIZED_TELEMETRY: "False"
+      # Vector store: empty (default) means the knowledge features stay off
+      # until `--profile knowledge` is enabled.
+      CODX_JUNIOR_MILVUS_URL: ${CODX_JUNIOR_MILVUS_URL:-http://codx-junior-milvus:19530}
+    volumes:
+      # Where the user's projects live on the host. This is the only thing a
+      # trial user has to change.
+      - "${CODX_JUNIOR_PROJECTS_PATH:-./projects}:/home/codx-junior-projects"
+      # Global settings + project .codx folders survive `docker compose down`
+      - codx-junior-settings:/home/codx-junior/.codx-junior
+      # Token usage, AI logs and API metrics
+      - codx-junior-analytics:/home/codx-junior/analytics
+      # NOT mounted on purpose:
+      #   /var/run/docker.sock  -> only needed by workspaces, browser/computer
+      #                            sessions and the infra panel. Add it only if
+      #                            you want those features in the demo:
+      # - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:19980/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Optional: knowledge / RAG search backend.
+  #   docker compose --profile knowledge up -d
+  # Adds ~1 GB of RAM (Milvus standalone + embedded etcd).
+  # ---------------------------------------------------------------------------
+  codx-junior-milvus:
+    profiles: ["knowledge"]
+    image: milvusdb/milvus:v2.5.11
+    container_name: codx-junior-milvus
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      - ETCD_USE_EMBED=true
+      - ETCD_DATA_DIR=/var/lib/milvus/etcd
+      - ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml
+      - COMMON_STORAGETYPE=local
+    volumes:
+      - milvus_data:/var/lib/milvus
+      - ../codx-junior/milvus_embedEtcd.yaml:/milvus/configs/embedEtcd.yaml
+      - ../codx-junior/milvus_user.yaml:/milvus/configs/user.yaml
+    restart: unless-stopped
+    command: milvus run standalone
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  codx-junior-settings:
+    name: codx-junior-settings
+  codx-junior-analytics:
+    name: codx-junior-analytics
+  milvus_data:
+    name: codx-junior-demo-milvus

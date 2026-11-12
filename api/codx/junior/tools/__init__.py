@@ -141,6 +141,8 @@ from .docker_tools import (
     docker_stats,
     docker_inspect,
     docker_images,
+    docker_build,
+    docker_pull,
     docker_run,
     docker_start,
     docker_stop,
@@ -149,6 +151,7 @@ from .docker_tools import (
     docker_compose_start,
     docker_compose_stop,
     docker_compose_restart,
+    docker_compose_down,
     docker_container,
     docker_compose_service,
     docker_exec,
@@ -165,7 +168,10 @@ from .docker_tools import (
     DOCKER_COMPOSE_START_TOOL_JSON,
     DOCKER_COMPOSE_STOP_TOOL_JSON,
     DOCKER_COMPOSE_RESTART_TOOL_JSON,
+    DOCKER_COMPOSE_DOWN_TOOL_JSON,
     DOCKER_CONTAINER_TOOL_JSON,
+    DOCKER_BUILD_TOOL_JSON,
+    DOCKER_PULL_TOOL_JSON,
     DOCKER_COMPOSE_SERVICE_TOOL_JSON,
     DOCKER_EXEC_TOOL_JSON,
 )
@@ -342,6 +348,8 @@ __all__ = [
     "docker_stats",
     "docker_inspect",
     "docker_images",
+    "docker_build",
+    "docker_pull",
     "docker_run",
     "docker_start",
     "docker_stop",
@@ -350,6 +358,7 @@ __all__ = [
     "docker_compose_start",
     "docker_compose_stop",
     "docker_compose_restart",
+    "docker_compose_down",
     "docker_container",
     "docker_compose_service",
     "docker_exec",
@@ -1540,6 +1549,18 @@ TOOLS = [
         "tool_call": docker_images
     },
     {
+        "tool_json": DOCKER_BUILD_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
+        "tags": ["docker", "images", "build", "deployment", "devops"],
+        "tool_call": docker_build
+    },
+    {
+        "tool_json": DOCKER_PULL_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
+        "tags": ["docker", "images", "registry", "deployment", "devops"],
+        "tool_call": docker_pull
+    },
+    {
         "tool_json": DOCKER_RUN_TOOL_JSON,
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
         "tags": ["docker", "containers", "execution", "devops"],
@@ -1586,6 +1607,12 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
         "tags": ["docker", "compose", "services", "lifecycle", "devops"],
         "tool_call": docker_compose_restart
+    },
+    {
+        "tool_json": DOCKER_COMPOSE_DOWN_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
+        "tags": ["docker", "compose", "services", "lifecycle", "teardown", "devops"],
+        "tool_call": docker_compose_down
     },
     {
         "tool_json": DOCKER_CONTAINER_TOOL_JSON,

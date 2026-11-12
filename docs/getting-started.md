@@ -2,6 +2,24 @@
 
 This page shows how to self-host codx-junior with Docker Compose. The engine is free and open source. If you would rather not run it yourself, see [Self-hosted or managed](/managed).
 
+## Fastest path: try it first
+
+If you only want to test codx-junior, do **not** clone or build anything. The
+demo deployment pulls a single image, asks for one API key and is up in about
+30 seconds:
+
+```sh
+cd codx-junior-installer/demo
+./up.sh --provider deepseek --key sk-xxxxxxxx
+# -> http://localhost:19981
+```
+
+It runs one container (API + background worker + web client), needs no domain,
+no Traefik, no Milvus and no local model server, and codx-junior configures the
+provider, the models and the model slots by itself. Every setting is documented
+in [demo/README.md](https://github.com/gbrian/codx-junior/blob/main/codx-junior-installer/demo/README.md).
+The rest of this page describes the full self-hosted stack.
+
 ## Requirements
 
 * A Linux server or workstation with **Docker** and **Docker Compose**.

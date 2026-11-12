@@ -37,11 +37,7 @@ dependencies = [
   'html2text',
   'watchdog',
   'pypandoc>=1.16',
-  'playwright',
   'jinja2>=3.0.3',
-  'vllm>=0.5.0',
-  'sentence-transformers>=6.2.0',
-  'torch>=2.4.0', 
   'pathspec>=1.1.1',
   'ddgs>=9.16.0',
   'PyMuPDF>=1.23.0',
@@ -57,6 +53,14 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+# Heavy, OPTIONAL dependencies. They are not installed by the slim/demo image
+# (see codx-junior-installer/demo/Dockerfile): the API imports them lazily and
+# degrades with a clear message when they are missing, so a trial installation
+# does not have to download torch (~2.5 GB), the CUDA-less vLLM stack or a
+# browser runtime before the first chat.
+#
+# Full installations keep today's behaviour by installing `.[local-models,browser]`
+# (scripts/install_api.sh does exactly that).
 [project.optional-dependencies]
 test = [
     "pytest>=7.3.1",
@@ -64,6 +68,26 @@ test = [
     "pytest-asyncio>=0.21.1",
 ]
 doc = [
+]
+# Local embeddings (all-MiniLM-L6-v2 + the hybrid embeddings model)
+local-models = [
+    "sentence-transformers>=6.2.0",
+    "torch>=2.4.0",
+]
+# Browser automation (Playwright: the browser sessions run inside containers,
+# this is only the Python client used by the fetch/browser tools)
+browser = [
+    "playwright",
+]
+# Deprecated local inference server (codx/junior/ai/vllm_cpu_ai.py)
+vllm = [
+    "vllm>=0.5.0",
+]
+# Everything a full deployment needs
+full = [
+    "sentence-transformers>=6.2.0",
+    "torch>=2.4.0",
+    "playwright",
 ]
 
 [project.scripts]
@@ -82,6 +106,12 @@ target-version = "py311"
 "Bug Tracker" = "https://github.com"
 
 # --- UV-SPECIFIC CONFIGURATION ---
+
+[tool.uv]
+# Extras a plain `uv sync` installs (source / dev deployments). They keep the
+# full feature set: local embeddings + the browser client. The slim demo image
+# installs with pip and no extras, so it never downloads torch.
+default-extras = ["local-models", "browser"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

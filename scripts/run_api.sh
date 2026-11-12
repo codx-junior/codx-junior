@@ -3,9 +3,16 @@
 export CODX_JUNIOR_PATH="$(cd "$(dirname "$0")/.." && pwd)"
 echo "CODX_JUNIOR_PATH: $CODX_JUNIOR_PATH"
 echo "Starting api USER: ${USER} ($(id -u):$(id -g)) HOME: ${HOME}"
-echo "Fix permissions"
-sudo chown -R ${USER} ${HOME}
-sudo chown ${USER} /var/run/docker.sock
+
+# A packaged image (see codx-junior-installer/demo) already ships the venv and a
+# source tree it must not touch: the recursive chown and `uv sync` below are
+# installation steps, not start-up steps, and cost tens of seconds per restart.
+# Set CODX_JUNIOR_SKIP_INSTALL=1 to skip them.
+if [ "$CODX_JUNIOR_SKIP_INSTALL" != "1" ]; then
+  echo "Fix permissions"
+  sudo chown -R ${USER} ${HOME}
+  sudo chown ${USER} /var/run/docker.sock 2>/dev/null || true
+fi
 
 source ${CODX_JUNIOR_PATH}/set_env.sh
 
@@ -24,7 +31,12 @@ else
 fi
 
 source ${CODX_JUNIOR_API_VENV}/bin/activate
-uv sync
+
+if [ "$CODX_JUNIOR_SKIP_INSTALL" != "1" ]; then
+  # Sync the environment with pyproject.toml / uv.lock on start (development and
+  # source-mounted deployments only: it downloads packages).
+  uv sync
+fi
 
 echo "codx-junior api BACKGROUND: '${CODX_JUNIOR_API_BACKGROUND}' DEBUG: '${DEBUG}'"
 

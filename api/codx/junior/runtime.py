@@ -118,6 +118,7 @@ DATA_PLANE_ENTRIES = (
     "atlas",
     "db",
     "logs",
+    "media",
     "tmp",
     "cache",
     "dependency_graph.json",

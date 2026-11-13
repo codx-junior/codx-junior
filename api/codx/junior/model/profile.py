@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 
+from codx.junior.media.model import VoiceProfile
 from codx.junior.model.user import CodxUser
 
 
@@ -103,6 +104,16 @@ class Profile(BaseModel):
             "``actor`` on save, never written by new code."
         ),
         default=None,
+    )
+    voice: Optional[VoiceProfile] = Field(
+        description=(
+            "Voice used when this profile speaks in the Project's Channel. "
+            "``enabled=False`` means the profile is silent (no fallback). "
+            "Omitted from the serialized profile when unset, so existing "
+            ".codx/profiles files keep their current bytes."
+        ),
+        default=None,
+        exclude_if=lambda voice: voice is None,
     )
     project_id: Optional[str] = Field(description="Profile's project", default=None)
     chat_id: Optional[str] = Field(default="", description="Unique identifier for chat")

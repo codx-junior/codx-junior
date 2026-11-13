@@ -96,6 +96,16 @@ def start_background_services(stop_event) -> None:
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the actor worker: %s", ex)
 
+    # Channel media worker: drains the durable ``.codx/media/jobs`` queues with
+    # leases and retries, so a restart resumes the interrupted work. Every
+    # wired handler is local only (offline cover render, inbox ingest).
+    try:
+        from codx.junior.media.worker import start_media_worker
+
+        start_media_worker(stop_event=stop_event)
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to start the media worker: %s", ex)
+
 
 async def stop_background_services() -> None:
     """
@@ -135,6 +145,13 @@ async def stop_background_services() -> None:
         stop_wiki_scheduler()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to stop the wiki update scheduler: %s", ex)
+
+    try:
+        from codx.junior.media.worker import stop_media_worker
+
+        stop_media_worker()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to stop the media worker: %s", ex)
 
 
 def reload_models() -> None:

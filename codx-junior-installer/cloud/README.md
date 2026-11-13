@@ -6,6 +6,18 @@ codx-junior. This is the automated path on top of the
 repository, writes the settings and then runs the same `demo/up.sh` a human
 would run, so there is only one place that knows how the stack starts.
 
+> **Shortcut:** from anywhere, without cloning, this directory is reachable
+> through the one-line installer in the repository root, which also handles
+> updates and branches:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
+>   | sudo bash -s -- --provider deepseek --key sk-xxxxxxxx --branch main
+> ```
+>
+> It is a thin wrapper: it resolves this `bootstrap.sh` for the requested branch
+> and hands the settings over to it.
+
 ```bash
 sudo ./bootstrap.sh --provider deepseek --key sk-xxxxxxxx
 ```

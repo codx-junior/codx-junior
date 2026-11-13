@@ -28,6 +28,7 @@
 #   --home PATH          CODX_JUNIOR_HOME           default: /opt/codx-junior
 #   --repo URL           CODX_JUNIOR_REPO           default: the public repo
 #   --ref BRANCH|TAG     CODX_JUNIOR_REF            default: main
+#   --branch BRANCH|TAG  alias of --ref
 #   --env-file PATH      CODX_JUNIOR_ENV_FILE       default: /etc/codx-junior/settings.env
 #   --build              build the image locally instead of pulling it
 #   --no-docker-install  fail instead of installing Docker
@@ -58,7 +59,13 @@ warn() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,44p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # The header comment block, not a fixed line range, so the help cannot drift
+    # from the options. Works when this script is piped into bash too.
+    if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+        awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
+    else
+        printf 'codx-junior unattended installer — see install.sh --help for the options\n'
+    fi
     exit 0
 }
 
@@ -132,7 +139,7 @@ while [[ $# -gt 0 ]]; do
         --projects)          PROJECTS="${2:-}"; shift 2 ;;
         --home)              HOME_DIR="${2:-}"; shift 2 ;;
         --repo)              REPO="${2:-}"; shift 2 ;;
-        --ref)               REF="${2:-}"; shift 2 ;;
+        --ref|--branch|-branch|-b) REF="${2:-}"; shift 2 ;;
         --env-file)          shift 2 ;;
         --build)             DO_BUILD=1; shift ;;
         --no-docker-install) INSTALL_DOCKER=0; shift ;;
@@ -142,11 +149,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ "${EUID}" -eq 0 ]] || die "run as root (sudo $0 ...), or use demo/up.sh directly as a normal user"
-
 if [[ -z "${API_KEY}" && -n "${API_KEY_FILE}" ]]; then
     [[ -f "${API_KEY_FILE}" ]] || die "key file not found: ${API_KEY_FILE}"
     API_KEY="$(head -n1 "${API_KEY_FILE}" | tr -d '[:space:]')"
+fi
+if [[ -z "${API_KEY}" && "${PROVIDER}" == "ollama" ]]; then
+    # A local Ollama endpoint needs no key at all.
+    API_KEY="ollama"
 fi
 if [[ -z "${API_KEY}" ]]; then
     cat >&2 <<MSG
@@ -233,6 +242,10 @@ ensure_docker() {
     install_compose_plugin
     log "Docker $(docker --version | awk '{print $3}' | tr -d ,) installed"
 }
+
+# Checked only after the settings are valid, so a bad invocation fails on its
+# own error instead of "run as root".
+[[ "${EUID}" -eq 0 ]] || die "run as root (sudo $0 ...), or use demo/up.sh directly as a normal user"
 
 ensure_git
 ensure_docker

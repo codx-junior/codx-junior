@@ -16,6 +16,34 @@ database and no build.
 
 ---
 
+## 0. One line: install or update
+
+The entry point for a machine you do not control yet — or for updating one you
+already run — is `install.sh` in the repository root:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
+  | sudo bash -s -- --provider deepseek --key sk-xxxxxxxx
+```
+
+It resolves the installer of the requested branch, installs Docker when it is
+missing, clones or **updates** the repository and ends by verifying the
+published port from the host. Exit code `0` means the health check passed.
+
+| Situation | Command |
+|---|---|
+| first install | `curl … \| sudo bash -s -- --provider deepseek --key sk-…` |
+| second run = upgrade | same command again (projects and settings are kept) |
+| test a branch or tag | add `--branch my-feature` |
+| see before acting | add `--dry-run` |
+| no internet on the host | `git clone`, then `./install.sh --provider … --key …` |
+
+Only `--provider` and `--key` are required (`ollama` needs no key). Every other
+value has a default; `install.sh --help` is the full reference, and
+[`cloud/README.md`](cloud/README.md) covers the unattended cloud-VM path.
+
+---
+
 ## 1. Requirements
 
 | | |

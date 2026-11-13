@@ -2,6 +2,36 @@
 
 This page shows how to self-host codx-junior with Docker Compose. The engine is free and open source. If you would rather not run it yourself, see [Self-hosted or managed](/managed).
 
+## One-line install (recommended)
+
+On any Linux machine with internet access, one command installs codx-junior and
+leaves it running with your provider already configured. It also **updates** an
+existing installation and can install a branch:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
+  | sudo bash -s -- --provider deepseek --key sk-xxxxxxxx
+# -> http://<server>:19981
+```
+
+Only the provider and its key are required. Useful extras:
+
+```sh
+  --branch feature-x     install or update to a branch or tag (default: main)
+  --port 8080            publish on another port
+  --projects /srv/repos  where your projects live
+  --build                build from source instead of pulling the image
+  --dry-run              show the command that would run, change nothing
+```
+
+The script installs Docker when it is missing, clones or updates the repository
+on the requested branch, writes the settings and verifies the published port
+from the host; exit code `0` means the health check passed. `install.sh --help`
+lists everything. Running it again is the upgrade path: your projects and
+settings are kept.
+
+The manual paths below are for full control of the stack.
+
 ## Fastest path: try it first
 
 If you only want to test codx-junior, do **not** clone or build anything. The

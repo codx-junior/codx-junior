@@ -1,0 +1,432 @@
+{
+  "id": "c8bb1af4-dfc4-4c03-bf92-6b7162bd6bd8",
+  "doc_id": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "owner_project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "parent_id": "9727302c-fa80-4868-9b72-b6955dfd2dd0",
+  "root_id": "9727302c-fa80-4868-9b72-b6955dfd2dd0",
+  "linked_chat_ids": [],
+  "parent_owner_project_id": null,
+  "parent_project_id": null,
+  "child_index": 0,
+  "message_id": null,
+  "status": "rejected",
+  "status_history": [
+    {
+      "doc_id": "0e5a1e62-99b4-4aee-8734-c288f316cc57",
+      "from_status": null,
+      "to_status": "todo",
+      "user": null,
+      "at": "2026-11-13T11:17:07.415839",
+      "meta_data": null
+    },
+    {
+      "doc_id": "9c4a6364-4577-4e39-8bba-301f7319798d",
+      "from_status": "todo",
+      "to_status": "doing",
+      "user": null,
+      "at": "2026-11-13T11:17:08.440192",
+      "meta_data": null
+    },
+    {
+      "doc_id": "6bd581d9-070a-466c-8b8c-539e7d4f7f6f",
+      "from_status": "doing",
+      "to_status": "rejected",
+      "user": null,
+      "at": "2026-11-13T11:32:33.685378",
+      "meta_data": null
+    }
+  ],
+  "tags": [
+    "orchestration",
+    "run:7bbcd9d8-2f84-4000-8b99-190d242b4d4e",
+    "step:worker-and-api",
+    "run-removed"
+  ],
+  "file_list": [
+    "api/codx/junior/media/worker.py",
+    "api/codx/junior/api/media.py",
+    "api/codx/junior/background.py",
+    "api/codx/junior/api/wiki.py"
+  ],
+  "check_lists": [],
+  "profiles": [
+    "software_developer"
+  ],
+  "users": [],
+  "name": "Media worker wire-up + /api/media router",
+  "pinned": false,
+  "is_template": false,
+  "description": "Wire the media package into the running app. Files: new `api/codx/junior/media/worker.py`, new `api/codx/junior/api/media.py`, and MINIMAL edits to `api/codx/junior/background.py` and the API router registration file (find how `api/codx/junior/api/wiki.py` is included).\n\nworker.py: `start_media_worker(stop_event: threading.Event) -> None` starting a daemon thread that loops: `store.claim_next(worker_id)` -> dispatch by `job.kind` through a `HANDLERS: dict[str, Callable]` (only a `noop`/unknown handler for now that marks the job done with a note) -> `heartbeat` every tick -> `stop_event.wait(interval)` (interval from settings or 5s). `stop_media_worker()` sets the stop event and joins with a timeout. Never raise out of the thread: log and `store.fail(job_id, str(exc))`.\n\nbackground.py: add the start/stop exactly like the existing wiki scheduler / orchestration worker \u2014 lazy import inside try/except ImportError, symmetric stop in the shutdown path, no behaviour change when the import fails.\n\napi/media.py: `APIRouter(prefix='/api/media', tags=['media'])` with GET `/providers` (registry info + available + estimate hints), GET `/queue` (jobs by state, attempts, error), GET `/episodes` (list) and POST `/episodes` (body: an EpisodeIR json OR `{inbox: true}` to drain the inbox; stores it and returns the job id), GET `/episodes/{episode_id}`, POST `/episodes/{episode_id}/cancel` and `/retry` (set state, persist), GET `/assets/{asset_id}` returning the file when it exists (FileResponse) and 404 otherwise. Follow the conventions of `api/codx/junior/api/wiki.py` (dependency-injected project, error shape, docstrings). Run the redaction scan on POST /episodes and return 422 with the findings when `assert_publishable` fails.\n\nTests: `api/tests/media/test_media_worker.py` exercising the worker loop with a tmp store and a fake handler (no threads needed if you factor the tick into `process_once(store, worker_id) -> bool`), plus a router smoke test with TestClient if the project has an existing pattern for it; if the project has no such pattern, at least import the router and check the routes are registered.\n\nTIME BUDGET: at most 6 tool calls before writing. Read `api/codx/junior/background.py` and `api/codx/junior/api/wiki.py` ONLY (plus the media modules you need). Do not refactor background.py beyond the two added blocks.\n\nRun `cd api && python -m pytest tests/media -q` and import-check the app module you touched.\n\n**Acceptance criteria**\n`python -c 'import codx.junior.api.media'` works, the router paths are registered, the worker starts and stops cleanly with a fake store, background.py diff is limited to the start/stop blocks, existing tests of the touched modules still pass.",
+  "meta_data": null,
+  "messages": [
+    {
+      "doc_id": "28b3600e-9d1f-46d0-b70c-aa34f837cb9b",
+      "role": "user",
+      "task_item": "",
+      "content": "# ORCHESTRATED STEP\nRun: **Project's Channel \u2014 M0 spine**\nStep: **Media worker wire-up + /api/media router** (`worker-and-api`)\n\n## Run objective\nBuild the load-bearing spine for the \"Project's Channel\" feature described in `design/project-channel.md` (read it first; it is the contract).\n\nScope of M0 only:\n1. New python package `api/codx/junior/media/` with models (MediaJob, MediaAsset, EpisodeIR, RenderSpec, VoiceProfile, ProviderInfo), a `MediaProvider` protocol + registry, a job store under `<project>/.codx/media/` (inbox/jobs/episodes/assets), a cost/estimate budget gate, and a mandatory redaction entry point. Pure python, no network, unit-tested.\n2. A background worker `media/worker.py` exposing `start_media_worker(stop_event)` / `stop_media_worker()` wired into `api/codx/junior/background.py` exactly like the existing wiki scheduler / orchestration worker (lazy import inside try/except, symmetric stop). Jobs must be persisted with leases + retries so a restart resumes work.\n3. A FastAPI router `api/codx/junior/api/media.py` exposing `/api/media/providers`, `/api/media/queue`, `/api/media/episodes` (create/detail), `/api/media/assets/...`, following the conventions in `api/codx/junior/api/wiki.py`.\n4. A local image provider PoC able to produce an episode cover with content-addressed caching (hash of provider+model+prompt+spec); ComfyUI is the real target but the provider must degrade to an available local/offline path when ComfyUI is not running.\n5. Client shell: `/channel` view with tabs Home, Library (reusing `client/src/components/wiki/WikiMarkdown.vue` + `client/src/service/wiki.js`), Episodes, Shorts, Learn. The existing wiki nav entry becomes a tab inside the channel; existing `/wiki` routes must keep resolving.\n\nHard constraints:\n- No external AI/media services in this milestone; local-first only.\n- Do not break existing wiki behaviour or the existing background services.\n- Keep changes reviewable; no reformatting of untouched code.\n- Every new module gets tests where it is testable offline.\n\n## Step objective\nWire the media package into the running app. Files: new `api/codx/junior/media/worker.py`, new `api/codx/junior/api/media.py`, and MINIMAL edits to `api/codx/junior/background.py` and the API router registration file (find how `api/codx/junior/api/wiki.py` is included).\n\nworker.py: `start_media_worker(stop_event: threading.Event) -> None` starting a daemon thread that loops: `store.claim_next(worker_id)` -> dispatch by `job.kind` through a `HANDLERS: dict[str, Callable]` (only a `noop`/unknown handler for now that marks the job done with a note) -> `heartbeat` every tick -> `stop_event.wait(interval)` (interval from settings or 5s). `stop_media_worker()` sets the stop event and joins with a timeout. Never raise out of the thread: log and `store.fail(job_id, str(exc))`.\n\nbackground.py: add the start/stop exactly like the existing wiki scheduler / orchestration worker \u2014 lazy import inside try/except ImportError, symmetric stop in the shutdown path, no behaviour change when the import fails.\n\napi/media.py: `APIRouter(prefix='/api/media', tags=['media'])` with GET `/providers` (registry info + available + estimate hints), GET `/queue` (jobs by state, attempts, error), GET `/episodes` (list) and POST `/episodes` (body: an EpisodeIR json OR `{inbox: true}` to drain the inbox; stores it and returns the job id), GET `/episodes/{episode_id}`, POST `/episodes/{episode_id}/cancel` and `/retry` (set state, persist), GET `/assets/{asset_id}` returning the file when it exists (FileResponse) and 404 otherwise. Follow the conventions of `api/codx/junior/api/wiki.py` (dependency-injected project, error shape, docstrings). Run the redaction scan on POST /episodes and return 422 with the findings when `assert_publishable` fails.\n\nTests: `api/tests/media/test_media_worker.py` exercising the worker loop with a tmp store and a fake handler (no threads needed if you factor the tick into `process_once(store, worker_id) -> bool`), plus a router smoke test with TestClient if the project has an existing pattern for it; if the project has no such pattern, at least import the router and check the routes are registered.\n\nTIME BUDGET: at most 6 tool calls before writing. Read `api/codx/junior/background.py` and `api/codx/junior/api/wiki.py` ONLY (plus the media modules you need). Do not refactor background.py beyond the two added blocks.\n\nRun `cd api && python -m pytest tests/media -q` and import-check the app module you touched.\n\n## Acceptance criteria\n`python -c 'import codx.junior.api.media'` works, the router paths are registered, the worker starts and stops cleanly with a fake store, background.py diff is limited to the start/stop blocks, existing tests of the touched modules still pass.\n\n## Known files\n- `api/codx/junior/media/worker.py`\n- `api/codx/junior/api/media.py`\n- `api/codx/junior/background.py`\n- `api/codx/junior/api/wiki.py`\n\n## Context\nDepends on the store, providers and redaction slices. Do not implement real rendering here.\n\n## Rules\n- Work only on this step; do not start unrelated refactors.\n- Inspect the code before changing it and keep the change reviewable.\n- Verify your work (tests, build, manual check) and say how.\n- If you are blocked, explain exactly what is missing instead of guessing forever.\n\n## Result contract\nFinish with a JSON object (and nothing after it):\n{\"status\":\"done\"|\"blocked\"|\"failed\",\"summary\":\"what was done\",\"files\":[\"paths touched\"],\"verification\":\"how you verified it\",\"followups\":[\"remaining work\"]}",
+      "think": null,
+      "hide": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-13 11:17:06.873714",
+      "updated_at": "2026-11-13 11:17:06.873719",
+      "attachments": [],
+      "files": [
+        "api/codx/junior/media/worker.py",
+        "api/codx/junior/api/media.py",
+        "api/codx/junior/background.py",
+        "api/codx/junior/api/wiki.py"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "cb680cca-7996-4fa0-beab-9601e13a764c",
+      "role": "user",
+      "task_item": "",
+      "content": "# ORCHESTRATED STEP\nRun: **Project's Channel \u2014 M0 spine**\nStep: **Media worker wire-up + /api/media router** (`worker-and-api`)\n\n## Run objective\nBuild the load-bearing spine for the \"Project's Channel\" feature described in `design/project-channel.md` (read it first; it is the contract).\n\nScope of M0 only:\n1. New python package `api/codx/junior/media/` with models (MediaJob, MediaAsset, EpisodeIR, RenderSpec, VoiceProfile, ProviderInfo), a `MediaProvider` protocol + registry, a job store under `<project>/.codx/media/` (inbox/jobs/episodes/assets), a cost/estimate budget gate, and a mandatory redaction entry point. Pure python, no network, unit-tested.\n2. A background worker `media/worker.py` exposing `start_media_worker(stop_event)` / `stop_media_worker()` wired into `api/codx/junior/background.py` exactly like the existing wiki scheduler / orchestration worker (lazy import inside try/except, symmetric stop). Jobs must be persisted with leases + retries so a restart resumes work.\n3. A FastAPI router `api/codx/junior/api/media.py` exposing `/api/media/providers`, `/api/media/queue`, `/api/media/episodes` (create/detail), `/api/media/assets/...`, following the conventions in `api/codx/junior/api/wiki.py`.\n4. A local image provider PoC able to produce an episode cover with content-addressed caching (hash of provider+model+prompt+spec); ComfyUI is the real target but the provider must degrade to an available local/offline path when ComfyUI is not running.\n5. Client shell: `/channel` view with tabs Home, Library (reusing `client/src/components/wiki/WikiMarkdown.vue` + `client/src/service/wiki.js`), Episodes, Shorts, Learn. The existing wiki nav entry becomes a tab inside the channel; existing `/wiki` routes must keep resolving.\n\nHard constraints:\n- No external AI/media services in this milestone; local-first only.\n- Do not break existing wiki behaviour or the existing background services.\n- Keep changes reviewable; no reformatting of untouched code.\n- Every new module gets tests where it is testable offline.\n\n## Step objective\nWire the media package into the running app. Files: new `api/codx/junior/media/worker.py`, new `api/codx/junior/api/media.py`, and MINIMAL edits to `api/codx/junior/background.py` and the API router registration file (find how `api/codx/junior/api/wiki.py` is included).\n\nworker.py: `start_media_worker(stop_event: threading.Event) -> None` starting a daemon thread that loops: `store.claim_next(worker_id)` -> dispatch by `job.kind` through a `HANDLERS: dict[str, Callable]` (only a `noop`/unknown handler for now that marks the job done with a note) -> `heartbeat` every tick -> `stop_event.wait(interval)` (interval from settings or 5s). `stop_media_worker()` sets the stop event and joins with a timeout. Never raise out of the thread: log and `store.fail(job_id, str(exc))`.\n\nbackground.py: add the start/stop exactly like the existing wiki scheduler / orchestration worker \u2014 lazy import inside try/except ImportError, symmetric stop in the shutdown path, no behaviour change when the import fails.\n\napi/media.py: `APIRouter(prefix='/api/media', tags=['media'])` with GET `/providers` (registry info + available + estimate hints), GET `/queue` (jobs by state, attempts, error), GET `/episodes` (list) and POST `/episodes` (body: an EpisodeIR json OR `{inbox: true}` to drain the inbox; stores it and returns the job id), GET `/episodes/{episode_id}`, POST `/episodes/{episode_id}/cancel` and `/retry` (set state, persist), GET `/assets/{asset_id}` returning the file when it exists (FileResponse) and 404 otherwise. Follow the conventions of `api/codx/junior/api/wiki.py` (dependency-injected project, error shape, docstrings). Run the redaction scan on POST /episodes and return 422 with the findings when `assert_publishable` fails.\n\nTests: `api/tests/media/test_media_worker.py` exercising the worker loop with a tmp store and a fake handler (no threads needed if you factor the tick into `process_once(store, worker_id) -> bool`), plus a router smoke test with TestClient if the project has an existing pattern for it; if the project has no such pattern, at least import the router and check the routes are registered.\n\nTIME BUDGET: at most 6 tool calls before writing. Read `api/codx/junior/background.py` and `api/codx/junior/api/wiki.py` ONLY (plus the media modules you need). Do not refactor background.py beyond the two added blocks.\n\nRun `cd api && python -m pytest tests/media -q` and import-check the app module you touched.\n\n## Acceptance criteria\n`python -c 'import codx.junior.api.media'` works, the router paths are registered, the worker starts and stops cleanly with a fake store, background.py diff is limited to the start/stop blocks, existing tests of the touched modules still pass.\n\n## Known files\n- `api/codx/junior/media/worker.py`\n- `api/codx/junior/api/media.py`\n- `api/codx/junior/background.py`\n- `api/codx/junior/api/wiki.py`\n\n## Context\nDepends on the store, providers and redaction slices. Do not implement real rendering here.\n\n## Rules\n- Work only on this step; do not start unrelated refactors.\n- Inspect the code before changing it and keep the change reviewable.\n- Verify your work (tests, build, manual check) and say how.\n- If you are blocked, explain exactly what is missing instead of guessing forever.\n\n## Result contract\nFinish with a JSON object (and nothing after it):\n{\"status\":\"done\"|\"blocked\"|\"failed\",\"summary\":\"what was done\",\"files\":[\"paths touched\"],\"verification\":\"how you verified it\",\"followups\":[\"remaining work\"]}",
+      "think": null,
+      "hide": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-13 11:17:06.873714",
+      "updated_at": "2026-11-13 11:17:06.873719",
+      "attachments": [],
+      "files": [
+        "api/codx/junior/media/worker.py",
+        "api/codx/junior/api/media.py",
+        "api/codx/junior/background.py",
+        "api/codx/junior/api/wiki.py"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "707da388-7b77-40d7-867f-44929241ea3f",
+      "role": "assistant",
+      "task_item": "",
+      "content": "",
+      "think": "* Processing request, please wait...\n",
+      "hide": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-13 11:17:12.999731",
+      "updated_at": "2026-11-13T11:32:28.991066",
+      "attachments": [],
+      "files": [],
+      "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+      "meta_data": {
+        "start_time": 1794568632.603582,
+        "cancellation_token_id": "5b404563-f496-4370-969c-08a4ec901c50",
+        "model": "deepseek-flash"
+      },
+      "tool_events": [
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_00_cKy0wFzJyUUmsjzV0bFN6772",
+          "status": "done",
+          "request": {
+            "path": "api/codx/junior/media"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n                \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n                \u251c\u2500\u2500 \ud83d\udc0d budget.py\n                \u251c\u2500\u2500 \ud83d\udc0d model.py\n                \u251c\u2500\u2500 \ud83d\udcc1 **providers**/\n                \u2502   \u2514\u2500\u2500 \ud83d\udc0d image_local.py\n                \u251c\u2500\u2500 \ud83d\udc0d providers.py\n                \u251c\u2500\u2500 \ud83d\udc0d redaction.py\n                \u2514\u2500\u2500 \ud83d\udc0d store.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
+          "output": null,
+          "duration_ms": 110856.17104917765,
+          "error": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_01_DqQeDBTIRMU5mB2w9c202466",
+          "status": "done",
+          "request": {
+            "query": "include_router.*wiki",
+            "regex": true,
+            "include": "*.py"
+          },
+          "response": "> atlas: 0 evidence(s) | confidence 0.10 | e21bd265eb8d +dirty | fresh\n\n**No indexed match for `include_router.*wiki`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='include_router.*wiki')",
+          "output": "No indexed match for `include_router.*wiki`.",
+          "duration_ms": 187005.86455315351,
+          "error": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_00_dhc7q2a1lWy8q2Xim6kn8127",
+          "status": "done",
+          "request": {
+            "query": "include_router",
+            "include": "*.py",
+            "limit": 20
+          },
+          "response": "> atlas: 0 evidence(s) | confidence 0.10 | e21bd265eb8d +dirty | fresh\n\n**No indexed match for `include_router`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='include_router')",
+          "output": "No indexed match for `include_router`.",
+          "duration_ms": 105427.16335877776,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_haQZcbMlbPisWelKgQaP1074",
+          "status": "done",
+          "request": {
+            "file_path": [
+              "api/codx/junior/media/store.py",
+              "api/codx/junior/media/providers.py",
+              "api/codx/junior/media/redaction.py",
+              "api/codx/junior/media/model.py",
+              "api/codx/junior/media/budget.py",
+              "api/codx/junior/media/__init__.py"
+            ]
+          },
+          "response": "# api/codx/junior/media/store.py (lines 1-354 of 354)\n```py api/codx/junior/media/store.py\n\"\"\"Persistence layer for the Project's Channel media pipeline.\n\nThe store owns everything that lives under ``<project>/.codx/media``:\n\n    inbox/          dropped ``*.episode.json`` files waiting to be ingested\n    inbox/done/     accepted inbox files (kept for traceability)\n    jobs/           one ``<job_id>.job.json`` per MediaJob (leases + retries)\n    episodes/       one ``<episode_id>.episode.json`` per EpisodeIR\n    assets/ab/      content addressed assets, sharded by the first 2 hash chars\n    tmp/            staging area that makes every write atomic\n\nPure python: stdlib + ``media.model`` only. No app settings, no network and no\nmodule level state, so callers (and tests) can point it at any directory. A\nproject store is built with ``MediaStore.for_project(project_path)``; tests pass\na ``tmp_path``.\n\"\"\"\n\nimport hashlib\nimport json\nimport mimetypes\nimport os\nimport re\nimport tempfile\nimport uuid\nfrom contextlib import suppress\nfrom datetime import datetime, timedelta, timezone\nfrom pathlib import Path\nfrom typing import Iterable, List, Optional, Tuple\n\nfrom pydantic import ValidationError\n\nfrom .model import EpisodeIR, MediaAsset, MediaJob, utc_now\n\nJOBS_DIRNAME = \"jobs\"\nINBOX_DIRNAME = \"inbox\"\nEPISODES_DIRNAME = \"episodes\"\nASSETS_DIRNAME = \"assets\"\nTMP_DIRNAME = \"tmp\"\nDONE_DIRNAME = \"done\"\n\nJOB_SUFFIX = \".job.json\"\nEPISODE_SUFFIX = \".episode.json\"\n\nQUEUED = \"queued\"\nLEASED = \"leased\"\nRUNNING = \"running\"\nDONE = \"done\"\nFAILED = \"failed\"\n# States whose job holds a lease and can be reclaimed when the lease expires\nLEASE_STATES = (LEASED, RUNNING)\n\n# Deterministic mime -> extension fallback (``mimetypes`` misses several of these)\nMIME_EXTENSIONS = {\n    \"image/png\": \".png\",\n    \"image/jpeg\": \".jpg\",\n    \"image/webp\": \".webp\",\n    \"image/gif\": \".gif\",\n    \"audio/mpeg\": \".mp3\",\n    \"audio/wav\": \".wav\",\n    \"audio/x-wav\": \".wav\",\n    \"audio/ogg\": \".ogg\",\n    \"video/mp4\": \".mp4\",\n    \"video/webm\": \".webm\",\n    \"text/vtt\": \".vtt\",\n    \"application/pdf\": \".pdf\",\n}\n\n\ndef _as_aware(value: Optional[datetime]) -> Optional[datetime]:\n    \"\"\"Normalise a timestamp to UTC; naive values are assumed to be UTC.\"\"\"\n    if value is None:\n        return None\n    if value.tzinfo is None:\n        return value.replace(tzinfo=timezone.utc)\n    return value.astimezone(timezone.utc)\n\n\ndef _normalize_ext(ext: str, mime: str) -> str:\n    \"\"\"Return a safe file extension (with the leading dot) for an asset.\"\"\"\n    value = (ext or \"\").strip().lower()\n    if not value and mime:\n        base_mime = (mime or \"\").split(\";\")[0].strip().lower()\n        value = MIME_EXTENSIONS.get(base_mime) or mimetypes.guess_extension(base_mime) or \"\"\n    if value and not value.startswith(\".\"):\n        value = \".\" + value\n    return re.sub(r\"[^.a-z0-9]\", \"\", value)\n\n\nclass MediaStore:\n    \"\"\"Filesystem store for media jobs, episodes and content addressed assets.\"\"\"\n\n    def __init__(self, root: Path):\n        self.root = Path(root)\n        self.inbox_dir = self.root / INBOX_DIRNAME\n        self.inbox_done_dir = self.inbox_dir / DONE_DIRNAME\n        self.jobs_dir = self.root / JOBS_DIRNAME\n        self.episodes_dir = self.root / EPISODES_DIRNAME\n        self.assets_dir = self.root / ASSETS_DIRNAME\n        self.tmp_dir = self.root / TMP_DIRNAME\n        for directory in (\n            self.inbox_dir,\n            self.jobs_dir,\n            self.episodes_dir,\n            self.assets_dir,\n            self.tmp_dir,\n        ):\n            directory.mkdir(parents=True, exist_ok=True)\n\n    @classmethod\n    def for_project(cls, project_path: Path) -> \"MediaStore\":\n        \"\"\"Store of a project: ``<project>/.codx/media``.\"\"\"\n        return cls(Path(project_path) / \".codx\" / \"media\")\n\n    # ------------------------------------------------------------------ writes\n    def write_atomic(self, target: Path, data: bytes) -> Path:\n        \"\"\"Write ``data`` to ``tmp/`` first and atomically move it to ``targe",
+          "output": "Read 6 file(s) | Successfully read: api/codx/junior/media/store.py, api/codx/junior/media/providers.py, api/codx/junior/media/redaction.py, api/codx/junior/media/model.py, api/codx/junior/media/budget.py, api/codx/junior/media/__init__.py",
+          "duration_ms": 391.1798447370529,
+          "error": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_00_QTY5mncC9uyxPxUr8rAZ3441",
+          "status": "done",
+          "request": {
+            "query": "api.wiki import",
+            "include": "*.py",
+            "limit": 10
+          },
+          "response": "> atlas: 0 evidence(s) | confidence 0.10 | e21bd265eb8d +dirty | fresh\n\n**No indexed match for `api.wiki import`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='api.wiki import')",
+          "output": "No indexed match for `api.wiki import`.",
+          "duration_ms": 148205.69509454072,
+          "error": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_01_c5TcWJq9d9Rry9AWzAF48436",
+          "status": "done",
+          "request": {
+            "path": "api/codx/junior"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u251c\u2500\u2500 \ud83d\udcdd README.md\n            \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **agents**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d base_agent.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d devops_agent.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d git_issues_agent.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **ai**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d ai.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d ai_logger.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udcc4 anthropic.py.disabled\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d cancellation.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d llmfactory.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udcc4 mistral_ai.py.disabled\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d ollama.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d raw_log_reader.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d raw_logger.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **smol**/\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d loop_guard.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d messages.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d smol_agent.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d tool_cache.py\n            \u2502   \u2502   \u2514\u2500\u2500 \ud83d\udc0d tool_context.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d utils.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d vllm_cpu_ai.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d wallet_check.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **analytics**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d analytics.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d decision_model.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d model.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d storage.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d token_counter.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **api**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d analytics.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d analytics_model.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d api_logs.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d atlas.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d autonomy.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d bootstrap.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d browser.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d browser_files.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d browser_models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d calendar.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d chat.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d chatGPTLikeApi.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d company.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d computer.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d computer_resize.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d console.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d db_router.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d dsh.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d dsh_agent.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d file_finder.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d files.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d git.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d global_settings.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d harness.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d image.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d images.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d infra.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d kanban.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d knowledge.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d log_explorer.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d logs.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d management.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d meets.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d orchestration.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d profiles.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d project_search.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d projects.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d teams.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d traefik.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d users.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d views.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d wiki.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d workspace_models.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d workspaces.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **api_logs**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d api_logs.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d model.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d storage.py\n            \u251c\u2500\u2500 \ud83d\udc0d app.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **atlas**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udcdd README.md\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d curator.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d indexer.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d query.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d related.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d store.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **autonomy**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d prompts.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d service.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d store.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d worker.py\n            \u251c\u2500\u2500 \ud83d\udc0d background.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **board_manager**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d service.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d store.py\n    ",
+          "output": null,
+          "duration_ms": 99879.22520563006,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_POyCJ90VbM0gWVwrvM272512",
+          "status": "done",
+          "request": {
+            "file_path": [
+              "api/codx/junior/api/__init__.py",
+              "api/codx/junior/app.py"
+            ],
+            "pattern": "wiki|include_router|APIRouter",
+            "context_lines": 3
+          },
+          "response": "# api/codx/junior/api/__init__.py \u2014 pattern `wiki|include_router|APIRouter` (1 match(es); 85 lines)\n```py api/codx/junior/api/__init__.py\n    28|     \"\"\"\n    29|     Extract the active CODXJuniorSession from the incoming request state.\n    30| \n    31|     This mirrors the pattern used in the wiki router where the session is\n    32|     injected into ``request.state`` by middleware before reaching the endpoint.\n    33| \n    34|     Args:\n```\n# api/codx/junior/app.py \u2014 pattern `wiki|include_router|APIRouter` (1 match(es); 676 lines)\n```py api/codx/junior/app.py\n   217|     routers = discover_routers()\n   218|     for router_config in routers:\n   219|         try:\n   220|             app.include_router(\n   221|                 router_config['router'],\n   222|                 prefix=router_config['prefix']\n   223|             )\n```",
+          "output": "Read 2 file(s) | Successfully read: api/codx/junior/api/__init__.py, api/codx/junior/app.py",
+          "duration_ms": 1165.7602526247501,
+          "error": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_01_rSvNPWqth74dAAgRzH0e5388",
+          "status": "done",
+          "request": {
+            "path": "api/tests"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **tests**/\n        \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u251c\u2500\u2500 \ud83d\udc0d _manual_calendar_smoke.py\n        \u251c\u2500\u2500 \ud83d\udc0d _manual_stall_check.py\n        \u251c\u2500\u2500 \ud83d\udc0d _manual_unique_copy_check.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **ai**/\n        \u2502   \u2514\u2500\u2500 \ud83d\udcc1 **smol**/\n        \u2502       \u251c\u2500\u2500 \ud83d\udc0d test_cache_invalidation.py\n        \u2502       \u251c\u2500\u2500 \ud83d\udc0d test_loop_guard_rounds.py\n        \u2502       \u251c\u2500\u2500 \ud83d\udc0d test_smol_agent.py\n        \u2502       \u251c\u2500\u2500 \ud83d\udc0d test_tool_cache.py\n        \u2502       \u2514\u2500\u2500 \ud83d\udc0d test_tool_timeout.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **browser**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_browser_co_browsing.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_browser_downloads.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_browser_keepalive.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_browser_script_tool_dispatch.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_browser_scripts.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_browser_sessions.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_cdp_proxy_supervisor.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_smol_chat_id_injection.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **chat**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_chat_prompt_builder_tool_memory.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_chat_tool_memory.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_turn_stall.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_turn_store.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **computer**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_docker.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_images.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_library.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_model.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_ocr.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_resize.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_computer_runtime.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_vnc_protocol.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **harness**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_harness_audit.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_harness_notification.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_harness_profile.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_harness_watchdog.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_single_instance.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_turn_processing_guard.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **logs**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d conftest.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_log_explorer_api.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_log_insights.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_log_parsers.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_log_query.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_log_sources_docker.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **media**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_cover_provider.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_media_models.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_media_providers.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d test_media_redaction.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_media_store.py\n        \u251c\u2500\u2500 \ud83d\udcc1 **security**/\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d ciso_selfcheck.py\n        \u2502   \u251c\u2500\u2500 \ud83d\udc0d ciso_wiring_check.py\n        \u2502   \u2514\u2500\u2500 \ud83d\udc0d test_ciso.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_atlas.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_board_manager.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_calendar_service.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_calendar_store.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_codx_tools.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_dsh_agent.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_dsh_integration.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_file_engine_transfers.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_git_conflicts.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_git_view.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_infra_discovery.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_infra_shell.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_kanban_search.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_knowledge_lancedb.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_lrt0_smoke.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_meets.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_orchestration.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_project_tools.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_traefik_builder.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_wiki_assistant.py\n        \u251c\u2500\u2500 \ud83d\udc0d test_wiki_scheduler.py\n        \u2514\u2500\u2500 \ud83d\udc0d test_wiki_site.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
+          "output": null,
+          "duration_ms": 55060.31725741923,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_NTkvv5ih7LNIBvrLYrnl7846",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/app.py",
+            "pattern": "def discover_routers",
+            "context_lines": 60
+          },
+          "response": "# api/codx/junior/app.py \u2014 pattern `def discover_routers` (0 match(es); 676 lines)\n\n> No line matches `def discover_routers`. The pattern is case-sensitive. Try a shorter pattern, or read a line range if you know where the code is.",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/app.py",
+          "duration_ms": 612.7309780567884,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_t86znguTkH5G0au1lKBa6761",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/media/providers/image_local.py",
+            "max_chars": 6000
+          },
+          "response": "### Outline (33 declaration(s), added automatically because the file is large; request only the lines you need)\nLine numbers below can be used with `start_line`/`end_line` or `pattern`.\n```\n    87| def _normalize_color(value: Any, default: str) -> str:\n    99| def normalize_cover_request(request: Optional[Dict[str, Any]]) -> Dict[str, Any]:\n   137| def cover_cache_key(\n   162| def cover_cache_path(store: Any, cache_key: str) -> Path:\n   167| def load_cached_asset(store: Any, cache_key: str) -> Optional[MediaAsset]:\n   192| def save_cached_asset(store: Any, cache_key: str, asset: MediaAsset) -> None:\n   207| def _pillow():\n   218| def _font_path() -> Optional[str]:\n   229| def _bundled_fonts() -> List[str]:\n   249| def _load_font(size: int):\n   269| def _text_width(draw: Any, text: str, font: Any) -> float:\n   280| def _split_long_word(draw: Any, word: str, font: Any, max_width: float) -> List[str]:\n   296| def _ellipsize(draw: Any, text: str, font: Any, max_width: float) -> str:\n   304| def _wrap_text(\n   342| def _rgb(color: str) -> Tuple[int, int, int]:\n   348| def _mix(first: Tuple[int, int, int], second: Tuple[int, int, int], ratio: float):\n   361| def render_cover_png(request: Optional[Dict[str, Any]]) -> bytes:\n   449| class LocalCoverProvider:\n   455| def info(self) -> ProviderInfo:\n   467| def available(self) -> bool:\n   471| def estimate(self, request: dict) -> float:\n   475| def run(self, request: dict) -> Dict[str, Any]:\n   488| def render(self, request: dict, store: Any) -> MediaAsset:\n   514| class ComfyUINotConfigured(NoProviderAvailable):\n   517| def __init__(self, reason: str) -> None:\n   523| class ComfyUICoverProvider:\n   534| def __init__(\n   551| def info(self) -> ProviderInfo:\n   563| def reason(self) -> str:\n   569| def available(self) -> bool:\n   575| def _probe(self) -> bool:\n   595| def estimate(self, request: dict) -> float:\n   599| def run(self, request: dict) -> Dict[str, Any]:\n```\n\n# api/codx/junior/media/providers/image_local.py (lines 1-168 of 601)\n```py api/codx/junior/media/providers/image_local.py\n\"\"\"Local media providers: the offline cover renderer and the ComfyUI stub.\n\n``LocalCoverProvider`` renders a deterministic cover PNG with Pillow. It needs\nno network, no model and no API key, so it is the provider that always works:\nthe channel can build episode covers on a disconnected machine.\n\n``ComfyUICoverProvider`` is the real target (ComfyUI runs locally) but it stays\noptional: it is only available when ``COMFYUI_URL`` (or an explicit ``url``) is\nset and reachable, it never touches the network at import time, and ``run``\nraises ``NoProviderAvailable`` while no workflow is wired.\n\nBoth providers cache through the content addressed ``MediaStore``: the cache key\nis the sha256 of ``{provider, model, params}`` (``json.dumps(..., sort_keys=True)``)\nand the ``key -> asset`` mapping is kept next to the assets, so asking for the\nsame cover twice returns the stored asset instead of rendering it again.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport hashlib\nimport io\nimport json\nimport logging\nimport os\nimport re\nimport string\nimport urllib.request\nfrom functools import lru_cache\nfrom pathlib import Path\nfrom typing import Any, Dict, List, Optional, Tuple\n\nfrom codx.junior.media.model import MediaAsset, ProviderInfo\nfrom codx.junior.media.providers import NoProviderAvailable\n\nlogger = logging.getLogger(__name__)\n\nLOCAL_COVER_PROVIDER = \"local-cover\"\nCOMFYUI_PROVIDER = \"comfyui\"\nCOVER_MODEL = \"pillow-cover-v1\"\nCOMFYUI_MODEL = \"comfyui-cover-v1\"\n\nPNG_MIME = \"image/png\"\nPNG_MAGIC = b\"\\x89PNG\\r\\n\\x1a\\n\"\n\n# Supported cover formats and the resolution each one renders at\nFORMAT_SIZES: Dict[str, Tuple[int, int]] = {\n    \"16:9\": (1920, 1080),\n    \"9:16\": (1080, 1920),\n}\nDEFAULT_FORMAT = \"16:9\"\n\nDEFAULT_THEME = {\n    \"bg\": \"#0f1220\",\n    \"fg\": \"#f5f7ff\",\n    \"accent\": \"#4f8cff\",\n}\n\n# Sidecar file (next to the assets) that maps a cache key to a stored asset\nCACHE_SIDECAR_SUFFIX = \".cover.json\"\n# Bumped whenever the",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/providers/image_local.py",
+          "duration_ms": 642.2385983169079,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_YR5t2F2Y4vPv2NMp6rBa7722",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/app.py",
+            "start_line": 150,
+            "end_line": 240
+          },
+          "response": "# api/codx/junior/app.py (lines 150-240 of 676)\n```py api/codx/junior/app.py\n    try:\n        path = request.url.path\n        if path in _API_LOG_SKIP_PATHS or path.startswith(_API_LOG_SKIP_PREFIXES):\n            return\n\n        route = request.scope.get(\"route\")\n        route_path = getattr(route, \"path\", None) or path\n        endpoint_name = getattr(route, \"name\", \"\") or \"\"\n\n        session = getattr(request.state, \"codx_junior_session\", None)\n        username = \"\"\n        project_name = \"\"\n        project_id = \"\"\n        if session is not None:\n            try:\n                username = session.user.username if session.user else \"\"\n            except Exception:\n                username = \"\"\n            try:\n                project_name = session.settings.project_name or \"\"\n                project_id = session.settings.project_id or \"\"\n            except Exception:\n                project_name = \"\"\n                project_id = \"\"\n\n        response_size = 0\n        if response is not None:\n            try:\n                response_size = int(response.headers.get(\"content-length\", 0) or 0)\n            except (ValueError, AttributeError):\n                response_size = 0\n\n        _api_logs_instance.record(\n            path=route_path,\n            method=request.method,\n            status_code=status_code,\n            duration_seconds=duration_seconds,\n            endpoint=endpoint_name,\n            request_id=request.headers.get(\"x-request-id\"),\n            username=username,\n            project_name=project_name,\n            project_id=project_id,\n            session_id=request.headers.get(\"x-sid\"),\n            client_ip=request.client.host if request.client else \"\",\n            query_string=str(request.url.query or \"\"),\n            response_size_bytes=response_size,\n            error=error,\n        )\n    except Exception as ex:\n        logger.error(\"record_api_call failed: %s\", ex)\n\n\napp = FastAPI(\n    title=\"codx-junior API\",\n    description=\"API for codx-junior\",\n    version=\"1.0\",\n    openapi_url=\"/api/openapi.json\",\n    docs_url=\"/api/docs\",\n    redoc_url=\"/api/redoc\"\n)\n\nsio_asgi_app = socketio.ASGIApp(sio, app, socketio_path=\"/api/socket.io\")\napp.mount(\"/api/socket.io\", sio_asgi_app)\n\n# Dynamically load and register all routers\ndef load_routers():\n    \"\"\"Load all discovered routers and register them with the FastAPI app.\"\"\"\n    routers = discover_routers()\n    for router_config in routers:\n        try:\n            app.include_router(\n                router_config['router'],\n                prefix=router_config['prefix']\n            )\n            logger.info(f\"Registered router from {router_config['module']}\")\n        except Exception as e:\n            logger.error(f\"Failed to register router {router_config['module']}: {e}\")\n\nload_routers()\n\n# The log explorer (``/api/logs/explorer/*``, see ``api/log_explorer.py``) is one of\n# the dynamically discovered routers. Verify it right after registration: a renamed\n# or broken module would otherwise only surface as a 404 in the client.\nif not any(str(getattr(route, \"path\", \"\")).startswith(\"/api/logs/explorer\") for route in app.routes):\n    logger.error(\"Log explorer router not registered: /api/logs/explorer/* is missing\")\n\nAPP_STOP_EVENT = asyncio.Event()\n    \n@app.on_event(\"startup\")\nasync def startup_event():\n    start_background_services(APP_STOP_EVENT)\n```\n\n> Showing the requested range lines 150-240 of 676; 436 line(s) follow it. Request them only if needed, or use `pattern=...` / the outline to jump to a symbol.",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/app.py",
+          "duration_ms": 630.8037638664246,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_fAEwkS5MwZ3gJGwrXVt62715",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/media/providers/image_local.py",
+            "start_line": 440,
+            "end_line": 520
+          },
+          "response": "# api/codx/junior/media/providers/image_local.py (lines 440-520 of 601)\n```py api/codx/junior/media/providers/image_local.py\n    image.save(buffer, format=\"PNG\")\n    return buffer.getvalue()\n\n\n# ---------------------------------------------------------------------------\n# providers\n# ---------------------------------------------------------------------------\n\n\nclass LocalCoverProvider:\n    \"\"\"Render episode covers locally with Pillow: free, offline, deterministic.\"\"\"\n\n    name = LOCAL_COVER_PROVIDER\n    model = COVER_MODEL\n\n    def info(self) -> ProviderInfo:\n        available = self.available()\n        return ProviderInfo(\n            name=self.name,\n            capability=\"image\",\n            available=available,\n            local=True,\n            model=self.model,\n            reason=None if available else \"Pillow (PIL) is not importable\",\n            cost_per_unit=0.0,\n        )\n\n    def available(self) -> bool:\n        \"\"\"True when Pillow can be imported (it ships with the api).\"\"\"\n        return _pillow() is not None\n\n    def estimate(self, request: dict) -> float:\n        \"\"\"Local rendering is free.\"\"\"\n        return 0.0\n\n    def run(self, request: dict) -> Dict[str, Any]:\n        \"\"\"Render the cover and return the PNG payload.\"\"\"\n        params = normalize_cover_request(request)\n        content = render_cover_png(params)\n        return {\n            \"cache_key\": cover_cache_key(params, provider=self.name, model=self.model),\n            \"mime\": PNG_MIME,\n            \"content\": content,\n            \"format\": params[\"format\"],\n            \"width\": params[\"width\"],\n            \"height\": params[\"height\"],\n        }\n\n    def render(self, request: dict, store: Any) -> MediaAsset:\n        \"\"\"Return the cached cover asset of ``request``, rendering it on miss.\n\n        ``store`` is a ``MediaStore``; the asset is content addressed, so the\n        same cover never produces a duplicate file.\n        \"\"\"\n        cache_key = cover_cache_key(request, provider=self.name, model=self.model)\n        cached = load_cached_asset(store, cache_key)\n        if cached is not None:\n            logger.debug(\"cover cache hit: %s\", cache_key)\n            return cached\n\n        content = render_cover_png(normalize_cover_request(request))\n        asset = store.put_asset(\n            content,\n            kind=\"image\",\n            mime=PNG_MIME,\n            provider=self.name,\n            model=self.model,\n            ext=\".png\",\n        )\n        save_cached_asset(store, cache_key, asset)\n        logger.info(\"cover rendered: asset=%s key=%s\", asset.asset_id, cache_key)\n        return asset\n\n\nclass ComfyUINotConfigured(NoProviderAvailable):\n    \"\"\"Raised when ComfyUI is asked to render a cover it cannot produce yet.\"\"\"\n\n    def __init__(self, reason: str) -> None:\n        super().__init__(\"image\", tried=[COMFYUI_PROVIDER])\n        self.reason = str(reason)\n        self.args = (f\"comfyui cover provider is unavailable: {self.reason}\",)\n```\n\n> Showing the requested range lines 440-520 of 601; 81 line(s) follow it. Request them only if needed, or use `pattern=...` / the outline to jump to a symbol.",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/providers/image_local.py",
+          "duration_ms": 614.2400987446308,
+          "error": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_2JU4E4Zrrc7z6DmIa6ZR3541",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/api/__init__.py"
+          },
+          "response": "# api/codx/junior/api/__init__.py (lines 1-85 of 85)\n```py api/codx/junior/api/__init__.py\n\"\"\"\nShared API utilities used across multiple routers.\n\"\"\"\n\nimport logging\nimport os\nimport importlib\nfrom pathlib import Path\nfrom typing import List\n\nfrom fastapi import Depends, HTTPException, Request\n\nfrom codx.junior.model.model import CodxUser\nfrom codx.junior.security.user_management import get_authenticated_user\nfrom codx.junior.engine import CODXJuniorSession\n\nlogger = logging.getLogger(__name__)\n\n\ndef require_admin(user: CodxUser = Depends(get_authenticated_user)) -> CodxUser:\n    \"\"\"Dependency that raises 403 unless the authenticated user is an admin.\"\"\"\n    if not user or user.role != \"admin\":\n        logger.error(\"Access denied for user: %s\", user.username if user else \"anonymous\")\n        raise HTTPException(status_code=403, detail=\"Access denied. Admins only.\")\n    return user\n\ndef get_current_session(request: Request) -> CODXJuniorSession:\n    \"\"\"\n    Extract the active CODXJuniorSession from the incoming request state.\n\n    This mirrors the pattern used in the wiki router where the session is\n    injected into ``request.state`` by middleware before reaching the endpoint.\n\n    Args:\n        request: The incoming HTTP request.\n\n    Returns:\n        The active ``CODXJuniorSession`` attached to the request state.\n    \"\"\"\n    return request.state.codx_junior_session\n\n\ndef discover_routers() -> List[dict]:\n    \"\"\"\n    Dynamically discover all routers in the api package.\n    Each router module should export a 'router' attribute.\n    \n    Returns:\n        List of dicts with 'router', 'prefix', and 'module' keys.\n    \"\"\"\n    routers = []\n    api_package_path = Path(__file__).parent\n    \n    # Get all Python files in the api directory (excluding __init__.py and test files)\n    router_files = [\n        f.stem for f in api_package_path.glob('*.py')\n        if f.is_file() and f.stem not in ['__init__', '__pycache__']\n        and not f.name.startswith('test_')\n    ]\n    \n    for module_name in sorted(router_files):\n        try:\n            # Import the module dynamically\n            module = importlib.import_module(f'codx.junior.api.{module_name}')\n            \n            # Check if module has a 'router' attribute\n            if hasattr(module, 'router'):\n                router_obj = getattr(module, 'router')\n                routers.append({\n                    'router': router_obj,\n                    'prefix': '/api',\n                    'module': module_name\n                })\n                logger.info(f\"Loaded router from module: {module_name}\")\n            else:\n                logger.debug(f\"Module {module_name} does not export 'router' attribute\")\n        except ImportError as e:\n            logger.error(f\"Failed to import router module {module_name}: {e}\")\n        except Exception as e:\n            logger.error(f\"Error loading router from {module_name}: {e}\")\n    \n    logger.info(f\"Successfully discovered {len(routers)} routers\")\n    return routers\n\n# Made with \u2764\ufe0f by codx-junior\n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/__init__.py",
+          "duration_ms": 571.3050812482834,
+          "error": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_01_DH8HbNV8SRas3gqEi55J7758",
+          "status": "done",
+          "request": {
+            "query": "discover_routers",
+            "include": "*.py",
+            "limit": 5
+          },
+          "response": "",
+          "output": null,
+          "duration_ms": 178364.37727697194,
+          "error": null
+        }
+      ],
+      "lifecycle_events": [
+        {
+          "status": "running",
+          "run_id": "4cc7c262966a",
+          "duration_ms": null,
+          "error": null
+        }
+      ],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "biblio",
+        "file_editor",
+        "git",
+        "project",
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": false,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    }
+  ],
+  "created_at": "2026-11-13 11:17:06.873645",
+  "updated_at": "2026-11-13T12:06:23.242986",
+  "mode": "chat",
+  "kanban_id": "",
+  "column_id": "",
+  "board": "Project channel",
+  "column": "Blocked",
+  "sprints": [
+    "Run: Project channel M0"
+  ],
+  "priority": "medium",
+  "due_date": null,
+  "progress": 100,
+  "assignees": [],
+  "sort_index": null,
+  "columns": [],
+  "chat_index": 0,
+  "url": "",
+  "branch": "",
+  "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/tasks/Project channel/Blocked/media-worker-wire-up-api-media-router.c8bb1af4-dfc4-4c03-bf92-6b7162bd6bd8.json",
+  "llm_model": "",
+  "estimation_cost": 1799.5066083,
+  "cost": 0.0,
+  "run_id": "7bbcd9d8-2f84-4000-8b99-190d242b4d4e",
+  "run_status": null,
+  "run_step_id": "worker-and-api",
+  "visibility": "",
+  "remote_url": "",
+  "attachments": [],
+  "knowledge_topics": [],
+  "chat_links": [],
+  "pr_view": {},
+  "history": [],
+  "session_id": null,
+  "auto_initialize": false,
+  "ignore_parent_knowledge": true,
+  "ignore_parent_files": true,
+  "external_source": null,
+  "external_id": null,
+  "external_parent_id": null,
+  "external_instance_id": null,
+  "external_status": null,
+  "external_url": null,
+  "external_updated_at": null,
+  "harness": null,
+  "harness_instance_id": null,
+  "harness_task_id": null,
+  "harness_parent_task_id": null,
+  "harness_mode": null,
+  "harness_status": null,
+  "harness_model": null,
+  "harness_usage": {},
+  "harness_cost": null,
+  "harness_metadata": {}
+}

@@ -53,6 +53,19 @@ GIT_ACCESS_TOKEN_ENV_VARS = [
     "GITLAB_TOKEN",
     "BITBUCKET_TOKEN",
 ]
+
+# Default GitHub REST API base. Projects on GitHub Enterprise override it with
+# the `github_api_base` setting (e.g. https://github.example.com/api/v3).
+DEFAULT_GITHUB_API_BASE = "https://api.github.com"
+
+# Environment variables checked (in order) when no GitHub token is stored in
+# the settings, so a container can use the integration without writing the
+# secret to disk
+GITHUB_TOKEN_ENV_VARS = [
+    "CODX_JUNIOR_GITHUB_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+]
         
 class CODXJuniorSettings(BaseModel):
     project_id: Optional[str] = Field(default=None)
@@ -236,6 +249,31 @@ class CODXJuniorSettings(BaseModel):
         )
     )
 
+    # GitHub integration (repository listing and repository connect). It is
+    # feature flagged and disabled by default so an installation that does not
+    # use GitHub never calls api.github.com. The token is a secret: the API
+    # exposes `has_github_token` / `masked_github_token` and never the value.
+    github_enabled: Optional[bool] = Field(
+        default=False,
+        description=(
+            "Enable the GitHub integration (repository listing and connect)"
+        )
+    )
+    github_api_base: Optional[str] = Field(
+        default=DEFAULT_GITHUB_API_BASE,
+        description=(
+            "GitHub REST API base URL. Override it for GitHub Enterprise "
+            "(e.g. https://github.example.com/api/v3)"
+        )
+    )
+    github_token: Optional[str] = Field(
+        default="",
+        description=(
+            "GitHub token used by the integration. Supports ${ENV_VAR} "
+            "references so the secret can stay out of project.json"
+        )
+    )
+
     def __str__(self):
         return str(self.model_dump())
 
@@ -404,6 +442,115 @@ class CODXJuniorSettings(BaseModel):
             '••••••••a1b2'
         """
         token = self.get_git_access_token()
+        if not token:
+            return ""
+        if len(token) <= 8:
+            return GIT_ACCESS_TOKEN_MASK
+        return f"{GIT_ACCESS_TOKEN_MASK}{token[-4:]}"
+
+    def is_github_enabled(self) -> bool:
+        """
+        Return True when the GitHub integration is enabled for this project.
+
+        The feature flag is disabled by default: nothing is sent to GitHub (and
+        no token is looked up) unless the project enables the integration.
+
+        Returns:
+            The `github_enabled` setting as a boolean.
+
+        Example:
+            >>> settings.github_enabled = True
+            >>> settings.is_github_enabled()
+            True
+        """
+        return bool(self.github_enabled)
+
+    def get_github_api_base(self) -> str:
+        """
+        Return the GitHub REST API base URL.
+
+        A trailing slash is removed so the client can always join paths with a
+        single `/`.
+
+        Returns:
+            The configured base URL, `https://api.github.com` when not set.
+
+        Example:
+            >>> settings.github_api_base = "https://github.example.com/api/v3/"
+            >>> settings.get_github_api_base()
+            'https://github.example.com/api/v3'
+        """
+        return (
+            str(self.github_api_base or "").strip() or DEFAULT_GITHUB_API_BASE
+        ).rstrip("/")
+
+    def get_github_token(self) -> str:
+        """
+        Return the GitHub token used by the integration.
+
+        Resolution order:
+            1. the project setting (`github_token`)
+            2. the environment (`CODX_JUNIOR_GITHUB_TOKEN`, `GITHUB_TOKEN`,
+               `GH_TOKEN`)
+
+        The stored value may reference an environment variable
+        (`${GITHUB_TOKEN}`), so the secret never has to be written into
+        `project.json`. A reference to an unset variable is treated as "no
+        token" instead of being sent to GitHub as a literal.
+
+        Returns:
+            Token string, empty when no usable token is configured.
+
+        Example:
+            Read it from the environment (recommended):
+                >>> settings.github_token = "${GITHUB_TOKEN}"
+                >>> bool(settings.get_github_token())
+                True
+
+            A literal value is accepted too, but then it lives in
+            `project.json`: prefer the reference.
+        """
+        token = str(self.github_token or "").strip()
+
+        if token:
+            expanded = os.path.expandvars(token).strip()
+            if expanded and not (expanded.startswith("${") and expanded.endswith("}")):
+                return expanded
+            logger.warning(
+                "GitHub token references an unset environment variable, ignoring it"
+            )
+
+        for env_name in GITHUB_TOKEN_ENV_VARS:
+            token = str(os.environ.get(env_name, "") or "").strip()
+            if token:
+                return token
+
+        return ""
+
+    def has_github_token(self) -> bool:
+        """
+        Return True when a usable GitHub token is configured.
+
+        Safe to expose to any client: it tells the UI whether the integration is
+        authenticated without revealing the secret.
+        """
+        return bool(self.get_github_token())
+
+    def masked_github_token(self) -> str:
+        """
+        Return a masked hint of the GitHub token, safe to send to the UI.
+
+        Only the last 4 characters are kept, so an admin can recognize which
+        token is stored while the secret never leaves the server.
+
+        Returns:
+            Hint such as '••••••••a1b2', empty when no token is configured.
+
+        Example:
+            >>> settings.masked_github_token()
+            '••••••••a1b2'
+        """
+        token = self.get_github_token()
         if not token:
             return ""
         if len(token) <= 8:

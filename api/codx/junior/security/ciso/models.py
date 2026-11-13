@@ -3,7 +3,7 @@
 The CISO subsystem answers one question everywhere in the platform: *may this
 artifact, command or answer cross the trust boundary?*
 
-Two design rules make the answer trustworthy:
+Three design rules make the answer trustworthy:
 
 * **Deterministic.** Detectors use regular expressions, entropy and structural
   heuristics. No security decision is delegated to an LLM, so a verdict is
@@ -13,14 +13,122 @@ Two design rules make the answer trustworthy:
   signals into a single :class:`SecurityVerdict`. Severity therefore never
   implies an action by itself: the same HIGH finding may block a git commit and
   only warn inside a document.
+* **Dependency-free.** These models are plain dataclasses on purpose: the
+  package must import on *any* interpreter, because the very same code runs
+  inside the API, in a git hook (often from a worktree with no virtualenv), in
+  a container image and in CI. A security gate that needs the application
+  dependency tree is a gate that stops running exactly when it is needed: it
+  dies with an ``ImportError`` at commit time instead of scanning.
 
 Made with ❤️ by codx-junior
 """
 
+import copy as _copy
+from dataclasses import dataclass, fields as _dataclass_fields
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, get_args, get_origin
 
-from pydantic import BaseModel, Field
+_NONE_TYPE = type(None)
+
+
+@dataclass
+class CisoModel:
+    """Base class of the CISO models: plain dataclasses, no third-party import.
+
+    It exposes the three attributes the rest of the package (and the tools)
+    expect from a model, so replacing the previous pydantic base changed no
+    call site:
+
+    * ``model_dump(mode="json")`` -> JSON-safe ``dict`` (enums become values),
+    * ``to_dict()`` / ``dict()`` -> the same, for older callers,
+    * ``model_copy(update={...})`` -> a copy with fields overridden.
+
+    Values are coerced to their declared enum or nested model on construction,
+    which keeps a verdict loaded from ``.codx`` JSON working when its enums come
+    back as plain strings.
+    """
+
+    def model_dump(self, mode: str = "python", **_: Any) -> Dict[str, Any]:
+        """Return the model as a ``dict`` (``mode="json"`` stringifies enums)."""
+        return _plain(self, json_mode=(mode == "json"))
+
+    def dict(self, **kwargs: Any) -> Dict[str, Any]:
+        """Alias of :meth:`model_dump`, kept for pydantic-v1 style callers."""
+        return self.model_dump(**kwargs)
+
+    def model_copy(
+        self, update: Optional[Dict[str, Any]] = None, deep: bool = False
+    ) -> "CisoModel":
+        """Return a copy of this model, optionally with *update* applied."""
+        clone = _copy.deepcopy(self) if deep else _copy.copy(self)
+        for key, value in (update or {}).items():
+            setattr(clone, key, value)
+        return clone
+
+    def __post_init__(self) -> None:
+        """Coerce every field to its declared enum/nested-model type."""
+        for model_field in _dataclass_fields(self):
+            value = getattr(self, model_field.name)
+            setattr(self, model_field.name, _coerce(value, model_field.type))
+
+
+def _coerce_enum(value: Any, enum_type: type) -> Any:
+    """Return *value* as a member of *enum_type* when it can be resolved."""
+    if value is None or isinstance(value, enum_type):
+        return value
+    if isinstance(value, str):
+        for member in enum_type:
+            if value == member.value or value.lower() == member.name.lower():
+                return member
+    return value
+
+
+def _coerce(value: Any, hint: Any) -> Any:
+    """Coerce *value* to *hint* (enum, nested model or list of them)."""
+    if value is None or hint is Any:
+        return value
+    if hint is int or hint is float:
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return hint(value)
+        return value
+    origin = get_origin(hint)
+    if origin is not None:
+        args = get_args(hint)
+        if origin is list or origin is List:
+            item_hint = args[0] if args else Any
+            if isinstance(value, (list, tuple)):
+                return [_coerce(item, item_hint) for item in value]
+            return value
+        # Optional[X] / Union[...]: coerce with the first matching member.
+        for arg in args:
+            if arg is _NONE_TYPE or arg is type(None):
+                continue
+            coerced = _coerce(value, arg)
+            if coerced is not value:
+                return coerced
+        return value
+    if isinstance(hint, type):
+        if issubclass(hint, Enum):
+            return _coerce_enum(value, hint)
+        if issubclass(hint, CisoModel) and isinstance(value, dict):
+            return hint(**value)
+    return value
+
+
+def _plain(value: Any, json_mode: bool) -> Any:
+    """Return *value* with models expanded to dicts (and enums to values)."""
+    if isinstance(value, Enum):
+        return value.value if json_mode else value
+    if isinstance(value, CisoModel):
+        return {
+            model_field.name: _plain(getattr(value, model_field.name), json_mode)
+            for model_field in _dataclass_fields(value)
+        }
+    if isinstance(value, (list, tuple)):
+        return [_plain(item, json_mode) for item in value]
+    if isinstance(value, dict):
+        return {key: _plain(item, json_mode) for key, item in value.items()}
+    return value
 
 
 class SecuritySeverity(str, Enum):
@@ -31,6 +139,52 @@ class SecuritySeverity(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+#: Ordering of the severities (higher is worse), used by report filters.
+SEVERITY_RANK: Dict[SecuritySeverity, int] = {
+    SecuritySeverity.INFO: 0,
+    SecuritySeverity.LOW: 1,
+    SecuritySeverity.MEDIUM: 2,
+    SecuritySeverity.HIGH: 3,
+    SecuritySeverity.CRITICAL: 4,
+}
+
+
+def severity_rank(severity: Optional[SecuritySeverity]) -> int:
+    """Return the numeric rank of *severity* (``0`` when unknown)."""
+    return SEVERITY_RANK.get(severity, 0) if severity else 0
+
+
+def parse_severity(value: Any) -> Optional[SecuritySeverity]:
+    """
+    Coerce *value* to a :class:`SecuritySeverity`.
+
+    Args:
+        value: A ``SecuritySeverity``, its string name/value, or ``None``.
+
+    Returns:
+        The severity, or ``None`` when the value is empty or unknown.
+    """
+    if isinstance(value, SecuritySeverity):
+        return value
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    for severity in SecuritySeverity:
+        if raw in (severity.value, severity.name.lower()):
+            return severity
+    return None
+
+
+def meets_minimum(
+    severity: Optional[SecuritySeverity],
+    minimum: Optional[SecuritySeverity],
+) -> bool:
+    """Return True when *severity* is at least *minimum*."""
+    if minimum is None:
+        return True
+    return severity_rank(severity) >= severity_rank(minimum)
 
 
 class SecurityCategory(str, Enum):
@@ -80,31 +234,33 @@ class SecurityAction(str, Enum):
     BLOCK = "block"
 
 
-class SecurityFinding(BaseModel):
+@dataclass
+class SecurityFinding(CisoModel):
     """A single signal produced by a detector.
 
     ``excerpt`` is ALWAYS already redacted: a finding is copied into logs, chat
     messages and audit records, so it must never carry the secret it reports.
     """
 
-    rule_id: str = Field(description="Stable detector identifier, e.g. 'secret.aws-access-key'")
-    title: str = Field(default="", description="Short human readable title")
+    rule_id: str
+    title: str = ""
     severity: SecuritySeverity = SecuritySeverity.MEDIUM
     category: SecurityCategory = SecurityCategory.POLICY
-    reason: str = Field(default="", description="Why the signal fired")
-    path: Optional[str] = Field(default=None, description="File the finding belongs to")
-    line: Optional[int] = Field(default=None, description="1-based line number")
-    excerpt: str = Field(default="", description="Redacted excerpt around the match")
-    evidence: str = Field(default="", description="Redacted matched value (never the raw secret)")
-    remediation: str = Field(default="", description="What to do to fix it")
-    confidence: Optional[float] = Field(default=None, description="0..1 detector confidence")
+    reason: str = ""
+    path: Optional[str] = None
+    line: Optional[int] = None
+    excerpt: str = ""
+    evidence: str = ""
+    remediation: str = ""
+    confidence: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON serialisable representation."""
         return self.model_dump(mode="json")
 
 
-class SecurityVerdict(BaseModel):
+@dataclass
+class SecurityVerdict(CisoModel):
     """Aggregated CISO decision for one artifact, command or answer."""
 
     domain: SecurityDomain = SecurityDomain.FILE_WRITE
@@ -114,16 +270,17 @@ class SecurityVerdict(BaseModel):
     requires_approval: bool = False
     risk_score: float = 0.0
     highest_severity: Optional[SecuritySeverity] = None
-    findings: List[SecurityFinding] = Field(default_factory=list)
+    findings: List[SecurityFinding] = None
     summary: str = ""
-    redacted_text: Optional[str] = Field(
-        default=None,
-        description="Text with secrets neutralised; None when nothing was redacted",
-    )
-    rules_evaluated: int = Field(default=0, description="Number of rules that ran")
-    truncated: bool = Field(
-        default=False, description="True when the scanned payload was cut to the size cap"
-    )
+    redacted_text: Optional[str] = None
+    rules_evaluated: int = 0
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        """Coerce the fields and guarantee the mutable default of findings."""
+        if self.findings is None:
+            self.findings = []
+        super().__post_init__()
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON serialisable representation."""
@@ -137,8 +294,83 @@ class SecurityVerdict(BaseModel):
             counts[key] = counts.get(key, 0) + 1
         return counts
 
+    def findings_at_least(
+        self, minimum: Optional[SecuritySeverity]
+    ) -> List[SecurityFinding]:
+        """
+        Return the findings whose severity is at least *minimum*.
 
-class CisoPolicy(BaseModel):
+        Args:
+            minimum: Severity floor; ``None`` keeps every finding.
+
+        Returns:
+            List[SecurityFinding]: Findings sorted by descending severity.
+        """
+        kept = [f for f in self.findings if meets_minimum(f.severity, minimum)]
+        return sorted(kept, key=lambda f: severity_rank(f.severity), reverse=True)
+
+    def filtered(self, minimum: Optional[SecuritySeverity]) -> "SecurityVerdict":
+        """
+        Return a copy of this verdict keeping only findings >= *minimum*.
+
+        The risk score, the action and the domain are preserved (they were
+        computed from the whole payload); only the finding list and the highest
+        severity are recomputed, so a filtered verdict can be rendered safely.
+        """
+        if minimum is None:
+            return self
+        kept = self.findings_at_least(minimum)
+        highest = max(
+            (finding.severity for finding in kept),
+            key=severity_rank,
+            default=None,
+        )
+        return self.model_copy(
+            update={"findings": kept, "highest_severity": highest}
+        )
+
+
+def _default_block_severities() -> List[SecuritySeverity]:
+    """Severities that always block, in every domain."""
+    return [SecuritySeverity.CRITICAL]
+
+
+def _default_block_categories() -> List[SecurityCategory]:
+    """Categories blocked once they reach ``block_above``."""
+    return [
+        SecurityCategory.SECRET,
+        SecurityCategory.MALICIOUS,
+        SecurityCategory.DATA_EXFILTRATION,
+    ]
+
+
+def _default_strict_domains() -> List[SecurityDomain]:
+    """Domains where a finding at ``block_above`` blocks instead of asking."""
+    # Every domain that PERSISTS or EXECUTES an artifact. A file write belongs
+    # here with the git ones: writing the file is what puts the secret on disk,
+    # so redacting it and continuing would leave the repository one `git add`
+    # away from the incident.
+    return [
+        SecurityDomain.FILE_WRITE,
+        SecurityDomain.GIT_COMMIT,
+        SecurityDomain.PULL_REQUEST,
+        SecurityDomain.COMMAND,
+        SecurityDomain.CONTAINER,
+        SecurityDomain.DEPLOY,
+    ]
+
+
+def _default_ignore_paths() -> List[str]:
+    """Path fragments skipped by the file scanners (vendored/generated)."""
+    return [
+        "node_modules/", "dist/", "build/", ".venv/", "venv/",
+        "__pycache__/", ".mypy_cache/", ".pytest_cache/", "package-lock.json",
+        "poetry.lock", "yarn.lock",
+    ]
+
+
+@dataclass
+class CisoPolicy(CisoModel):
     """Security policy used to decide what happens with the findings.
 
     The defaults are *fail-safe but not hostile*: secrets and clearly malicious
@@ -146,87 +378,46 @@ class CisoPolicy(BaseModel):
     else warns. Deployments can tighten or relax it through project settings.
     """
 
-    enabled: bool = Field(default=True, description="Master switch of the CISO checks")
+    enabled: bool = True
 
-    block_severities: List[SecuritySeverity] = Field(
-        default_factory=lambda: [SecuritySeverity.CRITICAL],
-        description="Severities that always block, in every domain",
-    )
-    block_categories: List[SecurityCategory] = Field(
-        default_factory=lambda: [
-            SecurityCategory.SECRET,
-            SecurityCategory.MALICIOUS,
-            SecurityCategory.DATA_EXFILTRATION,
-        ],
-        description="Categories blocked when they reach 'block_above' severity",
-    )
-    block_above: SecuritySeverity = Field(
-        default=SecuritySeverity.HIGH,
-        description="Least severity that turns a blocked category into a BLOCK",
-    )
-    approval_above: SecuritySeverity = Field(
-        default=SecuritySeverity.MEDIUM,
-        description="Least severity that requires human approval instead of blocking",
-    )
-    warn_above: SecuritySeverity = Field(
-        default=SecuritySeverity.LOW,
-        description="Least severity that still produces a warning",
-    )
+    block_severities: List[SecuritySeverity] = None
+    block_categories: List[SecurityCategory] = None
+    block_above: SecuritySeverity = SecuritySeverity.HIGH
+    approval_above: SecuritySeverity = SecuritySeverity.MEDIUM
+    warn_above: SecuritySeverity = SecuritySeverity.LOW
 
-    redact_secrets: bool = Field(
-        default=True, description="Neutralise detected secrets in outputs and logs"
-    )
-    fail_closed: bool = Field(
-        default=False,
-        description=(
-            "When True an internal error of the scanner blocks the operation "
-            "instead of letting it through (fail-open)."
-        ),
-    )
+    redact_secrets: bool = True
+    fail_closed: bool = False
 
-    strict_domains: List[SecurityDomain] = Field(
-        default_factory=lambda: [
-            SecurityDomain.GIT_COMMIT,
-            SecurityDomain.PULL_REQUEST,
-            SecurityDomain.COMMAND,
-            SecurityDomain.CONTAINER,
-            SecurityDomain.DEPLOY,
-        ],
-        description="Domains where any HIGH finding blocks instead of asking for approval",
-    )
-    enabled_domains: List[SecurityDomain] = Field(
-        default_factory=lambda: list(SecurityDomain),
-        description="Domains where the policy runs at all",
-    )
+    strict_domains: List[SecurityDomain] = None
+    enabled_domains: List[SecurityDomain] = None
 
-    ignore_paths: List[str] = Field(
-        default_factory=lambda: [
-            "node_modules/", "dist/", "build/", ".venv/", "venv/",
-            "__pycache__/", ".mypy_cache/", ".pytest_cache/", "package-lock.json",
-            "poetry.lock", "yarn.lock",
-        ],
-        description="Path fragments skipped by the file scanners",
-    )
-    ignore_rules: List[str] = Field(
-        default_factory=list, description="Rule ids silenced by this policy"
-    )
-    allow_secret_files: List[str] = Field(
-        default_factory=list,
-        description="Paths allowed to contain secret-looking literals (e.g. '.env.example')",
-    )
+    ignore_paths: List[str] = None
+    ignore_rules: List[str] = None
+    allow_secret_files: List[str] = None
 
-    entropy_threshold: float = Field(
-        default=4.2, description="Shannon entropy above which a token is suspicious"
-    )
-    min_secret_length: int = Field(
-        default=20, description="Least length of a high-entropy token worth flagging"
-    )
-    max_scan_bytes: int = Field(
-        default=1024 * 1024, description="Hard cap on the payload a single scan reads"
-    )
-    max_excerpt_chars: int = Field(
-        default=160, description="Length of the redacted excerpt attached to a finding"
-    )
+    entropy_threshold: float = 4.2
+    min_secret_length: int = 20
+    max_scan_bytes: int = 1024 * 1024
+    max_excerpt_chars: int = 160
+
+    def __post_init__(self) -> None:
+        """Materialise the list defaults and coerce the enum fields."""
+        if self.block_severities is None:
+            self.block_severities = _default_block_severities()
+        if self.block_categories is None:
+            self.block_categories = _default_block_categories()
+        if self.strict_domains is None:
+            self.strict_domains = _default_strict_domains()
+        if self.enabled_domains is None:
+            self.enabled_domains = list(SecurityDomain)
+        if self.ignore_paths is None:
+            self.ignore_paths = _default_ignore_paths()
+        if self.ignore_rules is None:
+            self.ignore_rules = []
+        if self.allow_secret_files is None:
+            self.allow_secret_files = []
+        super().__post_init__()
 
     def is_domain_enabled(self, domain: SecurityDomain) -> bool:
         """Return True when the policy runs for *domain*."""

@@ -218,37 +218,45 @@ def evaluate(
         return verdict
 
     ranking = severity_rank(severity)
-
-    # 1. Hard blocks: an explicitly blocking severity or blocked category.
-    if any(f.severity in policy.block_severities for f in findings):
-        verdict.action = SecurityAction.BLOCK
-        verdict.blocked = True
-        verdict.allowed = False
-
-    elif any(
-        f.category in policy.block_categories
-        and severity_rank(f.severity) >= severity_rank(policy.block_above)
+    strict = domain in policy.strict_domains
+    has_secret = any(f.category == SecurityCategory.SECRET for f in findings)
+    # A finding that blocks in ANY domain: the severity the policy declares as
+    # blocking, for a category that is not a secret (secrets have their own
+    # treatment, because they can be neutralised instead of refused).
+    hard_non_secret = any(
+        f.severity in policy.block_severities
+        and f.category != SecurityCategory.SECRET
         for f in findings
-    ):
+    )
+    # 1. Strict domains (commit, file write, command, container, deploy) block
+    #    every finding at or above `block_above`: nothing is persisted or
+    #    executed there, so there is no "approve and continue" shortcut.
+    if strict and ranking >= severity_rank(policy.block_above):
         verdict.action = SecurityAction.BLOCK
         verdict.blocked = True
         verdict.allowed = False
 
-    # 2. Strict domains never downgrade a HIGH finding to "just approve".
-    elif domain in policy.strict_domains and ranking >= severity_rank(SecuritySeverity.HIGH):
+    # 2. A neutralised secret may proceed with the redacted payload. Blocking a
+    #    model answer, a document or a log line because it quoted a key that has
+    #    already been replaced costs the user the content and protects nothing.
+    elif has_secret and policy.redact_secrets and redacted_text is not None:
+        if hard_non_secret:
+            verdict.action = SecurityAction.BLOCK
+            verdict.blocked = True
+            verdict.allowed = False
+        else:
+            verdict.action = SecurityAction.REDACT
+            verdict.allowed = True
+            verdict.requires_approval = True
+
+    # 3. Destructive or exfiltrating content, and a CRITICAL secret we could not
+    #    neutralise (no redacted payload), block everywhere.
+    elif hard_non_secret or (
+        has_secret and ranking >= severity_rank(SecuritySeverity.CRITICAL)
+    ):
         verdict.action = SecurityAction.BLOCK
         verdict.blocked = True
         verdict.allowed = False
-
-    # 3. Secrets that were neutralised may proceed with the redacted payload.
-    elif (
-        policy.redact_secrets
-        and redacted_text is not None
-        and any(f.category == SecurityCategory.SECRET for f in findings)
-    ):
-        verdict.action = SecurityAction.REDACT
-        verdict.allowed = True
-        verdict.requires_approval = True
 
     # 4. Ask a human.
     elif ranking >= severity_rank(policy.approval_above):
@@ -292,6 +300,7 @@ def render_report(
     verdict: SecurityVerdict,
     title: str = "CISO security report",
     max_findings: int = 50,
+    min_severity: Optional[SecuritySeverity] = None,
 ) -> str:
     """Render *verdict* as a Markdown report.
 
@@ -299,10 +308,17 @@ def render_report(
         verdict: Verdict to render.
         title: Report heading.
         max_findings: Maximum findings listed.
+        min_severity: Severity floor; findings below it are not listed. The
+            header keeps the totals of the unfiltered scan plus the number of
+            findings displayed, so a filtered report can never look cleaner
+            than the scan that produced it.
 
     Returns:
         str: Markdown report with a redacted evidence column only.
     """
+    total_findings = len(verdict.findings)
+    if min_severity is not None:
+        verdict = verdict.filtered(min_severity)
     icon = {
         SecurityAction.ALLOW: "✅",
         SecurityAction.WARN: "⚠️",
@@ -321,6 +337,12 @@ def render_report(
         f"- Findings: {len(verdict.findings)} ({verdict.findings_by_severity() or 'none'})",
         f"- Rules evaluated: {verdict.rules_evaluated}",
     ]
+    if min_severity is not None:
+        lines.insert(
+            5,
+            f"- Severity floor: **{min_severity.value}** "
+            f"({len(verdict.findings)} of {total_findings} finding(s) shown)",
+        )
     if verdict.truncated:
         lines.append("- ⚠️ The payload was truncated: only the beginning was scanned")
     lines.append("")

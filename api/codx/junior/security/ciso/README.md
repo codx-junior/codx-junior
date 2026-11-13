@@ -20,6 +20,16 @@ dump, `docker inspect` or a container log turns conversation state into
 permanent repository history. A task card is one local file away from being
 `git history`, so the gate sits on the **write path**, not on the commit.
 
+But `.codx` is not one thing. It holds **shared artifacts** a human edits
+(profiles, task cards, boards, views, teams, workspaces) and the **generated
+data plane** the platform writes while it runs (chat turns, browser sessions, the
+harness audit journal, orchestration/board state, rebuildable indexes). Only the
+first half is tracked by git. The second half is redacted on write *and*
+untracked, because one gate is never enough:
+
+* the gate stops a secret being **written**,
+* `.gitignore` stops runtime state being **committed** at all.
+
 ## Gates and call sites
 
 | # | Process | Call site | Gate | Status |
@@ -39,6 +49,27 @@ permanent repository history. A task card is one local file away from being
 
 Items 1–5 are the ones the incident proves load-bearing. Items 6–12 are grouped
 by class in the follow-up tickets of the incident report.
+
+## Data plane: untracked by construction
+
+The list of generated artefacts lives in **one** place,
+`runtime.DATA_PLANE_ENTRIES`, and is consumed by three things so it cannot drift:
+
+| Consumer | Purpose |
+|---|---|
+| `runtime.data_dir()` / `data_file()` | every writer addresses the data plane through it, so it can be relocated |
+| `.gitignore` | one rule per entry; `ciso_repo_check.py` fails when the two lists diverge |
+| `ciso_repo_check.py` | fails when a data-plane file is tracked by git |
+
+Relocating the whole data plane **outside the repository** is one variable:
+
+```bash
+CODX_JUNIOR_CODX_DATA_PATH=/var/lib/codx-junior/data   # one folder per project
+```
+
+The default stays `<project>/.codx`, so existing installs keep working and the
+paths that sibling containers bind-mount (browser sessions, downloads) stay
+host-visible.
 
 ## Pre-commit gate
 
@@ -60,6 +91,28 @@ The gate scans **added lines only** (`git diff --cached --unified=0`) and prints
 a report whose evidence is already redacted — a security report must never
 reproduce what it detected.
 
+## Repository audit
+
+The gates stop new leaks; the audit lists the ones already committed. It reads
+only, and every finding carries redacted evidence, so the report is attachable
+to a ticket as it is.
+
+```bash
+PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python \
+    -m codx.junior.security.ciso.audit .codx --project-path <repo> \
+    --min-severity high            # severity floor (default: high)
+                                   # --format triage | report
+```
+
+`--format triage` (default) groups by **rule** (one fix retires many findings)
+and by **file** (the assignable list), and counts what it suppressed instead of
+listing it: the entropy heuristic alone produces ~1200 medium findings on a
+large `.codx`, which buries the four that matter. `--format report` keeps the
+full policy report for a specific finding.
+
+Exit code `1` means there is something at or above the floor, so the audit can
+fail a nightly job.
+
 ## Verify
 
 ```bash
@@ -67,6 +120,10 @@ PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python \
     api/tests/security/ciso_wiring_check.py    # behaviour + wiring + real git repo
 PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python \
     api/tests/security/ciso_selfcheck.py       # detectors and policy ladder
+PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python \
+    api/tests/security/ciso_repo_check.py      # nothing from the data plane is tracked
+PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python -m pytest -q \
+    api/tests/security/test_ciso.py            # unit tests
 ```
 
 ## Detectors

@@ -94,3 +94,31 @@ After any multi-line batch edit of JS/Vue/Python files:
 - re-read the edited region (`sed -n a,bp` / `project_read_file` with line numbers) and confirm every declaration still starts its own line;
 - scan for swallowed statements: regex `//\s*[^\n]*\b(const |let |return |function )` (JS) and `#.*\b(self\.|return |raise |def )` (Python);
 - cross-check that every key returned by a composable is actually declared (that is how this bug surfaces).
+
+## Secrets must never reach .codx JSON or git history
+
+GitHub push protection blocks `.codx/tasks/**` and `.codx/chat_turns/**` commits that contain captured tool output with credentials.
+
+Rules:
+- Tool outputs printed into chat (e.g. repository_overview remote_url, git remotes with `https://user:token@...`) are persisted verbatim into `.codx` JSON, which is tracked by git. Always redact credentials in tool output before persisting/echoing.
+- Never commit `.codx` JSON without scanning: `git grep -n 'github_pat_\|ghp_\|gho_\|ghs_'`.
+- Repository remotes must not embed tokens; use a credential helper or env var instead.
+- Rewriting local-only commits: `git filter-branch --index-filter` in a **separate clean worktree** (the main tree is dirty), then `git update-ref refs/heads/main <new>`, realign the index with `git reset HEAD -- <path>`, and delete `refs/original/*` afterwards.
+- In this environment `sed -E 's/[A-Za-z0-9_]+/.../'` silently no-ops through docker_exec; use the BRE form `s/github_pat_[A-Za-z0-9_]*/.../g`. docker_exec rejects `|`, `;`, `rm`, `unlink`.
+
+## Project's Channel — product decisions
+
+**Project's Channel** (`design/project-channel.md`) — the wiki becomes the *Library* tab of a channel with Episodes, Shorts (9:16) and Learn (teacher chat). Produced by the **Multimedia AI manager** (`api/codx/junior/media/`, started from `background.py`), local-first behind one `MediaProvider` interface.
+
+Two locked decisions (do not re-litigate):
+1. **Voice is per profile**, not per channel: `Profile.voice` (`ProfileVoice` in `model/profile.py`) → resolved via `media/voice.py::resolve_voice` (shot → profile → project → system) and snapshotted into the Episode IR. This is why profiles need a dedicated **full-page editor** (`/profiles/:name/edit`) instead of the 32rem `TeamMemberDrawer.vue`.
+2. **Mobile first**: design the channel at 360 px (bottom tab bar, 9:16 shorts primary, full-bleed player); desktop is the enlarged mobile layout.
+
+Guards that must never be dropped: citation gate (narration without evidence refs = build error) and redaction before render (task cards contain `.env` values and client names; publishing defaults to `never`).
+
+## Client build & UI state persistence
+
+- The client (`client/`) is served by the `codx-junior-client` container via `scripts/run_client.sh` → `npm run preview` on the **built** dist. A source change is not live until it is rebuilt (`vite build`). Node lives in the container under `~/.nvm/versions/node/v24.12.0/bin/node` (nvm is not on the exec PATH).
+- Safe verification of a client change: `node .../node_modules/vite/bin/vite.js build <client> --outDir /tmp/dist-check` (never build into `dist/` for a check — it empties the live bundle).
+- UI screen state persistence: dockview layout in `localStorage` key `projectLayout_<project>` (store `client/src/store/views.js`, saved via `onLayoutChanged`, debounced); UI prefs in `localStorage` key `uiState` (`client/src/store/ui.js`). Per-panel details (board, view, open task) travel in the panel `params` through `$storex.ui.updateAppParams`.
+- Board panels: `client/src/components/kanban/board/KanbanBoardView.vue` owns `activeView` (`board|table|gantt|planning|followup`); new panels default to the table (`DEFAULT_VIEW`).

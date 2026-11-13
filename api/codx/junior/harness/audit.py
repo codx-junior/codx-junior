@@ -28,6 +28,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from codx.junior.runtime import data_dir
+
 logger = logging.getLogger(__name__)
 
 HARNESS_DIR_NAME = "harness"
@@ -45,11 +47,13 @@ def harness_dir(codx_path: str) -> str:
     """
     Return the harness folder of a project.
 
-    ``codx_path`` is the project's ``.codx`` directory (the same convention as
-    ``<codx_path>/tasks`` and ``<codx_path>/orchestration``), so the journal
-    lives at ``<project>/.codx/harness``.
+    ``codx_path`` is the project's ``.codx`` directory. The journal is generated
+    runtime state — it records tool payloads, so it must never be tracked by git
+    — and therefore lives in the generated data plane (``.codx/harness`` by
+    default, relocatable outside the project with
+    ``CODX_JUNIOR_CODX_DATA_PATH``).
     """
-    return os.path.join(str(codx_path or ""), HARNESS_DIR_NAME)
+    return data_dir(codx_path, HARNESS_DIR_NAME)
 
 
 def audit_path(codx_path: str) -> str:

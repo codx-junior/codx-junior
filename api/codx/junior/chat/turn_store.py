@@ -46,6 +46,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from codx.junior.runtime import data_dir
+
 logger = logging.getLogger(__name__)
 
 # Directory below ``settings.codx_path`` (which is already ``<project>/.codx``).
@@ -230,7 +232,11 @@ class ChatTurnStore:
             codx_path: Project ``.codx`` path.
         """
         self.codx_path = _normalize_codx_path(codx_path)
-        self.directory = os.path.join(self.codx_path, TURN_DIRNAME)
+        # Turn records, locks, cancel markers and heartbeats are *runtime* state,
+        # not source code: they belong to the generated data plane, which git
+        # never tracks and which can be relocated outside the project with
+        # CODX_JUNIOR_CODX_DATA_PATH.
+        self.directory = data_dir(self.codx_path, TURN_DIRNAME)
         self._locks: Dict[str, int] = {}
         self._locks_lock = threading.Lock()
         # Stall detection: a turn without progress for `stale_seconds` is
@@ -953,7 +959,9 @@ def repair_incomplete_messages(
             "interrupted": True,
             "interrupted_at": _now(),
         }
+        _mark_interrupted_events(message, error=error)
         message.hide = bool(hide)
+
 
         try:
             update = getattr(chat_manager, "update_message", None)
@@ -976,3 +984,63 @@ def repair_incomplete_messages(
             getattr(chat, "id", ""),
         )
     return repaired
+
+
+def _mark_interrupted_events(message: Any, *, error: Optional[str] = None) -> None:
+    """
+    Close the events that were still IN FLIGHT when the process died.
+
+    ``meta_data["interrupted"]`` only says *that* the turn was cut. A reader of
+    the timeline also needs to know *what* was running and *when* it stopped:
+    this helper stamps a terminal state on every open tool call, run and phase,
+    then appends an ``interrupted`` phase event carrying the reason. Without it a
+    killed turn shows a tool "running" for ever — indistinguishable from a slow
+    one — which is exactly the confusion the timeline exists to remove.
+
+    Args:
+        message: The response message being repaired.
+        error: Reason recorded by the recovery worker.
+    """
+    try:
+        from codx.junior.db import PhaseEvent
+    except Exception:  # pragma: no cover - defensive
+        return
+
+    stamp = _now()
+    reason = error or "The turn was interrupted"
+    try:
+        for tool_event in list(getattr(message, "tool_events", None) or []):
+            if getattr(tool_event, "status", "") == "running":
+                tool_event.status = "error"
+                tool_event.error = tool_event.error or f"Interrupted: {reason}"
+                tool_event.finished_at = tool_event.finished_at or stamp
+        for lifecycle in list(getattr(message, "lifecycle_events", None) or []):
+            if getattr(lifecycle, "status", "") == "running":
+                lifecycle.status = "error"
+                lifecycle.error = lifecycle.error or reason
+                lifecycle.finished_at = lifecycle.finished_at or stamp
+        phases = list(getattr(message, "phase_events", None) or [])
+        for phase in phases:
+            if getattr(phase, "status", "") == "running":
+                phase.status = "error"
+                phase.finished_at = phase.finished_at or stamp
+                phase.detail = f"{phase.detail or phase.kind} · interrupted"
+        phases.append(
+            PhaseEvent(
+                kind="interrupted",
+                status="error",
+                label="Application stopped",
+                detail=reason,
+                started_at=stamp,
+                finished_at=stamp,
+                meta={"reason": reason},
+            )
+        )
+        message.phase_events = phases
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.warning(
+            "ChatTurnStore: could not mark interrupted events of message '%s': %s",
+            getattr(message, "doc_id", ""),
+            ex,
+        )
+

@@ -76,6 +76,7 @@ from codx.junior.browser import download_settings
 from codx.junior.browser import tabs as browser_tabs
 from codx.junior.browser.activity import BrowserActivityLog
 from codx.junior.browser import events as browser_events
+from codx.junior.runtime import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +172,10 @@ class BrowserManager:
             settings: CODXJuniorSettings instance
         """
         self.settings = settings
-        self.sessions_path = os.path.join(settings.codx_path, BROWSER_SESSIONS_DIR)
+        # Session metadata, activity journals and chromium profiles are generated
+        # runtime state: they live in the data plane (never tracked by git) and
+        # stay on a host-visible path because sibling containers bind-mount them.
+        self.sessions_path = data_dir(settings.codx_path, BROWSER_SESSIONS_DIR)
         os.makedirs(self.sessions_path, exist_ok=True)
 
         traefik_domain = os.environ.get("CODX_JUNIOR_DOMAIN", "localhost")

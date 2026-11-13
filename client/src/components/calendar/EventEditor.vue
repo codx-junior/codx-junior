@@ -50,7 +50,11 @@ const REMINDER_OPTIONS = [
 const SECOND_REMINDER_OPTIONS = REMINDER_OPTIONS.filter(option => [0, 5, 10, 60, -1].includes(option.value))
 
 const isNew = computed(() => !props.event?.id)
-const editableCalendars = computed(() => (props.calendars || []).filter(calendar => !calendar.read_only))
+// `can_write` already resolves scope + role on the server; fall back to the
+// stored flag for payloads that do not carry it.
+const editableCalendars = computed(() =>
+  (props.calendars || []).filter(calendar => (calendar.can_write ?? !calendar.read_only))
+)
 
 function initialStart() {
   const raw = props.event?.start

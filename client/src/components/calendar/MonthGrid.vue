@@ -3,6 +3,9 @@
  * Month view — a 6×7 grid with up to three chips per day and a "+N more"
  * button that opens the day (analysis §9.2).
  *
+ * A click anywhere on a day cell creates an event on that day; the chips and
+ * the "+N more" button stop the propagation because they open something else.
+ *
  * The occurrences arrive already expanded by the server and bucketed by the
  * store (`occurrencesByDay`), so this component only decides *where* each chip
  * goes. Colour = calendar (§9.3.1): a chip bar uses the primary calendar
@@ -59,6 +62,16 @@ const days = computed(() => {
   }
   return cells
 })
+
+/**
+ * Day-cell click → create. The cell carries no time, so a new event defaults
+ * to 09:00, or to the next full hour when the clicked day is today.
+ */
+function createOn(date) {
+  const now = new Date()
+  const hour = sameDay(date, now) ? Math.min(23, now.getHours() + 1) : 9
+  emit('create', new Date(date.getFullYear(), date.getMonth(), date.getDate(), hour, 0))
+}
 
 function calendarOf(occurrence) {
   const id = occurrence.calendar_id || (occurrence.calendar_ids || [])[0]
@@ -134,8 +147,10 @@ function spanSuffix(occurrence, cellDate) {
       <div
         v-for="cell in days"
         :key="cell.key"
-        class="relative border-r border-b border-base-300 last:border-r-0 p-1 flex flex-col gap-0.5 min-h-0 overflow-hidden"
+        class="relative border-r border-b border-base-300 last:border-r-0 p-1 flex flex-col gap-0.5 min-h-0 overflow-hidden cursor-pointer transition-colors hover:bg-base-content/[0.04]"
         :class="[cell.other ? 'bg-base-content/[0.02]' : '', cell.today ? 'bg-codx-primary/10' : '']"
+        :title="`Create an event on ${cell.key}`"
+        @click="createOn(cell.date)"
       >
         <button
           class="self-center text-[11px] w-5 h-5 rounded-full flex items-center justify-center tabular-nums transition-colors"
@@ -143,7 +158,7 @@ function spanSuffix(occurrence, cellDate) {
             ? 'bg-codx-primary text-white font-bold'
             : 'text-base-content/60 hover:bg-base-300'"
           :title="`Create an event on ${cell.key}`"
-          @click="emit('create', cell.date)"
+          @click.stop="createOn(cell.date)"
         >
           {{ cell.number }}
         </button>
@@ -156,7 +171,7 @@ function spanSuffix(occurrence, cellDate) {
             :class="occurrence.overdue ? 'opacity-70' : ''"
             :style="chipStyle(occurrence)"
             :title="chipTitle(occurrence)"
-            @click="emit('select', occurrence)"
+            @click.stop="emit('select', occurrence)"
           >
             <span v-if="!occurrence.all_day" class="text-base-content/60 tabular-nums">
               {{ formatTime(occurrence.start) }}
@@ -177,7 +192,7 @@ function spanSuffix(occurrence, cellDate) {
           <button
             v-if="cell.extra"
             class="text-[10px] text-left pl-1 text-base-content/50 hover:text-base-content"
-            @click="emit('more', cell.date)"
+            @click.stop="emit('more', cell.date)"
           >
             +{{ cell.extra }} more…
           </button>

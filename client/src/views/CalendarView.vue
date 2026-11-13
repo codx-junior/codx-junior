@@ -59,7 +59,10 @@ const loading = computed(() => store.isLoading)
 const error = computed(() => store.loadError)
 const filteredCount = computed(() => store.filteredCount)
 const totalCount = computed(() => store.totalCount)
-const writableCalendars = computed(() => calendars.value.filter(calendar => !calendar.read_only))
+/** Calendars the editor may write to (`can_write` already resolves scope + role). */
+const writableCalendars = computed(() =>
+  calendars.value.filter(calendar => (calendar.can_write ?? !calendar.read_only))
+)
 
 /** Project selector of the editor: `personal` is the empty option. */
 const editorProjects = computed(() =>
@@ -129,8 +132,25 @@ async function openDay(date) {
   await store.setView('day')
 }
 
-function openCreate(defaultStart) {
+/**
+ * An event needs at least one writable calendar and a fresh installation has an
+ * empty catalogue, so the first "new event" provisions a private calendar for
+ * the viewer instead of opening an editor that cannot be submitted.
+ */
+async function ensureWritableCalendar() {
+  if (writableCalendars.value.length) return true
+  actionError.value = ''
+  try {
+    await store.createCalendar({ name: 'Personal', scope: 'private' })
+  } catch (exception) {
+    actionError.value = exception?.response?.data?.detail || exception?.message || 'Could not create a calendar'
+  }
+  return writableCalendars.value.length > 0
+}
+
+async function openCreate(defaultStart) {
   closePopover()
+  await ensureWritableCalendar()
   editor.value = { event: null, defaultStart: defaultStart || cursorDate.value, key: `new-${Date.now()}` }
 }
 

@@ -93,12 +93,24 @@ _FRONTMATTER_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 
 
 def _run_git(root: str, *args: str, timeout: int = 30) -> Optional[str]:
+    """
+    Run a read-only git command and return its stdout, or None on failure.
+
+    ``GIT_OPTIONAL_LOCKS=0`` is essential here: the indexer calls
+    ``git status`` on every refresh, and without it that call takes
+    ``index.lock`` to refresh the stat cache, colliding with real commits
+    ("index.lock: File exists"). Only reads are performed, so no lock is
+    needed.
+    """
+    env = dict(os.environ)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         result = subprocess.run(
             ["git", "-C", root, *args],
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
     except (OSError, subprocess.SubprocessError) as ex:
         logger.debug("git %s failed in %s: %s", args, root, ex)

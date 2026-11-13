@@ -39,6 +39,28 @@ TOKEN_ARG_PREFIX = "http.extraheader="
 # Replacement used when a command carrying the token is logged or returned
 TOKEN_VALUE_MASK = "********"
 
+# Environment applied to every git command. git asks for a username/password
+# when the remote rejects the credentials: a headless API has no terminal, so
+# the prompt only hangs or fails with an opaque "No such device". Disabling the
+# terminal prompt and the askpass helpers makes the command fail immediately
+# with a readable auth error, which is what lets the client prompt the user for
+# a one-shot credential (and it also prevents git from caching a credential in
+# a helper/store).
+#
+# ``GIT_OPTIONAL_LOCKS=0`` keeps read-only commands (``status``, ``diff``) from
+# taking ``index.lock`` merely to refresh the stat cache. The API polls the
+# repository state continuously, and on a loaded host each of those refreshes
+# holds the lock for seconds, which makes a real commit fail with
+# "index.lock: File exists". Required locks (``add``, ``commit``, ``merge``)
+# are unaffected.
+GIT_NON_INTERACTIVE_ENV = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/true",
+    "SSH_ASKPASS": "/bin/true",
+    "GCM_INTERACTIVE": "never",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
+
 # Git errors meaning the remote rejected the (missing) credentials
 AUTH_ERROR_PATTERNS = (
     "could not read username",
@@ -101,6 +123,36 @@ DIFF_HEADER_PATH_PATTERN = re.compile(r'^diff --git "?a/(.+?)"? "?b/(.+?)"?$')
 
 # Record separator used to delimit commits while reading `git log --name-only`
 LOG_COMMIT_SEPARATOR = "\x01"
+
+
+# Matches a remote URL whose user info carries a credential
+CREDENTIAL_URL_PATTERN = re.compile(r"^[a-z][a-z0-9+.-]*://[^/@\s]+@", re.IGNORECASE)
+
+
+def has_embedded_credentials(url: str) -> bool:
+    """
+    Tell whether a remote URL embeds a credential (user, password or token).
+
+    Remote URLs are written to ``.git/config``, so no credential may travel in
+    them: authentication is passed per command instead (see
+    ``_token_args`` / ``_credential_args``). An SSH/scp-like remote
+    (``git@host:owner/repo.git``) only carries a user name, never a secret.
+
+    Args:
+        url: Remote URL.
+
+    Returns:
+        True when the URL has a ``scheme://user[:password]@host`` user info.
+
+    Example:
+        >>> has_embedded_credentials("https://x-access-token:ghp_1@github.com/a/b.git")
+        True
+        >>> has_embedded_credentials("https://github.com/a/b.git")
+        False
+        >>> has_embedded_credentials("git@github.com:a/b.git")
+        False
+    """
+    return bool(CREDENTIAL_URL_PATTERN.match((url or "").strip()))
 
 
 class GitEngine:
@@ -533,6 +585,150 @@ class GitEngine:
             masked = masked.replace(arg, f"{TOKEN_ARG_PREFIX}{TOKEN_VALUE_MASK}")
         return masked
 
+    @staticmethod
+    def _normalize_credential(credential) -> Optional[dict]:
+        """
+        Normalize a one-shot credential into ``{'username', 'password'}``.
+
+        The credential of a remote operation arrives with the request and is
+        used for that single git command only. A bare string is treated as a
+        token (the placeholder user is used, like the project PAT) and an
+        incomplete credential (no password/token) is ignored instead of being
+        sent to the remote.
+
+        Args:
+            credential: Dict with 'username' + 'password'/'token', or a bare
+                token string. None/empty disables the one-shot credential.
+
+        Returns:
+            Dict with 'username' and 'password', or None when unusable.
+
+        Example:
+            >>> GitEngine._normalize_credential({"username": "jane", "password": "s3cr3t"})
+            {'username': 'jane', 'password': 's3cr3t'}
+            >>> GitEngine._normalize_credential({"token": "ghp_123"})
+            {'username': 'x-access-token', 'password': 'ghp_123'}
+            >>> GitEngine._normalize_credential({"username": "jane"}) is None
+            True
+        """
+        if not credential:
+            return None
+
+        if isinstance(credential, str):
+            token = credential.strip()
+            if not token:
+                return None
+            return {"username": DEFAULT_TOKEN_USERNAME, "password": token}
+
+        if not isinstance(credential, dict):
+            return None
+
+        username = str(credential.get("username") or "").strip()
+        password = str(credential.get("password") or "").strip()
+        if not password:
+            password = str(credential.get("token") or "").strip()
+        if not password:
+            return None
+        return {"username": username or DEFAULT_TOKEN_USERNAME, "password": password}
+
+    def _credential_args(self, credential: dict) -> List[str]:
+        """
+        Return the `-c` override that authenticates a command with a credential.
+
+        Same mechanism as the configured PAT (``_token_args``): the credential
+        is sent as an HTTP Basic header for the current command only, so nothing
+        is written to the repository config, the global git config or a
+        credential store and git never persists it.
+
+        Args:
+            credential: Dict returned by ``_normalize_credential``.
+
+        Returns:
+            Git argument list with the `http.extraheader` override.
+
+        Example:
+            >>> engine._credential_args({"username": "jane", "password": "s3cr3t"})
+            ['-c', 'http.extraheader=Authorization: Basic amFuZTpzM2NyM3Q=']
+        """
+        credentials = (
+            f"{credential['username']}:{credential['password']}".encode("utf-8")
+        )
+        encoded = base64.b64encode(credentials).decode("ascii")
+        return ["-c", f"{TOKEN_ARG_PREFIX}Authorization: Basic {encoded}"]
+
+    def _credential_secrets(
+        self, credential: Optional[dict], auth_args: List[str]
+    ) -> List[str]:
+        """
+        List every string form a credential can appear as.
+
+        The values are scrubbed from the command echo, the git output, the git
+        error and the logs, so a credential never comes back to the client (nor
+        sits in a log file) even when git echoes it.
+
+        Args:
+            credential: Dict returned by ``_normalize_credential`` (or None).
+            auth_args: Arguments returned by ``_credential_args`` / ``_token_args``.
+
+        Returns:
+            De-duplicated secret values, longest first.
+        """
+        secrets: List[str] = []
+        for arg in auth_args or []:
+            if not arg.startswith(TOKEN_ARG_PREFIX):
+                continue
+            secrets.append(arg)
+            encoded = arg.partition("Basic ")[2].strip()
+            if encoded:
+                secrets.append(encoded)
+
+        if credential:
+            username = credential.get("username", "")
+            password = credential.get("password", "")
+            # Very short values would mangle any output containing them
+            if password and len(password) >= 3:
+                secrets.append(password)
+                secrets.append(f"{username}:{password}")
+
+        unique: List[str] = []
+        for secret in sorted(set(secrets), key=len, reverse=True):
+            if secret and secret not in unique:
+                unique.append(secret)
+        return unique
+
+    @staticmethod
+    def _redact_secrets(text: str, secrets: List[str]) -> str:
+        """
+        Replace every occurrence of a secret value in *text* with a mask.
+
+        Args:
+            text: Command echo, git output or log message.
+            secrets: Values returned by ``_credential_secrets``.
+
+        Returns:
+            The text with every secret replaced by the mask.
+        """
+        redacted = text or ""
+        for secret in secrets or []:
+            if secret:
+                redacted = redacted.replace(secret, TOKEN_VALUE_MASK)
+        return redacted
+
+    @staticmethod
+    def _git_env() -> Dict[str, str]:
+        """
+        Return the environment every git command is run with.
+
+        See ``GIT_NON_INTERACTIVE_ENV``: git must never block on (or cache) a
+        credential prompt.
+
+        Returns:
+            Copy of the process environment with the non-interactive settings.
+        """
+        env = dict(os.environ)
+        env.update(GIT_NON_INTERACTIVE_ENV)
+        return env
+
     def get_git_token_info(self) -> dict:
         """
         Return whether remote operations are authenticated with a token.
@@ -585,6 +781,7 @@ class GitEngine:
         strip_output: bool = True,
         apply_identity: bool = True,
         apply_token: bool = True,
+        credential: Optional[dict] = None,
     ) -> dict:
         """
         Run a git command without a shell and return a structured result.
@@ -598,7 +795,8 @@ class GitEngine:
         performed by the engine is signed with the project author. The project
         access token (see ``get_git_access_token``) is passed as an HTTP Basic
         header, so push/pull/fetch work on private remotes without storing any
-        credential.
+        credential. A one-shot ``credential`` replaces that token for this single
+        command (the user was asked for it and it is never persisted).
 
         Args:
             args: Git arguments, e.g. ``["checkout", "-b", "feature/x"]``.
@@ -610,20 +808,35 @@ class GitEngine:
                 resolving the identity itself).
             apply_token: Authenticate the command with the project token (the
                 credential is masked in the returned 'command' and in the logs).
+            credential: One-shot credential used for this single command instead
+                of the configured token. Never stored; masked everywhere.
 
         Returns:
             Dict with 'ok', 'command', 'output', 'error' and 'returncode'.
         """
         cwd = cwd or self._get_repo_root()
         identity_args = self._identity_args() if apply_identity else []
-        token_args = self._token_args() if apply_token else []
-        command = ["git"] + identity_args + token_args + list(args)
-        # The token is a secret: it must never reach the logs
-        command_str = self._mask_token_args(" ".join(command), token_args)
+        # A one-shot credential overrides the configured token for this command
+        credential = self._normalize_credential(credential)
+        if credential:
+            auth_args = self._credential_args(credential)
+        else:
+            auth_args = self._token_args() if apply_token else []
+        secrets = self._credential_secrets(credential, auth_args)
+        command = ["git"] + identity_args + auth_args + list(args)
+        # The credential is a secret: it must never reach the logs or the result
+        header_args = [arg for arg in auth_args if arg.startswith(TOKEN_ARG_PREFIX)]
+        command_str = self._redact_secrets(
+            self._mask_token_args(" ".join(command), header_args), secrets
+        )
         logger.info("git command: %s (cwd=%s)", command_str, cwd)
         try:
             completed = subprocess.run(
-                command, cwd=cwd, text=True, capture_output=True
+                command,
+                cwd=cwd,
+                text=True,
+                capture_output=True,
+                env=self._git_env(),
             )
         except Exception as ex:
             logger.error("Error running '%s': %s", command_str, ex)
@@ -631,13 +844,14 @@ class GitEngine:
                 "ok": False,
                 "command": command_str,
                 "output": "",
-                "error": str(ex),
+                "error": self._redact_secrets(str(ex), secrets),
                 "returncode": -1,
             }
 
         raw_output = completed.stdout or ""
         output = raw_output.strip() if strip_output else raw_output
-        error = (completed.stderr or "").strip()
+        output = self._redact_secrets(output, secrets)
+        error = self._redact_secrets((completed.stderr or "").strip(), secrets)
         ok = completed.returncode == 0
         if not ok:
             logger.warning("git command failed: %s. %s", command_str, error)
@@ -768,7 +982,14 @@ class GitEngine:
             "error": f"Branch '{branch}' does not exist",
         }
 
-    def _git_operation_result(self, command_result: dict, **extra) -> dict:
+    def _git_operation_result(
+        self,
+        command_result: dict,
+        credential: Optional[dict] = None,
+        operation: str = "",
+        remote: str = "",
+        **extra,
+    ) -> dict:
         """
         Convert a ``_run_git`` result into an operation result dict.
 
@@ -778,8 +999,17 @@ class GitEngine:
         actionable hint appended, so the UI never shows a bare
         ``could not read Username``.
 
+        When the credentials were rejected, no one-shot credential was supplied
+        and the project has no stored token, the result also carries
+        'requires_credentials' (plus 'operation' / 'remote') so the client can
+        ask the user for a username/password or token and retry the operation
+        once. Nothing is stored: the credential lives for that single command.
+
         Args:
             command_result: Dict returned by ``_run_git``.
+            credential: One-shot credential supplied with the call (if any).
+            operation: Operation name ('fetch', 'pull', 'push'...).
+            remote: Remote name the operation targeted.
             extra: Additional fields merged into the result.
 
         Returns:
@@ -800,6 +1030,11 @@ class GitEngine:
             if auth_hint:
                 result["auth_error"] = True
                 result["errors"].append(auth_hint)
+                # No credential to retry with: the client must ask the user
+                if not credential and not self.get_git_access_token():
+                    result["requires_credentials"] = True
+                    result["remote"] = remote or DEFAULT_REMOTE
+                    result["operation"] = operation
         return result
 
     def _git_operation_error(self, message: str, **extra) -> dict:
@@ -3640,20 +3875,28 @@ class GitEngine:
         }
 
     def fetch_remote(
-        self, remote: str = DEFAULT_REMOTE, prune: bool = True
+        self,
+        remote: str = DEFAULT_REMOTE,
+        prune: bool = True,
+        credential: Optional[dict] = None,
     ) -> dict:
         """
         Fetch refs (and prune deleted ones) from a remote.
 
         The project access token (when configured) authenticates the request, so
-        private HTTPS remotes work without a credential helper.
+        private HTTPS remotes work without a credential helper. An optional
+        one-shot ``credential`` (the user was asked for it) is used instead of
+        the token for this single fetch and is never stored.
 
         Args:
             remote: Remote name.
             prune: Remove remote-tracking refs that no longer exist.
+            credential: Optional one-shot credential (``username`` +
+                ``password``/``token``), see ``_normalize_credential``.
 
         Returns:
-            Operation result dict.
+            Operation result dict ('requires_credentials' is set when the remote
+            rejected the credentials and none were supplied/configured).
         """
         if not self._get_remote_url(remote):
             return self._git_operation_error(f"No remote '{remote}' configured")
@@ -3661,22 +3904,34 @@ class GitEngine:
         args: List[str] = ["fetch", remote]
         if prune:
             args.append("--prune")
-        return self._git_operation_result(self._run_git(args))
+        return self._git_operation_result(
+            self._run_git(args, credential=credential),
+            credential=self._normalize_credential(credential),
+            operation="fetch",
+            remote=remote,
+        )
 
     def pull_remote(
-        self, remote: str = DEFAULT_REMOTE, branch: Optional[str] = None
+        self,
+        remote: str = DEFAULT_REMOTE,
+        branch: Optional[str] = None,
+        credential: Optional[dict] = None,
     ) -> dict:
         """
         Pull the current (or given) branch from a remote.
 
-        The project access token (when configured) authenticates the request.
+        The project access token (when configured) authenticates the request. An
+        optional one-shot ``credential`` overrides it for this single pull and
+        is never stored.
 
         Args:
             remote: Remote name.
             branch: Branch to pull. Defaults to the checked out branch.
+            credential: Optional one-shot credential, see ``_normalize_credential``.
 
         Returns:
-            Operation result dict.
+            Operation result dict ('requires_credentials' is set when the remote
+            rejected the credentials and none were supplied/configured).
 
         Example:
             >>> engine.pull_remote()
@@ -3692,15 +3947,23 @@ class GitEngine:
             return self._git_operation_error("Cannot pull while HEAD is detached")
 
         result = self._run_git(
-            ["pull", "--no-rebase", "--no-edit", remote, branch]
+            ["pull", "--no-rebase", "--no-edit", remote, branch],
+            credential=credential,
         )
-        return self._git_operation_result(result, branch=branch)
+        return self._git_operation_result(
+            result,
+            credential=self._normalize_credential(credential),
+            operation="pull",
+            remote=remote,
+            branch=branch,
+        )
 
     def push_remote(
         self,
         remote: str = DEFAULT_REMOTE,
         branch: Optional[str] = None,
         set_upstream: bool = True,
+        credential: Optional[dict] = None,
     ) -> dict:
         """
         Push the current (or given) branch to a remote.
@@ -3710,17 +3973,26 @@ class GitEngine:
         prompt, so the failure is reported with an actionable hint instead of a
         bare ``could not read Username``.
 
+        An optional one-shot ``credential`` (username + password/token) given by
+        the user overrides the token for this single push: it is injected as a
+        per-command ``http.extraheader`` and never written to the config, the
+        credential store or the logs.
+
         Args:
             remote: Remote name.
             branch: Branch to push. Defaults to the checked out branch.
             set_upstream: Set the upstream tracking reference (``-u``).
+            credential: Optional one-shot credential, see ``_normalize_credential``.
 
         Returns:
             Operation result dict ('auth_error' is set when the remote rejected
-            the credentials).
+            the credentials, 'requires_credentials' when the client should ask
+            the user for them).
 
         Example:
             >>> engine.push_remote()
+            {'success': True, 'branch': 'main', ...}
+            >>> engine.push_remote(credential={"username": "jane", "password": "s3cr3t"})
             {'success': True, 'branch': 'main', ...}
         """
         if not self._get_remote_url(remote):
@@ -3737,7 +4009,13 @@ class GitEngine:
             args.append("--set-upstream")
         args += [remote, branch]
 
-        return self._git_operation_result(self._run_git(args), branch=branch)
+        return self._git_operation_result(
+            self._run_git(args, credential=credential),
+            credential=self._normalize_credential(credential),
+            operation="push",
+            remote=remote,
+            branch=branch,
+        )
 
     def create_branch(
         self,

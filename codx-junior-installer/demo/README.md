@@ -17,6 +17,20 @@ Node server, and restarting it installs nothing.
 > falls back to a local build (a few minutes). Pass `--build` to make that explicit.
 > How to deploy the other tiers: [`../README.md`](../README.md).
 
+### On a remote / cloud server
+
+`up.sh` also reads its settings from the environment, so a server can be
+installed without any interaction:
+
+```bash
+sudo bash codx-junior-installer/cloud/bootstrap.sh --provider deepseek --key sk-xxxxxxxx
+# -> CODX_JUNIOR_READY http://<server-ip>:19981
+```
+
+That installs Docker, clones this repository, writes the settings and calls this
+same `up.sh`. Provider examples (Hetzner, DigitalOcean, AWS, GCE), cloud-init and
+the `codx-junior` operations CLI: **[../cloud/README.md](../cloud/README.md)**.
+
 | | Full deployment (`codx-junior/docker-compose.yaml`) | Demo (this folder) |
 |---|---|---|
 | Containers | 8 | **1** (+1 optional) |

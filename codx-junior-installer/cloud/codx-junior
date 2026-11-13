@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# =============================================================================
+# codx-junior — operations CLI for a deployed instance
+#
+# Installed at /usr/local/bin/codx-junior by cloud/bootstrap.sh and configured
+# from /etc/default/codx-junior. It is a thin wrapper over `docker compose`, so
+# anything it does can be done by hand with the compose file it points at.
+#
+#   codx-junior status       container state + health + URL
+#   codx-junior url          the URL this instance answers on
+#   codx-junior logs [-f]    container logs (--tail N)
+#   codx-junior up           start / recreate (after editing .env)
+#   codx-junior restart      restart the container
+#   codx-junior down         stop and remove the container (volumes are kept)
+#   codx-junior upgrade      git pull + pull/build the image + recreate
+#   codx-junior env          show the settings with the API key masked
+#   codx-junior version      version of the installed CLI
+# =============================================================================
+set -euo pipefail
+
+CLI_VERSION="1.0.0"
+
+if [[ -f /etc/default/codx-junior ]]; then
+    # shellcheck disable=SC1091
+    . /etc/default/codx-junior
+fi
+
+CODX_JUNIOR_HOME="${CODX_JUNIOR_HOME:-/opt/codx-junior}"
+SRC_DIR="${CODX_JUNIOR_HOME}/src"
+DEMO_DIR="${SRC_DIR}/codx-junior-installer/demo"
+COMPOSE_FILE="${DEMO_DIR}/docker-compose.yaml"
+CONTAINER="codx-junior-demo"
+
+die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[[ -f "${COMPOSE_FILE}" ]] || die "no installation found at ${DEMO_DIR}"
+
+compose() {
+    docker compose --project-directory "${DEMO_DIR}" -f "${COMPOSE_FILE}" "$@"
+}
+
+web_port() {
+    local port=""
+    port="$(sed -n 's/^CODX_JUNIOR_WEB_PORT=//p' "${DEMO_DIR}/.env" 2>/dev/null | tail -n1)"
+    printf '%s' "${port:-${CODX_JUNIOR_WEB_PORT:-19981}}"
+}
+
+public_url() {
+    local ip
+    ip="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)"
+    if [[ -z "${ip}" ]]; then
+        ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    fi
+    printf 'http://%s:%s' "${ip:-localhost}" "$(web_port)"
+}
+
+cmd="${1:-status}"
+[[ $# -gt 0 ]] && shift
+
+case "${cmd}" in
+    status)
+        printf 'URL      : %s\n' "$(public_url)"
+        printf 'source   : %s\n' "${SRC_DIR}"
+        printf 'settings : %s\n' "${DEMO_DIR}/.env"
+        printf 'knowledge: %s (embedded)\n' "lancedb"
+        echo
+        compose ps
+        ;;
+    url)
+        public_url; echo
+        ;;
+    logs)
+        follow=()
+        tail_args=(--tail 100)
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -f|--follow) follow=(-f); shift ;;
+                --tail) tail_args=(--tail "${2:-100}"); shift 2 ;;
+                *) tail_args=(--tail "$1"); shift ;;
+            esac
+        done
+        compose logs "${tail_args[@]}" "${follow[@]+"${follow[@]}"}" codx-junior
+        ;;
+    up)
+        compose up -d --remove-orphans
+        ;;
+    restart)
+        compose restart
+        ;;
+    down)
+        compose down
+        ;;
+    upgrade)
+        echo "==> Updating sources"
+        git -C "${SRC_DIR}" pull --ff-only
+        cd "${DEMO_DIR}"
+        echo "==> Updating the image"
+        compose pull --quiet codx-junior || compose build
+        echo "==> Recreating the container"
+        compose up -d --remove-orphans
+        echo "==> Done: $(public_url)"
+        ;;
+    env)
+        echo "# ${DEMO_DIR}/.env (API key masked)"
+        sed -E 's/^(CODX_JUNIOR_AI_API_KEY)=.*/\1=***masked***/' "${DEMO_DIR}/.env"
+        ;;
+    version)
+        echo "codx-junior CLI ${CLI_VERSION}"
+        ;;
+    -h|--help|help)
+        sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        ;;
+    *)
+        die "unknown command '${cmd}' (try: status, url, logs, up, restart, down, upgrade, env)"
+        ;;
+esac

@@ -1,0 +1,43 @@
+#cloud-config
+# =============================================================================
+# codx-junior — cloud-init user-data (tier 1 demo install)
+#
+# Works on any provider that supports cloud-init: Hetzner Cloud, DigitalOcean,
+# Scaleway, OpenStack, Oracle Cloud, ... The only thing you edit is the block
+# under `write_files`.
+#
+#   1. put your provider + key in CODX_JUNIOR_AI_PROVIDER / CODX_JUNIOR_AI_API_KEY
+#   2. boot the server passing this file as user-data (see README.md)
+#   3. wait 3-8 minutes, then open http://<server-ip>:19981
+#
+# First boot: installs Docker, shallow-clones the repository, configures the AI
+# provider from the preset and starts one container. Follow it with:
+#   tail -f /var/log/codx-junior-install.log
+#
+# Re-running is safe: the script is idempotent (that is also how you upgrade).
+# =============================================================================
+write_files:
+  - path: /etc/codx-junior/settings.env
+    owner: root:root
+    permissions: '0600'
+    content: |
+      # --- REQUIRED: the AI provider and its key -------------------------
+      # openai | deepseek | gemini | openrouter | mistral | groq | ollama | custom
+      CODX_JUNIOR_AI_PROVIDER=deepseek
+      CODX_JUNIOR_AI_API_KEY=sk-REPLACE-ME
+
+      # --- OPTIONAL: everything below has a working default --------------
+      CODX_JUNIOR_PROJECTS_PATH=/opt/codx-junior/projects
+      CODX_JUNIOR_WEB_PORT=19981
+      # CODX_JUNIOR_AI_MODEL=deepseek-chat
+      # CODX_JUNIOR_AI_API_URL=https://my-gateway.example.com/v1   # only for `custom`
+      # CODX_JUNIOR_PUBLIC_URL=https://codx.example.com            # printed in the summary
+      # CODX_JUNIOR_BUILD=1          # build the image locally (5-10 min) instead of pulling
+      # CODX_JUNIOR_OPEN_FIREWALL=1  # ufw: allow ssh + the web port (opt-in)
+      # CODX_JUNIOR_REF=main         # branch or tag to deploy
+
+runcmd:
+  - [ bash, -lc, "curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/codx-junior-installer/cloud/bootstrap.sh -o /tmp/codx-junior-bootstrap.sh" ]
+  - [ bash, -lc, "bash /tmp/codx-junior-bootstrap.sh --env-file /etc/codx-junior/settings.env" ]
+
+final_message: "codx-junior installed - open http://<server-ip>:19981 (log: /var/log/codx-junior-install.log)"

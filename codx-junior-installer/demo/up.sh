@@ -63,8 +63,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- settings may also come from the environment ---------------------------
+# Precedence: command line flag > environment > .env. The environment path is
+# what lets an automated deployment (cloud-init, Ansible, CI) configure the
+# instance without passing flags:
+#   CODX_JUNIOR_AI_PROVIDER=deepseek CODX_JUNIOR_AI_API_KEY=sk-... ./up.sh
+PROVIDER="${PROVIDER:-${CODX_JUNIOR_AI_PROVIDER:-}}"
+API_KEY="${API_KEY:-${CODX_JUNIOR_AI_API_KEY:-}}"
+CODX_JUNIOR_AI_API_URL="${CODX_JUNIOR_AI_API_URL:-}"
+MODEL="${MODEL:-${CODX_JUNIOR_AI_MODEL:-}}"
+PORT="${PORT:-${CODX_JUNIOR_WEB_PORT:-}}"
+PROJECTS="${PROJECTS:-${CODX_JUNIOR_PROJECTS_PATH:-}}"
 NO_WAIT="${NO_WAIT:-0}"
-MODEL="${MODEL:-}"
 
 log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
@@ -120,6 +130,14 @@ WEB_PORT="$(get_env_var CODX_JUNIOR_WEB_PORT "${ENV_FILE}")"
 WEB_PORT="${WEB_PORT:-19981}"
 PROJECTS_PATH="$(get_env_var CODX_JUNIOR_PROJECTS_PATH "${ENV_FILE}")"
 PROJECTS_PATH="${PROJECTS_PATH:-./projects}"
+# Printed in the summary. On a cloud VM localhost is not what the user opens,
+# so a deployment script can pass the address it published (see cloud/).
+CODX_JUNIOR_PUBLIC_URL="${CODX_JUNIOR_PUBLIC_URL:-}"
+if [[ -n "${CODX_JUNIOR_PUBLIC_URL}" ]]; then
+    WEB_URL="${CODX_JUNIOR_PUBLIC_URL}"
+else
+    WEB_URL="http://localhost:${WEB_PORT}"
+fi
 
 if [[ -z "${FINAL_PROVIDER}" || -z "${FINAL_KEY}" ]]; then
     cat >&2 <<MISSING
@@ -194,7 +212,7 @@ cat <<DONE
 =============================================================================
  codx-junior is running
 
-   Web UI : http://localhost:${WEB_PORT}
+   Web UI : ${WEB_URL}
    Projects: ${PROJECTS_PATH}
    Settings: ${ENV_FILE}
 

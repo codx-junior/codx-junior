@@ -96,6 +96,23 @@ docker run -d --name codx-junior -p 19981:19981 \
 > back to a local build (a few minutes). Pass `--build` to make that explicit, and
 > see ["publishing the image"](#7-publishing-the-image) below.
 
+### On a cloud VM — one command, fully unattended
+
+On a remote server you do not need to clone anything by hand. This installer
+installs Docker, downloads the repository, writes the settings, starts the
+container, waits for the health check and prints the URL:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/codx-junior-installer/cloud/bootstrap.sh -o /tmp/codx-junior.sh
+sudo bash /tmp/codx-junior.sh --provider deepseek --key sk-xxxxxxxx
+# -> CODX_JUNIOR_READY http://<server-ip>:19981
+```
+
+It is idempotent (re-running upgrades) and it also installs a small operations
+CLI: `codx-junior status | logs | restart | upgrade | down`. Hetzner,
+DigitalOcean, AWS and GCE examples, the full settings reference, HTTPS with a
+domain and the troubleshooting table are in **[cloud/README.md](cloud/README.md)**.
+
 ## 3. What the demo includes — and what it leaves out
 
 The demo is **one container**: FastAPI + the background worker + nginx serving the

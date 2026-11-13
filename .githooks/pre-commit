@@ -8,33 +8,72 @@
 #     git commit --no-verify
 # Make it fatal when the scanner cannot run:
 #     CISO_PRECOMMIT_STRICT=1 git commit ...
+# Force one interpreter:
+#     CISO_PYTHON=/usr/bin/python3 git commit ...
+# Accept the findings of THIS staged content for exactly one commit:
+#     bash .githooks/pre-commit --approve
+# Show or cancel the pending approval:
+#     bash .githooks/pre-commit --status
+#     bash .githooks/pre-commit --revoke
 #
 # The scan itself lives in `codx.junior.security.ciso.precommit` so the hook and
-# the platform share one rule set. Any redaction or detection added anywhere
-# else is security debt.
+# the platform share one rule set. That package is stdlib-only ON PURPOSE: the
+# hook runs from a fresh clone, a PR worktree or a container, where the API
+# virtualenv does not exist and third-party imports such as pydantic are simply
+# not installed. A gate that needs them dies with an ImportError at commit time
+# — i.e. it stops protecting exactly when it is needed. Any redaction or
+# detection added anywhere else is security debt.
 
 set -u
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" 2>/dev/null || exit 0
 
+# The API package may live in the MAIN worktree while the commit happens in a PR
+# worktree, where `api/.venv` does not exist because a venv is never committed.
+common_dir=$(git rev-parse --git-common-dir 2>/dev/null) || common_dir=".git"
+case "$common_dir" in
+    /*) ;;
+    *) common_dir="$root/$common_dir" ;;
+esac
+main_root=$(cd "$common_dir/.." 2>/dev/null && pwd) || main_root="$root"
+
+module=codx.junior.security.ciso.precommit
 python_bin=""
-for candidate in "${CISO_PYTHON:-}" "api/.venv/bin/python" ".venv/bin/python" "python3"; do
-    [ -n "$candidate" ] || continue
-    if command -v "$candidate" >/dev/null 2>&1; then
-        python_bin="$candidate"
+api_path=""
+
+for api_dir in "$root/api" "$main_root/api"; do
+    [ -d "$api_dir/codx/junior/security/ciso" ] || continue
+    for candidate in "${CISO_PYTHON:-}" \
+                     "$api_dir/.venv/bin/python" \
+                     "$(dirname "$api_dir")/.venv/bin/python" \
+                     "python3" \
+                     "python"; do
+        [ -n "$candidate" ] || continue
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        # Pick the first interpreter that can ACTUALLY import the scanner: an
+        # interpreter without the module must never silently disable the gate.
+        if PYTHONPATH="$api_dir${PYTHONPATH:+:$PYTHONPATH}" \
+            "$candidate" -c "import $module" >/dev/null 2>&1; then
+            python_bin="$candidate"
+            api_path="$api_dir"
+            break
+        fi
+    done
+    if [ -n "$python_bin" ]; then
         break
     fi
 done
 
 if [ -z "$python_bin" ]; then
-    echo "CISO: no python interpreter found; the staged changes were NOT scanned." >&2
+    echo "CISO: no interpreter could load the secret scanner; the staged changes were NOT scanned." >&2
+    echo "CISO: set CISO_PYTHON=<python> or install python3; use CISO_PRECOMMIT_STRICT=1 to make this fatal." >&2
     [ "${CISO_PRECOMMIT_STRICT:-0}" = "1" ] && exit 1
     exit 0
 fi
 
-PYTHONPATH="$root/api${PYTHONPATH:+:$PYTHONPATH}" \
-    "$python_bin" -m codx.junior.security.ciso.precommit
+PYTHONPATH="$api_path${PYTHONPATH:+:$PYTHONPATH}" \
+    "$python_bin" -m "$module" "$@"
 status=$?
 
 if [ "$status" -eq 3 ]; then

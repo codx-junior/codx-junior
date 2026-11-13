@@ -226,6 +226,38 @@ def is_secret_file(path: Optional[str]) -> bool:
     return any(pattern.search(normalised) for pattern in _SECRET_FILE_PATTERNS)
 
 
+def looks_like_path(value: str) -> bool:
+    """Return True when *value* is a file path rather than a credential.
+
+    Filesystem paths are the largest single source of false positives for the
+    entropy detector: ``codx/junior/security/ciso/gate.py`` or
+    ``/home/user/projects/my-api`` are long, low-redundancy and full of
+    separators. A credential is not usually shaped like a path, so a candidate
+    that is one is rejected.
+
+    Args:
+        value: Candidate secret value.
+
+    Returns:
+        bool: True when the value looks like a path.
+    """
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+    if candidate.startswith(("/", "~/", "./", "../")):
+        return True
+    if "://" in candidate:
+        # A URL, not a filesystem path: the host has dots, but the value is a
+        # credential the moment it embeds a user:password pair.
+        return False
+    if "/" not in candidate and "\\" not in candidate:
+        return False
+    normalised = candidate.replace("\\", "/")
+    last_segment = normalised.rsplit("/", 1)[-1]
+    # ``docs/readme.md`` or ``codx/junior/app.py``: a dotted final segment.
+    return "." in last_segment
+
+
 def is_secret_placeholder(value: str) -> bool:
     """Return True when *value* looks like a placeholder instead of a secret.
 
@@ -246,9 +278,15 @@ def is_secret_placeholder(value: str) -> bool:
     candidate = (value or "").strip()
     if not candidate:
         return True
+    # Already redacted by this module: ``mask()`` renders the value as
+    # ``eyJh[REDACTED](24 chars)``. Reporting it again would leave a file that
+    # was just cleaned still blocked, so the gate could never converge and the
+    # only way out would be a permanent path allowlist.
+    if REDACTED_MARKER in candidate:
+        return True
     if len(candidate) < 8:
         return True
-    if candidate.startswith(("/", "~/", "./", "../")):
+    if looks_like_path(candidate):
         # Filesystem path, not a credential.
         return True
     return any(pattern.search(candidate) for pattern in _PLACEHOLDER_PATTERNS)
@@ -391,7 +429,10 @@ def scan_text(
             reason=f"Detected {title.lower()} in the payload",
             path=path,
             line=_line_of(payload, start),
-            excerpt=_excerpt(payload, start, end, policy.max_excerpt_chars),
+            # The excerpt is copied into reports, logs and chat messages, so it
+            # is redacted with the same rules as the evidence: a finding must
+            # never reproduce the credential it reports.
+            excerpt=_redact(_excerpt(payload, start, end, policy.max_excerpt_chars)),
             evidence=_redact(evidence),
             remediation=remediation,
             confidence=0.95,
@@ -399,6 +440,12 @@ def scan_text(
 
     for rule_id, title, severity, pattern in _TOKEN_PATTERNS:
         for match in pattern.finditer(payload):
+            # Same guard as `redact_text` and the rules below: a value the
+            # redactor refuses to touch must not be reported either, otherwise
+            # the gate reports a credential it cannot neutralise and the
+            # cleanup never converges.
+            if is_secret_placeholder(match.group(0)):
+                continue
             _add(
                 rule_id=rule_id,
                 title=title,

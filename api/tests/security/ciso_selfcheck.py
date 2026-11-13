@@ -73,6 +73,26 @@ def _check_placeholders():
     assert findings == [], [f.rule_id for f in findings]
 
 
+@check("redacting a file clears it: the gate converges")
+def _check_redaction_converges():
+    """A redacted file must scan clean, or the gate can never be satisfied.
+
+    ``redact_text`` renders a secret as ``AKIA[REDACTED](20 chars)``. If that
+    marker were detected as a credential again, cleaning a file would leave it
+    still blocked and the only way out would be a permanent path allowlist.
+    """
+    payload = f"const token = '{AWS_KEY}'\nAPI_KEY = \"{OPENAI_KEY}\""
+    findings, redacted, _ = secrets.scan_text(payload)
+    assert findings, "the payload should be detected"
+    assert secrets.REDACTED_MARKER in redacted, redacted
+    again, redacted_again, _ = secrets.scan_text(redacted)
+    assert [finding.rule_id for finding in again] == [], [
+        finding.rule_id for finding in again
+    ]
+    assert redacted_again == redacted, "redaction must be idempotent"
+    assert secrets.is_secret_placeholder(redacted.split("= ")[-1].strip()), redacted
+
+
 @check("malicious code families are detected")
 def _check_malicious():
     payload = "\n".join([
@@ -228,4 +248,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # The registry check imports the application (engine, workers, caches), which
+    # may leave background threads alive; they would keep the interpreter
+    # running after the report, so exit without joining them.
+    import os  # local by design: only needed to skip the atexit/thread join
+
+    os._exit(_exit_code)

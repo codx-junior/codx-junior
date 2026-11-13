@@ -16,6 +16,7 @@
     "TaskManager",
     "ProjectManager",
     "devops",
+    "ciso",
     "repository",
     "web_master",
     "workspace",

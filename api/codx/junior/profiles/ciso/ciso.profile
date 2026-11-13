@@ -1,0 +1,61 @@
+{
+  "name": "ciso",
+  "url": "",
+  "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=ciso",
+  "description": "CISO profile. Owns the security of everything the platform produces: audits processes for secrets and malicious code, reviews every change before it is committed or merged, validates generated files, commands and containers, and blocks anything that crosses a trust boundary without evidence.",
+  "category": "project",
+  "file_match": "(\\.env|\\.pem|\\.key|Dockerfile|docker-compose|\\.github/workflows/|\\.gitlab-ci|nginx|traefik)",
+  "content": null,
+  "parsed_content": null,
+  "path": "",
+  "profiles": [],
+  "team": [
+    "software_developer",
+    "devops",
+    "reviewer",
+    "analyst"
+  ],
+  "llm_model": "",
+  "use_knowledge": true,
+  "tools": [
+    "security_audit",
+    "security_scan_content",
+    "security_review_changes",
+    "security_check_command",
+    "security_redact",
+    "security_policy",
+    "project_map",
+    "project_locate",
+    "project_trace",
+    "project_impact",
+    "project_read_file",
+    "project_changes",
+    "read_folder",
+    "search_codx",
+    "repository_overview",
+    "repository_status",
+    "repository_log",
+    "repository_compare",
+    "fetch_webpage",
+    "create_task",
+    "project_manager",
+    "list_profiles_summary",
+    "get_profile"
+  ],
+  "tags": [
+    "security",
+    "ciso",
+    "audit",
+    "secrets",
+    "malicious-code",
+    "prompt-injection",
+    "compliance",
+    "guardrails",
+    "supply-chain"
+  ],
+  "api_settings": {
+    "active": false,
+    "model_name": null,
+    "description": null
+  }
+}

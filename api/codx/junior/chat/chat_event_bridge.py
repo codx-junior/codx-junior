@@ -90,7 +90,8 @@ they are known, not only at the end of the turn.
 """
 import logging
 import time
-from typing import Dict, Set
+from datetime import datetime, timezone
+from typing import Dict, Optional, Set
 
 from engine.agent_runtime import AgentEvent, AgentEventType
 
@@ -98,6 +99,7 @@ from codx.junior.db import (
     Chat,
     LifeCycleEvent,
     Message,
+    PhaseEvent,
     ToolEvent,
 )
 
@@ -116,15 +118,44 @@ STATUS_RUNNING: str = "running"
 STATUS_DONE: str = "done"
 STATUS_ERROR: str = "error"
 
-# Run lifecycle events tracked on the response message. LLM_CHUNK / LLM_REQUEST
-# / LLM_USAGE are intentionally excluded: streaming previews are handled by the
-# response message callbacks and token usage lands in the run analytics summary.
+# Run lifecycle events tracked on the response message.
 LIFECYCLE_EVENT_TYPES = {
     AgentEventType.RUN_START,
     AgentEventType.RUN_END,
     AgentEventType.RUN_ERROR,
     AgentEventType.RUN_CANCELLED,
 }
+
+
+
+def _iso_ts(value: Optional[float] = None) -> str:
+    """
+    ISO-8601 UTC timestamp of *value* (default: now).
+
+    The ``+00:00`` offset is normalised to ``Z`` so every reader (browser
+    ``Date``, log parsers) interprets it the same way. Without timestamps on the
+    events a client could only GUESS where a call sat inside the turn — which is
+    why the timeline had to spread the unaccounted time over the gaps.
+
+    :param value: Epoch seconds; defaults to the current time.
+    :return: ISO-8601 UTC string, millisecond precision.
+    """
+    stamp = time.time() if value is None else float(value)
+    return (
+        datetime.fromtimestamp(stamp, tz=timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _parse_iso(value: Optional[str]) -> Optional[float]:
+    """Parse an ISO-8601 timestamp back to epoch seconds (None when invalid)."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
 
 
 def _truncate(text: str, max_chars: int = TOOL_RESPONSE_MAX_CHARS) -> str:
@@ -199,6 +230,12 @@ class ChatEventBridge:
         self._tool_events: Dict[str, ToolEvent] = {}
         # run_id -> in-place updated LifeCycleEvent
         self._lifecycle_events: Dict[str, LifeCycleEvent] = {}
+        # Phase currently waiting for the model's FIRST token (TTFT). It is the
+        # only place where "we are waiting for the AI" is a recorded fact: a turn
+        # with no tool running is NOT necessarily idle.
+        self._open_llm: Optional[PhaseEvent] = None
+        # Phase currently streaming the model response (tokens arriving).
+        self._stream_phase: Optional[PhaseEvent] = None
 
     @property
     def response_persisted(self) -> bool:
@@ -242,6 +279,16 @@ class ChatEventBridge:
                 self._on_tool_finished(event, error=True)
             elif event.type in LIFECYCLE_EVENT_TYPES:
                 self._on_lifecycle(event)
+            elif event.type == AgentEventType.LLM_REQUEST:
+                self._on_llm_request(event)
+            elif event.type == AgentEventType.LLM_CHUNK:
+                self._on_llm_chunk(event)
+            elif event.type == AgentEventType.LLM_USAGE:
+                self._on_llm_usage(event)
+            elif event.type == AgentEventType.TOOL_LOGS:
+                self._on_tool_logs(event)
+            elif event.type == AgentEventType.WALLET_CHECK:
+                self._on_wallet_check(event)
         except (OSError, ValueError, TypeError, RuntimeError) as ex:
             # A broken notification must NEVER kill the AI run.
             logger.exception(
@@ -275,6 +322,10 @@ class ChatEventBridge:
             tool_call_id=str(payload.get("tool_call_id") or ""),
             status=status,
             request=payload.get("args") or {},
+            # Real timestamps: the runtime emits them on the event, so the client
+            # never has to guess where the call sits inside the turn again.
+            started_at=str(payload.get("started_at") or _iso_ts(event.ts)),
+            cached=payload.get("cached"),
         )
         self._tool_events[self._tool_key(event)] = tool_event
         self.response_message.tool_events.append(tool_event)
@@ -302,6 +353,12 @@ class ChatEventBridge:
             tool_event = self._register_tool_event(event, status=STATUS_RUNNING)
 
         tool_event.duration_ms = duration_ms
+        tool_event.finished_at = str(payload.get("finished_at") or _iso_ts())
+        if not tool_event.started_at:
+            tool_event.started_at = _iso_ts(event.ts - (duration_ms / 1000.0))
+        # The model stopped generating to hand the turn over to the tool: the
+        # streaming phase ends here, not at the next request.
+        self._close_stream_phase()
 
         if error:
             tool_event.status = STATUS_ERROR
@@ -326,6 +383,227 @@ class ChatEventBridge:
         )
         self.publish()
 
+    # ── Phase events (what the turn is WAITING for) ────────────────────────────
+
+    def _phase_list(self):
+        """Return the phase list of the response message, creating it if needed."""
+        if self.response_message.phase_events is None:
+            self.response_message.phase_events = []
+        return self.response_message.phase_events
+
+    def _register_phase(
+        self,
+        kind: str,
+        *,
+        status: str = STATUS_RUNNING,
+        started_at: Optional[str] = None,
+        detail: Optional[str] = None,
+        label: Optional[str] = None,
+        meta: Optional[dict] = None,
+    ) -> PhaseEvent:
+        """
+        Append a new :class:`PhaseEvent` to the response message.
+
+        :param kind: Phase kind (``llm_request``, ``llm_response``, ``notice``).
+        :param status: Initial status ('running' while the wait is in flight).
+        :param started_at: ISO start timestamp (defaults to now).
+        :param detail: One-line description shown by the client.
+        :param label: Short human label.
+        :param meta: Free-form metrics (model, tokens, ...).
+        :return: The appended phase.
+        """
+        phase = PhaseEvent(
+            kind=kind,
+            status=status,
+            label=label,
+            detail=detail,
+            started_at=started_at or _iso_ts(),
+            meta=meta or None,
+        )
+        self._phase_list().append(phase)
+        return phase
+
+    @staticmethod
+    def _close_phase(
+        phase: Optional[PhaseEvent],
+        status: str = STATUS_DONE,
+        detail: Optional[str] = None,
+    ) -> Optional[PhaseEvent]:
+        """
+        Close *phase* in place: stamp the end and the MEASURED duration.
+
+        :param phase: The phase to close (no-op when None or already closed).
+        :param status: Final status.
+        :param detail: Optional replacement of the detail line.
+        :return: The same phase, for chaining.
+        """
+        if phase is None or phase.finished_at:
+            return phase
+        finished = time.time()
+        phase.finished_at = _iso_ts(finished)
+        started = _parse_iso(phase.started_at)
+        if started is not None:
+            phase.duration_ms = max(0.0, (finished - started) * 1000.0)
+        phase.status = status
+        if detail is not None:
+            phase.detail = detail
+        return phase
+
+    def _close_stream_phase(self) -> None:
+        """Close the streaming phase when it is still open."""
+        self._close_phase(self._stream_phase)
+        self._stream_phase = None
+
+    def _close_open_phases(
+        self, status: str = STATUS_DONE, detail: Optional[str] = None
+    ) -> bool:
+        """
+        Close every phase still running (end of the run, end of a request).
+
+        :param status: Final status to stamp.
+        :param detail: Optional replacement of the detail line.
+        :return: True when at least one phase was closed.
+        """
+        closed = False
+        if self._open_llm is not None:
+            self._close_phase(self._open_llm, status, detail)
+            self._open_llm = None
+            closed = True
+        if self._stream_phase is not None:
+            self._close_phase(self._stream_phase, status, detail)
+            self._stream_phase = None
+            closed = True
+        return closed
+
+    def _on_llm_request(self, event: AgentEvent) -> None:
+        """
+        Record that the turn is now WAITING for the model.
+
+        This is the phase that separates "waiting 2 minutes for the AI" from
+        "dead": from here until the first streamed chunk nothing else happens,
+        and the phase stays ``running`` on disk, so the client can show a live
+        counter for it instead of an empty timeline.
+
+        :param event: The LLM_REQUEST agent event.
+        """
+        # A new request always follows the end of the previous answer.
+        self._close_open_phases()
+        payload = event.payload
+        model = payload.get("model")
+        message_count = payload.get("message_count")
+        parts = []
+        if model:
+            parts.append(f"model {model}")
+        if message_count:
+            parts.append(f"{message_count} messages")
+        self._open_llm = self._register_phase(
+            "llm_request",
+            status=STATUS_RUNNING,
+            started_at=_iso_ts(event.ts),
+            label="Waiting for the model",
+            detail=" · ".join(parts) or "Waiting for the first token",
+            meta={"model": model, "message_count": message_count},
+        )
+        logger.info(
+            "ChatEventBridge: waiting for model (chat='%s', run='%s', model=%s)",
+            self.chat.id,
+            event.run_id,
+            model,
+        )
+        self.publish()
+
+    def _on_llm_chunk(self, event: AgentEvent) -> None:
+        """
+        First chunk of a request: close the wait and open the streaming phase.
+
+        Chunks arrive many times per second, so this only does work ONCE per
+        request; the rest stay in the log as plain progress.
+
+        :param event: The LLM_CHUNK agent event.
+        """
+        if self._stream_phase is not None:
+            return
+        now = event.ts
+        ttft_ms = None
+        if self._open_llm is not None:
+            started = _parse_iso(self._open_llm.started_at)
+            if started is not None:
+                ttft_ms = max(0.0, (now - started) * 1000.0)
+            self._close_phase(self._open_llm, STATUS_DONE)
+            self._open_llm = None
+        detail = "Streaming the response"
+        if ttft_ms is not None:
+            detail = f"First token after {ttft_ms / 1000.0:.1f}s"
+        self._stream_phase = self._register_phase(
+            "llm_response",
+            status=STATUS_RUNNING,
+            started_at=_iso_ts(now),
+            label="Reading the response",
+            detail=detail,
+            meta={"ttft_ms": round(ttft_ms) if ttft_ms is not None else None},
+        )
+        logger.info(
+            "ChatEventBridge: model response started (chat='%s', ttft=%sms)",
+            self.chat.id,
+            round(ttft_ms) if ttft_ms is not None else "?",
+        )
+        self.publish()
+
+    def _on_llm_usage(self, event: AgentEvent) -> None:
+        """
+        Attach token usage to the phase in flight (no persist: it is metadata).
+
+        :param event: The LLM_USAGE agent event.
+        """
+        phase = self._stream_phase or self._open_llm
+        if phase is None:
+            return
+        meta = dict(phase.meta or {})
+        meta["prompt_tokens"] = int(event.payload.get("prompt_tokens") or 0)
+        meta["completion_tokens"] = int(event.payload.get("completion_tokens") or 0)
+        meta["total_tokens"] = meta["prompt_tokens"] + meta["completion_tokens"]
+        phase.meta = meta
+
+    def _on_tool_logs(self, event: AgentEvent) -> None:
+        """
+        Record a runtime notice (loop guard, course correction) as a phase.
+
+        :param event: The TOOL_LOGS agent event.
+        """
+        payload = event.payload
+        logs = payload.get("logs") or []
+        text = "; ".join(str(item) for item in logs) if isinstance(logs, (list, tuple)) else str(logs)
+        phase = self._register_phase(
+            "notice",
+            status=STATUS_DONE,
+            started_at=_iso_ts(event.ts),
+            label=str(payload.get("tool") or "Notice"),
+            detail=_truncate(text, 400),
+        )
+        phase.finished_at = phase.started_at
+        self.publish()
+
+    def _on_wallet_check(self, event: AgentEvent) -> None:
+        """
+        Record the budget pre-flight that runs before the agent starts.
+
+        :param event: The WALLET_CHECK agent event.
+        """
+        payload = event.payload
+        phase = self._register_phase(
+            "wallet_check",
+            status=STATUS_DONE,
+            started_at=_iso_ts(event.ts),
+            label="Budget check",
+            detail=f"balance {payload.get('balance')} · estimated {payload.get('estimated_cost')}",
+            meta={
+                "balance": payload.get("balance"),
+                "estimated_cost": payload.get("estimated_cost"),
+            },
+        )
+        phase.finished_at = phase.started_at
+        self.publish()
+
     # ── Lifecycle events ───────────────────────────────────────────────────────
 
     def _on_lifecycle(self, event: AgentEvent) -> None:
@@ -343,6 +621,7 @@ class ChatEventBridge:
             lifecycle_event = LifeCycleEvent(
                 status=STATUS_RUNNING,
                 run_id=event.run_id,
+                started_at=_iso_ts(event.ts),
             )
             self._lifecycle_events[event.run_id] = lifecycle_event
             self.response_message.lifecycle_events.append(lifecycle_event)
@@ -350,12 +629,25 @@ class ChatEventBridge:
         if event.type == AgentEventType.RUN_END:
             lifecycle_event.status = STATUS_DONE
             lifecycle_event.duration_ms = payload.get("duration_ms")
+            lifecycle_event.finished_at = _iso_ts(event.ts)
+            self._close_open_phases()
         elif event.type in (AgentEventType.RUN_ERROR, AgentEventType.RUN_CANCELLED):
             lifecycle_event.status = STATUS_ERROR
             lifecycle_event.duration_ms = payload.get("duration_ms")
             lifecycle_event.error = str(
                 payload.get("error") or payload.get("reason") or "unknown error"
             )
+            lifecycle_event.finished_at = _iso_ts(event.ts)
+            # The run died with work in flight: close every open phase as an
+            # error so the client never shows a wait that cannot be running.
+            self._close_open_phases(
+                status=STATUS_ERROR, detail=lifecycle_event.error
+            )
+            for open_tool in self.response_message.tool_events:
+                if open_tool.status == STATUS_RUNNING:
+                    open_tool.status = STATUS_ERROR
+                    open_tool.error = open_tool.error or "Interrupted by a run error"
+                    open_tool.finished_at = open_tool.finished_at or _iso_ts(event.ts)
 
         # Aggregated run analytics are supplementary metadata on the response.
         analytics = payload.get("analytics")

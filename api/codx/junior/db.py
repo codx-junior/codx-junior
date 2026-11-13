@@ -121,6 +121,22 @@ class ToolEvent(BaseModel):
     )
     duration_ms: Optional[float] = Field(default=None, description="Execution time in milliseconds")
     error: Optional[str] = Field(default=None, description="Error details when status is 'error'")
+    started_at: Optional[str] = Field(
+        default=None,
+        description=(
+            "ISO-8601 (UTC) timestamp of the moment the call started. Emitted by "
+            "the agent runtime; without it a client can only guess the position "
+            "of the call inside the turn."
+        )
+    )
+    finished_at: Optional[str] = Field(
+        default=None,
+        description="ISO-8601 (UTC) timestamp of the moment the call finished"
+    )
+    cached: Optional[bool] = Field(
+        default=None,
+        description="True when the call was served from the tool cache (no execution)"
+    )
 
 
 class LifeCycleEvent(BaseModel):
@@ -134,6 +150,43 @@ class LifeCycleEvent(BaseModel):
     run_id: str = Field(description="Unique identifier for the agent run")
     duration_ms: Optional[float] = Field(default=None, description="Execution time in milliseconds")
     error: Optional[str] = Field(default=None, description="Error details when status is 'error'")
+    started_at: Optional[str] = Field(
+        default=None, description="ISO-8601 (UTC) timestamp of the run start"
+    )
+    finished_at: Optional[str] = Field(
+        default=None, description="ISO-8601 (UTC) timestamp of the run end"
+    )
+
+
+class PhaseEvent(BaseModel):
+    """
+    One PHASE of a turn, i.e. a period of waiting that is not a tool call.
+
+    A turn is not only tool calls: most of its wall-clock time is spent WAITING
+    — for the model to accept the request, for its first token, for the answer
+    to stream, for the process to come back after a restart. Those waits are
+    invisible in :class:`ToolEvent` (no call is running), so a client could only
+    reconstruct them by spreading the leftover time over the gaps, which is a
+    guess. This model makes them real, timestamped facts.
+
+    Kinds emitted by the agent runtime:
+
+    - ``llm_request``  — request sent, waiting for the FIRST token (TTFT).
+    - ``llm_response`` — tokens are streaming: the model is writing.
+    - ``notice``       — a tool/runtime notice (loop guard, course correction).
+    - ``wallet_check`` — budget pre-flight before the run.
+    - ``interrupted``  — the process died (or the turn was stopped) while this
+      phase was running. Written by the recovery worker on restart, so a power
+      cut leaves a visible trace instead of a turn that silently stops.
+    """
+    kind: str = Field(description="llm_request | llm_response | notice | wallet_check | interrupted")
+    status: str = Field(description="Phase status: 'running', 'done', or 'error'")
+    label: Optional[str] = Field(default=None, description="Short human label")
+    detail: Optional[str] = Field(default=None, description="What happened, in one line")
+    started_at: Optional[str] = Field(default=None, description="ISO-8601 (UTC) phase start")
+    finished_at: Optional[str] = Field(default=None, description="ISO-8601 (UTC) phase end")
+    duration_ms: Optional[float] = Field(default=None, description="Measured phase duration in milliseconds")
+    meta: Optional[Dict[str, Any]] = Field(default=None, description="Free-form phase metrics (model, tokens, ...)")
 
 
 class Message(BaseModel):
@@ -251,6 +304,7 @@ class Message(BaseModel):
     meta_data: Optional[Dict[str, Any]] = Field(default=None, description="Free-form supplementary metadata (timings, model, analytics...)")
     tool_events: List[ToolEvent] = Field(default=[], description="Tool execution events associated with this response message")
     lifecycle_events: List[LifeCycleEvent] = Field(default=[], description="Agent run lifecycle events associated with this response message")
+    phase_events: List[PhaseEvent] = Field(default=[], description="Non-tool phases of the turn (waiting for the model, streaming, interruptions) with real timestamps")
     cost: float = Field(
         default=0.0,
         description=(

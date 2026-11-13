@@ -41,6 +41,11 @@ export const state = () => ({
   theme: 'dark',
   activeTab: 'home',
   newProject: false,
+  // One-shot request that opens the global "New task" dialog (see
+  // components/kanban/NewTaskDialog.vue). It is set by the single-mode "New"
+  // entry and consumed by the dialog as soon as it opens, so it is never
+  // persisted with the rest of the UI state.
+  newTask: false,
   activeApp: null,
   appShowMode: null,
   viewEditor: null,
@@ -295,6 +300,10 @@ export const mutations = mutationTree(state, {
   },
   showNewProject(state, show) {
     state.newProject = show
+  },
+  // One-shot request: the New-task dialog clears the flag as soon as it opens
+  showNewTask(state, show) {
+    state.newTask = show
   },
   cloneApp(state, app) {
     // "Duplicate" only makes sense for apps declared as multi-instance in
@@ -578,6 +587,8 @@ export const actions = actionTree(
           ...state,
           uiReady: false,
           mobileMenuOpen: false,
+          // A one-shot dialog request must never survive a reload
+          newTask: false,
           openApps: {},
           viewEditor: null,
           projectLoadingState: {
@@ -605,6 +616,7 @@ export const actions = actionTree(
       }
       state.mobileMenuOpen = false
       $storex.ui.showNewProject(false)
+      $storex.ui.showNewTask(false)
       $storex.ui.handleResize()
     },
     handleResize({ state }) {

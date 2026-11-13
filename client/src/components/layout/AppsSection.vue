@@ -186,11 +186,17 @@ import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
         @click="handleNavigateToInfra"
       />
 
+      <!-- Project's channel (design/project-channel.md): the video-first shell
+           of the project. It replaces the Wiki item as the VISIBLE entry point
+           — the wiki becomes its "Library" tab — but nothing is removed: the
+           "/:projectName/wiki" route and the 'wiki' app registry entry keep
+           working, and the channel links to the wiki until the Library tab
+           renders it (see views/ChannelView.vue). -->
       <NavItem
-        icon="fas fa-graduation-cap"
-        label="Wiki"
+        icon="fas fa-tower-broadcast"
+        label="Channel"
         :is-collapsed="isCollapsed"
-        @click="handleNavigateToWiki"
+        @click="handleNavigateToChannel"
       />
 
     </div>
@@ -291,9 +297,10 @@ export default {
       if (this.$ui.isDesktopMode) {
         this.$service.chat.newQuickChat()
       } else {
-        // "New" is the composer, not the management dashboard. This is the
-        // mobile entry point and the single-mode entry point alike.
-        this.$storex.$router.$navigation.apps.openNewChat()
+        // Single mode has no window manager to host a new-chat panel, so "New"
+        // opens the create-task dialog directly, with the codx-junior profile
+        // already selected (see components/kanban/NewTaskDialog.vue).
+        this.$ui.showNewTask(true)
       }
       this.$emit('close')
     },
@@ -358,6 +365,17 @@ export default {
     handleNavigateToInfra() {
       this.openApp('infra')
     },
+    // Opens the project channel. It is a full screen (with its own tab bar),
+    // so it is reached by ROUTE rather than through openApp(): the channel is
+    // not a dockview panel yet. The router injects the active project prefix
+    // because the route path contains ":projectName" (see router/index.ts).
+    handleNavigateToChannel() {
+      this.$router.push({ name: 'channel' }).catch(() => {})
+      this.$emit('close')
+    },
+    // Kept for the screens that still open the wiki directly: the 'wiki' app
+    // is registered in config/apps.js and "/:projectName/wiki" still resolves,
+    // so the old documentation entry point is never broken.
     handleNavigateToWiki() {
       this.openApp('wiki')
     },

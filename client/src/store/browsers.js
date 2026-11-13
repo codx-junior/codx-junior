@@ -24,7 +24,20 @@ export const state = () => ({
   // `/api/computers/desktop-sizes`. `null` means "not loaded (yet)": the UI
   // then falls back to the built-in presets, so it also works against a
   // backend without that endpoint.
-  desktopSizes: null
+  desktopSizes: null,
+
+  // ── Multi-session "grid view" ───────────────────────────────────────────
+  // The screen shows either the single focused machine (`single`) or a wall
+  // with several machines at once (`grid`).
+  //
+  // `gridSessionIds` is the explicit selection (its order is the tile order)
+  // and `gridActiveId` is the tile that carries the live, interactive viewer
+  // while the rest render cheap previews. `gridLayout` only decides how those
+  // tiles are arranged, never which sessions are watched.
+  viewMode: 'single',
+  gridSessionIds: [],
+  gridActiveId: null,
+  gridLayout: 'grid'
 })
 
 export const getters = getterTree(state, {
@@ -55,7 +68,26 @@ export const getters = getterTree(state, {
   errorMessage: state => state.error,
 
   /** Selector options for the desktop size: auto, the fixed presets and custom. */
-  desktopSizeOptions: state => desktopSizeOptions(state.desktopSizes)
+  desktopSizeOptions: state => desktopSizeOptions(state.desktopSizes),
+
+  // ── Grid view ───────────────────────────────────────────────────────────
+
+  isGridView: state => state.viewMode === 'grid',
+  gridLayout: state => state.gridLayout,
+  gridSessionIds: state => state.gridSessionIds,
+  gridActiveId: state => state.gridActiveId,
+
+  /**
+   * Sessions on the wall, in the order the user added them.
+   *
+   * Ids that do not resolve (session deleted, another project, list not loaded
+   * yet) are dropped so the grid never renders an empty tile.
+   */
+  gridSessions: (state) => {
+    return state.gridSessionIds
+      .map(id => state.sessions.find(session => session.id === id))
+      .filter(Boolean)
+  }
 })
 
 export const mutations = mutationTree(state, {
@@ -78,6 +110,11 @@ export const mutations = mutationTree(state, {
     state.sessions = state.sessions.filter(s => s.id !== sessionId)
     if (state.selectedSessionId === sessionId) {
       state.selectedSessionId = null
+    }
+    // A deleted machine cannot stay on the wall.
+    state.gridSessionIds = state.gridSessionIds.filter(id => id !== sessionId)
+    if (state.gridActiveId === sessionId) {
+      state.gridActiveId = state.gridSessionIds[0] || null
     }
     delete state.activityBySession[sessionId]
     delete state.costBySession[sessionId]
@@ -162,6 +199,53 @@ export const mutations = mutationTree(state, {
 
   setDesktopSizes(state, presets) {
     state.desktopSizes = Array.isArray(presets) && presets.length ? presets : null
+  },
+
+  // ── Grid view ───────────────────────────────────────────────────────────
+
+  setViewMode(state, mode) {
+    state.viewMode = mode === 'grid' ? 'grid' : 'single'
+  },
+
+  setGridLayout(state, layout) {
+    state.gridLayout = ['grid', 'spotlight', 'sidebar'].includes(layout) ? layout : 'grid'
+  },
+
+  setGridSessions(state, sessionIds) {
+    state.gridSessionIds = [...new Set((sessionIds || []).filter(Boolean))]
+    if (!state.gridSessionIds.includes(state.gridActiveId)) {
+      state.gridActiveId = state.gridSessionIds[0] || null
+    }
+  },
+
+  addGridSession(state, sessionId) {
+    if (!sessionId || state.gridSessionIds.includes(sessionId)) return
+    state.gridSessionIds = [...state.gridSessionIds, sessionId]
+    if (!state.gridActiveId) state.gridActiveId = sessionId
+  },
+
+  removeGridSession(state, sessionId) {
+    state.gridSessionIds = state.gridSessionIds.filter(id => id !== sessionId)
+    if (state.gridActiveId === sessionId) {
+      state.gridActiveId = state.gridSessionIds[0] || null
+    }
+  },
+
+  toggleGridSession(state, sessionId) {
+    if (!sessionId) return
+    if (state.gridSessionIds.includes(sessionId)) {
+      state.gridSessionIds = state.gridSessionIds.filter(id => id !== sessionId)
+      if (state.gridActiveId === sessionId) {
+        state.gridActiveId = state.gridSessionIds[0] || null
+      }
+      return
+    }
+    state.gridSessionIds = [...state.gridSessionIds, sessionId]
+    if (!state.gridActiveId) state.gridActiveId = sessionId
+  },
+
+  setGridActive(state, sessionId) {
+    state.gridActiveId = sessionId || null
   }
 })
 
@@ -202,6 +286,9 @@ function shareNewSessionWithMeet(session) {
     console.warn('[Browsers] Meet sharing unavailable', error)
   }
 }
+
+// How many machines the first switch to the wall picks up on its own.
+const DEFAULT_GRID_SIZE = 6
 
 /**
  * Normalise the list response of the computer-session endpoint.
@@ -433,6 +520,62 @@ export const actions = actionTree(
 
     clearSelection({ commit }) {
       commit('clearSelection')
+    },
+
+    /**
+     * Switch the stage between one machine (`single`) and the wall (`grid`).
+     *
+     * The first switch to the wall seeds the selection with the machine being
+     * watched plus the running ones, so the grid never opens completely empty.
+     * `{ mode, seed: false }` restores a stored state without seeding it.
+     */
+    setViewMode({ state, commit }, payload) {
+      const options = typeof payload === 'string' ? { mode: payload } : (payload || {})
+      const mode = options.mode === 'grid' ? 'grid' : 'single'
+      if (mode === 'grid' && options.seed !== false && !state.gridSessionIds.length) {
+        const running = state.sessions
+          .filter(session => session.status === 'running')
+          .slice(0, options.seedLimit || DEFAULT_GRID_SIZE)
+          .map(session => session.id)
+        const ids = state.selectedSessionId
+          ? [state.selectedSessionId, ...running]
+          : running
+        commit('setGridSessions', [...new Set(ids)])
+      }
+      commit('setViewMode', mode)
+    },
+
+    setGridLayout({ commit }, layout) {
+      commit('setGridLayout', layout)
+    },
+
+    setGridSessions({ commit }, sessionIds) {
+      commit('setGridSessions', sessionIds)
+    },
+
+    addGridSession({ commit }, sessionId) {
+      commit('addGridSession', sessionId)
+    },
+
+    removeGridSession({ commit }, sessionId) {
+      commit('removeGridSession', sessionId)
+    },
+
+    toggleGridSession({ commit }, sessionId) {
+      commit('toggleGridSession', sessionId)
+    },
+
+    setGridActive({ commit }, sessionId) {
+      commit('setGridActive', sessionId)
+    },
+
+    /** Leave the wall and show one machine full screen again. */
+    openSingleSession({ commit }, sessionId) {
+      if (sessionId) {
+        commit('selectSession', sessionId)
+        commit('setGridActive', sessionId)
+      }
+      commit('setViewMode', 'single')
     },
 
     toggleNewSessionForm({ commit }, show) {

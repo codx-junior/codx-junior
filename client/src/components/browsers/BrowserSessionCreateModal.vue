@@ -1,20 +1,97 @@
 <script setup>
 import BrowserFolderPicker from './BrowserFolderPicker.vue'
 import ComputerImageLibrary from './ComputerImageLibrary.vue'
+import {
+  imageName,
+  imageTag,
+  loadRecentImages,
+  providerFromImage,
+  rememberRecentImage
+} from '../../utils/recentComputerImages'
 </script>
 
 <template>
   <!--
-    New computer session settings.
+    New computer session — a two step wizard in ONE dialog.
 
-    One dialog creates every kind of shared machine: a Linux desktop container,
-    a Windows/macOS VM, a remote VNC/SSH machine or the original Chromium
-    browser session. Container kinds decide their project mounts here because
-    they become bind mounts; VMs see the project root at /shared (Z: on
+    Step 1 picks the machine kind and its image (recent images, the full
+    library or a custom reference), step 2 its session settings. The image
+    library and the folder browser are rendered *inside* the wizard instead of
+    opening dialogs of their own: a modal on top of a modal hides the form the
+    user is filling in and traps them two levels deep.
+
+    One dialog still creates every kind of shared machine: a Linux desktop
+    container, a Windows/macOS VM, a remote VNC/SSH machine or the original
+    Chromium browser session. Container kinds decide their project mounts here
+    because they become bind mounts; VMs see the project root at /shared (Z: on
     Windows) and remote machines have no mounts.
   -->
   <modal close title="New computer session" @close="close">
-    <div class="flex flex-col gap-5 md:w-[34rem]">
+    <div class="flex flex-col gap-4 md:w-[36rem]">
+
+      <!-- ── Wizard steps ──────────────────────────────────────────────── -->
+      <ol class="flex flex-wrap items-center gap-1.5 text-[11px]" aria-label="New session steps">
+        <li>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-colors duration-150"
+            :class="step === 1
+              ? 'border-primary/50 bg-primary/10 font-semibold text-primary'
+              : 'border-base-content/15 text-base-content/60 hover:bg-base-200/60'"
+            @click="goToStep(1)"
+          >
+            <span
+              class="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold"
+              :class="step === 1 ? 'bg-primary text-primary-content' : 'bg-base-content/15'"
+            >1</span>
+            Machine &amp; image
+          </button>
+        </li>
+        <i class="fa-solid fa-chevron-right text-[8px] text-base-content/30" aria-hidden="true"></i>
+        <li>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-colors duration-150"
+            :class="step === 2
+              ? 'border-primary/50 bg-primary/10 font-semibold text-primary'
+              : 'border-base-content/15 text-base-content/60 hover:bg-base-200/60'"
+            @click="goToStep(2)"
+          >
+            <span
+              class="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold"
+              :class="step === 2 ? 'bg-primary text-primary-content' : 'bg-base-content/15'"
+            >2</span>
+            Settings
+          </button>
+        </li>
+        <li class="ml-auto min-w-0 max-w-[14rem] truncate text-base-content/40" :title="stepSummary">
+          {{ stepSummary }}
+        </li>
+      </ol>
+
+      <!-- Sub-views of this dialog: image library / folder browser -->
+      <ComputerImageLibrary
+        v-if="view === 'library'"
+        embedded
+        :kind="form.kind"
+        :model-value="form.image"
+        @select="onImageSelected"
+        @close="view = null"
+      />
+      <BrowserFolderPicker
+        v-else-if="view === 'folders' || view === 'downloads'"
+        embedded
+        :mode="view === 'downloads' ? 'single' : 'multiple'"
+        :model-value="view === 'downloads'
+          ? (form.downloadsFolder ? [form.downloadsFolder] : [])
+          : form.folders"
+        :title="view === 'downloads' ? 'Downloads folder' : 'Project folders'"
+        @select="onPickerSelect"
+        @close="view = null"
+      />
+
+      <!-- ── Step 1 · machine and its image ───────────────────────────── -->
+      <template v-else-if="step === 1">
 
       <!-- ── Machine ──────────────────────────────────────────────────── -->
       <section class="flex flex-col gap-2">
@@ -64,6 +141,111 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
           <span>Enable VNC/Screen Sharing on the remote machine. Add SSH to let the AI run shell commands (builds, tests, adb).</span>
         </p>
       </section>
+
+      <!-- ── Desktop image ───────────────────────────────────────────── -->
+      <section v-if="isLinux" class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <h3 class="flex-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/40">
+            Desktop image
+          </h3>
+          <button
+            v-if="form.image"
+            type="button"
+            class="btn btn-ghost btn-xs gap-1 text-base-content/50"
+            @click="clearLibraryImage"
+          >
+            <i class="fa-solid fa-eraser"></i> Use default
+          </button>
+        </div>
+
+        <!-- What is going to start -->
+        <div class="flex items-center gap-2.5 rounded-xl border border-primary/40 bg-primary/5 p-2">
+          <span class="flex h-14 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-base-300/50">
+            <img
+              v-if="imageSelectionPreview"
+              :src="imageSelectionPreview"
+              alt=""
+              class="h-full w-full object-cover"
+            />
+            <i v-else class="fa-solid fa-desktop text-lg text-base-content/30"></i>
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-xs font-semibold">{{ imageSelectionTitle }}</span>
+            <span class="block truncate text-[11px] text-base-content/50">{{ imageSelectionMeta }}</span>
+          </span>
+          <i class="fa-solid fa-circle-check text-primary" aria-hidden="true"></i>
+        </div>
+
+        <!-- Last images: the usual choice is one click away -->
+        <div v-if="recentImages.length" class="flex flex-col gap-1">
+          <span class="text-[10px] font-semibold uppercase tracking-wide text-base-content/40">
+            Recent
+          </span>
+          <div class="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            <button
+              v-for="image in recentImages"
+              :key="image.id"
+              type="button"
+              class="flex flex-col rounded-lg border p-1 text-left transition-colors duration-150"
+              :class="form.image === image.image
+                ? 'border-primary bg-primary/5'
+                : 'border-base-content/10 hover:border-primary/40 hover:bg-base-200/50'"
+              :title="image.image"
+              @click="onImageSelected(image)"
+            >
+              <span class="flex h-10 items-center justify-center overflow-hidden rounded bg-base-300/40">
+                <img
+                  v-if="image.screenshot_url"
+                  :src="image.screenshot_url"
+                  alt=""
+                  class="h-full w-full object-cover"
+                />
+                <i v-else class="fa-solid fa-desktop text-base-content/30"></i>
+              </span>
+              <span class="mt-1 block truncate text-[10px] font-semibold">{{ image.name }}</span>
+              <span class="block truncate text-[9px] text-base-content/40">{{ image.tag }}</span>
+            </button>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          class="btn btn-sm btn-outline w-full justify-start gap-2"
+          @click="view = 'library'"
+        >
+          <i class="fa-solid fa-images"></i>
+          <span class="flex-1 text-left">Browse the image library</span>
+          <span class="hidden text-[10px] opacity-60 sm:inline">Kasmweb · LinuxServer · Saved</span>
+          <i class="fa-solid fa-chevron-right text-[9px] opacity-40"></i>
+        </button>
+
+        <!-- Custom image: the escape hatch for anything not catalogued -->
+        <label class="flex flex-col gap-1">
+          <span class="text-[11px] font-semibold text-base-content/60">Or a custom image</span>
+          <input
+            v-model="form.image"
+            type="text"
+            class="input input-sm input-bordered w-full font-mono text-[11px]"
+            :placeholder="defaultImage"
+            spellcheck="false"
+          />
+        </label>
+      </section>
+
+      <p
+        v-else-if="!isRemote"
+        class="flex items-start gap-1.5 rounded-lg bg-base-200/60 px-2 py-1.5 text-[11px] text-base-content/60"
+      >
+        <i class="fa-solid fa-circle-info mt-0.5" aria-hidden="true"></i>
+        <span>
+          This machine always starts <code class="font-mono">{{ defaultImage }}</code>.
+        </span>
+      </p>
+
+      </template>
+
+      <!-- ── Step 2 · everything the session needs ────────────────────── -->
+      <template v-else>
 
       <!-- ── Session ──────────────────────────────────────────────────── -->
       <section class="flex flex-col gap-3">
@@ -174,46 +356,6 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
             reinstalling macOS.
           </span>
         </p>
-      </section>
-
-      <!-- ── Desktop image library ───────────────────────────────────── -->
-      <section v-if="isLinux" class="flex flex-col gap-2">
-        <div class="flex items-center gap-2">
-          <h3 class="flex-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/40">
-            Desktop image
-          </h3>
-          <button
-            v-if="form.image || selectedLibraryImage"
-            type="button"
-            class="btn btn-ghost btn-xs gap-1 text-base-content/50"
-            @click="clearLibraryImage"
-          >
-            <i class="fa-solid fa-eraser"></i> Use default
-          </button>
-        </div>
-        <button
-          type="button"
-          class="flex w-full items-center gap-2.5 rounded-xl border border-base-content/10 bg-base-100 p-2 text-left transition-colors hover:border-primary/40 hover:bg-base-200/50"
-          @click="showImageLibrary = true"
-        >
-          <span class="flex h-14 w-20 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-base-300/50">
-            <img
-              v-if="imageSelectionPreview"
-              :src="imageSelectionPreview"
-              alt=""
-              class="h-full w-full object-cover"
-            />
-            <i v-else class="fa-solid fa-desktop text-lg text-base-content/30"></i>
-          </span>
-          <span class="min-w-0 flex-1">
-            <span class="block truncate text-xs font-semibold">{{ imageSelectionTitle }}</span>
-            <span class="block truncate text-[11px] text-base-content/50">{{ imageSelectionMeta }}</span>
-            <span class="mt-0.5 flex items-center gap-1 text-[10px] text-primary">
-              <i class="fa-solid fa-images"></i> Browse Kasmweb and LinuxServer images
-            </span>
-          </span>
-          <i class="fa-solid fa-chevron-right text-[10px] text-base-content/30"></i>
-        </button>
       </section>
 
       <!-- ── Remote machine ──────────────────────────────────────────── -->
@@ -377,7 +519,7 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
           <button
             type="button"
             class="btn btn-outline btn-sm justify-start gap-2"
-            @click="picker = 'folders'"
+            @click="view = 'folders'"
           >
             <i class="fa-solid fa-folder-plus"></i>
             Add folders
@@ -466,7 +608,7 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
             :aria-label="form.downloadsFolder
               ? `Change downloads folder (${form.downloadsFolder})`
               : 'Choose downloads folder'"
-            @click="picker = 'downloads'"
+            @click="view = 'downloads'"
           >
             <i class="fa-solid fa-folder-open flex-shrink-0"></i>
             <span class="truncate font-mono text-[11px]">
@@ -515,23 +657,6 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
           </summary>
 
           <div class="flex flex-col gap-3 border-t border-base-content/10 p-2.5">
-            <!-- Image -->
-            <label class="flex flex-col gap-1">
-              <span class="text-xs font-semibold">Custom image override</span>
-              <input
-                v-model="form.image"
-                type="text"
-                class="input input-sm input-bordered w-full font-mono text-[11px]"
-                :placeholder="defaultImage"
-                spellcheck="false"
-              />
-              <span class="text-[10px] leading-snug text-base-content/50">
-                Leave empty to use the Desktop image selection above, or
-                <code class="font-mono">{{ defaultImage }}</code>. A custom image must
-                keep a live view and the X11/control channel of this machine kind.
-              </span>
-            </label>
-
             <!-- CPU + RAM (browser/Linux; VMs have a dedicated section) -->
             <div v-if="!isVm" class="grid grid-cols-2 gap-2">
               <label class="flex flex-col gap-1">
@@ -630,6 +755,8 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
         </details>
       </section>
 
+      </template>
+
       <!-- Error -->
       <p
         v-if="error"
@@ -644,50 +771,46 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
     <!-- ── Actions ──────────────────────────────────────────────────── -->
     <template #footer>
       <button type="button" class="btn btn-sm btn-ghost" :disabled="creating" @click="close">
-        Cancel
+        <i v-if="view" class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+        {{ view ? 'Back' : 'Cancel' }}
       </button>
+      <span class="mr-auto"></span>
+
       <button
+        v-if="!view && step === 1"
         type="button"
         class="btn btn-sm btn-primary gap-1"
-        :disabled="!canCreate"
-        @click="create"
+        @click="goToStep(2)"
       >
-        <i
-          class="fa-solid"
-          :class="creating ? 'fa-spinner animate-spin' : 'fa-plus'"
-          aria-hidden="true"
-        ></i>
-        {{ creating ? 'Creating…' : 'Create session' }}
+        Next
+        <i class="fa-solid fa-arrow-right" aria-hidden="true"></i>
       </button>
+
+      <template v-else-if="!view">
+        <button
+          type="button"
+          class="btn btn-sm btn-outline gap-1"
+          :disabled="creating"
+          @click="goToStep(1)"
+        >
+          <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+          Image
+        </button>
+        <button
+          type="button"
+          class="btn btn-sm btn-primary gap-1"
+          :disabled="!canCreate"
+          @click="create"
+        >
+          <i
+            class="fa-solid"
+            :class="creating ? 'fa-spinner animate-spin' : 'fa-plus'"
+            aria-hidden="true"
+          ></i>
+          {{ creating ? 'Creating…' : 'Create session' }}
+        </button>
+      </template>
     </template>
-
-    <Teleport to="body">
-      <ComputerImageLibrary
-        v-if="showImageLibrary"
-        :kind="form.kind"
-        :model-value="form.image"
-        @select="onImageSelected"
-        @close="showImageLibrary = false"
-      />
-    </Teleport>
-
-    <!--
-      The folder browser is teleported to <body>: the dialog box carries an
-      `animate-in` transform, which would otherwise become the containing block
-      of the picker's `position: fixed` overlay and clip it inside the dialog.
-    -->
-    <Teleport to="body">
-      <BrowserFolderPicker
-        v-if="picker"
-        :mode="picker === 'downloads' ? 'single' : 'multiple'"
-        :model-value="picker === 'downloads'
-          ? (form.downloadsFolder ? [form.downloadsFolder] : [])
-          : form.folders"
-        :title="picker === 'downloads' ? 'Downloads folder' : 'Project folders'"
-        @select="onPickerSelect"
-        @close="picker = null"
-      />
-    </Teleport>
   </modal>
 </template>
 
@@ -740,9 +863,11 @@ export default {
       form: emptyForm(),
       creating: false,
       error: null,
-      // Open folder picker: null | 'folders' | 'downloads'
-      picker: null,
-      showImageLibrary: false,
+      // Which wizard step is visible, and which sub-view replaces it. Both
+      // sub-views render inside this dialog: no modal opens another modal.
+      step: 1,
+      view: null, // null | 'library' | 'folders' | 'downloads'
+      recent: loadRecentImages(),
       selectedLibraryImage: null
     }
   },
@@ -823,14 +948,54 @@ export default {
     imageSelectionPreview() {
       return this.selectedLibraryImage?.screenshot_url || this.selectedLibraryImage?.icon_url || ''
     },
+    /** Machine kind label, used by the wizard header. */
+    kindLabel() {
+      return this.kindOptions.find(option => option.value === this.form.kind)?.label || 'Computer'
+    },
+    /** One line with the current choices, shown in the wizard header. */
+    stepSummary() {
+      if (!this.isLinux) return this.kindLabel
+      return `${this.kindLabel} · ${this.imageSelectionTitle}`
+    },
+    /**
+     * Last images: what this browser used before plus the images of the
+     * machines that already exist here, so a fresh browser is not empty.
+     */
+    recentImages() {
+      const seen = new Set()
+      return [
+        ...this.recent.filter(entry => entry.kind === this.form.kind),
+        ...this.sessionImages
+      ]
+        .filter((image) => {
+          if (!image?.image || seen.has(image.image)) return false
+          seen.add(image.image)
+          return true
+        })
+        .slice(0, 8)
+    },
+    /** Images of the existing sessions of the current machine kind. */
+    sessionImages() {
+      const sessions = this.$storex?.browsers?.allSessions || []
+      return sessions
+        .filter(session => session.image && (session.kind || 'browser') === this.form.kind)
+        .map(session => ({
+          id: `session:${session.id}`,
+          image: session.image,
+          name: imageName(session.image),
+          tag: imageTag(session.image),
+          provider: session.image_provider || providerFromImage(session.image),
+          live_view: session.live_view || '',
+          kind: session.kind || 'linux'
+        }))
+    },
+
     /** Short "what changed" badge shown while the section is collapsed. */
     advancedSummary() {
       const parts = []
       if (this.form.cpuCores) parts.push(`${this.form.cpuCores} vCPU`)
       if (this.form.ramSize.trim()) parts.push(`${this.form.ramSize.trim()} RAM`)
       if (this.isVm && this.form.diskSize.trim()) parts.push(`${this.form.diskSize.trim()} disk`)
-      if (this.selectedLibraryImage) parts.push(this.selectedLibraryImage.name)
-      else if (this.form.image.trim()) parts.push('custom image')
       const envCount = String(this.form.env || '')
         .split('\n')
         .filter(line => line.trim() && !line.trim().startsWith('#'))
@@ -1056,7 +1221,16 @@ export default {
       } else {
         this.mergeFolders(selection || [])
       }
-      this.picker = null
+      this.view = null
+    },
+    /** Wizard navigation: the steps swap the body, they never stack dialogs. */
+    goToStep(step) {
+      this.view = null
+      this.step = step === 2 ? 2 : 1
+      if (this.step === 2) this.focusNameInput()
+    },
+    focusNameInput() {
+      this.$nextTick(() => this.$refs.nameInput?.focus())
     },
     /** Parse the advanced environment textarea into an object. */
     parseEnv() {
@@ -1122,20 +1296,38 @@ export default {
       }
       return null
     },
+    /** Image chosen in the library (or in the recent row): go to settings. */
     onImageSelected(image) {
+      if (!image?.image) return
       this.selectedLibraryImage = image
-      this.form.image = image?.image || ''
-      this.showImageLibrary = false
+      this.form.image = image.image
+      this.view = null
+      this.step = 2
+      this.focusNameInput()
+    },
+    /** Remember the chosen image so the Recent row fills up next time. */
+    rememberImage() {
+      const image = String(this.form.image || '').trim()
+      if (!image) return
+      rememberRecentImage({
+        image,
+        name: this.selectedLibraryImage?.name || imageName(image),
+        provider: this.selectedLibraryImage?.image_provider ||
+          this.selectedLibraryImage?.provider ||
+          providerFromImage(image),
+        tag: this.selectedLibraryImage?.tag || imageTag(image),
+        live_view: this.selectedLibraryImage?.live_view || '',
+        library_item_id: this.selectedLibraryImage?.library_item_id || null,
+        kind: this.form.kind
+      })
     },
     clearLibraryImage() {
       this.selectedLibraryImage = null
       this.form.image = ''
     },
     resetAdvanced() {
-      // The image is also edited by the library section above, but the reset
-      // button sits next to the advanced override; clear it there.
-      this.form.image = ''
-      this.selectedLibraryImage = null
+      // The image lives in step 1 (machine & image): resetting the advanced
+      // panel must not throw away the chosen image.
       this.form.shmSize = ''
       this.form.desktopWidth = ''
       this.form.desktopHeight = ''
@@ -1210,6 +1402,7 @@ export default {
           ssh_password: this.isRemote ? (this.form.sshPassword || null) : null,
           ...this.advancedPayload()
         })
+        this.rememberImage()
         this.close()
         return session
       } catch (error) {
@@ -1219,10 +1412,13 @@ export default {
         this.creating = false
       }
     },
-    /** ESC / backdrop: an open folder picker closes first, never both. */
+    /**
+     * ESC / backdrop / Cancel: an open sub-view (image library or folder
+     * browser) closes first and returns to the wizard, never the dialog.
+     */
     close() {
-      if (this.picker) {
-        this.picker = null
+      if (this.view) {
+        this.view = null
         return
       }
       this.$storex.browsers.toggleNewSessionForm(false)
@@ -1230,13 +1426,12 @@ export default {
   },
   mounted() {
     // The standalone library browser can open this dialog with a card already
-    // picked; apply it once so the form shows the image before the user types.
+    // picked: apply it and start on the settings step (the image is done).
     const pendingImage = this.$storex.browsers.pendingLibraryImage
     if (pendingImage) {
       this.onImageSelected(pendingImage)
       this.$storex.browsers.clearPendingLibraryImage()
     }
-    this.$nextTick(() => this.$refs.nameInput?.focus())
   }
 }
 </script>

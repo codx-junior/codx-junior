@@ -299,12 +299,41 @@ import ChatIcon from '@/components/chat/ChatIcon.vue'
                     {{ task.board || 'no board' }} · {{ columnLabel(taskColumn(task)) }}
                   </div>
                 </div>
+                <!-- Running: an agent is working on this task right now -->
+                <span
+                  v-if="taskRun(task)"
+                  class="badge badge-xs shrink-0 mt-1 gap-1"
+                  :class="taskRun(task).badge"
+                  :title="taskRun(task).title"
+                  :aria-label="taskRun(task).title"
+                >
+                  <span
+                    v-if="taskRun(task).spinner"
+                    class="loading loading-spinner loading-xs"
+                    aria-hidden="true"
+                  ></span>
+                  <i v-else :class="taskRun(task).icon" class="text-[8px]" aria-hidden="true"></i>
+                  {{ taskRun(task).label }}
+                </span>
                 <span v-if="task.parent_id" class="badge badge-xs badge-ghost shrink-0 mt-1">sub</span>
                 <i
                   v-if="task.pinned"
                   class="fa-solid fa-thumbtack text-[10px] text-warning shrink-0 mt-1.5"
                   title="Pinned"
                 ></i>
+                <!-- Browser/computer session used by this task: the icon is a
+                     direct link to the shared machine (live view + docked
+                     session chat). The click never opens the task itself. -->
+                <button
+                  v-if="taskBrowserSession(task)"
+                  type="button"
+                  class="btn btn-ghost btn-xs btn-circle shrink-0 mt-0.5 text-info"
+                  :title="sessionTitle(taskBrowserSession(task))"
+                  :aria-label="sessionTitle(taskBrowserSession(task))"
+                  @click.stop="openBrowserSession(taskBrowserSession(task))"
+                >
+                  <i class="fa-solid fa-display text-[11px]" aria-hidden="true"></i>
+                </button>
               </div>
             </td>
 
@@ -627,6 +656,21 @@ export default {
       if (this.showBoardFilter) return 'All boards of this project'
       return 'No board selected'
     },
+    // ── Browser / computer sessions ──
+    // A shared machine is linked to the chats using it through `chat_ids` (and
+    // to the chat holding the control lease through `controller_chat_id`). Only
+    // the first session per chat is needed: it feeds the row shortcut.
+    sessionsByChatId() {
+      const byChatId = {}
+      const sessions = this.$storex.browsers.allSessions || []
+      sessions.forEach(session => {
+        const chatIds = [...(session.chat_ids || []), session.controller_chat_id].filter(Boolean)
+        chatIds.forEach(chatId => {
+          if (!byChatId[chatId]) byChatId[chatId] = session
+        })
+      })
+      return byChatId
+    },
     // Every task the table may show, as stored (no clones: the cards keep the
     // identity the store relies on)
     allTasks() {
@@ -782,6 +826,9 @@ export default {
       this.statusFilter = 'all'
     }
   },
+  async mounted() {
+    await this.ensureBrowserSessions()
+  },
   methods: {
     // ── Task normalisation ──
     // The column a task belongs to. Kanban tasks store it on `chat.column`;
@@ -803,6 +850,68 @@ export default {
     taskStatus(task) {
       return task.status || 'todo'
     },
+    // Whether an agent is working on the task RIGHT NOW, or null when it is idle.
+    //
+    // Three sources are merged, all of them server-owned:
+    //   • `chatTurn` — the live turn snapshot pushed over Socket.IO (a turn that
+    //     exists and is not stalled means the agent is executing),
+    //   • `isChatUpdating` — the stream is being received (same source the board
+    //     cards use for their spinner),
+    //   • `harness_status` — an external harness (DSH, Claude, Codex…) is running
+    //     the task even when no message is streaming.
+    // A stalled turn is NOT running: it is dead and can be re-run, so it gets its
+    // own (warning) state instead of pretending to work.
+    taskRun(task) {
+      if (!task?.id) return null
+
+      const chats = this.$storex.chats
+      const turn = chats.chatTurn(task.id)
+      const stalled = chats.isChatTurnStalled(task.id)
+      const streaming = chats.isChatUpdating(task.id)
+      const harness = `${task.harness_status || ''}`.trim().toLowerCase()
+
+      if (harness === 'running') {
+        return {
+          label: task.harness ? `${task.harness} running` : 'Running',
+          spinner: true,
+          badge: 'badge-primary gap-1 font-semibold',
+          title: 'An agent harness is running this task'
+        }
+      }
+
+      if (turn && !stalled) {
+        const profile = turn.profile || turn.profile_name || null
+        return {
+          label: 'Running',
+          spinner: true,
+          badge: 'badge-primary gap-1 font-semibold',
+          title: profile
+            ? `Running · answered by ${profile}`
+            : 'The agent is working on this task'
+        }
+      }
+
+      if (streaming) {
+        return {
+          label: 'Running',
+          spinner: true,
+          badge: 'badge-primary gap-1 font-semibold',
+          title: 'The agent is answering this task'
+        }
+      }
+
+      if (stalled) {
+        return {
+          label: 'Stalled',
+          spinner: false,
+          icon: 'fa-solid fa-triangle-exclamation',
+          badge: 'badge-warning gap-1',
+          title: 'The last run stopped making progress — it can be re-run'
+        }
+      }
+
+      return null
+    },
     taskPriority(task) {
       const value = `${task.priority || ''}`.trim().toLowerCase()
       return PRIORITIES[value] ? value : DEFAULT_PRIORITY
@@ -813,6 +922,54 @@ export default {
     },
     uniqueValues(values) {
       return [...new Set((values || []).filter(Boolean))].sort((a, b) => `${a}`.localeCompare(`${b}`))
+    },
+
+    // ── Browser / computer sessions ──
+    // The session a task opened. The sessions store is the source of truth (the
+    // backend keeps `chat_ids` in sync); a chat carrying its own snapshot in
+    // `meta_data.browser` is used as a fallback, so the link also works before
+    // the session list has been loaded.
+    taskBrowserSession(task) {
+      if (!task?.id) return null
+      const linked = this.sessionsByChatId[task.id]
+      if (linked) return linked
+
+      const snapshot = task.meta_data?.browser
+      const sessionId = snapshot?.id || snapshot?.session_id
+      if (!sessionId) return null
+
+      return (this.$storex.browsers.allSessions || []).find(session => session.id === sessionId)
+        || { id: sessionId, name: snapshot?.name || null, kind: snapshot?.kind || 'browser' }
+    },
+    sessionTitle(session) {
+      const kind = session?.kind === 'browser' ? 'browser' : 'computer'
+      return `Open ${kind} session · ${session?.name || session?.id}`
+    },
+    openBrowserSession(session) {
+      if (!session?.id) return
+      // The navigation API opens the session inside the sessions workspace, so
+      // the live machine and its chat share the same splitter (see
+      // navigate.js → browsers.open).
+      const navigation = this.$storex.$navigation
+      if (navigation?.browsers?.open) {
+        navigation.browsers.open(session.id, session.name)
+        return
+      }
+      this.$storex.browsers.selectSession(session.id)
+      this.$ui.setActiveTab('browser-sessions')
+    },
+    // Sessions are loaded lazily by the sessions screen. The table needs them to
+    // know which tasks have one, so it asks ONCE and only while the store is
+    // still empty. A failure is never fatal: the shortcut is optional.
+    async ensureBrowserSessions() {
+      const browsers = this.$storex.browsers
+      if (!browsers || browsers.isLoading) return
+      if ((browsers.allSessions || []).length) return
+      try {
+        await browsers.loadSessions()
+      } catch (error) {
+        console.warn('[TaskTableView] Could not load computer sessions', error)
+      }
     },
     today() {
       return new Date().toISOString().slice(0, 10)

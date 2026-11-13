@@ -12,6 +12,7 @@ const QuickChatView = () => import('@/views/QuickChatView.vue')
 const ChatsView = () => import('@/views/ChatsView.vue')
 const WorkspaceView = () => import('@/views/WorkspaceView.vue')
 const MessengerView = () => import('@/views/MessengerView.vue')
+const ChannelView = () => import('@/views/ChannelView.vue')
 const MeetView = () => import('@/views/MeetView.vue')
 const TeamView = () => import('@/views/TeamView.vue')
 const CompanyView = () => import('@/views/CompanyView.vue')
@@ -237,6 +238,38 @@ const router = createRouter({
     // config/apps.js (route meta.app) and feeds it its params.
     { path: '/:projectName/vibe-coding', name: 'vibe-coding', component: AppRouteView, meta: { app: 'vibe-coding' } },
     { path: '/:projectName/wiki', name: 'wiki', component: AppRouteView, meta: { app: 'wiki' } },
+    {
+      // Unscoped alias so the literal "/channel" deep link works: it forwards to
+      // the ACTIVE project's channel. The static segment outranks
+      // "/:projectName", like "/company" and "/solopreneur". Without an active
+      // project it goes back to the bootstrap route (which the guard resolves
+      // to the project home), never to itself.
+      path: '/channel',
+      redirect: () => {
+        const projectName = activeProjectSegment()
+        return projectName
+          ? { name: 'channel', params: { projectName } }
+          : { name: 'root' }
+      }
+    },
+    {
+      // Project's channel (design/project-channel.md) — the video-first shell
+      // that will host the project documentation as its "Library" tab.
+      //
+      // M0 shell only: the five sections live in the "?tab=" query
+      // (home|library|episodes|shorts|learn), so each one is a deep link that
+      // survives a refresh. The SIDEBAR ENTRY now opens this screen, while
+      // "/:projectName/wiki" above keeps resolving unchanged — the channel is
+      // a shell over the wiki, never a replacement for its route.
+      //
+      // `hideTabs` removes the generic mobile tab bar: the channel has its own
+      // thumb-reachable bottom bar (Home · Library · Episodes · Shorts ·
+      // Learn), and stacking two bars would cost 56 px of a 640 px screen.
+      path: '/:projectName/channel',
+      name: 'channel',
+      component: ChannelView,
+      meta: { ...mobile('Channel', 'more', { hideTopBar: true, hideTabs: true }) }
+    },
     { path: '/:projectName/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs' } },
     // Agenda / Calendar manager — ONE global agenda across every project
     // (design/06-calendar/01-analysis.md, decision D1): the projects are a

@@ -14,13 +14,16 @@
     single    → radios, one folder, emits an array with one entry
   -->
   <div
-    class="modal modal-open"
-    role="dialog"
-    aria-modal="true"
+    :class="embedded ? 'flex flex-col min-h-0' : 'modal modal-open'"
+    :role="embedded ? null : 'dialog'"
+    :aria-modal="embedded ? null : 'true'"
     :aria-label="title"
-    @click.self="cancel"
+    @click.self="embedded ? null : cancel()"
   >
-    <div class="modal-box w-11/12 max-w-xl flex flex-col gap-3 max-h-[85vh]">
+    <div
+      class="flex flex-col gap-3"
+      :class="embedded ? 'min-h-0 max-h-[62vh]' : 'modal-box w-11/12 max-w-xl max-h-[85vh]'"
+    >
       <!-- Header -->
       <div class="flex items-start gap-2">
         <div class="min-w-0 flex-1">
@@ -33,10 +36,10 @@
         </div>
         <button
           class="btn btn-sm btn-circle btn-ghost"
-          aria-label="Close folder picker"
+          :aria-label="embedded ? 'Back to the settings' : 'Close folder picker'"
           @click="cancel"
         >
-          <i class="fa-solid fa-xmark"></i>
+          <i :class="embedded ? 'fa-solid fa-arrow-left' : 'fa-solid fa-xmark'"></i>
         </button>
       </div>
 
@@ -148,7 +151,9 @@ export default {
     mode: { type: String, default: 'multiple' },
     /** Already selected project-relative paths ('' means the project root). */
     modelValue: { type: Array, default: () => [] },
-    title: { type: String, default: 'Project folders' }
+    title: { type: String, default: 'Project folders' },
+    /** Render inside the caller's dialog instead of opening one (wizards). */
+    embedded: { type: Boolean, default: false }
   },
   data() {
     return {

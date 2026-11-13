@@ -1087,7 +1087,11 @@ export default {
     allowColumnDelete: { type: Boolean, default: false },
     // Compact layout for narrow hosts (e.g. the solopreneur quick ticket on
     // mobile): optional fields are hidden and spacing/controls are reduced.
-    compact: { type: Boolean, default: false }
+    compact: { type: Boolean, default: false },
+    // Profiles pre-selected when the dialog opens, BEFORE the profiles the
+    // destination column pre-selects. Used by launchers that create a task on
+    // behalf of a profile (e.g. the sidebar "New" entry → codx-junior).
+    defaultProfiles: { type: Array, default: () => [] }
   },
   emits: [
     'task-created', 'tasks-added', 'column-created', 'column-updated', 'column-deleted',
@@ -1594,6 +1598,11 @@ export default {
       const firstColumn = this.columns[0] || null
       // Resolve the destination column: kanban by title, sprint by status
       const targetColumn = this.findColumn({ title: column, status }) || firstColumn
+      // Profiles the caller pre-selects (launcher defaults), in front of the
+      // ones inherited from the destination column
+      const defaultProfiles = (this.defaultProfiles || [])
+        .map(profile => profile?.name || profile)
+        .filter(Boolean)
       this.newTask = {
         ...DEFAULT_NEW_TASK(),
         parentId: parentId || null,
@@ -1602,8 +1611,8 @@ export default {
         column: column || firstColumn?.title || '',
         // A subtask follows its parent; otherwise the column defines the project
         project_id: parent?.project_id || targetColumn?.project_id || null,
-        // Default profiles inherited from the destination column
-        selectedProfiles: [...(targetColumn?.profiles || [])]
+        // Launcher defaults + profiles inherited from the destination column
+        selectedProfiles: [...new Set([...defaultProfiles, ...(targetColumn?.profiles || [])])]
       }
       this.composerText = ''
       this.cursorWord = {}

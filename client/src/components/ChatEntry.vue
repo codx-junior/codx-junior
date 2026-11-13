@@ -10,8 +10,8 @@ import MessagePRView from './chat/MessagePRView.vue'
 import MessageFileView from './chat/MessageFileView.vue'
 import ChatEntrySelectionMenu from './ChatEntrySelectionMenu.vue'
 import ChatAttachmentPreview from './chat/ChatAttachmentPreview.vue'
-import ChatEntryToolSummary from './chat/ChatEntryToolSummary.vue'
 import ChatMessageEvents from './chat/ChatMessageEvents.vue'
+import ChatTurnTimeline from './chat/ChatTurnTimeline.vue'
 import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
 import { formatElapsed } from '../utils/duration.js'
 </script>
@@ -124,9 +124,10 @@ import { formatElapsed } from '../utils/duration.js'
                - visible when no tool ran yet (run/lifecycle events only);
                - visible in channels too: the inline panel below is the only place
                  that shows what the assistant actually did there.
-               The tool count is NOT repeated here anymore: it belongs to the tool
-               summary strip below (@see ChatEntryToolSummary), which is also the
-               discoverable trigger, so this button stays icon-only at every width. -->
+               The tool count is NOT repeated here anymore: it lives in the turn
+               timeline row of this header (@see ChatTurnTimeline), which is also
+               the discoverable trigger, so this button stays icon-only at every
+               width. -->
           <button
             v-if="isAssistant"
             class="btn btn-xs btn-ghost tooltip tooltip-bottom"
@@ -308,40 +309,53 @@ import { formatElapsed } from '../utils/duration.js'
             </div>
           </div>
 
+          <!-- ── Turn timeline (its own header row) + processing details ──
+               The waterfall of the turn is part of the HEADER, on a row under the
+               identity/actions row, so it stays pinned while a long message
+               scrolls (this header is `sticky top-0`).
+               - visible from the very first token and it grows while the run
+                 streams;
+               - every event type has its own colour (read / write / execute /
+                 web / agent / model / error), shared with the events table of
+                 the panel below so a colour always means the same thing;
+               - it carries the tools counter and the read-receipt countdown;
+               - clicking it opens the details panel RIGHT HERE, inside the same
+                 sticky container, so the bar and its detail never separate.
+               It replaces both the old read-receipt progress bar (which sat at
+               the end of the message) and the tool summary strip: one trace, one
+               place. Channels keep their read-receipt behaviour untouched (no
+               marking) but still get the trace: it is the only compact summary of
+               the run. The `ref`/focus pair keeps driving the seen tracking. -->
+          <div
+            v-if="isAssistant"
+            ref="seenProgressBar"
+            class="w-full mt-1 outline-none"
+            tabindex="0"
+            @focus="onMessageFocus"
+            @blur="onMessageBlur"
+          >
+            <ChatTurnTimeline
+              :message="displayMessage"
+              :eventsOpen="eventsOpen"
+              :drawerOpen="eventsDrawerOpen"
+              :panelId="eventsPanelId"
+              :liveMs="liveElapsedMs"
+              :seenProgress="seenProgressValue"
+              :seenPending="seenTracking"
+              :seenDuration="seenDuration"
+              @toggle="toggleEventsPanel"
+              @show-events-drawer="$emit('show-events-drawer', message)"
+            />
+
+            <ChatMessageEvents
+              v-if="eventsOpen"
+              :message="displayMessage"
+              :panelId="eventsPanelId"
+              class="mt-1.5"
+            />
+          </div>
+
         </div>
-
-        <!-- ── Tool summary strip ──
-             The ALWAYS-visible trace of the run: basic info about the tools the
-             assistant executed — the last one (status · tool · argument ·
-             duration) plus the run totals — so the run can be followed without
-             opening anything. Shown from the first event while streaming, and
-             while the panel is open (it carries the ⋯ drawer trigger).
-             Clicking it emits `show-events`, exactly like the header wrench, so
-             both triggers share the very same parent-owned state. -->
-        <ChatEntryToolSummary
-          v-if="showToolStrip"
-          :message="displayMessage"
-          :eventsOpen="eventsOpen"
-          :drawerOpen="eventsDrawerOpen"
-          :panelId="eventsPanelId"
-          class="mt-1.5"
-          @toggle="toggleEventsPanel"
-          @show-events-drawer="$emit('show-events-drawer', message)"
-        />
-
-        <!-- ── Tool & run events (collapsible, live-updated while streaming) ──
-             Rendered inline, directly under the summary strip so it is
-             discoverable and contextual. Driven by the existing `eventsOpen` prop
-             (parent owns the open state). The full wall starts with the
-             executions: the run summary is the strip above, not a second header.
-             Channels render it too: the strip trigger is the only way to see what
-             the assistant ran inside a channel, hiding it made the panel unusable. -->
-        <ChatMessageEvents
-          v-if="eventsOpen"
-          :message="displayMessage"
-          :panelId="eventsPanelId"
-          class="mt-1.5"
-        />
 
         <!-- ── Thread / Reply badge (always visible if exists) ── -->
         <div
@@ -672,32 +686,6 @@ import { formatElapsed } from '../utils/duration.js'
             :size="isChannel ? 'lg' : 'sm'"
             @update-attachment="onAttachmentUpdated"
           />
-        </div>
-
-        <!-- ── Seen timeout progress bar ──
-             Channels skip it entirely: an 8px band under EVERY message reads as a
-             separator stripe and makes the channel timeline harder to scan. The
-             surface is only painted while the bar is actually tracking. -->
-        <div
-          v-if="!isChannel"
-          ref="seenProgressBar"
-          class="mt-2 transition-opacity duration-200 min-h-2 rounded-full"
-          :class="isFocused && !isMessageSeen ? 'opacity-100 bg-base-200' : 'opacity-0'"
-          tabindex="0"
-          @focus="onMessageFocus"
-          @blur="onMessageBlur"
-        >
-          <div class="flex gap-2 items-center h-full"
-            v-if="!isMyMessage && isDone"
-            :class="isFocused && !isMessageSeen ? 'opacity-100' : 'opacity-0'"
-          >
-            <progress
-              class="progress progress-xs flex-1 bg-success/20"
-              :value="seenProgressValue"
-              max="100"
-            ></progress>
-            <i class="fa-solid fa-check-double text-sm text-success"></i>
-          </div>
         </div>
 
         <!-- ── Collapsed toggle (for archived messages) ── -->
@@ -1125,14 +1113,6 @@ export default {
     hasEvents() {
       return this.toolEventCount > 0
     },
-    // The tool summary strip is the always-visible summary of the run: it shows
-    // up with the run itself (streaming, before any tool ran) and stays while
-    // tools were recorded. Also shown while the panel is open because it carries
-    // the ⋯ drawer trigger. User messages never render it.
-    showToolStrip() {
-      if (!this.isAssistant) return false
-      return this.toolEventCount > 0 || !this.isDone || this.eventsOpen
-    },
     // Id shared by the panel and every trigger pointing at it (aria-controls)
     eventsPanelId() {
       const key = this.message?.doc_id || this.message?.id
@@ -1151,6 +1131,19 @@ export default {
       const currentUsername = this.$user?.username
       if (!currentUsername) return false
       return (this.message.read_by || []).includes(currentUsername)
+    },
+    // Read-receipt countdown is running: the entry waits `seenDuration` ms after
+    // the turn finished before marking the message as read, and the timeline
+    // paints that wait over the bar. Channels keep their previous behaviour (no
+    // read receipts): an 8px band under EVERY message reads as a separator.
+    seenTracking() {
+      return !this.isChannel && !this.isMyMessage && this.isDone && this.isFocused && !this.isMessageSeen
+    },
+    // Elapsed time of a response that is still streaming so the timeline bar
+    // grows while the turn runs (`clockNow` is refreshed once per second).
+    liveElapsedMs() {
+      if (!this.responseStartedAt) return 0
+      return Math.max(this.clockNow - this.responseStartedAt, 0)
     }
   },
   watch: {
@@ -1600,12 +1593,58 @@ export default {
     onCreateTask(taskData) {
       this.$emit('sub-task', { content: taskData.content, title: taskData.title })
     },
-    // The events/tools panel is rendered INLINE inside this component (see the
-    // <ChatMessageEvents> block under the tool summary strip). We still notify the
-    // parent which message was toggled so it can own the `eventsOpen` flag — the
-    // strip and the header wrench both call this, so they always stay in sync.
+    // The processing details panel is rendered INLINE inside this component (see
+    // the <ChatMessageEvents> block right under the timeline; both live in the
+    // sticky header). We still notify the parent which message was toggled so it
+    // can own the `eventsOpen` flag — the timeline bar, its ⋯ drawer button and
+    // the header wrench all call this, so they always stay in sync.
     toggleEventsPanel() {
+      const willOpen = !this.eventsOpen
       this.$emit('show-events', this.message)
+      if (willOpen) {
+        // The panel renders INSIDE this sticky header: opening it grows the
+        // header, and a sticky box taller than the space left in its message is
+        // pushed ABOVE the viewport (CSS sticky containment). Without this the
+        // details open off-screen on messages near the bottom of the list.
+        this.$nextTick(() => this.revealEventsPanel())
+      }
+    },
+    // Scroll the messages viewport just enough for the open details panel to be
+    // fully visible. Aligning the message top with the viewport top leaves the
+    // header at its natural (never clamped) position.
+    revealEventsPanel(attempt = 0) {
+      // The panel is rendered from the PARENT-owned flag (`eventsOpen`), so on
+      // the first tick it may not be in the DOM yet: retry for a few frames
+      // instead of silently giving up.
+      if (!this.eventsOpen) return
+      const panel = this.eventsPanelId ? document.getElementById(this.eventsPanelId) : null
+      if (!panel) {
+        if (attempt < 20) requestAnimationFrame(() => this.revealEventsPanel(attempt + 1))
+        return
+      }
+
+      let scroller = panel.parentElement
+      while (scroller && scroller !== document.body) {
+        if (/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) break
+        scroller = scroller.parentElement
+      }
+      if (!scroller || scroller === document.body) return
+
+      const view = scroller.getBoundingClientRect()
+      const rect = panel.getBoundingClientRect()
+      const margin = 8
+      if (rect.top >= view.top + margin && rect.bottom <= view.bottom - margin) return
+
+      // `this.$el` is a comment anchor (multi-root template), so anchor on the
+      // header instead: its parent is the non-sticky column whose top IS the
+      // flow position of the message.
+      const bar = this.$refs.seenProgressBar
+      const header = bar?.closest('.sticky') || bar?.parentElement
+      const anchor = header?.parentElement
+      if (!anchor) return
+
+      const top = scroller.scrollTop + anchor.getBoundingClientRect().top - view.top
+      scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' })
     },
     onBlockEdited(data) {
       const target = this.displayMessage
@@ -1662,7 +1701,7 @@ export default {
       this.intersectionObserver.observe(this.$refs.seenProgressBar)
     },
     onMessageFocus() {
-      if (!this.isMyMessage && this.isDone) {
+      if (!this.isChannel && !this.isMyMessage && this.isDone) {
         this.isFocused = true
         if (this.isDone && !this.isMyMessage && !this.isMessageSeen) {
           this.startSeenTracking()
@@ -1695,7 +1734,7 @@ export default {
       }
     },
     startSeenTracking() {
-      if (this.hasSeen || this.isMessageSeen || !this.isDone) return
+      if (this.hasSeen || this.isMessageSeen || !this.isDone || this.isChannel) return
       this.seenProgressValue = 0
 
       const startTime = Date.now()

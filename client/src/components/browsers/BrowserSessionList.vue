@@ -2,32 +2,34 @@
 import ConfirmDialog from '../ConfirmDialog.vue'
 import BrowserSessionCreateModal from './BrowserSessionCreateModal.vue'
 import ComputerImageLibrary from './ComputerImageLibrary.vue'
+import ComputerViewControls from './ComputerViewControls.vue'
 </script>
 
 <template>
   <!-- Collapsed: icon rail -->
   <div v-if="collapsed" class="flex flex-col items-center h-full w-full py-3 bg-base-100">
-    <!-- Brand mark -->
-    <div
-      class="w-10 h-10 flex-shrink-0 rounded-xl bg-primary/15 text-primary flex items-center justify-center"
-      title="Computer sessions"
-      aria-hidden="true"
-    >
-      <i class="fa-solid fa-window-restore"></i>
-    </div>
-
-    <!-- Expand toggle -->
+    <!-- Brand mark: the icon itself expands the sidebar (no separate arrow) -->
     <button
       @click="$emit('toggle-collapse')"
-      class="btn btn-xs btn-ghost btn-circle mt-2 text-base-content/50 hover:text-base-content"
+      class="w-10 h-10 flex-shrink-0 rounded-xl bg-primary/15 text-primary flex items-center justify-center transition-colors duration-150 hover:bg-primary/25 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       title="Expand sidebar"
       aria-label="Expand sidebar"
       aria-expanded="false"
     >
-      <i class="fa-solid fa-chevron-right text-[10px]"></i>
+      <i class="fa-solid fa-window-restore"></i>
     </button>
 
-    <div class="w-6 border-t border-base-content/10 mt-2 mb-2 flex-shrink-0"></div>
+    <div class="w-6 border-t border-base-content/10 mt-3 mb-2 flex-shrink-0"></div>
+
+    <!-- Stage controls: reachable while the sidebar is collapsed, so the
+         stage itself carries no toolbar. -->
+    <ComputerViewControls
+      v-if="viewControls"
+      collapsed
+      class="flex-shrink-0"
+      @manage="$emit('manage')"
+    />
+    <div v-if="viewControls" class="w-6 border-t border-base-content/10 mt-2 mb-2 flex-shrink-0"></div>
 
     <!-- Session rail -->
     <div class="flex-1 w-full min-h-0 overflow-y-auto flex flex-col items-center gap-1.5 px-2 pb-2">
@@ -106,24 +108,36 @@ import ComputerImageLibrary from './ComputerImageLibrary.vue'
 
   <!-- Expanded -->
   <div v-else class="flex flex-col h-full bg-base-100 p-3 pb-4">
-    <!-- Header (brand row with collapse toggle) -->
+    <!-- Header: the brand icon is also the collapse toggle (no separate arrow) -->
     <div class="flex items-center gap-2.5 px-1 flex-shrink-0">
-      <div class="w-10 h-10 flex-shrink-0 rounded-xl bg-primary/15 text-primary flex items-center justify-center">
-        <i class="fa-solid fa-window-restore"></i>
-      </div>
-      <h2 class="text-base font-bold truncate flex-1">Computer sessions</h2>
       <button
+        v-if="collapsible"
         @click="$emit('toggle-collapse')"
-        class="btn btn-xs btn-ghost btn-circle flex-shrink-0 text-base-content/50 hover:text-base-content"
+        class="w-10 h-10 flex-shrink-0 rounded-xl bg-primary/15 text-primary flex items-center justify-center transition-colors duration-150 hover:bg-primary/25 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
         title="Collapse sidebar"
         aria-label="Collapse sidebar"
         aria-expanded="true"
       >
-        <i class="fa-solid fa-chevron-left text-[10px]"></i>
+        <i class="fa-solid fa-window-restore"></i>
       </button>
+      <div
+        v-else
+        class="w-10 h-10 flex-shrink-0 rounded-xl bg-primary/15 text-primary flex items-center justify-center"
+      >
+        <i class="fa-solid fa-window-restore"></i>
+      </div>
+      <h2 class="text-base font-bold truncate flex-1">Computer sessions</h2>
     </div>
 
     <div class="border-t border-base-content/10 mt-3 mb-2 flex-shrink-0"></div>
+
+    <!-- Stage controls (same actions as the collapsed rail) -->
+    <ComputerViewControls
+      v-if="viewControls"
+      class="mb-2 flex-shrink-0"
+      @manage="$emit('manage')"
+    />
+    <div v-if="viewControls" class="border-t border-base-content/10 mb-2 flex-shrink-0"></div>
 
     <!-- Sessions List -->
     <div class="flex-1 min-h-0 overflow-y-auto mt-1 space-y-0.5">
@@ -284,9 +298,21 @@ export default {
     collapsed: {
       type: Boolean,
       default: false
+    },
+    // The view controls belong to the desktop sidebar; the mobile list is a
+    // full screen of its own and already has them in the header.
+    viewControls: {
+      type: Boolean,
+      default: true
+    },
+    // The brand icon toggles the sidebar: only when the sidebar can actually
+    // collapse (the mobile list is a full screen, so there it stays a mark).
+    collapsible: {
+      type: Boolean,
+      default: true
     }
   },
-  emits: ['toggle-collapse'],
+  emits: ['toggle-collapse', 'manage'],
   data() {
     return {
       deleteTarget: null,

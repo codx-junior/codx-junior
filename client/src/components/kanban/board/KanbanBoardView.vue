@@ -745,6 +745,10 @@ import MobileActionSheet from '@/components/mobile/MobileActionSheet.vue'
 const KANBAN_VIEWS = ['board', 'table', 'planning', 'followup']
 const SPRINT_VIEWS = ['board', 'table', 'gantt']
 const VALID_VIEWS = ['board', 'table', 'gantt', 'planning', 'followup']
+// View a board opens in when neither the panel nor the URL asks for one: the
+// task table. The view actually used is remembered per panel (see
+// `syncPanelState`), so this is only the first-time default.
+const DEFAULT_VIEW = 'table'
 
 export default {
   props: {
@@ -770,6 +774,11 @@ export default {
       // Task shown in the inline detail pane (right side). Separate from
       // `selectedTaskId` so the pane can be closed without losing highlight.
       sideTaskId: null,
+      // Task the detail pane was showing when the layout was saved, plus the
+      // board it belonged to. Snapshotted in `created` and applied once by
+      // `restoreSideTask` when that board becomes active.
+      pendingRestoreTaskId: null,
+      pendingRestoreTaskBoardId: null,
       searchQuery: '',
       editingColumn: null,
       showBoardList: false,
@@ -798,12 +807,23 @@ export default {
     this.boardAppliedFromParams = !!this.initialRequestedBoardId &&
       this.activeBoardId === this.initialRequestedBoardId
     // Apply the requested view, but only when the open board supports it
-    // (planning/follow-up are kanban-only, gantt is sprint-only)
-    this.activeView = this.isViewAllowed(this.requestedView) ? this.requestedView : 'board'
+    // (planning/follow-up are kanban-only, gantt is sprint-only). A board opened
+    // without one reopens in the view it was left in (persisted in the app
+    // params, see `requestedView`) or, the first time, in the table.
+    const requestedView = this.requestedView
+    this.activeView = this.isViewAllowed(requestedView)
+      ? requestedView
+      : (this.isViewAllowed(DEFAULT_VIEW) ? DEFAULT_VIEW : 'board')
+    // Snapshot the task the detail pane was showing when the layout was saved,
+    // next to the board it belonged to, so `restoreSideTask` can reopen it once
+    // that board is resolved (`activeBoardId` watcher).
+    this.pendingRestoreTaskId = this.app?.params?.task || this.params?.task || null
+    this.pendingRestoreTaskBoardId = this.app?.params?.board || this.params?.board ||
+      this.params?.params?.board || null
     // Mobile: start with the board sidebar collapsed to maximise canvas space
     this.sidebarCompact = this.isMobile
-    // Fall back to the board list only when the board view has no active board
-    this.showBoardList = this.activeView === 'board' && !this.activeBoardId
+    // Fall back to the board list whenever the panel has no active board yet
+    this.showBoardList = !this.activeBoardId
     // Publish the board to the app info so the tab shows its name. If the boards
     // were not loaded yet, this re-runs once they arrive (see `boards` watcher).
     this.syncAppInfo()
@@ -836,6 +856,8 @@ export default {
     // Resolve a requested initial view from app params (multiple shapes) or the route query
     requestedView() {
       const candidates = [
+        // Live app params — updated when the view changes (persisted per panel)
+        this.app?.params?.view,
         this.params?.view,
         this.params?.params?.view,
         this.$route?.query?.view
@@ -1206,9 +1228,12 @@ export default {
     }
   },
   watch: {
-    // Apply a view requested through params/route (e.g. /kanban?view=planning)
+    // Apply a view requested through params/route (e.g. /kanban?view=planning).
+    // Dropping the request (the param/query was cleared) returns to the default.
     requestedView(view) {
-      this.activeView = this.isViewAllowed(view) ? view : 'board'
+      this.activeView = this.isViewAllowed(view)
+        ? view
+        : (this.isViewAllowed(DEFAULT_VIEW) ? DEFAULT_VIEW : 'board')
     },
     // Keep the sidebar collapsed whenever we cross into the mobile breakpoint
     isMobile(mobile) {
@@ -1218,16 +1243,22 @@ export default {
     // boards, gantt only for sprints) and the tab title shows the board name.
     activeBoard(board) {
       if (!this.isViewAllowed(this.activeView, board)) {
-        this.activeView = 'board'
+        this.activeView = this.isViewAllowed(DEFAULT_VIEW, board) ? DEFAULT_VIEW : 'board'
       }
       this.syncAppInfo()
       this.syncRouteParams()
     },
-    // Switching boards invalidates the inline task detail pane
+    // Switching boards invalidates the inline task detail pane, unless the pane
+    // is being restored for that same board (see `restoreSideTask`)
     activeBoardId() {
-      this.sideTaskId = null
+      if (!this.restoreSideTask()) this.sideTaskId = null
       this.editingColumn = null
       this.ensureManagerProfiles()
+    },
+    // Remember the task the detail pane is showing, so the saved layout reopens
+    // the same task detail
+    sideTaskId() {
+      this.syncPanelState()
     },
     // Single (non-desktop) mode: reopen the board addressed by the URL whenever
     // the route changes (refresh, back/forward, deep link or a link to another
@@ -1257,7 +1288,7 @@ export default {
       }
       if (this.activeBoardId && !this.$storex.kanban.boardById(this.activeBoardId)) {
         this.activeBoardId = boards[0]?.id || null
-        this.showBoardList = this.activeView === 'board' && !this.activeBoardId
+        this.showBoardList = !this.activeBoardId
       }
     },
     // Switching back to the board view without an active board shows the board list
@@ -1265,6 +1296,9 @@ export default {
       if (view === 'board' && !this.activeBoardId) {
         this.showBoardList = true
       }
+      // Remember the view for this board panel and in the address bar
+      this.syncPanelState()
+      this.syncRouteParams()
     },
     project() {
       // The project changed: the previously requested board no longer applies
@@ -1322,10 +1356,54 @@ export default {
         }
       })
     },
+    // Persist the rest of the panel state — the view the board was left in and
+    // the task open in the detail pane — next to the board. Dockview serializes
+    // the panel params into the saved layout, so a reload (or the next login on
+    // this browser) reopens the same screen instead of the default view.
+    syncPanelState() {
+      const tabId = this.appTabId
+      if (!tabId) return
+      // A not-yet-applied restore must not be overwritten: the panel persists
+      // its defaults while the board is still resolving (`restoreSideTask`
+      // clears the pending value as soon as it decides).
+      const task = this.sideTaskId || this.pendingRestoreTaskId || null
+      this.$storex.ui.updateAppParams({
+        tabId,
+        params: {
+          view: this.activeView,
+          task
+        }
+      })
+    },
+    // Reopen the task detail that was open when the layout was saved. One-shot:
+    // it only applies to the board it belonged to and only until the user picks
+    // another board (see the `activeBoardId` watcher).
+    restoreSideTask() {
+      const taskId = this.pendingRestoreTaskId
+      if (!taskId) return false
+      // Wait for the board to resolve so the task is matched against it
+      if (!this.activeBoardId) return false
+      const boardId = this.pendingRestoreTaskBoardId
+      this.pendingRestoreTaskId = null
+      this.pendingRestoreTaskBoardId = null
+      // Mobile opens a task as a route instead of in the inline pane
+      if (this.isMobile) return false
+      // The layout was saved with another board open
+      if (boardId && boardId !== this.activeBoardId) return false
+      const chat = (this.$storex.chats.chats || {})[taskId] ||
+        this.allTasks.find(task => task.id === taskId) || null
+      if (!chat) return false
+      this.selectedTaskId = taskId
+      this.sideTaskId = taskId
+      // Make sure the full history is loaded before ChatView renders it
+      this.$storex.chats.loadUninitialized(chat)
+      return true
+    },
     // Single (non-desktop) mode only: keep the route in sync with the open board
-    // (id + name) so a refresh or a back-navigation reopens the same board.
-    // Desktop mode tracks the board through the panel params (`syncAppInfo`)
-    // instead, so this is a no-op whenever the kanban route is not active.
+    // (id + name) and view so a refresh or a back-navigation reopens the same
+    // screen. Desktop mode tracks the board through the panel params
+    // (`syncAppInfo`) instead, so this is a no-op whenever the kanban route is
+    // not active.
     syncRouteParams() {
       if (this.$route?.name !== 'kanban') return
       const boardId = this.activeBoardId
@@ -1334,8 +1412,15 @@ export default {
 
       const boardName = board.title || null
       const params = this.$route.params || {}
+      // The open view belongs to the address too. The default view needs no
+      // query: it is what the board opens with anyway.
+      const query = { ...(this.$route.query || {}) }
+      if (this.activeView && this.activeView !== DEFAULT_VIEW) query.view = this.activeView
+      else delete query.view
+
       const settled = params.board === boardId &&
-        (params.boardName || null) === (boardName || null)
+        (params.boardName || null) === (boardName || null) &&
+        (this.$route.query?.view || null) === (query.view || null)
       if (settled) return
 
       const nextParams = { ...params, board: boardId }
@@ -1343,7 +1428,7 @@ export default {
       else delete nextParams.boardName
 
       this.$router
-        .replace({ name: 'kanban', params: nextParams, query: this.$route.query })
+        .replace({ name: 'kanban', params: nextParams, query })
         .catch(() => {})
     },
 

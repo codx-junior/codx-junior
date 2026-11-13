@@ -226,6 +226,28 @@ function enhanceCodeBlocks() {
   })
 }
 
+// Tables are authored for the desktop VitePress site and can be wider than a
+// 360 px phone. Wrapping each one in its own overflow container keeps the
+// horizontal scroll inside the table instead of on the page (design §7.1),
+// and code fences already scroll inside their <pre>.
+function wrapTables() {
+  const element = root.value
+  if (!element) return
+  element.querySelectorAll('table').forEach(table => {
+    if (table.dataset.wrapped) return
+    table.dataset.wrapped = '1'
+    const wrapper = document.createElement('div')
+    wrapper.className = 'wiki-table-scroll'
+    table.parentElement.insertBefore(wrapper, table)
+    wrapper.appendChild(table)
+  })
+}
+
+function enhanceContent() {
+  enhanceCodeBlocks()
+  wrapTables()
+}
+
 function onRootClick(event) {
   const link = event.target.closest('[data-wiki-path]')
   if (!link) return
@@ -235,14 +257,14 @@ function onRootClick(event) {
 }
 
 onMounted(() => {
-  nextTick(enhanceCodeBlocks)
+  nextTick(enhanceContent)
 })
 
 watch(
   () => props.text,
   () => {
     segments.value = buildSegments(props.text)
-    nextTick(enhanceCodeBlocks)
+    nextTick(enhanceContent)
   },
   { immediate: true }
 )
@@ -385,6 +407,17 @@ const hasContent = computed(() => Boolean(String(props.text || '').trim()))
 }
 .wiki-markdown :deep(th) {
   background: color-mix(in oklab, var(--color-base-200) 80%, transparent);
+}
+/* Wide tables scroll inside this wrapper; the page itself never scrolls
+   horizontally on a 360 px phone. */
+.wiki-markdown :deep(.wiki-table-scroll) {
+  margin: 1rem 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.wiki-markdown :deep(.wiki-table-scroll table) {
+  margin: 0;
+  min-width: max-content;
 }
 .wiki-markdown :deep(ul),
 .wiki-markdown :deep(ol) {

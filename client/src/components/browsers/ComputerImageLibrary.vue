@@ -14,7 +14,10 @@ export default {
   name: 'ComputerImageLibrary',
   props: {
     kind: { type: String, default: 'linux' },
-    modelValue: { type: String, default: '' }
+    modelValue: { type: String, default: '' },
+    // Render as a view of the caller's dialog instead of a dialog of its own:
+    // the new-session wizard must never open a second modal on top of itself.
+    embedded: { type: Boolean, default: false }
   },
   emits: ['close', 'select'],
   data() {
@@ -103,11 +106,19 @@ export default {
       this.category = ''
     }
   },
+  mounted() {
+    // Standalone dialog: ESC closes it. Embedded, the wizard owns dismissal.
+    if (!this.embedded) window.addEventListener('keydown', this.onKeydown)
+  },
   beforeUnmount() {
     if (this.searchTimer) window.clearTimeout(this.searchTimer)
+    if (!this.embedded) window.removeEventListener('keydown', this.onKeydown)
     this.revokeSavedPreviews()
   },
   methods: {
+    onKeydown(event) {
+      if (event.key === 'Escape') this.$emit('close')
+    },
     async loadImages() {
       const token = ++this.loadToken
       this.loading = true
@@ -345,8 +356,38 @@ export default {
 </script>
 
 <template>
-  <modal close title="Desktop image library" @close="$emit('close')">
-    <div class="flex flex-col gap-3 md:w-[42rem] max-h-[78vh]">
+  <!--
+    Two modes, one markup: a dialog of its own (`embedded` false, still the
+    default for the standalone library browser) or a view *inside* the
+    new-session wizard. Embedding is what keeps a wizard from opening a second
+    dialog, which would hide the half-filled form underneath.
+  -->
+  <div
+    :class="embedded ? 'flex flex-col min-h-0' : 'modal modal-open'"
+    :role="embedded ? null : 'dialog'"
+    :aria-modal="embedded ? null : 'true'"
+    :aria-label="embedded ? null : 'Desktop image library'"
+    @click.self="embedded ? null : $emit('close')"
+  >
+    <div
+      class="flex flex-col gap-3"
+      :class="embedded ? 'min-h-0 max-h-[62vh]' : 'modal-box w-11/12 md:w-[42rem] max-w-[42rem] max-h-[78vh]'"
+    >
+      <!-- Title (both modes own their chrome now) -->
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <i class="fa-solid fa-images text-primary" aria-hidden="true"></i>
+        <h3 class="flex-1 text-sm font-bold">Desktop image library</h3>
+        <button
+          type="button"
+          class="btn btn-xs btn-ghost btn-square"
+          :title="embedded ? 'Back to the session' : 'Close'"
+          :aria-label="embedded ? 'Back to the session' : 'Close'"
+          @click="$emit('close')"
+        >
+          <i :class="embedded ? 'fa-solid fa-arrow-left' : 'fa-solid fa-xmark'"></i>
+        </button>
+      </div>
+
       <!-- Provider tabs + search -->
       <div class="flex flex-wrap items-center gap-2">
         <div class="join">
@@ -545,5 +586,5 @@ export default {
         project on this host. Images are pulled on first use.
       </p>
     </div>
-  </modal>
+  </div>
 </template>

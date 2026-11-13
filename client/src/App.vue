@@ -7,6 +7,7 @@ import Toast from './components/Toast.vue'
 import DesktopSidebar from './components/layout/DesktopSidebar.vue'
 import NewProject from './components/project/NewProject.vue'
 import MobileShell from './components/mobile/MobileShell.vue'
+import NewTaskDialog from './components/kanban/NewTaskDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -117,6 +118,10 @@ onMounted(() => {
       </div>
 
       <Toast />
+
+      <!-- Global "New task" dialog, opened from the single-mode "New" entry
+           (see components/kanban/NewTaskDialog.vue). -->
+      <NewTaskDialog />
 
       <!-- Global "New project" modal — opened from any launcher
            (mobile menu, sidebar AppsSection, WindowsMenu, QuickBar) through the

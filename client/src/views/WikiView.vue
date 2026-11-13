@@ -949,11 +949,19 @@ export default {
     },
 
     syncUrl() {
-      const params = new URLSearchParams()
+      // Start from the params already in the URL instead of an empty set: this
+      // view is also rendered inside the channel's Library tab, whose state is
+      // "?tab=library". Rebuilding the query from scratch used to drop that
+      // param on the first page click, which closed the tab and bounced the
+      // user back to the channel Home. Unrelated params are preserved as-is.
+      const params = new URLSearchParams(window.location.search)
       if (this.projectName && this.projectName !== this.$project?.project_name) {
         params.set('project', this.projectName)
+      } else {
+        params.delete('project')
       }
       if (this.page?.path) params.set('page', this.page.path)
+      else params.delete('page')
       const query = params.toString()
       const url = `${window.location.pathname}${query ? `?${query}` : ''}`
       window.history.replaceState({}, '', url)

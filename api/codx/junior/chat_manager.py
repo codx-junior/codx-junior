@@ -148,6 +148,8 @@ from codx.junior.events.event_manager import EventManager
 
 from codx.junior.project.project_discover import find_project_by_id
 
+from codx.junior.security.ciso.payload import redact_payload
+
 logger = logging.getLogger(__name__)
 
 
@@ -1270,12 +1272,33 @@ class ChatManager:
         """
         Write *chat* to its ``file_path`` as JSON.
 
+        A chat (task card) is a **git-tracked artifact** living under
+        ``.codx/tasks``, so this is the last boundary before an in-memory
+        conversation becomes permanent repository history: everything the
+        conversation touched passes through here, including the
+        ``tool_events`` that carry the output of a tool which printed
+        ``.git/config``, an environment dump or a container log.
+
+        CISO: the serialised payload is sanitised with
+        :func:`codx.junior.security.ciso.payload.redact_payload` before it is
+        written, so a credential can never enter a task card. Every
+        replacement is logged and (when ``settings.codx_path`` is known) also
+        recorded by the gate that produced it.
+
         :param chat: The chat to write.
         """
         logger.info("Save chat: %s", chat.file_path)
         os.makedirs(os.path.dirname(chat.file_path), exist_ok=True)
+        payload, redactions = redact_payload(chat.model_dump())
+        if redactions:
+            logger.warning(
+                "CISO: redacted %d secret(s) before storing chat '%s' at %s",
+                redactions,
+                chat.id,
+                chat.file_path,
+            )
         with open(chat.file_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(chat.model_dump(), indent=2))
+            f.write(json.dumps(payload, indent=2))
 
     def delete_chat(self, file_path: Optional[str] = None, chat_id: Optional[str] = None) -> None:
         """

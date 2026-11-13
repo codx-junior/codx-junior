@@ -89,20 +89,70 @@
 
           <div v-if="boards.length" class="flex flex-wrap gap-1">
             <button
-              v-for="board in boards"
+              v-for="board in selectedBoards"
+              :key="board"
+              type="button"
+              class="btn btn-xs btn-primary gap-1"
+              :title="`Stop watching ${board}`"
+              @click="toggleBoard(board)"
+            >
+              {{ board }}
+              <i class="fa-solid fa-xmark text-[9px]"></i>
+            </button>
+            <span v-if="!selectedBoards.length" class="text-[11px] text-base-content/40">
+              No board selected yet
+            </span>
+          </div>
+
+          <!-- Boards are searched, not listed: a project can have hundreds -->
+          <div class="flex items-end gap-2">
+            <div class="flex-1 min-w-[8rem]">
+              <label class="label-text text-[11px] pb-1 block">Add a board</label>
+              <input
+                v-model="boardQuery"
+                type="search"
+                class="input input-sm input-bordered w-full"
+                :placeholder="boards.length ? `Search ${boards.length} boards…` : 'No boards found'"
+              />
+            </div>
+            <div class="flex-1 min-w-[8rem]">
+              <label class="label-text text-[11px] pb-1 block">or create a new one</label>
+              <div class="join w-full">
+                <input
+                  v-model="newBoard"
+                  type="text"
+                  class="join-item input input-sm input-bordered w-full"
+                  placeholder="Agent: agenda"
+                  @keydown.enter.prevent="addTypedBoard"
+                />
+                <button
+                  type="button"
+                  class="join-item btn btn-sm btn-square"
+                  title="Watch this new board"
+                  :disabled="!newBoard.trim()"
+                  @click="addTypedBoard"
+                >
+                  <i class="fa-solid fa-plus"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="boardOptions.length" class="flex flex-wrap gap-1">
+            <button
+              v-for="board in boardOptions"
               :key="board.name"
               type="button"
-              class="btn btn-xs gap-1"
-              :class="form.boards.includes(board.name) ? 'btn-primary' : 'btn-ghost'"
+              class="btn btn-xs btn-ghost gap-1"
               :title="board.columns.length ? `Columns: ${board.columns.join(', ')}` : board.name"
               @click="toggleBoard(board.name)"
             >
-              <i class="fa-solid" :class="form.boards.includes(board.name) ? 'fa-check' : 'fa-plus'"></i>
+              <i class="fa-solid fa-plus text-[9px]"></i>
               {{ board.name }}
             </button>
           </div>
-          <p v-else class="text-[11px] text-base-content/40">
-            No board found in this project.
+          <p v-else-if="boardQuery" class="text-[11px] text-base-content/40">
+            No board matches “{{ boardQuery }}” — type it above to watch a new one.
           </p>
 
           <div v-if="form.boards.length">
@@ -237,6 +287,8 @@ export default {
     const config = this.entry.config || {}
     return {
       error: '',
+      boardQuery: '',
+      newBoard: '',
       form: {
         role: config.role || 'coworker',
         policy: config.policy || 'full',
@@ -267,6 +319,18 @@ export default {
     scheduleOpen() {
       return !!this.entry.schedule?.open
     },
+    /** Boards currently watched (rendered as removable chips). */
+    selectedBoards() {
+      return this.form.boards
+    },
+    /** Available boards matching the search, excluding the ones already picked. */
+    boardOptions() {
+      const query = (this.boardQuery || '').trim().toLowerCase()
+      return this.boards
+        .filter(board => !this.form.boards.includes(board.name))
+        .filter(board => !query || board.name.toLowerCase().includes(query))
+        .slice(0, 24)
+    },
     avatar() {
       return avatarUrl({ name: this.entry.actor, avatar: this.entry.avatar })
     }
@@ -278,6 +342,19 @@ export default {
     }
   },
   methods: {
+    /**
+     * Watch a board typed by the user: an actor can own a board that does not
+     * exist yet (it is created on the first shift).
+     */
+    addTypedBoard() {
+      const name = (this.newBoard || '').trim()
+      if (!name) return
+      if (!this.form.boards.includes(name)) {
+        this.form.boards = [...this.form.boards, name]
+      }
+      if (!this.form.board) this.form.board = name
+      this.newBoard = ''
+    },
     toggleBoard(name) {
       const boards = this.form.boards
       this.form.boards = boards.includes(name)

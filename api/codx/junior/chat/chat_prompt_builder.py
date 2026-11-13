@@ -84,6 +84,7 @@ from langchain.messages import AIMessage, HumanMessage
 
 from codx.junior.chat.chat_tool_memory import build_tool_memory_section
 from codx.junior.db import ChatAttachment, Message
+from codx.junior.security.ciso.secrets import redact_text
 
 logger = logging.getLogger(__name__)
 
@@ -1182,7 +1183,48 @@ class ChatPromptBuilder:
                 ),
             )
 
+        self._redact_for_model(messages, chat=chat)
+
         return messages
+
+    def _redact_for_model(self, messages, chat=None):
+        """Neutralise secrets in every outgoing message (CISO).
+
+        A prompt is a permanent third-party disclosure: the provider stores it,
+        and the same text is echoed back into the answer and from there into the
+        task card. Tool output is the usual carrier (a ``cat`` of a config file,
+        a ``git remote -v``, a container log), which is why the check runs here
+        instead of trusting every caller.
+
+        Only the TEXT part is rewritten: attachment images
+        (``{"type": "image_url"}``) are preserved, see
+        :meth:`_get_text_content` / :meth:`_set_text_content`.
+
+        :param messages: The messages about to be sent to the model.
+        :param chat: The chat being processed (used in the log line).
+        :return: Number of redacted occurrences.
+        """
+        replacements = 0
+        for message in messages:
+            try:
+                text = self._get_text_content(message)
+            except Exception:  # pragma: no cover - defensive
+                continue
+            if not text:
+                continue
+            redacted, found = redact_text(text)
+            if not found:
+                continue
+            replacements += found
+            self._set_text_content(message, redacted)
+        if replacements:
+            logger.warning(
+                "CISO: redacted %d secret(s) from the prompt of chat '%s' "
+                "before sending it to the model",
+                replacements,
+                getattr(chat, "doc_id", None) or getattr(chat, "id", None),
+            )
+        return replacements
 
     def append_refine_message(self, chat, messages, user_message, last_ai_message):
         """

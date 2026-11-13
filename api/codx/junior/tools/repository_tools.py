@@ -92,6 +92,7 @@ import textwrap
 from typing import Dict, List, Optional, Tuple
 
 from codx.junior.settings import CODXJuniorSettings
+from codx.junior.security.ciso import gate as ciso_gate
 from .model import ToolResponse
 
 logger = logging.getLogger(__name__)
@@ -1046,11 +1047,6 @@ def repository_overview(**kwargs) -> ToolResponse:
     staged = info.get("staged") or []
     unstaged = info.get("unstaged") or []
     remote_url = info.get("remote_url") or ""
-    if remote_url:
-        # Never echo credentials: a remote such as
-        # https://user:token@github.com/org/repo would otherwise be copied into
-        # the conversation, into task cards and from there into git history.
-        remote_url = re.sub(r"//[^/@]+@", "//***@", remote_url)
     ahead = info.get("ahead") or 0
     behind = info.get("behind") or 0
 
@@ -1104,27 +1100,35 @@ def repository_overview(**kwargs) -> ToolResponse:
         "_Ask me about a branch, the diff of a file, or for a commit message._",
     ]
 
+    user_response = "\n".join(lines)
+    llm_response = json.dumps(
+        {
+            "repo_path": info.get("repo_path"),
+            "active_branch": info.get("active_branch"),
+            "default_branch": info.get("default_branch"),
+            "remote_url": remote_url,
+            "ahead": ahead,
+            "behind": behind,
+            "dirty": info.get("dirty"),
+            "staged": staged,
+            "unstaged": unstaged,
+            "locked": info.get("locked"),
+            "lock_path": info.get("lock_path"),
+            "worktrees": worktrees,
+            "last_commits": commits,
+        },
+        indent=2,
+        default=str,
+    )
+
+    # CISO: this tool renders configuration (remote URLs, file paths, commit
+    # subjects). Everything it returns is copied into the conversation and from
+    # there into the task card, so the WHOLE snapshot passes ``guard_output``:
+    # a local regex knew one credential shape and covered one field only.
+    settings = kwargs.get("settings")
     return ToolResponse(
-        user_response="\n".join(lines),
-        llm_response=json.dumps(
-            {
-                "repo_path": info.get("repo_path"),
-                "active_branch": info.get("active_branch"),
-                "default_branch": info.get("default_branch"),
-                "remote_url": remote_url,
-                "ahead": ahead,
-                "behind": behind,
-                "dirty": info.get("dirty"),
-                "staged": staged,
-                "unstaged": unstaged,
-                "locked": info.get("locked"),
-                "lock_path": info.get("lock_path"),
-                "worktrees": worktrees,
-                "last_commits": commits,
-            },
-            indent=2,
-            default=str,
-        ),
+        user_response=ciso_gate.redact_output(user_response, settings=settings),
+        llm_response=ciso_gate.redact_output(llm_response, settings=settings),
     )
 
 

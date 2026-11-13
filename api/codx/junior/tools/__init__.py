@@ -217,6 +217,20 @@ from .computer_tools import (
     SAVE_COMPUTER_TOOL_JSON,
     COMPUTER_TOOL_SETTINGS,
 )
+from .ciso_tools import (
+    security_audit,
+    security_scan_content,
+    security_review_changes,
+    security_check_command,
+    security_redact,
+    security_policy,
+    SECURITY_AUDIT_TOOL_JSON,
+    SECURITY_SCAN_CONTENT_TOOL_JSON,
+    SECURITY_REVIEW_CHANGES_TOOL_JSON,
+    SECURITY_CHECK_COMMAND_TOOL_JSON,
+    SECURITY_REDACT_TOOL_JSON,
+    SECURITY_POLICY_TOOL_JSON,
+)
 from .model import ToolResponse, ToolSettings
 
 # Configure logging
@@ -366,6 +380,12 @@ __all__ = [
     "save_browser_script",
     "run_browser_script",
     "delete_browser_script",
+    "security_audit",
+    "security_scan_content",
+    "security_review_changes",
+    "security_check_command",
+    "security_redact",
+    "security_policy",
     "start_computer",
     "computer_action",
     "computer_screenshot",
@@ -1738,6 +1758,49 @@ TOOLS = [
     #  delete_browser_script). Spread here so this file never has to be
     # rewritten when the recipe tool set grows.
     *BROWSER_SCRIPT_TOOLS,
+    # -- CISO: security gates callable by a profile --------------------------
+    # Source of truth: codx/junior/tools/ciso_tools.py
+    # The detectors, the policy engine and the automatic gates live in
+    # codx/junior/security/ciso/. These entries only expose the explicit
+    # actions a profile may take (audit, review, validate, redact, policy).
+    {
+        "tool_json": SECURITY_AUDIT_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "audit", "secrets", "malicious-code", "compliance"],
+        "tool_call": security_audit
+    },
+    {
+        "tool_json": SECURITY_SCAN_CONTENT_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "scan", "pre-write", "validation"],
+        "tool_call": security_scan_content
+    },
+    {
+        "tool_json": SECURITY_REVIEW_CHANGES_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "review", "diff", "pull-request", "git"],
+        "tool_call": security_review_changes
+    },
+    {
+        "tool_json": SECURITY_CHECK_COMMAND_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "command", "shell", "guard"],
+        "tool_call": security_check_command
+    },
+    {
+        "tool_json": SECURITY_REDACT_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "redaction", "secrets", "logs"],
+        "tool_call": security_redact
+    },
+    {
+        "tool_json": SECURITY_POLICY_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "policy", "configuration"],
+        "tool_call": security_policy
+    },
 ]
+
+# Made with ❤️ by codx-junior
 
 # Made with ❤️ by codx-junior

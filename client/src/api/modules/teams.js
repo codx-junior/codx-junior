@@ -58,6 +58,31 @@ export const teamsModule = (API) => ({
     return API.delete(`/api/teams/${encodeURIComponent(teamId)}`)
   },
 
+  // ── Generation from a plain-language need ───────────────────────────────
+
+  /**
+   * Turn a need into a team **proposal** (nothing is written).
+   *
+   * The backend maps the sentence onto known roles (reusing the profiles that
+   * already exist) and returns the `actor` block every new profile would get,
+   * so an autonomous team can be previewed with its availability window.
+   * @param {{ need: string, autonomous?: boolean, board?: string, schedule?: Object }} payload
+   * @returns {Promise<{ mode: string, team_name: string, roles: Object[], members: Object[], summary: string }>}
+   */
+  suggestGeneration({ need, autonomous = false, board = '', schedule = null } = {}) {
+    return API.post('/api/teams/generate/suggest', { need, autonomous, board, schedule })
+  },
+
+  /**
+   * Materialize a proposal: creates the missing profiles and the team (with its
+   * charter). Existing profiles are never modified.
+   * @param {{ suggestion: Object, team_name?: string }} payload
+   * @returns {Promise<{ team: Object, created_profiles: string[], reused_profiles: string[], errors: string[] }>}
+   */
+  applyGeneration({ suggestion, team_name = '' } = {}) {
+    return API.post('/api/teams/generate/apply', { suggestion, team_name })
+  },
+
   // ── Membership ─────────────────────────────────────────────────────────────
 
   /**

@@ -82,7 +82,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from codx.junior.db import Chat, Message
-from codx.junior.task_manager import TaskManager
+from codx.junior.task_manager import TaskManager, to_wake_at
 from .model import ToolResponse
 
 logger = logging.getLogger(__name__)
@@ -460,6 +460,7 @@ def _task_dict(chat: Chat, include_messages: bool = False) -> Dict[str, Any]:
         "sprints": list(chat.sprints or []),
         "priority": chat.priority,
         "due_date": chat.due_date,
+        "wake_at": chat.wake_at,
         "progress": chat.progress,
         "assignees": list(chat.assignees or []),
         "profiles": list(chat.profiles or []),
@@ -500,7 +501,7 @@ def _task_summary(chat: Chat) -> str:
         f"- Board: `{chat.board}` | Column: `{chat.column}`",
         f"- Sprints: {sprints}",
         f"- Priority: `{chat.priority or '-'}` | Progress: {chat.progress or 0}% | "
-        f"Due: `{chat.due_date or '-'}`",
+        f"Due: `{chat.due_date or '-'}` | Wake: `{chat.wake_at or '-'}`",
         f"- Assignees: {assignees}",
         f"- Updated: {chat.updated_at}",
     ]
@@ -2220,6 +2221,7 @@ def _action_create_task(
     status: Optional[str],
     priority: Optional[str],
     due_date: Optional[str],
+    wake_at: Optional[str],
     progress: Optional[int],
     assignees: Any,
     profiles: Any,
@@ -2258,6 +2260,9 @@ def _action_create_task(
         status: Initial state (must be a valid state).
         priority: Task priority.
         due_date: Due date (ISO ``YYYY-MM-DD``).
+        wake_at: When an autonomous agent must be woken for this task. It is NOT
+            a deadline: it is the alarm clock the autonomy worker reads. Accepts
+            ``"+2d"``, ``"6 hours"``, ``"2026-04-03"`` or an ISO instant.
         progress: Completion percentage (0-100).
         assignees: Usernames assigned.
         profiles: Profiles/roles for the task (parameter only, never inherited).
@@ -2318,6 +2323,7 @@ def _action_create_task(
         status=status,
         priority=priority,
         due_date=due_date,
+        wake_at=wake_at,
         progress=progress,
         assignees=assignees,
         profiles=profiles,
@@ -2334,8 +2340,15 @@ def _action_create_task(
         f"- Board/Column: `{saved_task.board}` / `{saved_task.column}`",
         f"- Sprints: {', '.join(f'`{s}`' for s in task_sprints) or 'none'}",
         f"- Status: `{saved_task.status or '-'}`",
-        "\nUse action='request_changes' to process this task through the engine.",
     ]
+    if saved_task.wake_at:
+        user_lines.append(
+            f"- Wake at: `{saved_task.wake_at}` "
+            "(the autonomy worker delivers it when due)"
+        )
+    user_lines.append(
+        "\nUse action='request_changes' to process this task through the engine."
+    )
 
     logger.info(
         "project_manager: created task '%s' (board=%s column=%s sprints=%s)",
@@ -2358,6 +2371,7 @@ def _action_update_task(
     status: Optional[str],
     priority: Optional[str],
     due_date: Optional[str],
+    wake_at: Optional[str],
     progress: Optional[int],
     assignees: Any,
     tags: Any,
@@ -2386,6 +2400,7 @@ def _action_update_task(
         status: New state (must be a valid state).
         priority: New priority.
         due_date: New due date.
+        wake_at: New schedule for an autonomous agent (``""`` clears it).
         progress: New completion percentage.
         assignees: New assignee list (replaces).
         tags: New tag list (replaces).
@@ -2440,6 +2455,9 @@ def _action_update_task(
         metadata["priority"] = priority
     if due_date is not None:
         metadata["due_date"] = due_date
+    if wake_at is not None:
+        # An empty value clears the schedule; the parse never raises.
+        metadata["wake_at"] = to_wake_at(wake_at)
     if progress is not None:
         metadata["progress"] = max(0, min(100, int(progress)))
     if assignees is not None:
@@ -2453,7 +2471,7 @@ def _action_update_task(
     if not metadata:
         raise ValueError(
             "Nothing to update: provide at least one of status, board, column, "
-            "sprints, sprint, priority, due_date, progress, assignees or tags"
+            "sprints, sprint, priority, due_date, wake_at, progress, assignees or tags"
         )
 
     updated = chat_manager.update_chat_metadata(chat=chat, metadata=metadata)
@@ -2750,6 +2768,7 @@ async def project_manager(
     status: Optional[str] = None,
     priority: Optional[str] = None,
     due_date: Optional[str] = None,
+    wake_at: Optional[str] = None,
     progress: Optional[int] = None,
     assignees: Optional[List[str]] = None,
     profiles: Optional[List[str]] = None,
@@ -2817,6 +2836,10 @@ async def project_manager(
         status: Task state (one of :func:`_task_states`).
         priority: Task priority ('high' | 'medium' | 'low').
         due_date: Due date (ISO ``YYYY-MM-DD``).
+        wake_at: When an autonomous agent must be woken for this task (the alarm
+            clock read by the autonomy worker, not a deadline). Accepts
+            ``"+2d"``, ``"6 hours"``, ``"2026-04-03"`` or an ISO instant; on
+            update an empty value clears the schedule.
         progress: Completion percentage (0-100).
         assignees: Assigned usernames (replaces on update).
         profiles: Profiles/roles for the task/comment (parameter only).
@@ -2979,6 +3002,7 @@ async def project_manager(
                 status=status,
                 priority=priority,
                 due_date=due_date,
+                wake_at=wake_at,
                 progress=progress,
                 assignees=assignees,
                 profiles=profiles,
@@ -3002,6 +3026,7 @@ async def project_manager(
                 status=status,
                 priority=priority,
                 due_date=due_date,
+                wake_at=wake_at,
                 progress=progress,
                 assignees=assignees,
                 tags=tags,
@@ -3199,6 +3224,16 @@ PROJECT_MANAGER_TOOL_JSON = {
                 "due_date": {
                     "type": "string",
                     "description": "Task due date in ISO format (YYYY-MM-DD)."
+                },
+                "wake_at": {
+                    "type": "string",
+                    "description": (
+                        "When an autonomous agent must be woken for this task: the "
+                        "alarm clock read by the autonomy worker, NOT a deadline "
+                        "(that is due_date). Accepts relative expressions like "
+                        "'+2d' or '6 hours', a date ('2026-04-03') or an ISO "
+                        "instant. On update an empty string clears the schedule."
+                    )
                 },
                 "progress": {
                     "type": "integer",

@@ -126,6 +126,37 @@ def to_profile_names(value: Any) -> List[str]:
     return names
 
 
+def to_wake_at(value: Any) -> Optional[str]:
+    """
+    Normalize a scheduling expression into an ISO-8601 instant.
+
+    Accepts the same vocabulary as the autonomy runtime (``"+2d"``, ``"3 hours"``,
+    an ISO date or instant) so any task creation path can schedule a follow-up for
+    an autonomous agent. An unparsable value schedules nothing instead of
+    raising: a task must never be lost because of a bad date.
+
+    Args:
+        value: Scheduling expression.
+
+    Returns:
+        ISO instant, or None when there is nothing to schedule.
+
+    Example:
+        >>> to_wake_at("+2d")  # doctest: +SKIP
+        '2026-04-03T00:00:00+00:00'
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    try:
+        from codx.junior.autonomy.models import parse_when
+
+        return parse_when(text) or None
+    except Exception as ex:  # pragma: no cover - scheduling is best effort
+        logger.warning("TaskManager: cannot parse wake_at '%s': %s", text, ex)
+        return None
+
+
 def to_progress(value: Any, default: int = 0) -> int:
     """
     Clamp a completion percentage into the ``0-100`` range.
@@ -255,6 +286,7 @@ class TaskManager:
         status: Optional[str] = None,
         priority: Optional[str] = None,
         due_date: Optional[str] = None,
+        wake_at: Optional[str] = None,
         progress: Any = 0,
         assignees: Any = None,
         profiles: Any = None,
@@ -372,6 +404,7 @@ class TaskManager:
             status=(status or "").strip(),
             priority=priority,
             due_date=due_date,
+            wake_at=to_wake_at(wake_at),
             progress=to_progress(progress),
             assignees=to_list(assignees),
             profiles=task_profiles,

@@ -46,9 +46,10 @@ Made with ❤️ by codx-junior
 
 import logging
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from codx.junior.api import get_current_session
 from codx.junior.model.team import Team
@@ -57,6 +58,40 @@ from codx.junior.teams.team_manager import TeamManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class TeamSuggestionRequest(BaseModel):
+    """A plain-language need to turn into a team proposal."""
+
+    need: str = Field(
+        description="What the user asked for: 'I need an IT team', "
+        "'take care of the maintenance tickets', ..."
+    )
+    autonomous: bool = Field(
+        default=False,
+        description="Give every generated profile an actor block so the team works on its own.",
+    )
+    board: str = Field(
+        default="", description="Board the generated actors are responsible for."
+    )
+    schedule: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Weekly availability applied to the generated actors: "
+            "{enabled, timezone, windows: [{days, start, end}]}."
+        ),
+    )
+
+
+class TeamGenerationRequest(BaseModel):
+    """The proposal to materialize (the payload ``/generate/suggest`` returns)."""
+
+    suggestion: Dict[str, Any] = Field(
+        description="The proposal returned by POST /api/teams/generate/suggest."
+    )
+    team_name: Optional[str] = Field(
+        default=None, description="Override of the generated team name."
+    )
 
 
 def get_team_manager(request: Request) -> TeamManager:
@@ -106,6 +141,77 @@ def list_teams(request: Request) -> List[Dict[str, Any]]:
     teams = manager.list_teams()
     logger.info("list_teams: %d team(s)", len(teams))
     return [team.definition() for team in teams]
+
+
+@router.post("/teams/generate/suggest")
+def suggest_team(payload: TeamSuggestionRequest, request: Request) -> Dict[str, Any]:
+    """
+    Turn a plain-language need into a team **proposal** (nothing is written).
+
+    The proposal is the advisor suggestion enriched with the ``actor`` block
+    every generated profile would get, so the UI can show who would be created
+    and under which availability window before anything touches the project.
+
+    Args:
+        payload: The need, plus the autonomy options.
+        request: The incoming HTTP request.
+
+    Returns:
+        ``{mode, team_name, roles, members, summary, autonomous, board, ...}``
+
+    Raises:
+        HTTPException: 400 when the need is empty.
+    """
+    need = str(payload.need or "").strip()
+    if not need:
+        raise HTTPException(status_code=400, detail="need is required")
+    manager = get_team_manager(request)
+    from codx.junior.teams import generator
+
+    suggestion = generator.suggest(
+        manager.settings,
+        need,
+        autonomous=bool(payload.autonomous),
+        board=str(payload.board or "").strip(),
+        schedule=payload.schedule,
+    )
+    logger.info("suggest_team: %d role(s) for %r", len(suggestion.get("roles") or []), need)
+    return suggestion
+
+
+@router.post("/teams/generate/apply", status_code=201)
+def generate_team(payload: TeamGenerationRequest, request: Request) -> Dict[str, Any]:
+    """
+    Write the profiles and the team of a proposal.
+
+    Existing profiles are never modified: a role that already has a profile is
+    reused as-is. The team is written with its charter, exactly like a team
+    created by hand.
+
+    Args:
+        payload: The proposal and an optional team name override.
+        request: The incoming HTTP request.
+
+    Returns:
+        ``{team, created_profiles, reused_profiles, errors}``
+
+    Raises:
+        HTTPException: 400 when nothing can be created.
+    """
+    manager = get_team_manager(request)
+    from codx.junior.teams import generator
+
+    result = generator.apply(
+        manager.settings, payload.suggestion, team_name=payload.team_name or ""
+    )
+    if result.get("errors") and not result.get("team") and not result.get("created_profiles"):
+        raise HTTPException(status_code=400, detail="; ".join(result["errors"]))
+    logger.info(
+        "generate_team: created=%s reused=%s",
+        result.get("created_profiles"),
+        result.get("reused_profiles"),
+    )
+    return result
 
 
 @router.get("/teams/{team_name}")

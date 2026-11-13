@@ -129,6 +129,10 @@ from .company_tools import (
     COMPANY_MANAGEMENT_TOOL_JSON,
 )
 from .project_manager_tools import project_manager, PROJECT_MANAGER_TOOL_JSON
+from .autonomy_tools import (
+    autonomy_management,
+    AUTONOMY_MANAGEMENT_TOOL_JSON,
+)
 from .tutorial_tools import (
     tutorial_definition,
     create_chapter,
@@ -316,6 +320,7 @@ __all__ = [
     "team_context",
     "company_management",
     "project_manager",
+    "autonomy_management",
     "explain_image",
     "generate_image",
     "tutorial_definition",
@@ -918,6 +923,12 @@ TOOLS = [
         },
         "tags": ["project-management", "tasks", "kanban", "sprint", "workflow", "chat"],
         "tool_call": project_manager
+    },
+    {
+        "tool_json": AUTONOMY_MANAGEMENT_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
+        "tags": ["autonomy", "agents", "profiles", "schedule", "initiative"],
+        "tool_call": autonomy_management
     },
     {
         "tool_json": {

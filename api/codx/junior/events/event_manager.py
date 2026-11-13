@@ -143,6 +143,20 @@ class EventManager:
             self.event_data(payload),
         )
 
+    def autonomy_event(self, payload: dict):
+        """
+        Emit an autonomy (agent shift) event to connected clients.
+
+        The payload carries ``agent``, ``event`` (started/finished/error/wake/
+        scheduled), ``message``, ``board`` and event-specific data. The REST
+        endpoints remain the source of truth; clients can subscribe to
+        ``codx-junior-autonomy`` for live agent status updates.
+        """
+        self.channel.send_event(
+            'codx-junior-autonomy',
+            self.event_data(payload),
+        )
+
     def collection_event(self, collection: str, action: str, item: dict = None, **extra):
         """
         Announce that a cached collection changed (profiles, projects, teams...).

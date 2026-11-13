@@ -75,15 +75,6 @@ def start_background_services(stop_event) -> None:
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the orchestration worker: %s", ex)
 
-    # Board managers: a profile reviews a board periodically and applies the
-    # actions it decides (move/comment/close/update/create). Opt-in per board.
-    try:
-        from codx.junior.board_manager.worker import start_board_manager_worker
-
-        start_board_manager_worker(stop_event=stop_event)
-    except Exception as ex:  # pragma: no cover - defensive
-        logger.exception("Failed to start the board manager worker: %s", ex)
-
     # Company autopilot. It only dispatches missions whose company explicitly
     # enabled autonomy, and it is a no-op when no company is enabled.
     try:
@@ -92,6 +83,18 @@ def start_background_services(stop_event) -> None:
         start_company_autopilot(stop_event=stop_event)
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the company autopilot: %s", ex)
+
+    # Actors: the single shift worker. It takes the due shifts of the profiles
+    # that declare an ``actor`` block (coworkers and managers) and of the boards
+    # that still declare a ``manager`` block — same runtime, same locks, same
+    # weekly availability windows. A project without actors is a no-op, so this
+    # is safe to start everywhere.
+    try:
+        from codx.junior.autonomy.worker import start_actor_worker
+
+        start_actor_worker(stop_event=stop_event)
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to start the actor worker: %s", ex)
 
 
 async def stop_background_services() -> None:
@@ -113,18 +116,18 @@ async def stop_background_services() -> None:
         logger.exception("Failed to stop the orchestration worker: %s", ex)
 
     try:
-        from codx.junior.board_manager.worker import stop_board_manager_worker
-
-        stop_board_manager_worker()
-    except Exception as ex:  # pragma: no cover - defensive
-        logger.exception("Failed to stop the board manager worker: %s", ex)
-
-    try:
         from codx.junior.company.autopilot import stop_company_autopilot
 
         stop_company_autopilot()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to stop the company autopilot: %s", ex)
+
+    try:
+        from codx.junior.autonomy.worker import stop_actor_worker
+
+        stop_actor_worker()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to stop the actor worker: %s", ex)
 
     try:
         from codx.junior.wiki.scheduler import stop_wiki_scheduler

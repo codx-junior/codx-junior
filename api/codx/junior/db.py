@@ -409,6 +409,16 @@ class Chat(BaseModel):
         default=[],
         description="Usernames assigned to this task (distinct from participants in 'users')"
     )
+    wake_at: Optional[str] = Field(
+        default=None,
+        description=(
+            "Instant (ISO-8601) when this task must be delivered to an autonomous "
+            "agent. It is NOT a deadline (that is ``due_date``): it is the alarm "
+            "clock the autonomy worker reads. An agent schedules a follow-up with "
+            "``wake_at='+2d'`` and is woken when it becomes due; the wake is "
+            "consumed (cleared) once a shift has handled the task."
+        )
+    )
     sort_index: Optional[int] = Field(
         default=None,
         description="Manual ordering index within a board column"

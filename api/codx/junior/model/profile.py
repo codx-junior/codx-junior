@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from codx.junior.model.user import CodxUser
 
@@ -82,5 +82,27 @@ class Profile(BaseModel):
         default=ProfileGuardrailSettings(),
     )
     chat_mode: Optional[str] = Field(description="Affects on how conversation works. Like writing a document or chat messages", default=None)
+    actor: Optional[Dict[str, Any]] = Field(
+        description=(
+            "Actor declaration of the profile: when ``actor.enabled`` is true the "
+            "profile works on its own (shifts on its boards, weekly schedule, "
+            "budgets) without a human in the loop. Settings live in "
+            "codx.junior.autonomy.models.ActorConfig (role, policy, session, "
+            "boards, interval_minutes, schedule, mode, budgets, instructions...). "
+            "Kept as a plain mapping so this core model never depends on the "
+            "actor package. The legacy ``autonomy`` key is read as a fallback "
+            "and migrated on save."
+        ),
+        default=None,
+    )
+    autonomy: Optional[Dict[str, Any]] = Field(
+        description=(
+            "Legacy actor declaration (superseded by ``actor``): when "
+            "``autonomy.enabled`` is true the profile becomes an autonomous "
+            "agent that takes shifts on its own board. Still read, migrated to "
+            "``actor`` on save, never written by new code."
+        ),
+        default=None,
+    )
     project_id: Optional[str] = Field(description="Profile's project", default=None)
     chat_id: Optional[str] = Field(default="", description="Unique identifier for chat")

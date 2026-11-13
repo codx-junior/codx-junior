@@ -18,6 +18,7 @@ Profiles are reusable instructions that tell the AI how to behave. They encode y
 | Use knowledge | Whether the profile searches the project's knowledge. |
 | Chat mode | Changes how the conversation works, for example writing a document instead of chatting. |
 | API settings | Expose the profile as a model through the [OpenAI-compatible API](/features/api). |
+| Autonomy | Turn the profile into an [autonomous agent](/features/autonomous-agents) that takes its own shifts. |
 
 ## Built-in profiles
 

@@ -226,6 +226,8 @@ def _profile_definition(profile: Profile, include_content: bool = False) -> Dict
         "api_settings": (
             profile.api_settings.model_dump() if profile.api_settings else None
         ),
+        "actor": profile.actor or {},
+        "autonomy": profile.autonomy or {},
         "path": profile.path,
         "project_id": profile.project_id,
         "has_content": bool(profile.content),
@@ -836,6 +838,36 @@ def _action_get(manager: ProfileManager, name: str) -> ToolResponse:
     return ToolResponse(user_response=user_response, llm_response=llm_response)
 
 
+def _normalize_autonomy(value: Any) -> Optional[Dict[str, Any]]:
+    """
+    Validate and normalize an ``autonomy`` mapping for a profile.
+
+    The profile stores the agent settings as a plain mapping so the core model
+    never depends on the autonomy package; the schema lives in
+    :class:`codx.junior.autonomy.models.AutonomyConfig`. A mapping without
+    ``enabled`` simply produces a disabled configuration.
+
+    Args:
+        value: Raw mapping coming from the tool arguments.
+
+    Returns:
+        The normalized mapping, or None when nothing was provided.
+
+    Raises:
+        ValueError: When the value is not an object.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            "autonomy must be an object, e.g. "
+            "{'enabled': true, 'board': 'agents', 'interval_minutes': 60}"
+        )
+    from codx.junior.autonomy.models import AutonomyConfig
+
+    return AutonomyConfig.from_store_value(value).normalized().model_dump()
+
+
 def _action_create(
     manager: ProfileManager,
     name: str,
@@ -852,6 +884,7 @@ def _action_create(
     avatar: Optional[str] = None,
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
+    autonomy: Optional[Dict[str, Any]] = None,
 ) -> ToolResponse:
     """
     Create a new profile (both files) in the project.
@@ -872,6 +905,11 @@ def _action_create(
         avatar: Optional avatar URL.
         url: Optional documentation URL.
         api_settings: Optional ``{active, model_name, description}``.
+        autonomy: Optional autonomy mapping. When ``enabled`` is true the profile
+            becomes an autonomous agent that takes shifts on its own board:
+            ``{enabled, board, interval_minutes, max_runtime_minutes, max_agenda,
+            mode ('active'|'dry_run'), budget_cxjcoins, instructions, wake_at,
+            notify}``.
 
     Returns:
         ToolResponse describing the created profile.
@@ -916,6 +954,7 @@ def _action_create(
         avatar=avatar or "",
         url=url or "",
         api_settings=ProfileApiSettings(**(api_settings or {})),
+        actor=_normalize_autonomy(autonomy),
         project_id=manager.settings.project_id,
     )
     profile.path = _profile_paths(manager, name)["profile"]
@@ -949,6 +988,7 @@ def _action_update(
     avatar: Optional[str] = None,
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
+    autonomy: Optional[Dict[str, Any]] = None,
 ) -> ToolResponse:
     """
     Update an existing project profile, merging the provided fields.
@@ -972,6 +1012,8 @@ def _action_update(
         avatar: New avatar URL.
         url: New documentation URL.
         api_settings: New ``{active, model_name, description}``.
+        autonomy: New autonomy mapping (``None`` keeps it, a mapping without
+            ``enabled`` disables the agent).
 
     Returns:
         ToolResponse describing the updated profile.
@@ -1028,6 +1070,8 @@ def _action_update(
         overrides["url"] = url
     if api_settings is not None:
         overrides["api_settings"] = ProfileApiSettings(**api_settings)
+    if autonomy is not None:
+        overrides["actor"] = _normalize_autonomy(autonomy)
 
     if not overrides:
         raise ValueError(
@@ -1206,6 +1250,7 @@ def profile_management(
     avatar: Optional[str] = None,
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
+    autonomy: Optional[Dict[str, Any]] = None,
     query: Optional[str] = None,
     include_inherited: bool = False,
     **kwargs,
@@ -1271,6 +1316,11 @@ def profile_management(
         url: Documentation URL.
         api_settings: ``{active, model_name, description}`` to expose the
             profile through the LLM API.
+        autonomy: ``{enabled, board, interval_minutes, max_runtime_minutes,
+            max_agenda, mode ('active'|'dry_run'), budget_cxjcoins, instructions,
+            wake_at, notify}``. With ``enabled: true`` the profile becomes an
+            autonomous agent that takes shifts on its own board without a human
+            in the loop (create/update).
         query: ``list`` / ``list_summary`` only. Case-insensitive filter on
             name, description and tags.
         include_inherited: ``list`` / ``list_summary`` only. Include read-only
@@ -1364,6 +1414,7 @@ def profile_management(
                 avatar=avatar,
                 url=url,
                 api_settings=api_settings,
+                autonomy=autonomy,
             )
 
         if action == "update":
@@ -1383,6 +1434,7 @@ def profile_management(
                 avatar=avatar,
                 url=url,
                 api_settings=api_settings,
+                autonomy=autonomy,
             )
 
         return _action_delete(
@@ -1552,6 +1604,7 @@ def create_profile(
     avatar: Optional[str] = None,
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
+    autonomy: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -1574,6 +1627,7 @@ def create_profile(
         avatar: Optional avatar URL.
         url: Optional documentation URL.
         api_settings: Optional ``{active, model_name, description}``.
+        autonomy: Optional autonomy mapping (see ``profile_management``).
         **kwargs: Internal. Injected by the agent runtime: ``settings``.
 
     Returns:
@@ -1596,6 +1650,7 @@ def create_profile(
         avatar=avatar,
         url=url,
         api_settings=api_settings,
+        autonomy=autonomy,
         **kwargs,
     )
 
@@ -1616,6 +1671,7 @@ def update_profile(
     avatar: Optional[str] = None,
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
+    autonomy: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -1637,6 +1693,7 @@ def update_profile(
         avatar: New avatar URL.
         url: New documentation URL.
         api_settings: New ``{active, model_name, description}``.
+        autonomy: New autonomy mapping (see ``profile_management``).
         **kwargs: Internal. Injected by the agent runtime: ``settings``.
 
     Returns:
@@ -1659,6 +1716,7 @@ def update_profile(
         avatar=avatar,
         url=url,
         api_settings=api_settings,
+        autonomy=autonomy,
         **kwargs,
     )
 
@@ -1850,6 +1908,69 @@ PROFILE_MANAGEMENT_TOOL_JSON = {
                         "description": {
                             "type": "string",
                             "description": "Description exposed by the API"
+                        }
+                    }
+                },
+                "autonomy": {
+                    "type": "object",
+                    "description": (
+                        "Autonomy of the profile: with enabled=true the profile "
+                        "becomes an autonomous agent that takes shifts on its own "
+                        "board without a human in the loop. Keys: enabled, board, "
+                        "interval_minutes, max_runtime_minutes, max_agenda, mode "
+                        "('active'|'dry_run'), budget_cxjcoins, instructions, "
+                        "wake_at, notify."
+                    ),
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Turn the profile into an autonomous agent."
+                        },
+                        "board": {
+                            "type": "string",
+                            "description": (
+                                "Board of the agent (created on demand; default "
+                                "'Agent: <Name>')."
+                            )
+                        },
+                        "interval_minutes": {
+                            "type": "integer",
+                            "description": "Minutes between two shifts (default 1440)."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["active", "dry_run"],
+                            "description": (
+                                "'active' applies the tool actions, 'dry_run' only "
+                                "reports."
+                            )
+                        },
+                        "budget_cxjcoins": {
+                            "type": "number",
+                            "description": "Budget cap for one shift (0 = default)."
+                        },
+                        "max_runtime_minutes": {
+                            "type": "integer",
+                            "description": "Hard limit of one shift in minutes."
+                        },
+                        "max_agenda": {
+                            "type": "integer",
+                            "description": "How many due tasks the agent reviews."
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Standing orders (the agent's mandate)."
+                        },
+                        "wake_at": {
+                            "type": "string",
+                            "description": (
+                                "Next planned wake ('+2d', '2026-04-03' or an ISO "
+                                "instant). Empty derives it from the cadence."
+                            )
+                        },
+                        "notify": {
+                            "type": "boolean",
+                            "description": "Comment the shift report on the agent board."
                         }
                     }
                 },
@@ -2135,6 +2256,69 @@ PROFILE_CREATE_TOOL_JSON = {
                             "description": "Description exposed by the API"
                         }
                     }
+                },
+                "autonomy": {
+                    "type": "object",
+                    "description": (
+                        "Autonomy of the profile: with enabled=true the profile "
+                        "becomes an autonomous agent that takes shifts on its own "
+                        "board without a human in the loop. Keys: enabled, board, "
+                        "interval_minutes, max_runtime_minutes, max_agenda, mode "
+                        "('active'|'dry_run'), budget_cxjcoins, instructions, "
+                        "wake_at, notify."
+                    ),
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Turn the profile into an autonomous agent."
+                        },
+                        "board": {
+                            "type": "string",
+                            "description": (
+                                "Board of the agent (created on demand; default "
+                                "'Agent: <Name>')."
+                            )
+                        },
+                        "interval_minutes": {
+                            "type": "integer",
+                            "description": "Minutes between two shifts (default 1440)."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["active", "dry_run"],
+                            "description": (
+                                "'active' applies the tool actions, 'dry_run' only "
+                                "reports."
+                            )
+                        },
+                        "budget_cxjcoins": {
+                            "type": "number",
+                            "description": "Budget cap for one shift (0 = default)."
+                        },
+                        "max_runtime_minutes": {
+                            "type": "integer",
+                            "description": "Hard limit of one shift in minutes."
+                        },
+                        "max_agenda": {
+                            "type": "integer",
+                            "description": "How many due tasks the agent reviews."
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Standing orders (the agent's mandate)."
+                        },
+                        "wake_at": {
+                            "type": "string",
+                            "description": (
+                                "Next planned wake ('+2d', '2026-04-03' or an ISO "
+                                "instant). Empty derives it from the cadence."
+                            )
+                        },
+                        "notify": {
+                            "type": "boolean",
+                            "description": "Comment the shift report on the agent board."
+                        }
+                    }
                 }
             },
             "required": ["profile_name", "content"]
@@ -2235,6 +2419,59 @@ PROFILE_UPDATE_TOOL_JSON = {
                 "url": {
                     "type": "string",
                     "description": "New documentation/homepage URL."
+                },
+                "autonomy": {
+                    "type": "object",
+                    "description": (
+                        "New autonomy of the profile: with enabled=true the profile "
+                        "becomes an autonomous agent that takes shifts on its own "
+                        "board. Keys: enabled, board, interval_minutes, "
+                        "max_runtime_minutes, max_agenda, mode ('active'|'dry_run'), "
+                        "budget_cxjcoins, instructions, wake_at, notify."
+                    ),
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Turn the profile into an autonomous agent."
+                        },
+                        "board": {
+                            "type": "string",
+                            "description": "Board of the agent."
+                        },
+                        "interval_minutes": {
+                            "type": "integer",
+                            "description": "Minutes between two shifts."
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["active", "dry_run"],
+                            "description": "'active' applies tools, 'dry_run' reports."
+                        },
+                        "budget_cxjcoins": {
+                            "type": "number",
+                            "description": "Budget cap for one shift (0 = default)."
+                        },
+                        "max_runtime_minutes": {
+                            "type": "integer",
+                            "description": "Hard limit of one shift in minutes."
+                        },
+                        "max_agenda": {
+                            "type": "integer",
+                            "description": "How many due tasks the agent reviews."
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Standing orders (the agent's mandate)."
+                        },
+                        "wake_at": {
+                            "type": "string",
+                            "description": "Next planned wake (ISO or '+2d')."
+                        },
+                        "notify": {
+                            "type": "boolean",
+                            "description": "Comment the shift report on the agent board."
+                        }
+                    }
                 },
                 "api_settings": {
                     "type": "object",

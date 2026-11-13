@@ -1,26 +1,29 @@
 """
 Data model of the board manager.
 
-The board document keeps only the **configuration** (enabled, profile,
-interval, mode, instructions). Everything that changes at runtime (last run,
-actions taken, last report, cost) lives in the project state store
-(:mod:`codx.junior.board_manager.store`), so a review never rewrites the board
-catalogue and a task save never races with a manager write.
+A board manager is now only a **declaration**: the board says who reviews it and
+how often (``board.manager``). The execution lives in
+:mod:`codx.junior.autonomy.service` — the same runtime as every other actor.
 
-The decision contract parsed here is deliberately small and strict: the model
-returns ``{"summary": "...", "actions": [...]}`` and the service validates every
-action against the real board before applying it.
+The JSON **action contract** that used to live here is gone. The manager used to
+answer ``{"summary": "...", "actions": [...]}`` and a second pass validated and
+applied those actions; today the manager is an actor with the ``manager`` role
+and uses the ordinary task tools, so every change it makes is recorded on the
+board exactly like a human change (same audit trail, same permissions).
+
+:meth:`BoardManagerConfig.to_actor_config` is the bridge between the two worlds:
+it turns the board-level declaration into the
+:class:`~codx.junior.autonomy.models.ActorConfig` the runtime understands, which
+is what keeps existing boards working after the merge.
 
 Made with ❤️ by codx-junior
 """
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -85,13 +88,17 @@ class BoardManagerConfig(BaseModel):
         profile: Profile name that acts as the board manager. Empty falls back
             to the board assistant (``board.assignee``) and then to
             :data:`codx.junior.board_manager.constants.DEFAULT_PROFILE`.
-        mode: ``apply`` writes the actions, ``suggest`` only records them.
+        mode: ``apply`` (the actor may change the board) or ``suggest`` (dry
+            run: it only writes a report). Mapped onto the actor modes.
         interval_minutes: Minimum time between two automatic reviews.
-        max_actions: Upper bound of actions applied in one review.
-        include_done: Whether closed tasks are also sent to the model (they are
-            never modified; they provide context).
+        max_actions: How many changes one review should make. It used to bound
+            the action list; it is now part of the mandate, because the manager
+            acts through the tools.
+        include_done: Whether closed tasks are also sent as context (they are
+            never modified).
         instructions: Extra, board-specific policy written by the user.
         max_tasks: How many tasks the prompt includes.
+        announce: Whether the review also leaves a short comment on the board.
     """
 
     enabled: bool = False
@@ -102,6 +109,7 @@ class BoardManagerConfig(BaseModel):
     include_done: bool = False
     instructions: str = ""
     max_tasks: int = C.DEFAULT_MAX_TASKS
+    announce: bool = True
 
     def normalized(self) -> "BoardManagerConfig":
         """Return a clamped copy (never mutate the input)."""
@@ -130,6 +138,7 @@ class BoardManagerConfig(BaseModel):
         data["instructions"] = _clip(data.get("instructions"), 8000)
         data["enabled"] = bool(data.get("enabled"))
         data["include_done"] = bool(data.get("include_done"))
+        data["announce"] = bool(data.get("announce", True))
         return BoardManagerConfig(**data)
 
     @classmethod
@@ -155,6 +164,7 @@ class BoardManagerConfig(BaseModel):
             include_done=bool(raw.get("include_done")),
             instructions=raw.get("instructions") or "",
             max_tasks=raw.get("max_tasks") or C.DEFAULT_MAX_TASKS,
+            announce=bool(raw.get("announce", True)),
         ).normalized()
 
     def to_board_value(self, fallback_profile: str = "") -> Dict[str, Any]:
@@ -164,192 +174,57 @@ class BoardManagerConfig(BaseModel):
             data["profile"] = _clip(fallback_profile, 120)
         return data
 
+    def to_actor_config(self, board: str) -> Any:
+        """
+        Translate the board declaration into the actor that executes it.
 
-# ---------------------------------------------------------------------------
-# Decision contract
-# ---------------------------------------------------------------------------
+        A board manager is an actor with:
 
+        * ``role="manager"`` — it curates the board, it does not implement;
+        * ``policy="board_only"`` — no code, no shell, no browser;
+        * ``session="single"`` — one review per run;
+        * ``boards=[board]`` — the reviewed board feeds the agenda;
+        * its own **desk** board (``Agent: <profile>``) where the review report
+          is written, so the reviewed board is never polluted by shift cards.
 
-class ManagerAction(BaseModel):
-    """One requested change. Unknown fields from the model are kept as extras."""
+        Args:
+            board: Title of the reviewed board.
 
-    type: str = Field(default="")
-    task_id: str = Field(default="")
-    column: str = Field(default="")
-    status: str = Field(default="")
-    comment: str = Field(default="")
-    reason: str = Field(default="")
-    priority: str = Field(default="")
-    due_date: str = Field(default="")
-    progress: Optional[int] = Field(default=None)
-    assignees: List[str] = Field(default_factory=list)
-    tags: List[str] = Field(default_factory=list)
-    name: str = Field(default="")
-    description: str = Field(default="")
+        Returns:
+            An :class:`codx.junior.autonomy.models.ActorConfig`.
+        """
+        from codx.junior.autonomy import constants as A
+        from codx.junior.autonomy.models import ActorConfig, default_board_name
 
-
-class ManagerDecision(BaseModel):
-    """The parsed answer of the manager profile."""
-
-    summary: str = Field(default="")
-    actions: List[ManagerAction] = Field(default_factory=list)
-    parse_error: str = Field(default="")
-    raw_content: str = Field(default="")
-
-
-def _extract_json_candidates(text: str) -> List[str]:
-    """
-    Return JSON-looking fragments of *text*, most likely contract first.
-
-    Fenced blocks first (the contract asks for a fenced JSON answer), then
-    balanced objects scanning backwards because the contract is normally the
-    last thing the model writes.
-    """
-    candidates: List[str] = []
-    for match in re.finditer(r"```(?:json)?\s*\n?(.*?)```", text, re.S | re.I):
-        block = (match.group(1) or "").strip()
-        if block.startswith(("{", "[")):
-            candidates.append(block)
-
-    positions = [index for index, char in enumerate(text) if char in "{["]
-    for start in reversed(positions[-50:]):
-        opening = text[start]
-        closing = "}" if opening == "{" else "]"
-        depth = 0
-        in_string = False
-        escaped = False
-        for index in range(start, len(text)):
-            char = text[index]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    in_string = False
-                continue
-            if char == '"':
-                in_string = True
-            elif char == opening:
-                depth += 1
-            elif char == closing:
-                depth -= 1
-                if depth == 0:
-                    candidates.append(text[start:index + 1])
-                    break
-
-    seen = set()
-    ordered: List[str] = []
-    for candidate in candidates:
-        if candidate not in seen:
-            seen.add(candidate)
-            ordered.append(candidate)
-    return ordered
-
-
-def normalize_action_type(value: Any) -> str:
-    """Map the many verbs a model may use onto the supported action types."""
-    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return C.ACTION_ALIASES.get(text, text)
-
-
-def _coerce_action(raw: Any) -> Optional[ManagerAction]:
-    """Build a :class:`ManagerAction` from a model-provided mapping."""
-    if not isinstance(raw, dict):
-        return None
-    action = ManagerAction(
-        type=normalize_action_type(raw.get("type") or raw.get("action")),
-        task_id=_clip(
-            raw.get("task_id") or raw.get("chat_id") or raw.get("id"), 120
-        ),
-        column=_clip(raw.get("column") or raw.get("to_column"), 200),
-        status=_clip(raw.get("status") or raw.get("state"), 80),
-        comment=_clip(raw.get("comment") or raw.get("message") or raw.get("note"), 4000),
-        reason=_clip(raw.get("reason"), 1000),
-        priority=_clip(raw.get("priority"), 40).lower(),
-        due_date=_clip(raw.get("due_date") or raw.get("due"), 40),
-        progress=(
-            _as_int(raw.get("progress"), 0, 0, 100)
-            if raw.get("progress") is not None
-            else None
-        ),
-        assignees=_as_str_list(raw.get("assignees") or raw.get("users")),
-        tags=_as_str_list(raw.get("tags")),
-        name=_clip(raw.get("name") or raw.get("title"), 300),
-        description=_clip(raw.get("description"), 8000),
-    )
-    return action
-
-
-def parse_decision(content: str) -> ManagerDecision:
-    """
-    Parse the manager answer into a :class:`ManagerDecision`.
-
-    Never raises: a model that ignores the contract yields a decision with no
-    actions and a ``parse_error`` (the report still reaches the user). A fenced
-    JSON block, a bare object and a bare list of actions are all accepted.
-    """
-    text = content or ""
-    payload: Any = None
-    for candidate in _extract_json_candidates(text):
-        try:
-            parsed = json.loads(candidate)
-        except (TypeError, ValueError):
-            continue
-        if isinstance(parsed, dict) and (
-            "actions" in parsed or "summary" in parsed or "report" in parsed
-        ):
-            payload = parsed
-            break
-        if isinstance(parsed, list):
-            payload = {"actions": parsed}
-            break
-
-    if payload is None:
-        return ManagerDecision(
-            summary=_clip(text, 8000),
-            parse_error=(
-                "The manager answer did not contain a JSON object with an "
-                "'actions' list"
-            ),
-            raw_content=_clip(text, 12000),
-        )
-
-    if isinstance(payload, dict):
-        raw_actions = payload.get("actions")
-        if raw_actions is None:
-            raw_actions = []
-        if not isinstance(raw_actions, list):
-            raw_actions = []
-        actions = [
-            action for action in (_coerce_action(raw) for raw in raw_actions) if action
+        config = self.normalized()
+        instructions = [
+            f"You are the manager of the board **{board}**.",
+            "Review the status of its tasks, request the missing information, "
+            "add what is missing, reorganise and re-prioritise.",
+            f"Do not make more than {config.max_actions} changes in one review.",
         ]
-        summary = payload.get("summary") or payload.get("report") or payload.get("message")
-        return ManagerDecision(
-            summary=_clip(summary, 8000),
-            actions=actions,
-            raw_content=_clip(text, 12000),
-        )
-
-    return ManagerDecision(raw_content=_clip(text, 12000))
+        if config.instructions:
+            instructions.append(config.instructions)
+        return ActorConfig(
+            enabled=True,
+            role=A.ROLE_MANAGER,
+            policy=A.POLICY_BOARD,
+            session=A.SESSION_SINGLE,
+            board=default_board_name(config.profile) if config.profile else "",
+            boards=[board] if board else [],
+            interval_minutes=config.interval_minutes,
+            mode=A.MODE_ALIASES.get(config.mode, A.MODE_ACTIVE),
+            max_tasks=config.max_tasks,
+            include_done=config.include_done,
+            max_agenda=config.max_actions,
+            notify=config.announce,
+            instructions="\n\n".join(instructions),
+        ).normalized()
 
 
 # ---------------------------------------------------------------------------
 # Runtime state
 # ---------------------------------------------------------------------------
-
-
-class ActionRecord(BaseModel):
-    """What happened to one proposed action."""
-
-    at: str = Field(default_factory=utcnow_iso)
-    type: str = Field(default="")
-    task_id: str = Field(default="")
-    task_name: str = Field(default="")
-    proposed: Dict[str, Any] = Field(default_factory=dict)
-    applied: bool = Field(default=False)
-    summary: str = Field(default="")
-    error: str = Field(default="")
 
 
 class ManagerState(BaseModel):
@@ -370,15 +245,17 @@ class ManagerState(BaseModel):
     runs: int = Field(default=0)
     duration_ms: float = Field(default=0.0)
     last_profile: str = Field(default="")
-    last_actions: List[ActionRecord] = Field(default_factory=list)
+    last_turns: int = Field(default=0)
+    #: Kept for the UI: the contract is gone, so it stays empty.
+    last_actions: List[Dict[str, Any]] = Field(default_factory=list)
 
     def mark_run_started(self, board: str, board_id: str, profile: str) -> None:
         """
-        Set the in-flight markers before the AI call.
+        Set the in-flight markers before the shift.
 
-        The previous report/actions are kept: the UI shows "running" while the
-        review is in flight and the last useful report remains visible until the
-        new one replaces it (or an error is recorded).
+        The previous report is kept: the UI shows "running" while the review is
+        in flight and the last useful report remains visible until the new one
+        replaces it (or an error is recorded).
         """
         self.board = board
         self.board_id = board_id
@@ -396,7 +273,7 @@ class ManagerState(BaseModel):
         error: str = "",
         cost: float = 0.0,
         duration_ms: float = 0.0,
-        actions: Optional[Sequence[ActionRecord]] = None,
+        turns: int = 0,
     ) -> None:
         """Record a finished review (success or failure)."""
         self.running = False
@@ -410,7 +287,7 @@ class ManagerState(BaseModel):
         self.total_cost = float(self.total_cost or 0.0) + self.last_cost
         self.duration_ms = max(0.0, float(duration_ms or 0.0))
         self.runs = int(self.runs or 0) + 1
-        self.last_actions = list(actions or [])
+        self.last_turns = max(0, int(turns or 0))
 
     def public(self) -> Dict[str, Any]:
         """Return the API/UI shape of the state."""

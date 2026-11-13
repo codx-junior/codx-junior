@@ -8,6 +8,7 @@ import { viewsModule } from './modules/views'
 import { chatsModule } from './modules/chats'
 import { orchestrationModule } from './modules/orchestration'
 import { teamsModule } from './modules/teams'
+import { actorsModule } from './modules/actors'
 import { companiesModule } from './modules/companies'
 import { workspacesModule } from './modules/workspaces'
 import { browsersModule } from './modules/browsers'
@@ -788,6 +789,18 @@ const initializeAPI = ({ project, user } = {}) => {
         API._teamsModule = teamsModule(API)
       }
       return API._teamsModule
+    },
+
+    /**
+     * Actors: profiles that work on their own (role, boards, cadence, weekly
+     * availability window, budgets). See api/modules/actors.js and the backend
+     * router codx/junior/api/autonomy.py.
+     */
+    get actors() {
+      if (!API._actorsModule) {
+        API._actorsModule = actorsModule(API)
+      }
+      return API._actorsModule
     },
 
     /**

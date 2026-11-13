@@ -4,6 +4,8 @@ import TeamMemberDrawer from '@/components/team-view/TeamMemberDrawer.vue'
 import AddTeamMemberDialog from '@/components/team-view/AddTeamMemberDialog.vue'
 import AddMembersToTeamDialog from '@/components/team-view/AddMembersToTeamDialog.vue'
 import CreateTeamDialog from '@/components/team-view/CreateTeamDialog.vue'
+import GenerateTeamDialog from '@/components/teams/GenerateTeamDialog.vue'
+import ActorsPanel from '@/components/actors/ActorsPanel.vue'
 import ToolDetailsModal from '@/components/team-view/ToolDetailsModal.vue'
 import {
   ROLE_META,
@@ -32,7 +34,7 @@ import {
           </div>
         </div>
 
-        <div class="join shrink-0">
+        <div v-if="tab === 'members'" class="join shrink-0">
           <button
             type="button"
             class="join-item btn btn-sm gap-1"
@@ -66,6 +68,18 @@ import {
           <i class="fa-solid fa-rotate" :class="loading ? 'animate-spin' : ''"></i>
         </button>
 
+        <!-- Generate a whole team from a plain-language need (profiles + team) -->
+        <button
+          type="button"
+          class="btn btn-sm btn-ghost shrink-0 gap-1"
+          title="Generate a team from a need"
+          :disabled="saving"
+          @click="generateOpen = true"
+        >
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          <span class="hidden md:inline">Generate</span>
+        </button>
+
         <!-- Create team: distinct "add" icon + always-visible label (short on mobile) -->
         <button
           type="button"
@@ -92,6 +106,39 @@ import {
         </button>
       </div>
     </header>
+
+    <!-- Members vs autonomous profiles: one place to manage the whole team -->
+    <div class="shrink-0 px-4 md:px-6 pt-3">
+      <div class="tabs tabs-boxed tabs-sm w-fit" role="tablist" aria-label="Team sections">
+        <button
+          type="button"
+          class="tab gap-1.5"
+          :class="tab === 'members' ? 'tab-active' : ''"
+          role="tab"
+          :aria-selected="tab === 'members'"
+          @click="tab = 'members'"
+        >
+          <i class="fa-solid fa-users"></i>
+          Members
+          <span class="badge badge-xs">{{ members.length }}</span>
+        </button>
+        <button
+          type="button"
+          class="tab gap-1.5"
+          :class="tab === 'actors' ? 'tab-active' : ''"
+          role="tab"
+          :aria-selected="tab === 'actors'"
+          title="Profiles that work on their own: role, boards, weekly schedule and budget"
+          @click="tab = 'actors'"
+        >
+          <i class="fa-solid fa-robot"></i>
+          Autonomy
+        </button>
+      </div>
+    </div>
+
+    <!-- Members: roster, filters and the board of teams -->
+    <template v-if="tab === 'members'">
 
     <!-- Stats (single compact row; labels hidden on mobile) -->
     <section class="shrink-0 px-4 md:px-6 pt-3">
@@ -434,6 +481,16 @@ import {
       </div>
     </div>
 
+    </template>
+
+    <!-- Autonomous profiles: actors, weekly schedule, budgets and shifts -->
+    <ActorsPanel
+      v-else
+      class="flex-1 min-h-0 px-4 md:px-6 pb-4"
+      @generate="generateOpen = true"
+      @edit-member="openActorProfile"
+    />
+
     <!-- Filters modal -->
     <div v-if="filtersOpen" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center sm:p-4">
       <div class="absolute inset-0 bg-black/50 backdrop-blur-sm" @click="filtersOpen = false"></div>
@@ -581,6 +638,13 @@ import {
     />
 
     <!-- Create / edit team dialog -->
+    <!-- Generate a team dialog: proposal first, then profiles + team -->
+    <GenerateTeamDialog
+      v-if="generateOpen"
+      @created="load"
+      @close="generateOpen = false"
+    />
+
     <CreateTeamDialog
       v-if="teamDialogOpen"
       :team="editingTeam"
@@ -663,6 +727,7 @@ export default {
       tools: [],
       loading: true,
       error: null,
+      tab: 'members', // members | actors — actors manages the autonomous profiles
       view: 'board', // grid | board — board is the default view
       search: '',
       roleFilter: '',
@@ -681,6 +746,8 @@ export default {
       addMembersTeam: null,
       teamDialogOpen: false,
       editingTeam: null,
+      // Generate a team from a plain-language need (profiles + team + actors).
+      generateOpen: false,
       confirmDelete: null,
       saving: false,
       // Drag & drop state: the member being dragged + its source team.
@@ -1213,6 +1280,11 @@ export default {
     // ── Editor (member settings) ──────────────────────────────────────────
     openEditor(member) {
       this.selectedMember = member
+    },
+    // Open the member settings of an actor from the autonomous profiles panel.
+    openActorProfile(name) {
+      const member = this.members.find(item => item.name === name)
+      if (member) this.openEditor(member)
     },
     closeEditor() {
       this.selectedMember = null

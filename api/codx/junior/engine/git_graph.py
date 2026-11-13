@@ -43,6 +43,7 @@ import re
 
 from typing import Dict, List, Optional
 
+from codx.junior.engine.git_engine import has_embedded_credentials
 from codx.junior.engine.git_workspace import GitWorkspaceEngine
 
 logger = logging.getLogger(__name__)
@@ -150,6 +151,64 @@ class GitGraphEngine(GitWorkspaceEngine):
                 entry["url"] = url
 
         return remotes
+
+    def set_remote_url(
+        self, remote: str = DEFAULT_REMOTE, url: str = ""
+    ) -> dict:
+        """
+        Point a remote to the given URL (creating the remote when missing).
+
+        The URL is written **without credentials**: a token is never stored in
+        ``.git/config``. Remote operations authenticate per command instead (see
+        ``_token_args`` / ``_credential_args``), so a URL that embeds a
+        username/password pair is rejected instead of being persisted.
+
+        Args:
+            remote: Remote name, ``origin`` by default.
+            url: Credential-free remote URL.
+
+        Returns:
+            Dict with 'success', 'remote', 'url', 'action' ('added' or
+            'updated'), 'previous_url', 'output' and 'errors'.
+
+        Example:
+            >>> engine.set_remote_url("origin", "https://github.com/acme/app.git")
+            {'success': True, 'remote': 'origin', 'url': 'https://github.com/acme/app.git',
+             'action': 'updated', 'previous_url': 'git@github.com:acme/app.git',
+             'output': '', 'errors': []}
+        """
+        remote = (remote or DEFAULT_REMOTE).strip() or DEFAULT_REMOTE
+        url = (url or "").strip()
+
+        if not url:
+            return self._git_operation_error(
+                "A remote URL is required", remote=remote
+            )
+        if has_embedded_credentials(url):
+            # A credential must never be written to .git/config
+            return self._git_operation_error(
+                "The remote URL must not contain credentials", remote=remote
+            )
+
+        previous_url = self._get_remote_url(remote)
+        if previous_url:
+            args = ["remote", "set-url", remote, url]
+            action = "updated"
+        else:
+            args = ["remote", "add", remote, url]
+            action = "added"
+
+        # A config write never needs the token: keep the command credential free
+        result = self._run_git(args, apply_token=False)
+        return {
+            "success": bool(result["ok"]),
+            "remote": remote,
+            "url": url,
+            "action": action,
+            "previous_url": previous_url,
+            "output": result["output"],
+            "errors": [] if result["ok"] else [result["error"]],
+        }
 
     # -------------------------------------------------------------------------
     # Commit graph

@@ -39,6 +39,13 @@
  *   DELETE /api/git/repo/branch
  *   POST   /api/git/repo/pr | pr/close | pr/abandon
  *
+ * fetch / pull / push accept an **optional one-shot credential**
+ * (`{ username, password, token }`) that travels in the JSON body only: it is
+ * used by the backend for that single git command and never stored. When the
+ * remote rejects the call and no token is configured, the endpoint answers
+ * **400** with `requires_credentials`, surfaced here as
+ * `GitCredentialsRequiredError` so the view can prompt the user and retry once.
+ *
  * File diffs and commit details go through the short-term request cache
  * (`api/requestCache.js`): both are expensive and are requested repeatedly by
  * the diff panels while the user clicks through the file list. File diffs also
@@ -94,6 +101,96 @@ const asList = (paths) => {
 const invalidateDiffs = (API) => {
   API.invalidateCache(API.cacheKey('repo:fileDiff'))
 }
+
+/**
+ * Error raised when a remote operation needs credentials.
+ *
+ * The backend answers **400** with
+ * `{"detail": {"requires_credentials": true, "remote": "origin",
+ * "operation": "push", "message": "..."}}` when the remote rejected the call
+ * and no credential was supplied (and the project settings have no token).
+ * The UI branches on `requiresCredentials` to prompt the user instead of
+ * showing a raw 400, then retries the operation **once** with the values the
+ * user typed.
+ *
+ * It never carries the credential itself: only the remote and the operation.
+ */
+export class GitCredentialsRequiredError extends Error {
+  constructor({ remote, operation, message } = {}) {
+    super(message || 'The remote asked for credentials')
+    this.name = 'GitCredentialsRequiredError'
+    /** `true` when the remote asked for credentials (the UI must prompt). */
+    this.requiresCredentials = true
+    /** Remote that asked for them (`origin`). */
+    this.remote = remote || 'origin'
+    /** Operation that failed (`fetch`, `pull` or `push`). */
+    this.operation = operation || ''
+  }
+}
+
+/**
+ * Turn the 400 of a remote operation into a credential request when the backend
+ * asked for one, and return the error untouched otherwise.
+ *
+ * @param {Error} error - Rejection of the remote operation.
+ * @param {string} operation - Operation that failed.
+ * @returns {Error} `GitCredentialsRequiredError` or the original error.
+ */
+const withCredentialRequest = (error, operation) => {
+  const detail = error?.response?.data?.detail
+  if (!detail || typeof detail !== 'object' || !detail.requires_credentials) {
+    return error
+  }
+  const required = new GitCredentialsRequiredError({
+    remote: detail.remote,
+    operation: detail.operation || operation,
+    message: typeof detail.message === 'string' ? detail.message : error?.message
+  })
+  // Keep the transport details available for the generic error paths.
+  required.response = error.response
+  required.cause = error
+  return required
+}
+
+/**
+ * Build the one-shot credential body of a remote operation.
+ *
+ * The values travel in the **JSON body only** — never in the query string, so
+ * they never land in a URL that is logged or proxied — and the backend uses
+ * them for that single git command: nothing is written to the project settings,
+ * `.git/config`, a git credential store, `.codx` or the logs.
+ *
+ * @param {Object} [credential] - `{ username, password, token }`.
+ * @returns {Object} Body with only the fields that were filled in.
+ */
+const credentialPayload = (credential) => {
+  const payload = {}
+  if (!credential) return payload
+  const username = String(credential.username ?? '').trim()
+  const password = String(credential.password ?? '')
+  const token = String(credential.token ?? '').trim()
+  if (username) payload.username = username
+  if (password) payload.password = password
+  if (token) payload.token = token
+  return payload
+}
+
+/**
+ * POST a remote operation, optionally carrying one-shot credentials.
+ *
+ * @param {Object} API - API instance.
+ * @param {string} path - Endpoint path (without query string).
+ * @param {Object} query - Query parameters (`remote`, `branch`, ...).
+ * @param {string} operation - Operation name, used by the credential error.
+ * @param {Object} [credential] - `{ username, password, token }`.
+ * @returns {Promise<Object>} Operation result.
+ * @throws {GitCredentialsRequiredError} When the remote needs credentials.
+ */
+const remoteRequest = (API, path, query, operation, credential) => API
+  .post(`${path}${toQuery(query)}`, credentialPayload(credential))
+  .catch((error) => {
+    throw withCredentialRequest(error, operation)
+  })
 
 export const repoModule = (API) => ({
   // ── Repository overview ───────────────────────────────────────────────────
@@ -716,16 +813,82 @@ export const repoModule = (API) => ({
 
   // ── Remote operations ─────────────────────────────────────────────────────
 
-  fetch() {
-    return API.post('/api/git/repo/fetch', {})
+  /**
+   * Fetch (and prune) remote refs.
+   *
+   * The optional `credential` is a **one-shot** value: it is sent in the JSON
+   * body, used for this single command and never stored.
+   *
+   * @param {Object} [params] - Options.
+   * @param {string} [params.remote] - Remote name (defaults to `origin`).
+   * @param {boolean} [params.prune] - Prune deleted remote branches.
+   * @param {Object} [params.credential] - `{ username, password, token }`.
+   * @returns {Promise<Object>} Operation result.
+   * @throws {GitCredentialsRequiredError} When the remote needs credentials.
+   */
+  fetch({ remote, prune, credential } = {}) {
+    return remoteRequest(
+      API,
+      '/api/git/repo/fetch',
+      { remote, prune: prune === undefined ? undefined : (prune ? 1 : 0) },
+      'fetch',
+      credential
+    )
   },
 
-  pull() {
-    return API.post('/api/git/repo/pull', {})
+  /**
+   * Pull the current (or given) branch from a remote.
+   *
+   * @param {Object} [params] - Options.
+   * @param {string} [params.remote] - Remote name (defaults to `origin`).
+   * @param {string} [params.branch] - Branch to pull (defaults to the current).
+   * @param {Object} [params.credential] - One-shot `{ username, password, token }`.
+   * @returns {Promise<Object>} Operation result.
+   * @throws {GitCredentialsRequiredError} When the remote needs credentials.
+   */
+  pull({ remote, branch, credential } = {}) {
+    return remoteRequest(
+      API,
+      '/api/git/repo/pull',
+      { remote, branch },
+      'pull',
+      credential
+    )
   },
 
-  push() {
-    return API.post('/api/git/repo/push', {})
+  /**
+   * Push the current (or given) branch to a remote.
+   *
+   * @param {Object} [params] - Options.
+   * @param {string} [params.remote] - Remote name (defaults to `origin`).
+   * @param {string} [params.branch] - Branch to push (defaults to the current).
+   * @param {boolean} [params.set_upstream] - Track the remote branch.
+   * @param {Object} [params.credential] - One-shot `{ username, password, token }`.
+   * @returns {Promise<Object>} Operation result.
+   * @throws {GitCredentialsRequiredError} When the remote needs credentials.
+   *
+   * @example
+   * try {
+   *   await api.repo.push()
+   * } catch (error) {
+   *   if (error.requiresCredentials) {
+   *     // prompt the user, then retry once with what they typed
+   *     await api.repo.push({ credential: { username, password } })
+   *   }
+   * }
+   */
+  push({ remote, branch, set_upstream, credential } = {}) {
+    return remoteRequest(
+      API,
+      '/api/git/repo/push',
+      {
+        remote,
+        branch,
+        set_upstream: set_upstream === undefined ? undefined : (set_upstream ? 1 : 0)
+      },
+      'push',
+      credential
+    )
   },
 
   // ── Branches ──────────────────────────────────────────────────────────────

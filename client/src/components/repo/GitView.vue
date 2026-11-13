@@ -7,6 +7,7 @@ import CommitDetail from '@/components/repo/CommitDetail.vue'
 import GitValidator from '@/components/repo/GitValidator.vue'
 import GitConflictResolver from '@/components/repo/GitConflictResolver.vue'
 import GitContextMenu from '@/components/repo/GitContextMenu.vue'
+import GitCredentialsDialog from '@/components/repo/GitCredentialsDialog.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import VerticalSplitter from '@/components/layout/VerticalSplitter.vue'
 import { contextMenuMixin } from '@/mixins/contextMenu'
@@ -17,10 +18,16 @@ const COMMIT_SUBJECT_LIMIT = 50
 const COMMIT_BODY_LIMIT = 72
 // File events are coalesced: a burst of writes reloads the view only once
 const FILE_EVENT_REFRESH_DELAY = 600
+// Success notices of the remote operations (shared by the credential retry)
+const REMOTE_SUCCESS_MESSAGES = {
+  fetch: 'Fetched from remote',
+  pull: 'Pulled from remote',
+  push: 'Pushed to remote'
+}
 
 export default {
   name: 'GitView',
-  components: { ChangesPanel, RepoFileDiff, RepoBranchList, GitGraph, CommitDetail, GitValidator, GitConflictResolver, GitContextMenu, ConfirmDialog, VerticalSplitter },
+  components: { ChangesPanel, RepoFileDiff, RepoBranchList, GitGraph, CommitDetail, GitValidator, GitConflictResolver, GitContextMenu, GitCredentialsDialog, ConfirmDialog, VerticalSplitter },
   mixins: [contextMenuMixin],
   props: {
     params: { type: Object, default: () => ({}) }
@@ -111,6 +118,10 @@ export default {
       // Pending confirmation: { title, message, details, hint, icon, iconClass,
       // confirmLabel, confirmIcon, confirmClass, resolve }
       confirmRequest: null,
+      // Remote operation waiting for credentials: { operation, remote, message }.
+      // The values the user types never live here: they exist only inside the
+      // dialog component and in the retry call, and are wiped right after it.
+      credentialRequest: null,
       // Working tree / diff split. The diff is the right panel so the file list
       // stays visible (and usable) while a file is being reviewed or edited.
       splitterConfig: {
@@ -1774,7 +1785,34 @@ export default {
     },
 
     // ── Shared operation runner ─────────────────────────────────────────
-    async runOperation(fn, successMessage) {
+    /**
+     * Human readable message of a failed operation.
+     *
+     * The backend answers a plain git failure with a string `detail` and a
+     * missing credential with an object (`requires_credentials`): never render
+     * that object itself.
+     *
+     * @param {Error} ex - Rejection of the operation.
+     * @returns {string} Message to show.
+     */
+    errorMessage(ex) {
+      const detail = ex?.response?.data?.detail
+      if (typeof detail === 'string' && detail) return detail
+      if (detail && typeof detail === 'object' && detail.message) return String(detail.message)
+      return ex?.message || String(ex)
+    },
+
+    /**
+     * Run a git operation, reporting its result in `notice` / `error`.
+     *
+     * @param {Function} fn - Factory returning the operation promise.
+     * @param {string|null} successMessage - Notice shown on success.
+     * @param {Object} [options] - Options.
+     * @param {boolean} [options.promptCredentials] - Ask the user for git
+     * credentials when the remote rejects the call instead of showing a raw
+     * 400. Only the remote operations use it: they retry once after the prompt.
+     */
+    async runOperation(fn, successMessage, { promptCredentials = false } = {}) {
       if (!this.api) return
       this.error = null
       this.notice = null
@@ -1800,27 +1838,97 @@ export default {
         this.graphRefreshToken += 1
         return result
       } catch (ex) {
-        const message = ex?.response?.data?.detail || ex?.message || String(ex)
+        const required = ex?.requiresCredentials ? ex : null
+        const message = this.errorMessage(ex)
         // Reflect whatever could be applied (e.g. a partial staging)
         await this.loadRepo()
         // loadRepo clears `error` on entry: restore the operation failure so a
         // refused/failed write (e.g. deleting a worktree) is never silent.
-        this.error = message
         this.graphRefreshToken += 1
+        if (required && promptCredentials) {
+          // The remote wants credentials: ask the user instead of showing the
+          // raw 400. Nothing is retried until the dialog is submitted.
+          this.credentialRequest = {
+            operation: required.operation || 'push',
+            remote: required.remote || 'origin',
+            message
+          }
+        } else if (required) {
+          // The retry already carried credentials and they were rejected.
+          this.error = `${message} — the credentials were rejected: check the username, password or token and try again.`
+        } else {
+          this.error = message
+        }
       } finally {
         this.busy = false
       }
     },
 
     // ── Remote operations ───────────────────────────────────────────────
+    //
+    // The first attempt carries no credential (the backend falls back to the
+    // project token, if any). A `requires_credentials` answer opens the
+    // credential dialog and nothing is retried until the user submits it.
     onFetch() {
-      this.runOperation(() => this.api.repo.fetch(), 'Fetched from remote')
+      this.runRemoteOperation('fetch')
     },
     onPull() {
-      this.runOperation(() => this.api.repo.pull(), 'Pulled from remote')
+      this.runRemoteOperation('pull')
     },
     onPush() {
-      this.runOperation(() => this.api.repo.push(), 'Pushed to remote')
+      this.runRemoteOperation('push')
+    },
+
+    /**
+     * Run a remote operation, prompting for credentials when the remote asks.
+     *
+     * @param {'fetch'|'pull'|'push'} operation - Remote operation to run.
+     * @returns {Promise<Object|undefined>} Operation result.
+     */
+    runRemoteOperation(operation) {
+      if (!this.api) return Promise.resolve()
+      return this.runOperation(
+        () => this.api.repo[operation](),
+        REMOTE_SUCCESS_MESSAGES[operation],
+        { promptCredentials: true }
+      )
+    },
+
+    /**
+     * Retry the pending operation **once** with the credentials the user typed.
+     *
+     * The values live only in this call: they are wiped as soon as the retry
+     * settles, whatever its outcome. Nothing is stored, persisted or logged,
+     * and they are never shown again.
+     *
+     * @param {Object} credential - `{ username, password, token }`.
+     */
+    async submitCredentials(credential) {
+      const request = this.credentialRequest
+      // Work on the received object: it is the only copy outside the dialog.
+      const values = credential || {}
+      // Close the dialog (and drop its state) before the retry starts.
+      this.credentialRequest = null
+      if (!request || !this.api) return
+      try {
+        await this.runOperation(
+          () => this.api.repo[request.operation]({
+            remote: request.remote,
+            credential: values
+          }),
+          REMOTE_SUCCESS_MESSAGES[request.operation]
+        )
+      } finally {
+        // The credential must not survive the retry: wipe the only copy left.
+        values.username = ''
+        values.password = ''
+        values.token = ''
+      }
+    },
+
+    /** Dismiss the credential dialog: nothing is retried. */
+    closeCredentials() {
+      this.credentialRequest = null
     },
 
     // ── Branch operations ───────────────────────────────────────────────
@@ -3135,6 +3243,17 @@ export default {
     />
 
     <!-- ── Confirmation dialog (replaces window.confirm) ─────────────────── -->
+    <!-- ── Git credentials (asked only when the remote requires them) ─────── -->
+    <GitCredentialsDialog
+      v-if="credentialRequest"
+      :operation="credentialRequest.operation"
+      :remote="credentialRequest.remote"
+      :message="credentialRequest.message"
+      :busy="busy"
+      @submit="submitCredentials"
+      @cancel="closeCredentials"
+    />
+
     <ConfirmDialog
       v-if="confirmRequest"
       :title="confirmRequest.title"

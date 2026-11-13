@@ -108,7 +108,7 @@ import logging
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from codx.junior.engine.git_commit_message import (
     COMMIT_MESSAGE_MAX_DIFF_CHARS,
@@ -264,6 +264,50 @@ class FilePathsRequest(BaseModel):
     include_staged: bool = True
 
 
+class RemoteCredentialsRequest(BaseModel):
+    """Optional, one-shot credentials for a remote operation.
+
+    fetch/pull/push accept these in the **JSON body only** (never in the query
+    string, so they never land in a URL that is logged or proxied) and use them
+    for that single git command: nothing is written to the project settings,
+    ``.git/config``, a git credential store, ``.codx`` or the logs. ``repr=False``
+    keeps the values out of the model repr, so a logged payload cannot leak
+    them.
+    """
+
+    username: Optional[str] = Field(
+        default=None,
+        repr=False,
+        description="Git username (omit it when only a token is used)",
+    )
+    password: Optional[str] = Field(
+        default=None,
+        repr=False,
+        description="Git password (or the token, forges accept it as password)",
+    )
+    token: Optional[str] = Field(
+        default=None,
+        repr=False,
+        description="Access token, used as the password of the placeholder user",
+    )
+
+    def to_credential(self) -> Optional[Dict[str, str]]:
+        """
+        Return the credential dict understood by the git engine.
+
+        Returns:
+            Dict with 'username', 'password' and 'token', or None when the body
+            carries no credential at all.
+        """
+        if not (self.username or self.password or self.token):
+            return None
+        return {
+            "username": (self.username or "").strip(),
+            "password": (self.password or "").strip(),
+            "token": (self.token or "").strip(),
+        }
+
+
 class CreatePRRequest(BaseModel):
     """Payload to create a local PR branch."""
 
@@ -353,6 +397,46 @@ def _ensure_success(result: dict) -> dict:
         detail = "; ".join(str(e) for e in errors) or "Git operation failed"
         raise HTTPException(status_code=400, detail=detail)
     return result
+
+
+def _ensure_remote_success(result: dict, operation: str) -> dict:
+    """
+    Raise a 400 for a failed remote operation, askable by the client.
+
+    When the remote rejected the credentials, no one-shot credential was sent
+    and the project has no stored token, the error body is machine readable so
+    the client can prompt the user for a username/password (or token) and retry
+    the operation once:
+    ``{"detail": {"requires_credentials": true, "remote": "origin",
+    "operation": "push", "message": "..."}}``.
+
+    Args:
+        result: Result dict of the remote operation.
+        operation: Operation name ('fetch', 'pull' or 'push').
+
+    Returns:
+        The same result when the operation succeeded.
+
+    Raises:
+        HTTPException: 400 with the git errors joined, or with the
+            ``requires_credentials`` payload described above.
+    """
+    if result.get("success"):
+        return result
+
+    errors = [e for e in (result.get("errors") or []) if e]
+    detail = "; ".join(str(e) for e in errors) or "Git operation failed"
+    if result.get("requires_credentials"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "requires_credentials": True,
+                "remote": result.get("remote") or "origin",
+                "operation": result.get("operation") or operation,
+                "message": detail,
+            },
+        )
+    raise HTTPException(status_code=400, detail=detail)
 
 
 # -----------------------------------------------------------------------------
@@ -1062,11 +1146,25 @@ def api_git_repo_fetch(
     request: Request,
     remote: str = Query("origin"),
     prune: bool = Query(True),
+    payload: Optional[RemoteCredentialsRequest] = None,
     user: CodxUser = Depends(get_authenticated_user),
 ):
-    """Fetch (and prune) remote refs."""
-    return _ensure_success(
-        _git_engine(request).fetch_remote(remote=remote, prune=prune)
+    """
+    Fetch (and prune) remote refs.
+
+    The optional body may carry one-shot credentials (``username`` +
+    ``password`` or ``token``): they authenticate this single fetch and are
+    never stored. When the remote rejects the credentials and none were
+    supplied (nor configured in the project settings) the answer is **400**
+    with ``{"detail": {"requires_credentials": true, ...}}`` so the client can
+    ask the user.
+    """
+    credential = payload.to_credential() if payload else None
+    return _ensure_remote_success(
+        _git_engine(request).fetch_remote(
+            remote=remote, prune=prune, credential=credential
+        ),
+        operation="fetch",
     )
 
 
@@ -1075,11 +1173,23 @@ def api_git_repo_pull(
     request: Request,
     remote: str = Query("origin"),
     branch: Optional[str] = Query(None),
+    payload: Optional[RemoteCredentialsRequest] = None,
     user: CodxUser = Depends(get_authenticated_user),
 ):
-    """Pull the current (or given) branch from a remote."""
-    return _ensure_success(
-        _git_engine(request).pull_remote(remote=remote, branch=branch)
+    """
+    Pull the current (or given) branch from a remote.
+
+    The optional body may carry one-shot credentials (``username`` +
+    ``password`` or ``token``) used for this single pull and never stored. A
+    rejected credential without a supplied one answers **400** with
+    ``{"detail": {"requires_credentials": true, ...}}``.
+    """
+    credential = payload.to_credential() if payload else None
+    return _ensure_remote_success(
+        _git_engine(request).pull_remote(
+            remote=remote, branch=branch, credential=credential
+        ),
+        operation="pull",
     )
 
 
@@ -1089,13 +1199,29 @@ def api_git_repo_push(
     remote: str = Query("origin"),
     branch: Optional[str] = Query(None),
     set_upstream: bool = Query(True),
+    payload: Optional[RemoteCredentialsRequest] = None,
     user: CodxUser = Depends(get_authenticated_user),
 ):
-    """Push the current (or given) branch to a remote."""
-    return _ensure_success(
+    """
+    Push the current (or given) branch to a remote.
+
+    The optional body may carry one-shot credentials (``username`` +
+    ``password`` or ``token``): they authenticate this single push and are
+    never stored. When the remote rejects the credentials and none were
+    supplied (nor configured in the project settings) the answer is **400**
+    with ``{"detail": {"requires_credentials": true, "remote": "origin",
+    "operation": "push", "message": "..."}}`` so the client can prompt the
+    user and retry once.
+    """
+    credential = payload.to_credential() if payload else None
+    return _ensure_remote_success(
         _git_engine(request).push_remote(
-            remote=remote, branch=branch, set_upstream=set_upstream
-        )
+            remote=remote,
+            branch=branch,
+            set_upstream=set_upstream,
+            credential=credential,
+        ),
+        operation="push",
     )
 
 

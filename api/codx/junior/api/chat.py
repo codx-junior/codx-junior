@@ -61,6 +61,65 @@ def _harness_task_id(chat) -> Optional[str]:
     )
 
 
+def _conversation_messages(chat) -> list:
+    """
+    Return the messages of *chat* that belong to the conversation.
+
+    The text a composer is still typing is persisted with the chat as ONE
+    ``unsent`` message (see :func:`codx.junior.db.upsert_unsent_message`). It is
+    not part of the conversation, so it is filtered out through
+    :func:`codx.junior.db._visible_messages`: a chat returned by ``GET /chats``
+    never carries another client's draft. The composer that owns the draft
+    reads it through ``GET /chats/draft``.
+
+    :param chat: The chat whose messages are filtered (may be ``None``).
+    :return: A new list without the unsent drafts.
+    """
+    from codx.junior.db import _visible_messages
+
+    return _visible_messages(getattr(chat, "messages", None) or [])
+
+
+def _draft_response(chat_id: Optional[str], message) -> dict:
+    """
+    Serialize the unsent draft of a chat for the client composer.
+
+    :param chat_id: Chat the draft belongs to.
+    :param message: The stored draft message, or ``None`` when there is none.
+    :return: JSON-serializable draft payload (empty ``content`` when absent).
+    """
+    if message is None:
+        return {
+            "chat_id": chat_id,
+            "doc_id": None,
+            "content": "",
+            "author": None,
+            "updated_at": None,
+        }
+    return {
+        "chat_id": chat_id,
+        "doc_id": message.doc_id,
+        "content": message.content or "",
+        "author": message.user,
+        "updated_at": message.updated_at,
+    }
+
+
+def _query_flag(request: Request, name: str) -> bool:
+    """
+    Read a boolean query-string flag.
+
+    Args:
+        request: The incoming request.
+        name: Query parameter name.
+
+    Returns:
+        True for ``1``, ``true``, ``yes`` or ``on`` (case-insensitive).
+    """
+    value = request.query_params.get(name)
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _resolve_chat_manager(request: Request, data: Optional[dict] = None):
     """
     Resolve a ``ChatManager``/settings pair for a project for chat control.
@@ -383,6 +442,7 @@ def api_get_recent_chats(request: Request):
         board = request.query_params.get("board")
         column = request.query_params.get("column")
         chat_type = request.query_params.get("chat_type")
+        include_archived = _query_flag(request, "include_archived")
 
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -405,6 +465,7 @@ def api_get_recent_chats(request: Request):
             board=board,
             column=column,
             chat_type=chat_type,
+            include_archived=include_archived,
             page=page,
             page_size=page_size,
         )
@@ -434,6 +495,117 @@ def api_get_recent_chats(request: Request):
             "has_next": False,
             "has_prev": False,
         }
+
+
+@router.get("/chats/archived")
+def api_list_archived_chats(request: Request):
+    """
+    List the archived tasks of the project (metadata only).
+
+    Archiving compresses a task into ``tasks/.archive`` and removes it from the
+    live tree, so an archived task never shows up in ``GET /chats`` unless that
+    endpoint is called with ``include_archived=true``.
+
+    Returns:
+        {
+            "count": number of archived tasks,
+            "tasks": [catalogue entries: chat_id, name, board, column, status,
+                      archived_at, archived_by, size, original_size...],
+            "stats": {"count", "archived_bytes", "original_bytes",
+                      "saved_bytes", "ratio"}
+        }
+    """
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        tasks = chat_manager.task_archive.list_entries()
+        return {
+            "count": len(tasks),
+            "tasks": tasks,
+            "stats": chat_manager.task_archive.stats(),
+        }
+    except Exception as ex:
+        logger.error("api_list_archived_chats: unexpected error: %s", ex)
+        return {
+            "error": f"Failed to list archived tasks: {str(ex)}",
+            "count": 0,
+            "tasks": [],
+            "stats": {},
+        }
+
+
+@router.post("/chats/archive")
+async def api_archive_chat(request: Request, data: Optional[dict] = None):
+    """
+    Archive a task: compress it and take it out of the live tree.
+
+    Body (or query string):
+        - chat_id (or id): the task to archive.
+        - user: optional user (or profile) recorded as the author.
+
+    The task stops appearing in listings, search and boards (pass
+    ``include_archived=true`` to get it back in the listings) and its space is
+    released. Archiving the same task twice is harmless.
+
+    Returns:
+        {"ok": true, "task": <catalogue entry>} or {"ok": false, "error": ...}
+    """
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        payload = data if isinstance(data, dict) else {}
+        chat_id = (
+            payload.get("chat_id")
+            or payload.get("id")
+            or request.query_params.get("chat_id")
+            or request.query_params.get("id")
+        )
+        if not chat_id:
+            return {"ok": False, "error": "chat_id is required to archive a task"}
+        user = payload.get("user") or request.query_params.get("user")
+        entry = chat_manager.archive_chat(chat_id=str(chat_id), user=user)
+        return {"ok": True, "task": entry}
+    except ValueError as ex:
+        logger.warning("api_archive_chat: %s", ex)
+        return {"ok": False, "error": str(ex)}
+    except Exception as ex:
+        logger.error("api_archive_chat: unexpected error: %s", ex)
+        return {"ok": False, "error": f"Failed to archive the task: {str(ex)}"}
+
+
+@router.post("/chats/restore")
+async def api_restore_chat(request: Request, data: Optional[dict] = None):
+    """
+    Restore an archived task back into its board/column.
+
+    Body (or query string):
+        - chat_id (or id): the archived task to restore.
+        - user: optional user (or profile) doing it.
+
+    The destination folders are resolved from the kanban catalogue, so a task
+    archived before a board rename lands in the right folder.
+
+    Returns:
+        {"ok": true, "task": <restored Chat>} or {"ok": false, "error": ...}
+    """
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        payload = data if isinstance(data, dict) else {}
+        chat_id = (
+            payload.get("chat_id")
+            or payload.get("id")
+            or request.query_params.get("chat_id")
+            or request.query_params.get("id")
+        )
+        if not chat_id:
+            return {"ok": False, "error": "chat_id is required to restore a task"}
+        user = payload.get("user") or request.query_params.get("user")
+        chat = chat_manager.restore_chat(chat_id=str(chat_id), user=user)
+        return {"ok": True, "task": chat}
+    except ValueError as ex:
+        logger.warning("api_restore_chat: %s", ex)
+        return {"ok": False, "error": str(ex)}
+    except Exception as ex:
+        logger.error("api_restore_chat: unexpected error: %s", ex)
+        return {"ok": False, "error": f"Failed to restore the task: {str(ex)}"}
 
 
 @router.get("/chats/logs")
@@ -729,6 +901,136 @@ def api_get_chat_logs(request: Request):
         return {"error": f"Failed to retrieve chat logs: {str(ex)}"}
 
 
+# ---------------------------------------------------------------------------
+# Unsent draft (composer state)
+#
+# While the user types, the composer text is persisted as the chat's single
+# ``unsent`` message so it survives a reload. That message is NOT part of the
+# conversation: it is filtered out of every reader (chat list/detail, LLM
+# prompt, socket message events, analytics, exports) and only the composer that
+# owns it reads, updates or deletes it through the three routes below.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/chats/draft")
+def api_get_chat_draft(request: Request):
+    """
+    Return the unsent draft of a chat (the text its composer is still typing).
+
+    Query parameters:
+        - chat_id: <chat UUID> (required)
+
+    Returns:
+        { "chat_id", "doc_id", "content", "author", "updated_at" }
+
+    ``content`` is an empty string when the chat has no draft, so the client
+    needs no special case. The draft never appears in the chat returned by
+    ``GET /chats``: this route is its only reader.
+    """
+    from codx.junior.db import get_unsent_message
+
+    chat_id = request.query_params.get("chat_id")
+    if not chat_id:
+        logger.warning("api_get_chat_draft: missing chat_id")
+        return {"error": "missing chat_id parameter", "content": ""}
+
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        message = get_unsent_message(chat_id, chat_manager=chat_manager)
+        return _draft_response(chat_id, message)
+    except Exception as ex:
+        logger.error("api_get_chat_draft: unexpected error: %s", ex)
+        return {"error": f"Failed to load draft: {str(ex)}", "content": ""}
+
+
+@router.put("/chats/draft")
+async def api_save_chat_draft(request: Request):
+    """
+    Create or update the unsent draft of a chat (debounced while typing).
+
+    Expected JSON payload:
+        {
+            "chat_id": "<chat UUID>",
+            "content": "...",
+            "author":  "<optional username>"
+        }
+
+    The draft is persisted as the chat's single ``unsent`` message, so it never
+    becomes a conversation message: no ``message-event`` is broadcast to other
+    clients, no normal message is created and the model never receives it.
+
+    Returns:
+        The stored draft: { "chat_id", "doc_id", "content", "author",
+        "updated_at" } (HTTP 422 without ``chat_id``, 404 when the chat is
+        unknown).
+    """
+    from codx.junior.db import upsert_unsent_message
+
+    try:
+        data = await request.json()
+    except Exception as ex:
+        logger.error("api_save_chat_draft: invalid payload: %s", ex)
+        raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {ex}")
+
+    chat_id = data.get("chat_id")
+    if not chat_id:
+        logger.error("api_save_chat_draft: missing chat_id")
+        raise HTTPException(status_code=422, detail="'chat_id' is required")
+
+    user = getattr(request.state, "user", None)
+    author = data.get("author") or getattr(user, "username", None)
+
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        message = upsert_unsent_message(
+            chat_id=chat_id,
+            content=data.get("content") or "",
+            author=author,
+            chat_manager=chat_manager,
+        )
+        return _draft_response(chat_id, message)
+    except ValueError as ex:
+        logger.warning("api_save_chat_draft: %s", ex)
+        raise HTTPException(status_code=404, detail=str(ex))
+    except Exception as ex:
+        logger.error("api_save_chat_draft: unexpected error: %s", ex)
+        raise HTTPException(status_code=500, detail=f"Failed to save draft: {ex}")
+
+
+@router.delete("/chats/draft")
+def api_delete_chat_draft(request: Request):
+    """
+    Discard the unsent draft of a chat.
+
+    Query parameters:
+        - chat_id: <chat UUID> (required)
+
+    Called by the composer after a successful send (the draft is consumed there
+    as well, see ``api_add_message``) and when the user clears the input.
+    Deleting a chat without a draft is not an error.
+
+    Returns:
+        { "deleted": true|false }
+    """
+    from codx.junior.db import delete_unsent_message
+
+    chat_id = request.query_params.get("chat_id")
+    if not chat_id:
+        logger.warning("api_delete_chat_draft: missing chat_id")
+        return {"error": "missing chat_id parameter", "deleted": False}
+
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        deleted = delete_unsent_message(chat_id, chat_manager=chat_manager)
+        logger.info(
+            "api_delete_chat_draft: chat='%s' deleted=%s", chat_id, deleted
+        )
+        return {"deleted": bool(deleted)}
+    except Exception as ex:
+        logger.error("api_delete_chat_draft: unexpected error: %s", ex)
+        return {"error": f"Failed to delete draft: {str(ex)}", "deleted": False}
+
+
 @router.post("/chats/message")
 async def api_add_message(request: Request):
     """
@@ -778,7 +1080,22 @@ async def api_add_message(request: Request):
 
         message = Message(**message_data)
         updated_chat = chat_manager.add_message(chat=chat, message=message)
-        
+
+        # Sending CONSUMES the composer draft (unless the payload IS the draft):
+        # the unsent message is discarded together with the real one, so no
+        # stale text is left behind for the next prompt or another client.
+        if not getattr(message, "unsent", False):
+            try:
+                from codx.junior.db import delete_unsent_message
+
+                delete_unsent_message(chat_id, chat_manager=chat_manager)
+            except Exception as draft_ex:  # pragma: no cover - best effort
+                logger.warning(
+                    "api_add_message: could not clear the draft of chat '%s': %s",
+                    chat_id,
+                    draft_ex,
+                )
+
         return updated_chat
     except HTTPException:
         raise
@@ -939,6 +1256,8 @@ def api_list_chats(request: Request):
         - date_from: ISO-format start date (inclusive) for filtering chats.
         - date_to: ISO-format end date (inclusive) for filtering chats.
         - from_date: (legacy) alias of ``date_from``.
+        - include_archived: also list the archived (compressed) tasks
+          (``true``/``1``/``yes``/``on``). By default they are hidden.
 
     When neither ``date_from`` nor ``date_to`` is provided, the list defaults
     to chats updated within the last ``DEFAULT_CHAT_HISTORY_DAYS`` (30) days.
@@ -958,6 +1277,8 @@ def api_list_chats(request: Request):
         # backward compatibility with existing clients.
         date_from = request.query_params.get("date_from") or request.query_params.get("from_date")
         date_to = request.query_params.get("date_to")
+        # Archived (compressed) tasks are hidden unless explicitly requested.
+        include_archived = _query_flag(request, "include_archived")
 
         if export_format:
             export = chat_manager.export_chat(chat_id=chat_id, export_format=export_format)
@@ -1006,12 +1327,17 @@ def api_list_chats(request: Request):
                         ).for_chat_manager(chat_manager).hydrate_chat(chat)
                 except Exception as ex:
                     logger.warning("api_list_chats: cannot hydrate DSH chat %s: %s", chat_id, ex)
+            # The unsent draft never reaches other clients: it is filtered out
+            # here and read only through GET /chats/draft by its composer.
+            chat.messages = _conversation_messages(chat)
             return chat
 
         if file_path:
             chat = chat_manager.load_chat_from_path(chat_file=file_path)
             if not chat:
                 logger.error('Chat not found. file_path: %s, project: %s', file_path, codx_junior_session.settings.project_name)
+            if chat is not None:
+                chat.messages = _conversation_messages(chat)
             return chat
 
         # Default to the last 30 days when the caller does not inform a range
@@ -1033,7 +1359,11 @@ def api_list_chats(request: Request):
             date_from or "all",
             date_to or "open",
         )
-        return chat_manager.list_chats(from_date=date_from, to_date=date_to)
+        return chat_manager.list_chats(
+            from_date=date_from,
+            to_date=date_to,
+            include_archived=include_archived,
+        )
     except ValueError as ex:
         logger.error("api_list_chats: invalid date format: %s", ex)
         return {"error": "Invalid date format (use ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)"}

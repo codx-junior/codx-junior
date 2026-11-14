@@ -159,7 +159,7 @@ function control(action) {
       </header>
 
       <!-- Tabs -->
-      <div role="tablist" class="tabs tabs-boxed tabs-xs w-fit">
+      <div role="tablist" class="tabs tabs-boxed tabs-xs w-fit max-w-full overflow-x-auto">
         <button
           v-for="item in TABS"
           :key="item.id"

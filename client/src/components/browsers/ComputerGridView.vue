@@ -1,5 +1,6 @@
 <script>
 import ComputerGridTile from './ComputerGridTile.vue'
+import { SESSION_LABELS } from '@/utils/sessionLabels'
 
 /**
  * Wall of computer sessions ("grid view").
@@ -26,6 +27,10 @@ export default {
   },
   emits: ['activate', 'open', 'remove', 'manage'],
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     activeSession() {
       return this.sessions.find(session => session.id === this.activeId) || this.sessions[0] || null
     },
@@ -69,9 +74,9 @@ export default {
     >
       <div>
         <i class="fa-solid fa-table-cells-large text-4xl block mb-3 opacity-25" aria-hidden="true"></i>
-        <p class="text-sm font-semibold">No machines on the wall</p>
+        <p class="text-sm font-semibold">{{ sessionLabels.gridEmpty }}</p>
         <p class="text-xs opacity-60 mt-1 max-w-xs">
-          Pick the computer sessions you want to watch at the same time.
+          {{ sessionLabels.gridPick }}
         </p>
         <button class="btn btn-sm btn-primary mt-3 gap-1" @click="$emit('manage')">
           <i class="fa-solid fa-list-check"></i>

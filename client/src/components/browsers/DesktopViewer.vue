@@ -1,6 +1,7 @@
 <script>
 import NoVNC from '../NoVNC.vue'
 import SaveComputerModal from './SaveComputerModal.vue'
+import { SESSION_LABELS } from '@/utils/sessionLabels'
 
 /**
  * Live view + action bar for desktop computer sessions.
@@ -52,6 +53,10 @@ export default {
     }
   },
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     activeSession() {
       const id = this.sessionId || this.session?.id
       if (id) {
@@ -394,7 +399,7 @@ export default {
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" :class="isRunning ? 'bg-success' : 'bg-base-content/30'"></span>
         </span>
         <i :class="kindIcon" class="text-base-content/60" aria-hidden="true"></i>
-        <h3 class="font-semibold truncate">{{ activeSession?.name || 'Computer session' }}</h3>
+        <h3 class="font-semibold truncate">{{ activeSession?.name || sessionLabels.untitled }}</h3>
         <span class="badge badge-xs badge-outline">{{ kindLabel }}</span>
         <span class="badge badge-xs" :class="isRunning ? 'badge-success' : 'badge-warning'">
           {{ isRunning ? 'running' : (activeSession?.status || 'stopped') }}

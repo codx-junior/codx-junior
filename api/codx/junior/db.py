@@ -60,6 +60,14 @@ class ChatAttachment(BaseModel):
         # ("audio/webm;codecs=opus"). Attachments store the container type only,
         # so the parameters are stripped before validating (and persisting).
         media_type = (v or '').split(';')[0].strip().lower()
+        # Mobile uploads report whatever the device knows: an iPhone gallery
+        # screenshot is `image/heic`, some gallery apps send `image/bmp` or an
+        # empty/generic type. Rejecting those made the whole message fail, so any
+        # `image/*` is accepted and stored as-is: the real format is sniffed from
+        # the payload and converted to PNG/JPEG before the model request (see
+        # ChatPromptBuilder._prepare_attachment).
+        if media_type.startswith('image/'):
+            return media_type
         if media_type not in ALLOWED_ATTACHMENT_TYPES:
             raise ValueError(
                 f"Attachment type '{v}' not allowed. Allowed types: {', '.join(ALLOWED_ATTACHMENT_TYPES)}"
@@ -284,6 +292,20 @@ class Message(BaseModel):
     content: str = Field(default='')
     think: Optional[str] = Field(default=None)
     hide: bool = Field(default=False)
+    unsent: bool = Field(
+        default=False,
+        description=(
+            "DRAFT marker: an ``unsent`` message is the text a client composer "
+            "is still typing, persisted with the chat (so it survives a reload) "
+            "but NEVER part of the conversation. At most ONE unsent message "
+            "exists per chat and only the composer that owns it may read, "
+            "update or delete it. Every reader drops it through "
+            "``_visible_messages`` so it cannot reach chat lists, summaries, "
+            "LLM prompts, socket chat events, analytics or exports. See "
+            "``get_unsent_message`` / ``upsert_unsent_message`` / "
+            "``delete_unsent_message``."
+        )
+    )
     is_answer: bool = Field(default=False)
     improvement: bool = Field(default=False)
     created_at: str = Field(default_factory=lambda: str(datetime.now()))
@@ -476,6 +498,27 @@ class Chat(BaseModel):
     sort_index: Optional[int] = Field(
         default=None,
         description="Manual ordering index within a board column"
+    )
+
+    # ── Archive (compressed, out of the live tree) ─────────────────────────
+    # Additive and derived: they are stamped by ChatManager when a task is
+    # listed with `include_archived` and never stored inside the task file.
+    archived: bool = Field(
+        default=False,
+        description=(
+            "True when the task is archived: compressed into "
+            "<codx_path>/tasks/.archive and no longer part of the live tree. "
+            "Archived tasks are only returned when the caller asks for them "
+            "(`include_archived`)."
+        )
+    )
+    archived_at: Optional[str] = Field(
+        default=None,
+        description="Instant (ISO-8601) when the task was archived"
+    )
+    archived_by: Optional[str] = Field(
+        default=None,
+        description="User or profile that archived the task"
     )
 
     # ── Calendar (agenda) fields ───────────────────────────────────────────
@@ -683,6 +726,169 @@ class Chat(BaseModel):
         default_factory=dict,
         description="Free-form harness metadata (session url, selection errors, labels...)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Unsent drafts (message composer state)
+# ---------------------------------------------------------------------------
+# The text a user is still typing is persisted with the chat as ONE draft
+# message (``Message.unsent == True``). It survives reloads and crashes, but it
+# is NOT part of the conversation: it must never be listed, summarized, sent to
+# the model, broadcast as a chat message, exported or counted by analytics.
+# Persistence is delegated to the owner ``ChatManager`` (the only chat store);
+# the imports are lazy because ``chat_manager`` imports this module.
+
+
+def _visible_messages(messages: Optional[List[Message]]) -> List[Message]:
+    """
+    Return only the messages that belong to the conversation.
+
+    Unsent drafts (``Message.unsent``) are filtered out here, so every reader
+    that goes through this helper is draft-free by construction.
+
+    :param messages: Message list of a chat (may be ``None``).
+    :return: A new list without the unsent drafts.
+    """
+    return [message for message in (messages or []) if not message.unsent]
+
+
+def _find_unsent_message(chat: "Chat") -> Optional[Message]:
+    """
+    Return the unsent draft of *chat* (the most recent one when legacy data has
+    more than one), or ``None`` when the chat has no draft.
+
+    :param chat: Chat to inspect.
+    :return: The draft message or ``None``.
+    """
+    for message in reversed(chat.messages or []):
+        if message.unsent:
+            return message
+    return None
+
+
+def _resolve_chat_manager(chat_id: str, chat_manager: Any = None) -> Any:
+    """
+    Resolve the ``ChatManager`` that stores *chat_id*.
+
+    The manager is injectable (``chat_manager``) because the API layer already
+    holds the session manager; otherwise the projects are searched the same way
+    ``/api/chats/message`` resolves a chat id.
+
+    :param chat_id: Chat whose store is needed.
+    :param chat_manager: Optional already-resolved manager.
+    :return: The manager holding the chat, or ``None`` when it is unknown.
+    """
+    if chat_manager is not None:
+        return chat_manager
+
+    from codx.junior.chat_manager import ChatManager
+    from codx.junior.project.project_discover import find_all_projects
+
+    try:
+        projects = find_all_projects()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.warning("draft: cannot list projects for chat '%s': %s", chat_id, ex)
+        return None
+
+    for settings in projects.values():
+        try:
+            manager = ChatManager(settings=settings)
+            if manager.find_by_id(chat_id) is not None:
+                return manager
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning(
+                "draft: project scan failed for chat '%s': %s", chat_id, ex
+            )
+    return None
+
+
+def get_unsent_message(chat_id: str, chat_manager: Any = None) -> Optional[Message]:
+    """
+    Return the unsent draft of *chat_id*.
+
+    Only the client composer that owns the draft should call this: the returned
+    message is not part of the conversation (see :func:`_visible_messages`).
+
+    :param chat_id: Chat whose draft is requested.
+    :param chat_manager: Optional already-resolved ``ChatManager``.
+    :return: The draft message, or ``None`` when the chat has no draft.
+    """
+    if not chat_id:
+        return None
+    manager = _resolve_chat_manager(chat_id, chat_manager)
+    chat = manager.find_by_id(chat_id) if manager else None
+    if chat is None:
+        return None
+    return _find_unsent_message(chat)
+
+
+def upsert_unsent_message(
+    chat_id: str,
+    content: str,
+    author: Optional[str] = None,
+    chat_manager: Any = None,
+) -> Message:
+    """
+    Create or replace the single unsent draft of *chat_id*.
+
+    The existing draft ``doc_id`` is reused when updating, so the client keeps
+    a stable key while typing. The chat keeps at most ONE unsent message.
+
+    :param chat_id: Chat owning the draft.
+    :param content: Current composer text.
+    :param author: Optional username of the composer (stored in ``Message.user``).
+    :param chat_manager: Optional already-resolved ``ChatManager``.
+    :return: The persisted draft message.
+    :raises ValueError: When *chat_id* is missing or unknown.
+    """
+    if not chat_id:
+        raise ValueError("upsert_unsent_message requires a chat_id")
+
+    manager = _resolve_chat_manager(chat_id, chat_manager)
+    chat = manager.find_by_id(chat_id) if manager else None
+    if chat is None:
+        raise ValueError(f"upsert_unsent_message: chat '{chat_id}' not found")
+
+    message = _find_unsent_message(chat)
+    if message is None:
+        message = Message(
+            doc_id=str(uuid.uuid4()),
+            role=ROLE_USER,
+            content=content or '',
+            user=author,
+            unsent=True,
+        )
+        manager.add_message(chat=chat, message=message)
+        return message
+
+    message.role = ROLE_USER
+    message.content = content or ''
+    message.unsent = True
+    if author is not None:
+        message.user = author
+    manager.update_message(chat=chat, message=message)
+    return message
+
+
+def delete_unsent_message(chat_id: str, chat_manager: Any = None) -> bool:
+    """
+    Remove the unsent draft of *chat_id*.
+
+    :param chat_id: Chat whose draft must be discarded.
+    :param chat_manager: Optional already-resolved ``ChatManager``.
+    :return: ``True`` when a draft was deleted, ``False`` when there was none.
+    """
+    if not chat_id:
+        return False
+    manager = _resolve_chat_manager(chat_id, chat_manager)
+    chat = manager.find_by_id(chat_id) if manager else None
+    if chat is None:
+        return False
+    message = _find_unsent_message(chat)
+    if message is None:
+        return False
+    manager.remove_message(chat=chat, message_doc_id=message.doc_id)
+    return True
 
 
 # Made with ❤️ by codx-junior

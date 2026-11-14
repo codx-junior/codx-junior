@@ -42,6 +42,14 @@ LEGACY_VERSION = 0.1
 INDEX_FILE = "index.json"
 BOARDS_DIR = "boards"
 BOARD_FILE = "board.json"
+
+# Archived tasks: compressed out of the live tree (see kanban/archive.py).
+ARCHIVE_DIR = ".archive"
+ARCHIVE_INDEX_FILE = "index.json"
+ARCHIVE_LOCK_FILE = ".archive.lock"
+ARCHIVE_SUFFIX = ".tar.gz"
+# Bumped whenever the layout of the archive catalogue changes.
+ARCHIVE_VERSION = 1
 LEGACY_FILE = "kanban.json"
 BACKUP_FILE = "kanban.v1.backup.json"
 LOCK_FILE = ".kanban.lock"
@@ -87,7 +95,12 @@ def is_store_file(file_path: str) -> bool:
 
     ``.codx/tasks`` holds both the chats and the catalogue, so any code that
     walks the tree for chats must skip ``index.json``, the legacy
-    ``kanban.json`` and everything under ``boards/``.
+    ``kanban.json``, everything under ``boards/`` and the ``.archive`` folder
+    (which holds the compressed archived tasks and their own catalogue).
+
+    Any hidden path (a path segment starting with ``.``) is storage too: the
+    archive folder is hidden on purpose, so a task moves out of the live tree
+    the moment it is archived.
 
     Args:
         file_path: Absolute or relative file path.
@@ -98,8 +111,13 @@ def is_store_file(file_path: str) -> bool:
     base = os.path.basename(file_path)
     if base in (INDEX_FILE, LEGACY_FILE, BACKUP_FILE, LOCK_FILE):
         return True
-    parts = os.path.normpath(file_path).split(os.sep)
-    return BOARDS_DIR in parts
+    parts = [
+        part for part in os.path.normpath(str(file_path)).split(os.sep)
+        if part and part not in (os.curdir, os.pardir)
+    ]
+    if BOARDS_DIR in parts or ARCHIVE_DIR in parts:
+        return True
+    return any(part.startswith(".") for part in parts)
 
 
 def clean_profiles(value: Any) -> List[str]:

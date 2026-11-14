@@ -32,7 +32,18 @@ import { ROLE_META, roleMeta, avatarUrl, EMPTY_GUARDRAILS } from './config'
             <i :class="role.icon" class="text-[10px]"></i>{{ role.label }}
           </div>
         </div>
-        <button type="button" class="btn btn-ghost btn-sm btn-square ml-auto" aria-label="Close editor" @click="$emit('close')">
+        <!-- Opens the full-page editor: voice settings need more than 32rem -->
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm btn-square ml-auto"
+          title="Open the full-page editor"
+          aria-label="Open the full-page editor"
+          :disabled="!draft.name"
+          @click="openFullEditor"
+        >
+          <i class="fa-solid fa-arrow-up-right-from-square"></i>
+        </button>
+        <button type="button" class="btn btn-ghost btn-sm btn-square" aria-label="Close editor" @click="$emit('close')">
           <i class="fa-solid fa-xmark"></i>
         </button>
       </header>
@@ -665,6 +676,12 @@ export default {
     },
     closeToolDetails() {
       this.detailsTool = null
+    },
+    // The drawer is a 32rem panel: the full-page editor owns the voice settings.
+    // Unsaved drawer edits are dropped, so save first when they matter.
+    openFullEditor() {
+      if (!this.draft.name) return
+      this.$router?.push({ name: 'profile-edit', params: { name: this.draft.name } })
     },
     // Enable/disable the skill from within the details modal (keeps it open).
     toggleDetailsTool(tool) {

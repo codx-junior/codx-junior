@@ -50,6 +50,14 @@ logger = logging.getLogger(__name__)
 #: Hard cap on the tabs an agent may open (they are all visible to the user).
 MAX_TABS = 20
 
+#: URLs of a tab that never rendered anything. They pile up when a navigation
+#: fails (the page is opened before the URL is loaded), so one pass removes them.
+BLANK_URLS = ("", "about:blank", "chrome://newtab/", "chrome://new-tab-page/")
+#: Blank tabs that must be open before a tidy pass acts: one or two are what a
+#: user gets by pressing Ctrl+T, and stealing them would be hostile.
+BLANK_TAB_THRESHOLD = 3
+#: Hard cap of tabs a single tidy pass closes (never turn a connect into a storm).
+MAX_TIDY_CLOSES = 25
 #: Fragment identifying the protected tab (survives reconnections).
 KEEP_ALIVE_FRAGMENT = "codx-keep-alive"
 #: URL of the protected tab (``about:blank`` + marker fragment).
@@ -165,6 +173,89 @@ def keep_alive_page(browser) -> Optional[Any]:
         if is_keep_alive_page(page):
             return page
     return None
+
+
+def is_blank_page(page) -> bool:
+    """
+    Return True when *page* never rendered anything.
+
+    ``about:blank`` and the new-tab pages are what is left behind when a
+    navigation fails, so they are the candidates of :func:`tidy_blank_tabs`. The
+    keep-alive tab lives on ``about:blank`` too and is never "blank" here.
+
+    Args:
+        page: Playwright page.
+
+    Returns:
+        bool: True for an empty tab the user gets nothing out of.
+
+    Example:
+        >>> is_blank_page(keep_alive)  # doctest: +SKIP
+        False
+    """
+    if is_keep_alive_page(page):
+        return False
+    return page_url(page) in BLANK_URLS
+
+
+async def tidy_blank_tabs(browser) -> Dict[str, Any]:
+    """
+    Close the empty tabs that accumulate when navigations fail.
+
+    Opening a tab and failing to navigate leaves an ``about:blank`` behind; a
+    session used for a couple of days ends up with a tab strip full of them (20
+    blank tabs over 22 has been observed). This pass removes them while keeping
+    everything that matters:
+
+    - the keep-alive tab (it protects the browser window),
+    - the tab the AI drives and the user is watching,
+    - every tab that rendered something.
+
+    It only acts when at least :data:`BLANK_TAB_THRESHOLD` blank tabs are open,
+    so a tab the user has just created is never stolen, and never closes more
+    than :data:`MAX_TIDY_CLOSES` in one pass.
+
+    Args:
+        browser: Connected :class:`Browser`.
+
+    Returns:
+        Dict[str, Any]: ``closed`` (how many were closed), ``blank`` (how many
+        were found) and ``threshold``.
+
+    Raises:
+        RuntimeError: When the browser is not connected.
+
+    Example:
+        >>> await tidy_blank_tabs(browser)  # doctest: +SKIP
+        {'closed': 6, 'blank': 6, 'threshold': 3}
+    """
+    pages = open_pages(browser)
+    active = getattr(browser, "page", None)
+    candidates = [
+        page for page in pages
+        if page is not active and is_blank_page(page)
+    ]
+    if len(candidates) < BLANK_TAB_THRESHOLD:
+        return {"closed": 0, "blank": len(candidates), "threshold": BLANK_TAB_THRESHOLD}
+
+    closed = 0
+    for page in candidates[:MAX_TIDY_CLOSES]:
+        try:
+            await page.close()
+            closed += 1
+        except Exception as ex:
+            logger.debug("Could not close a blank tab: %s", ex)
+
+    if closed:
+        logger.info(
+            "Closed %s blank tab(s) of session %s (%s left)",
+            closed, _session_label(browser), len(candidates) - closed,
+        )
+    return {
+        "closed": closed,
+        "blank": len(candidates),
+        "threshold": BLANK_TAB_THRESHOLD,
+    }
 
 
 def active_tab_index(browser, pages: Optional[List[Any]] = None) -> int:
@@ -408,11 +499,27 @@ async def open_tab(browser, url: Optional[str] = None) -> Dict[str, Any]:
         )
 
     context = getattr(browser, "context", None)
+    previous = getattr(browser, "page", None)
     page = await context.new_page()
     await _activate(browser, page)
     if url:
-        # navigate() keeps the networkidle -> load fallback and syncs the session
-        await browser.navigate(url)
+        try:
+            # navigate() keeps the networkidle -> load fallback and syncs the session
+            await browser.navigate(url)
+        except Exception:
+            # A tab that never rendered is pure noise in the tab strip the user
+            # watches: close it and give the focus back to the previous tab
+            # instead of leaving another about:blank behind.
+            try:
+                await page.close()
+            except Exception as ex:
+                logger.debug("Could not close the failed tab: %s", ex)
+            remaining = open_pages(browser)
+            if previous is not None and previous in remaining:
+                await _activate(browser, previous)
+            elif remaining:
+                await _activate(browser, remaining[-1])
+            raise
 
     index = active_tab_index(browser)
     logger.info(

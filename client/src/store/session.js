@@ -162,6 +162,13 @@ export const actions = actionTree(
       }
       if (type === 'notification') {
         $storex.ui.addNotification(data)
+        // A machine raised a handoff (`needs_user`, emitted for login / MFA /
+        // captcha / payment approval): refresh the session list so the rail and
+        // the chat icon blink right away. The API stays the single source of
+        // truth for the flag — it turns false after take-control.
+        if (data?.needs_user) {
+          $storex.browsers.loadSessions?.()
+        }
       }
       if (event === 'codx-junior-online-users') {
         $storex.users.setOnlineUsers(data.users)

@@ -115,7 +115,10 @@ export default {
       if (!this.project?.$state?.kanban) {
         await this.$storex.projects.loadKanban({ project: this.project })
       }
-      this.selectBoard()
+      // Open the board that was open the last time instead of resetting the
+      // selection: previously this cleared `activeBoard`, so every entry to the
+      // Kanban landed on the board list.
+      this.$storex.projects.restoreActiveBoard(this.project)
     },
     async selectBoard(board) {
       await this.$projects.setActiveBoard(board)

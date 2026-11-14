@@ -57,6 +57,21 @@ http://codx-junior-api:19980/api/traefik/config
 
 Using the public `CODX_JUNIOR_DOMAIN` here usually fails because port `19980` is not exposed publicly. Recreate the Traefik container after changing the installer compose or `traefik/traefik.yaml`.
 
+### Diagnosing routes with the `traefik` tool
+
+The DevOps profile has a read-only `traefik` tool, so a routing problem can be diagnosed without opening the dashboard or the source code:
+
+| `traefik(action=…)` | Returns |
+| --- | --- |
+| `status` | Container state and restarts, the effective command line (provider endpoint, entrypoints), the static-config location and the route statistics with the open issues. |
+| `routes` | The merged routing table (workspace, global and project routes) with rule, target, `managed_by` and per-route issues; narrow it with `search`. |
+| `config` | `source="generated"` returns the dynamic configuration Traefik polls; `source="file"` returns the static `traefik.yaml` (secrets masked). |
+| `logs` | Container logs including the JSON access logs, filterable with `search`; credentials in headers are masked and the output is bounded. |
+
+A `502` whose log line already carries a `RouterName` means Traefik matched the route and the backend is down — check the container, not the rule. A route missing from `routes` (or `enabled: no`) is a rule problem, not a proxy problem.
+
+Point the tool at a different deployment with `CODX_JUNIOR_TRAEFIK_CONTAINER` (container name, default `traefik-codx-junior`) and `CODX_JUNIOR_TRAEFIK_CONFIG` (static config path, default `/traefik/traefik.yaml`).
+
 ## Default apps
 
 The default workspace includes:

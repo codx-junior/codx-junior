@@ -5,6 +5,9 @@ shared by the user and the AI**: the human watches and can take over through a
 live view, the AI drives the same screen through desktop tools. The original
 Chromium sessions are now the `browser` kind of this model, so nothing is lost.
 
+The UI calls each of them a **Co-desktop** (section **Coworking**). Every
+user-facing name of the concept comes from `client/src/utils/sessionLabels.js`,
+so renaming it again is a single edit there.
 | Kind | What runs | AI control | Typical use |
 | --- | --- | --- | --- |
 | `browser` | Chromium container | Chrome DevTools Protocol | The existing browser co-pilot (DOM snapshots, scripts, downloads). |
@@ -44,7 +47,7 @@ and [noVNC](https://github.com/novnc/noVNC).
 
 ## Image library (Kasmweb + LinuxServer.io)
 
-The **Library** button in the Computer sessions sidebar opens the standalone
+The **Library** button in the Coworking sidebar opens the standalone
 image browser (`ComputerImageLibrary.vue`): search, category chips, provider
 tabs and image details.  Picking an image opens the new-session dialog with that
 image already selected.  The same browser is also embedded in the new-session
@@ -155,7 +158,7 @@ blocked while a session started from it is still present.
 
 ### From the UI
 
-**Computer sessions** → **New session** → choose the machine:
+**Coworking** → **New co-desktop** → choose the machine:
 
 - **Linux desktop** (default): shell, GUI apps and project folders under
   `/home/<project_name>`; downloads/saved files land in the project.

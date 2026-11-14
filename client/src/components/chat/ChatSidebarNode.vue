@@ -30,7 +30,7 @@ import ChatIcon from './ChatIcon.vue'
         <!-- Icon + Content -->
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2">
-            <ChatIcon :mode="chat.mode" class="text-xs shrink-0" />
+            <ChatIcon :mode="chat.mode" :attention="chatNeedsUser" class="text-xs shrink-0" />
             <span class="font-bold text-sm truncate">{{ chat.name }}</span>
             <span class="text-xs text-base-content/40 shrink-0 tabular-nums">
               {{ chat.messages?.length || 0 }}
@@ -108,6 +108,12 @@ export default {
     }
   },
   computed: {
+    // A machine session of this task needs the user (same source as ChatCard:
+    // the `needs_user` flag of the session payload, so it also survives a
+    // reload and clears once the user takes control).
+    chatNeedsUser() {
+      return (this.$storex.ui.attentionChatIds || []).includes(this.chat?.id)
+    },
     children() {
       return this.allChats.filter(c => c.parent_id === this.chat.id)
     },

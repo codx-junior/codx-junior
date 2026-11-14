@@ -3,6 +3,7 @@ import BrowserSessionList from './BrowserSessionList.vue'
 import BrowserSessionPanel from './BrowserSessionPanel.vue'
 import ComputerGridView from './ComputerGridView.vue'
 import ComputerGridPicker from './ComputerGridPicker.vue'
+import { SESSION_LABELS } from '@/utils/sessionLabels'
 </script>
 
 <template>
@@ -18,13 +19,13 @@ import ComputerGridPicker from './ComputerGridPicker.vue'
       >
         <i class="fa-solid fa-arrow-left"></i>
       </button>
-      <h1 class="text-lg font-bold flex-1 truncate">Computer sessions</h1>
+      <h1 class="text-lg font-bold flex-1 truncate">{{ SESSION_LABELS.section }}</h1>
       <button
         v-if="isGridView"
         @click="showPicker = true"
         class="btn btn-sm btn-ghost btn-square"
-        title="Select the machines on the wall"
-        aria-label="Select the machines on the wall"
+        :title="sessionLabels.wallPick"
+        :aria-label="sessionLabels.wallPick"
       >
         <i class="fa-solid fa-list-check"></i>
       </button>
@@ -132,6 +133,10 @@ export default {
     }
   },
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     isMobile() {
       return this.$storex.ui.isMobile
     },

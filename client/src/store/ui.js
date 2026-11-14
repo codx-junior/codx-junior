@@ -102,6 +102,23 @@ export const getters = getterTree(state, {
   // `sidebarCollapsed` is the single, persisted source of truth shared by
   // App.vue (mobile overlay) and DesktopSidebar.vue (desktop rail).
   isSidebarExpanded: state => !state.sidebarCollapsed,
+  // ── ATTENTION (a machine is waiting for the user) ──────────────────────
+  // Ids of the chats/tasks whose machine session needs the user: the API flags
+  // `needs_user` on the session payload when a handoff happens (login, MFA,
+  // captcha, payment approval, controller == 'user') and clears it once the
+  // user takes control. Deriving it from the loaded session payload keeps the
+  // blinking after a reload — there is no transient local flag to lose.
+  attentionChatIds: () => {
+    const ids = []
+    ;($storex.browsers.allSessions || []).forEach(session => {
+      if (!session?.needs_user) return
+      const chatId = session.chat_id || session.chatId
+      if (chatId && !ids.includes(chatId)) ids.push(chatId)
+    })
+    return ids
+  },
+  // True while at least one machine waits for the user.
+  hasAttention: () => ($storex.browsers.allSessions || []).some(session => !!session?.needs_user),
 })
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -271,19 +288,34 @@ export const mutations = mutationTree(state, {
     state.floatingCodxJunior = !state.floatingCodxJunior
     $storex.ui.saveState()
   },
-  addNotification(state, { text, type }) {
-    const existing = state.notifications?.find(n => n.text === text)
+  addNotification(state, notification) {
+    const payload = typeof notification === 'string'
+      ? { text: notification }
+      : (notification || {})
+    const { text, type } = payload
+    const existing = text ? state.notifications?.find(n => n.text === text) : null
     if (existing) {
       existing.ts = moment().format("HH:mm:ss")
       return
     }
+    // Keep the extra fields the sender provides (`title`, `session_id`,
+    // `chat_id`, `needs_user`, …) so the bell can label and link the entry
+    // (e.g. point at the machine session that needs the user) instead of only
+    // showing its text.
     const notif = {
+      ...payload,
+      // Stable identity: the list uses it as `v-for` key and to remove it.
+      id: payload.id || `${Date.now()}-${state.notifications.length}`,
       ts: moment().format("HH:mm:ss"),
       text,
       type: type || 'info'
     }
     state.notifications.push(notif)
-    setTimeout(() => $storex.ui.removeNotification(notif), 30000)
+    // Attention notifications (a machine waiting for the user) live longer than
+    // the regular 30s toast, but they still expire so the bell can never get
+    // stuck on an event the user already handled.
+    const ttl = notif.needs_user ? 300000 : 30000
+    setTimeout(() => $storex.ui.removeNotification(notif), ttl)
   },
   removeNotification(state, notification) {
     state.notifications.splice(

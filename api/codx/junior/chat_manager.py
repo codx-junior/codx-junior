@@ -131,6 +131,7 @@ from codx.junior.db import Chat, Message, ChatStatusEvent
 
 from codx.junior.identity import resolve_root_id
 
+from codx.junior.kanban.archive import TaskArchive
 from codx.junior.kanban.model import DEFAULT_BOARD, DEFAULT_COLUMN, is_store_file
 from codx.junior.kanban.store import KanbanStore
 
@@ -243,6 +244,8 @@ class ChatManager:
             event_manager if event_manager else EventManager(codx_path=settings.codx_path)
         )
         self.kanban_store = KanbanStore(tasks_path=self.chat_path)
+        # Compressed storage of the archived tasks (tasks/.archive).
+        self.task_archive = TaskArchive(tasks_path=self.chat_path)
         os.makedirs(self.chat_path, exist_ok=True)
         os.makedirs(f"{self.chat_path}/{DEFAULT_BOARD}/{DEFAULT_COLUMN}", exist_ok=True)
 
@@ -364,6 +367,7 @@ class ChatManager:
         board: Optional[str] = None,
         column: Optional[str] = None,
         chat_type: Optional[str] = None,
+        include_archived: bool = False,
         page: int = 1,
         page_size: int = 10,
     ) -> Dict[str, Any]:
@@ -378,11 +382,14 @@ class ChatManager:
         :param board: Optional board name filter.
         :param column: Optional column name filter.
         :param chat_type: Optional chat type filter ('task' or 'chat').
+        :param include_archived: Also list the archived (compressed) tasks.
+            They are metadata only: their messages stay inside the archive
+            payload until the task is restored.
         :param page: Page number (1-indexed).
         :param page_size: Number of results per page.
         :return: Dict with paginated results and metadata.
         """
-        all_chats = self.list_chats()
+        all_chats = self.list_chats(include_archived=include_archived)
 
         # Apply filters
         filtered_chats = all_chats
@@ -490,6 +497,7 @@ class ChatManager:
         self,
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        include_archived: bool = False,
     ) -> List[Chat]:
         """
         Return a sorted list of all chats (metadata only, no messages).
@@ -505,6 +513,9 @@ class ChatManager:
             this date are returned (lower bound).
         :param to_date: ISO-format date string; only chats modified on or
             before this date are returned (inclusive upper bound).
+        :param include_archived: Also list the archived (compressed) tasks.
+            They are metadata only (``archived=True``), because their messages
+            live inside the archive payload, not in the tasks tree.
         :return: List of Chat objects sorted by index/updated_at descending.
         """
         last_update = datetime.fromisoformat(from_date) if from_date else None
@@ -523,7 +534,16 @@ class ChatManager:
             return None
 
         chats = [c for c in (_load_chat_info(p) for p in file_paths) if c]
-        return sorted(chats, key=lambda x: str(x.chat_index or x.updated_at), reverse=True)
+        chats = sorted(chats, key=lambda x: str(x.chat_index or x.updated_at), reverse=True)
+        if not include_archived:
+            return chats
+        # Archived tasks have no file in the live tree: they are merged from
+        # the archive catalogue (metadata only, nothing is decompressed).
+        return sorted(
+            chats + self.archived_chats(),
+            key=lambda x: str(x.updated_at or ""),
+            reverse=True,
+        )
 
     # -------------------------------------------------------------------------
     # Chat search
@@ -941,9 +961,15 @@ class ChatManager:
 
         Best effort: a notification failure must never break persistence.
 
+        UNSENT DRAFTS ARE NEVER ANNOUNCED: the composer text persisted as
+        ``Message.unsent`` is private to the client that is typing it, so it
+        must not reach any other connected client through a socket event.
+
         :param chat: The chat the message belongs to.
         :param message: The message that changed.
         """
+        if getattr(message, "unsent", False):
+            return
         try:
             self.event_manager.message_event(chat=chat, message=message)
         except Exception:  # pragma: no cover - notifications are best effort
@@ -1322,7 +1348,6 @@ class ChatManager:
             os.remove(file_path)
         else:
             logger.error("Removing chat error %s", file_path)
-
     # -------------------------------------------------------------------------
     # Chat loading
     # -------------------------------------------------------------------------
@@ -1483,6 +1508,197 @@ class ChatManager:
         )
         return None
 
+    def find_chat_path(self, chat_id: Optional[str]) -> Optional[str]:
+        """
+        Return the file that stores *chat_id*, or None when it is not live.
+
+        The id is matched as a filename suffix (``<slug>.<chat_id>.json``),
+        never as a substring, and an archived task has no file in the live tree
+        at all (it lives compressed in ``tasks/.archive``).
+
+        :param chat_id: The UUID of the chat to locate.
+        :return: Absolute path of the chat file, or None.
+        """
+        wanted = str(chat_id or "").strip()
+        if not wanted:
+            return None
+        return next(
+            (
+                path for path in self.chat_paths()
+                if os.path.basename(path).endswith(f".{wanted}.json")
+                or os.path.basename(path).endswith(f".{wanted}.yaml")
+            ),
+            None,
+        )
+
+    # -------------------------------------------------------------------------
+    # Archiving (compressed, out of the live tree)
+    # -------------------------------------------------------------------------
+
+    def archived_chats(self) -> List[Chat]:
+        """
+        Return the archived tasks as metadata-only chats.
+
+        Archived tasks are compressed into ``tasks/.archive`` (see
+        :class:`codx.junior.kanban.archive.TaskArchive`), so nothing is
+        decompressed here: listing them stays cheap however big the archive
+        grows. Every returned chat carries ``archived=True``, ``archived_at``
+        and ``archived_by`` and has an empty message list.
+
+        :return: List of archived Chat objects (no messages).
+        """
+        return [self._archived_chat(entry) for entry in self.task_archive.list_entries()]
+
+    @staticmethod
+    def _archived_chat(entry: Dict[str, Any]) -> Chat:
+        """
+        Build the metadata-only Chat of an archive catalogue entry.
+
+        :param entry: Entry returned by ``TaskArchive.list_entries()``.
+        :return: Chat carrying the listing fields and ``archived=True``.
+        """
+        return Chat(
+            id=entry.get("chat_id"),
+            name=entry.get("name") or "(archived)",
+            board=entry.get("board") or "",
+            column=entry.get("column") or "",
+            status=entry.get("status") or "",
+            priority=entry.get("priority"),
+            due_date=entry.get("due_date"),
+            wake_at=entry.get("wake_at"),
+            progress=int(entry.get("progress") or 0),
+            created_at=entry.get("created_at"),
+            updated_at=entry.get("updated_at"),
+            profiles=list(entry.get("profiles") or []),
+            tags=list(entry.get("tags") or []),
+            sprints=list(entry.get("sprints") or []),
+            assignees=list(entry.get("assignees") or []),
+            parent_id=entry.get("parent_id"),
+            root_id=entry.get("root_id"),
+            project_id=entry.get("project_id"),
+            messages=[],
+            archived=True,
+            archived_at=entry.get("archived_at"),
+            archived_by=entry.get("archived_by"),
+        )
+
+    def archive_chat(self, chat_id: str, user: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Archive a task: compress it and remove it from the live tree.
+
+        The task stops appearing in every listing, search, board and cost
+        roll-up (archived tasks are only returned when the caller asks for them
+        with ``include_archived``) and the space it used is released. The
+        payload keeps the original file name, so a restore is byte for byte.
+
+        The call is idempotent: archiving an already archived task returns the
+        stored entry instead of failing.
+
+        :param chat_id: Id of the task to archive.
+        :param user: User (or profile) doing it; stored in the catalogue.
+        :return: The archive catalogue entry.
+        :raises ValueError: When the task is neither live nor archived.
+        """
+        chat = self.find_by_id(chat_id)
+        if chat is None:
+            entry = self.task_archive.get(chat_id)
+            if entry is None:
+                raise ValueError(f"task '{chat_id}' not found")
+            return entry
+
+        file_path = self.find_chat_path(chat.id or chat_id)
+        if not file_path or not os.path.isfile(file_path):
+            raise ValueError(f"task '{chat_id}' has no stored file to archive")
+
+        entry = self.task_archive.archive(
+            chat_file=file_path,
+            chat_id=chat.id or chat_id,
+            archived_by=user,
+            metadata={
+                "name": chat.name,
+                "board": chat.board,
+                "column": chat.column,
+                "status": chat.status,
+                "priority": chat.priority,
+                "due_date": chat.due_date,
+                "wake_at": chat.wake_at,
+                "progress": chat.progress,
+                "created_at": chat.created_at,
+                "updated_at": chat.updated_at,
+                "profiles": chat.profiles,
+                "tags": chat.tags,
+                "sprints": chat.sprints,
+                "assignees": chat.assignees,
+                "parent_id": chat.parent_id,
+                "root_id": chat.root_id,
+                "project_id": chat.project_id,
+            },
+        )
+        self._emit_archive_event(chat, archived=True)
+        logger.info("Archived task '%s' (%s)", chat.id, chat.name)
+        return entry
+
+    def restore_chat(self, chat_id: str, user: Optional[str] = None) -> Optional[Chat]:
+        """
+        Restore an archived task into its board/column folder.
+
+        The destination folders are resolved through the kanban catalogue (they
+        are immutable), so a task archived before a board or column rename still
+        lands where the catalogue points to, not where its title says.
+
+        :param chat_id: Id of the archived task.
+        :param user: User (or profile) doing it; only logged.
+        :return: The restored Chat, with its messages.
+        :raises ValueError: When the task is not archived.
+        """
+        entry = self.task_archive.get(chat_id)
+        if entry is None:
+            raise ValueError(f"task '{chat_id}' is not archived")
+
+        board_folder, column_folder = self.kanban_store.resolve_folders(
+            board=entry.get("board") or DEFAULT_BOARD,
+            column=entry.get("column") or DEFAULT_COLUMN,
+        )
+        target_dir = os.path.join(self.chat_path, board_folder, column_folder)
+        file_path = self.task_archive.restore(
+            chat_id=str(chat_id), target_dir=target_dir
+        )
+        chat = self.load_chat_from_path(chat_file=file_path)
+        self._emit_archive_event(chat, archived=False)
+        logger.info(
+            "Restored task '%s' (%s) to %s/%s by %s",
+            chat.id,
+            chat.name,
+            board_folder,
+            column_folder,
+            user or "-",
+        )
+        return chat
+
+    def _emit_archive_event(self, chat: Chat, archived: bool) -> None:
+        """
+        Announce an archive/restore so every client reloads its boards.
+
+        Best effort: a lost event only leaves a client with a stale board until
+        its next reload and must never fail a completed write.
+
+        :param chat: The task that moved.
+        :param archived: True when it was archived, False when restored.
+        """
+        try:
+            emit_collection_event(
+                COLLECTION_BOARDS,
+                ACTION_CHANGED,
+                {"name": chat.name, "chat_id": chat.id, "board": chat.board},
+                settings=self.settings,
+                source="chat_manager",
+                archived=archived,
+            )
+        except Exception as ex:  # never break a completed write
+            logger.warning(
+                "Could not emit the archive event of '%s': %s", chat.id, ex
+            )
+
     def load_kanban_from_file(self, kanban_file: str) -> dict:
         """
         Load kanban state from a JSON file, applying defaults when missing.
@@ -1619,7 +1835,8 @@ class ChatManager:
         messages = self.traverse_chat_messages(chat_id=chat_id, all_chats=all_chats)
         markdown = ""
         for msg in messages:
-            if not msg.hide:
+            # Unsent drafts are private composer state, never part of an export.
+            if not msg.hide and not msg.unsent:
                 markdown += f"# {msg.content}\n\n"
         return markdown
 

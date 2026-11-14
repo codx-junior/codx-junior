@@ -169,6 +169,7 @@ from .docker_tools import (
     DOCKER_COMPOSE_SERVICE_TOOL_JSON,
     DOCKER_EXEC_TOOL_JSON,
 )
+from .traefik_tools import traefik, TRAEFIK_TOOL_JSON
 from .duckduckgo_search import duckduckgo_search, DUCKDUCKGO_SEARCH_TOOL_JSON
 from .browser_tools import (
     start_session,
@@ -230,6 +231,20 @@ from .ciso_tools import (
     SECURITY_CHECK_COMMAND_TOOL_JSON,
     SECURITY_REDACT_TOOL_JSON,
     SECURITY_POLICY_TOOL_JSON,
+)
+from .qa_tools import (
+    qa_plan,
+    qa_run_tests,
+    qa_review_changes,
+    qa_coverage,
+    qa_flaky_check,
+    qa_policy,
+    QA_PLAN_TOOL_JSON,
+    QA_RUN_TESTS_TOOL_JSON,
+    QA_REVIEW_CHANGES_TOOL_JSON,
+    QA_COVERAGE_TOOL_JSON,
+    QA_FLAKY_CHECK_TOOL_JSON,
+    QA_POLICY_TOOL_JSON,
 )
 from .model import ToolResponse, ToolSettings
 
@@ -366,6 +381,7 @@ __all__ = [
     "docker_container",
     "docker_compose_service",
     "docker_exec",
+    "traefik",
     "duckduckgo_search",
     "start_session",
     "browse_action",
@@ -386,6 +402,12 @@ __all__ = [
     "security_check_command",
     "security_redact",
     "security_policy",
+    "qa_plan",
+    "qa_run_tests",
+    "qa_review_changes",
+    "qa_coverage",
+    "qa_flaky_check",
+    "qa_policy",
     "start_computer",
     "computer_action",
     "computer_screenshot",
@@ -1613,6 +1635,12 @@ TOOLS = [
         "tool_call": docker_exec
     },
     {
+        "tool_json": TRAEFIK_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
+        "tags": ["traefik", "proxy", "routing", "devops", "infrastructure", "logs", "diagnostics"],
+        "tool_call": traefik
+    },
+    {
         "tool_json": DOCKER_COMPOSE_SERVICE_TOOL_JSON,
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
         "tags": ["docker", "compose", "services", "unified", "devops", "optimization"],
@@ -1798,6 +1826,54 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
         "tags": ["security", "ciso", "policy", "configuration"],
         "tool_call": security_policy
+    },
+    # -- QA: quality gates callable by a profile -----------------------------
+    # Source of truth: codx/junior/tools/qa_tools.py
+    # The suite discovery, the runner, the change->test mapper, the coverage
+    # reader and the gate live in codx/junior/quality/qa/. These entries only
+    # expose the explicit actions a profile may take (plan, run, review,
+    # coverage, flaky, policy).
+    {
+        "tool_json": QA_PLAN_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["qa", "quality", "plan", "tests", "discovery"],
+        "tool_call": qa_plan
+    },
+    {
+        "tool_json": QA_RUN_TESTS_TOOL_JSON,
+        "settings": ToolSettings(
+            project_settings=True, dual_response=True, scope="chat", cache=False, timeout_seconds=1800
+        ).dict(),
+        "tags": ["qa", "quality", "tests", "run", "verification"],
+        "tool_call": qa_run_tests
+    },
+    {
+        "tool_json": QA_REVIEW_CHANGES_TOOL_JSON,
+        "settings": ToolSettings(
+            project_settings=True, dual_response=True, scope="chat", cache=False, timeout_seconds=1800
+        ).dict(),
+        "tags": ["qa", "quality", "gate", "diff", "coverage", "verification"],
+        "tool_call": qa_review_changes
+    },
+    {
+        "tool_json": QA_COVERAGE_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["qa", "quality", "coverage", "threshold"],
+        "tool_call": qa_coverage
+    },
+    {
+        "tool_json": QA_FLAKY_CHECK_TOOL_JSON,
+        "settings": ToolSettings(
+            project_settings=True, dual_response=True, scope="chat", cache=False, timeout_seconds=1800
+        ).dict(),
+        "tags": ["qa", "quality", "flaky", "stability"],
+        "tool_call": qa_flaky_check
+    },
+    {
+        "tool_json": QA_POLICY_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["qa", "quality", "policy", "configuration"],
+        "tool_call": qa_policy
     },
 ]
 

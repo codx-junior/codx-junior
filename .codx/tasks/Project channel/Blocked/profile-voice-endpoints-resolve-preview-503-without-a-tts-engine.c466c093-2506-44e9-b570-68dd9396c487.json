@@ -1,0 +1,1031 @@
+{
+  "id": "c466c093-2506-44e9-b570-68dd9396c487",
+  "doc_id": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "owner_project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "parent_id": "9727302c-fa80-4868-9b72-b6955dfd2dd0",
+  "root_id": "9727302c-fa80-4868-9b72-b6955dfd2dd0",
+  "linked_chat_ids": [],
+  "parent_owner_project_id": null,
+  "parent_project_id": null,
+  "child_index": 0,
+  "message_id": null,
+  "status": "rejected",
+  "status_history": [
+    {
+      "doc_id": "8b983250-e5bc-4a3a-9161-c8cfe7e1aa92",
+      "from_status": null,
+      "to_status": "todo",
+      "user": null,
+      "at": "2026-11-13T16:53:39.507398",
+      "meta_data": null
+    },
+    {
+      "doc_id": "8af86435-f741-43da-a0d4-59daabb4a070",
+      "from_status": "todo",
+      "to_status": "doing",
+      "user": null,
+      "at": "2026-11-13T16:53:45.437443",
+      "meta_data": null
+    },
+    {
+      "doc_id": "86d45804-d773-4fdc-a354-a55b46fd23c3",
+      "from_status": "doing",
+      "to_status": "rejected",
+      "user": null,
+      "at": "2026-11-13T17:09:08.497934",
+      "meta_data": null
+    }
+  ],
+  "tags": [
+    "orchestration",
+    "run:7bbcd9d8-2f84-4000-8b99-190d242b4d4e",
+    "step:profile-voice-api",
+    "run-removed"
+  ],
+  "file_list": [
+    "api/codx/junior/api/profile_voice.py",
+    "api/codx/junior/media/voice.py",
+    "api/tests/media/test_profile_voice_api.py"
+  ],
+  "check_lists": [],
+  "profiles": [
+    "software_developer"
+  ],
+  "users": [],
+  "name": "Profile voice endpoints: resolve + preview (503 without a TTS engine)",
+  "pinned": false,
+  "is_template": false,
+  "description": "Voice is already a profile property: api/codx/junior/model/profile.py has `voice: Optional[VoiceProfile]` (~line 108) and the pure resolver api/codx/junior/media/voice.py (204 lines) already exposes DEFAULT_VOICE, PROJECT_STORE_KEY, ResolvedVoice, VoiceSource = profile|project|system|disabled, resolve_voice and voice_snapshot. What is missing are the HTTP endpoints.\n\nCREATE A NEW ROUTER MODULE api/codx/junior/api/profile_voice.py - it needs no app.py change because codx.junior.api.discover_routers() imports every module of that package and registers its `router` under the /api prefix. Expose:\n  GET  /profiles/{profile_name}/voice          -> {voice: VoiceProfile json, source, reason, profile}. Load the profile with the same loader the existing profiles API/tools use (find the profiles router once), pass profile.voice as the profile voice and the project default voice (media store key PROJECT_STORE_KEY='project', via MediaStore) as project_voice, and return resolve_voice(...).model_dump(mode='json').\n  POST /profiles/{profile_name}/voice/preview  -> synthesize a short sample. In M0 there is NO TTS engine: answer HTTP 503 with {\"reason\": \"no tts provider\", \"voice\": ...}. Never return fake or silent audio bytes. Resolve the provider through codx.junior.media.providers (default registry) rather than hardcoding a vendor, so a future local TTS drops in without changing the endpoint.\n\nUnknown profile -> 404. Follow the conventions of api/codx/junior/api/wiki.py (Depends(get_current_session), module logger, no business logic inside the endpoint).\n\nAdd api/tests/media/test_profile_voice_api.py (offline, fastapi TestClient with dependency_overrides, pytest.importorskip('httpx')): both routes are declared in the router; resolve reports source='profile' when the profile declares a voice and source='disabled' when enabled=False; preview answers 503 when no provider is available.\n\nTIME BUDGET: at most 8 tool calls before you write. Read only: api/codx/junior/media/voice.py, the existing profiles router (locate it once with one grep/locate), and ~30 lines of api/codx/junior/api/wiki.py for the conventions. Do NOT read the client, design/project-channel.md or background.py.\n\nDO NOT MODIFY api/codx/junior/api/media.py - another step owns that file in parallel.\n\nTEST COMMAND (the api image has no python on PATH):\n  docker exec codx-junior-api /tmp/.venv_codx_junior_api/bin/python -m pytest /home/codx-junior-projects/codx-junior/codx-junior-platform/api/tests/media/test_profile_voice_api.py -q -o pythonpath=/home/codx-junior-projects/codx-junior/codx-junior-platform/api\n\n**Acceptance criteria**\napi/codx/junior/api/profile_voice.py exists and declares GET /profiles/{profile_name}/voice plus POST /profiles/{profile_name}/voice/preview; the new test file passes (quote the exact number); preview returns 503 instead of fake audio when no TTS provider is configured; project_changes shows only the new module and its test.",
+  "meta_data": null,
+  "messages": [
+    {
+      "doc_id": "780c399a-57b6-48b0-b611-90042930002c",
+      "role": "user",
+      "task_item": "",
+      "content": "# ORCHESTRATED STEP\nRun: **Project's Channel \u2014 M0 spine**\nStep: **Profile voice endpoints: resolve + preview (503 without a TTS engine)** (`profile-voice-api`)\n\n## Run objective\nBuild the load-bearing spine for the \"Project's Channel\" feature described in `design/project-channel.md` (read it first; it is the contract).\n\nScope of M0 only:\n1. New python package `api/codx/junior/media/` with models (MediaJob, MediaAsset, EpisodeIR, RenderSpec, VoiceProfile, ProviderInfo), a `MediaProvider` protocol + registry, a job store under `<project>/.codx/media/` (inbox/jobs/episodes/assets), a cost/estimate budget gate, and a mandatory redaction entry point. Pure python, no network, unit-tested.\n2. A background worker `media/worker.py` exposing `start_media_worker(stop_event)` / `stop_media_worker()` wired into `api/codx/junior/background.py` exactly like the existing wiki scheduler / orchestration worker (lazy import inside try/except, symmetric stop). Jobs must be persisted with leases + retries so a restart resumes work.\n3. A FastAPI router `api/codx/junior/api/media.py` exposing `/api/media/providers`, `/api/media/queue`, `/api/media/episodes` (create/detail), `/api/media/assets/...`, following the conventions in `api/codx/junior/api/wiki.py`.\n4. A local image provider PoC able to produce an episode cover with content-addressed caching (hash of provider+model+prompt+spec); ComfyUI is the real target but the provider must degrade to an available local/offline path when ComfyUI is not running.\n5. Client shell: `/channel` view with tabs Home, Library (reusing `client/src/components/wiki/WikiMarkdown.vue` + `client/src/service/wiki.js`), Episodes, Shorts, Learn. The existing wiki nav entry becomes a tab inside the channel; existing `/wiki` routes must keep resolving.\n\nHard constraints:\n- No external AI/media services in this milestone; local-first only.\n- Do not break existing wiki behaviour or the existing background services.\n- Keep changes reviewable; no reformatting of untouched code.\n- Every new module gets tests where it is testable offline.\n\n## Step objective\nVoice is already a profile property: api/codx/junior/model/profile.py has `voice: Optional[VoiceProfile]` (~line 108) and the pure resolver api/codx/junior/media/voice.py (204 lines) already exposes DEFAULT_VOICE, PROJECT_STORE_KEY, ResolvedVoice, VoiceSource = profile|project|system|disabled, resolve_voice and voice_snapshot. What is missing are the HTTP endpoints.\n\nCREATE A NEW ROUTER MODULE api/codx/junior/api/profile_voice.py - it needs no app.py change because codx.junior.api.discover_routers() imports every module of that package and registers its `router` under the /api prefix. Expose:\n  GET  /profiles/{profile_name}/voice          -> {voice: VoiceProfile json, source, reason, profile}. Load the profile with the same loader the existing profiles API/tools use (find the profiles router once), pass profile.voice as the profile voice and the project default voice (media store key PROJECT_STORE_KEY='project', via MediaStore) as project_voice, and return resolve_voice(...).model_dump(mode='json').\n  POST /profiles/{profile_name}/voice/preview  -> synthesize a short sample. In M0 there is NO TTS engine: answer HTTP 503 with {\"reason\": \"no tts provider\", \"voice\": ...}. Never return fake or silent audio bytes. Resolve the provider through codx.junior.media.providers (default registry) rather than hardcoding a vendor, so a future local TTS drops in without changing the endpoint.\n\nUnknown profile -> 404. Follow the conventions of api/codx/junior/api/wiki.py (Depends(get_current_session), module logger, no business logic inside the endpoint).\n\nAdd api/tests/media/test_profile_voice_api.py (offline, fastapi TestClient with dependency_overrides, pytest.importorskip('httpx')): both routes are declared in the router; resolve reports source='profile' when the profile declares a voice and source='disabled' when enabled=False; preview answers 503 when no provider is available.\n\nTIME BUDGET: at most 8 tool calls before you write. Read only: api/codx/junior/media/voice.py, the existing profiles router (locate it once with one grep/locate), and ~30 lines of api/codx/junior/api/wiki.py for the conventions. Do NOT read the client, design/project-channel.md or background.py.\n\nDO NOT MODIFY api/codx/junior/api/media.py - another step owns that file in parallel.\n\nTEST COMMAND (the api image has no python on PATH):\n  docker exec codx-junior-api /tmp/.venv_codx_junior_api/bin/python -m pytest /home/codx-junior-projects/codx-junior/codx-junior-platform/api/tests/media/test_profile_voice_api.py -q -o pythonpath=/home/codx-junior-projects/codx-junior/codx-junior-platform/api\n\n## Acceptance criteria\napi/codx/junior/api/profile_voice.py exists and declares GET /profiles/{profile_name}/voice plus POST /profiles/{profile_name}/voice/preview; the new test file passes (quote the exact number); preview returns 503 instead of fake audio when no TTS provider is configured; project_changes shows only the new module and its test.\n\n## Known files\n- `api/codx/junior/api/profile_voice.py`\n- `api/codx/junior/media/voice.py`\n- `api/tests/media/test_profile_voice_api.py`\n\n## Rules\n- Work only on this step; do not start unrelated refactors.\n- Inspect the code before changing it and keep the change reviewable.\n- Verify your work (tests, build, manual check) and say how.\n- If you are blocked, explain exactly what is missing instead of guessing forever.\n- Do not burn your tool budget: batch the reads you need and re-use the results already in the conversation. Only stop for a tool limit if you have run out of continuations, and then report what you already know.\n\n## Result contract\nFinish with a JSON object (and nothing after it):\n{\"status\":\"done\"|\"blocked\"|\"failed\",\"summary\":\"what was done\",\"files\":[\"paths touched\"],\"verification\":\"how you verified it\",\"followups\":[\"remaining work\"]}",
+      "think": null,
+      "hide": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-13 16:53:37.084514",
+      "updated_at": "2026-11-13 16:53:37.084520",
+      "attachments": [],
+      "files": [
+        "api/codx/junior/api/profile_voice.py",
+        "api/codx/junior/media/voice.py",
+        "api/tests/media/test_profile_voice_api.py"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "a42996ae-d646-4496-8778-94bc4e827ab6",
+      "role": "user",
+      "task_item": "",
+      "content": "# ORCHESTRATED STEP\nRun: **Project's Channel \u2014 M0 spine**\nStep: **Profile voice endpoints: resolve + preview (503 without a TTS engine)** (`profile-voice-api`)\n\n## Run objective\nBuild the load-bearing spine for the \"Project's Channel\" feature described in `design/project-channel.md` (read it first; it is the contract).\n\nScope of M0 only:\n1. New python package `api/codx/junior/media/` with models (MediaJob, MediaAsset, EpisodeIR, RenderSpec, VoiceProfile, ProviderInfo), a `MediaProvider` protocol + registry, a job store under `<project>/.codx/media/` (inbox/jobs/episodes/assets), a cost/estimate budget gate, and a mandatory redaction entry point. Pure python, no network, unit-tested.\n2. A background worker `media/worker.py` exposing `start_media_worker(stop_event)` / `stop_media_worker()` wired into `api/codx/junior/background.py` exactly like the existing wiki scheduler / orchestration worker (lazy import inside try/except, symmetric stop). Jobs must be persisted with leases + retries so a restart resumes work.\n3. A FastAPI router `api/codx/junior/api/media.py` exposing `/api/media/providers`, `/api/media/queue`, `/api/media/episodes` (create/detail), `/api/media/assets/...`, following the conventions in `api/codx/junior/api/wiki.py`.\n4. A local image provider PoC able to produce an episode cover with content-addressed caching (hash of provider+model+prompt+spec); ComfyUI is the real target but the provider must degrade to an available local/offline path when ComfyUI is not running.\n5. Client shell: `/channel` view with tabs Home, Library (reusing `client/src/components/wiki/WikiMarkdown.vue` + `client/src/service/wiki.js`), Episodes, Shorts, Learn. The existing wiki nav entry becomes a tab inside the channel; existing `/wiki` routes must keep resolving.\n\nHard constraints:\n- No external AI/media services in this milestone; local-first only.\n- Do not break existing wiki behaviour or the existing background services.\n- Keep changes reviewable; no reformatting of untouched code.\n- Every new module gets tests where it is testable offline.\n\n## Step objective\nVoice is already a profile property: api/codx/junior/model/profile.py has `voice: Optional[VoiceProfile]` (~line 108) and the pure resolver api/codx/junior/media/voice.py (204 lines) already exposes DEFAULT_VOICE, PROJECT_STORE_KEY, ResolvedVoice, VoiceSource = profile|project|system|disabled, resolve_voice and voice_snapshot. What is missing are the HTTP endpoints.\n\nCREATE A NEW ROUTER MODULE api/codx/junior/api/profile_voice.py - it needs no app.py change because codx.junior.api.discover_routers() imports every module of that package and registers its `router` under the /api prefix. Expose:\n  GET  /profiles/{profile_name}/voice          -> {voice: VoiceProfile json, source, reason, profile}. Load the profile with the same loader the existing profiles API/tools use (find the profiles router once), pass profile.voice as the profile voice and the project default voice (media store key PROJECT_STORE_KEY='project', via MediaStore) as project_voice, and return resolve_voice(...).model_dump(mode='json').\n  POST /profiles/{profile_name}/voice/preview  -> synthesize a short sample. In M0 there is NO TTS engine: answer HTTP 503 with {\"reason\": \"no tts provider\", \"voice\": ...}. Never return fake or silent audio bytes. Resolve the provider through codx.junior.media.providers (default registry) rather than hardcoding a vendor, so a future local TTS drops in without changing the endpoint.\n\nUnknown profile -> 404. Follow the conventions of api/codx/junior/api/wiki.py (Depends(get_current_session), module logger, no business logic inside the endpoint).\n\nAdd api/tests/media/test_profile_voice_api.py (offline, fastapi TestClient with dependency_overrides, pytest.importorskip('httpx')): both routes are declared in the router; resolve reports source='profile' when the profile declares a voice and source='disabled' when enabled=False; preview answers 503 when no provider is available.\n\nTIME BUDGET: at most 8 tool calls before you write. Read only: api/codx/junior/media/voice.py, the existing profiles router (locate it once with one grep/locate), and ~30 lines of api/codx/junior/api/wiki.py for the conventions. Do NOT read the client, design/project-channel.md or background.py.\n\nDO NOT MODIFY api/codx/junior/api/media.py - another step owns that file in parallel.\n\nTEST COMMAND (the api image has no python on PATH):\n  docker exec codx-junior-api /tmp/.venv_codx_junior_api/bin/python -m pytest /home/codx-junior-projects/codx-junior/codx-junior-platform/api/tests/media/test_profile_voice_api.py -q -o pythonpath=/home/codx-junior-projects/codx-junior/codx-junior-platform/api\n\n## Acceptance criteria\napi/codx/junior/api/profile_voice.py exists and declares GET /profiles/{profile_name}/voice plus POST /profiles/{profile_name}/voice/preview; the new test file passes (quote the exact number); preview returns 503 instead of fake audio when no TTS provider is configured; project_changes shows only the new module and its test.\n\n## Known files\n- `api/codx/junior/api/profile_voice.py`\n- `api/codx/junior/media/voice.py`\n- `api/tests/media/test_profile_voice_api.py`\n\n## Rules\n- Work only on this step; do not start unrelated refactors.\n- Inspect the code before changing it and keep the change reviewable.\n- Verify your work (tests, build, manual check) and say how.\n- If you are blocked, explain exactly what is missing instead of guessing forever.\n- Do not burn your tool budget: batch the reads you need and re-use the results already in the conversation. Only stop for a tool limit if you have run out of continuations, and then report what you already know.\n\n## Result contract\nFinish with a JSON object (and nothing after it):\n{\"status\":\"done\"|\"blocked\"|\"failed\",\"summary\":\"what was done\",\"files\":[\"paths touched\"],\"verification\":\"how you verified it\",\"followups\":[\"remaining work\"]}",
+      "think": null,
+      "hide": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-13 16:53:37.084514",
+      "updated_at": "2026-11-13 16:53:37.084520",
+      "attachments": [],
+      "files": [
+        "api/codx/junior/api/profile_voice.py",
+        "api/codx/junior/media/voice.py",
+        "api/tests/media/test_profile_voice_api.py"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "596e8070-5024-4785-ac8a-1062159b8402",
+      "role": "assistant",
+      "task_item": "",
+      "content": "I'll inspect the required files first: existing profiles router, wiki.py conventions, media providers registry, and MediaStore.Now I have the conventions. Writing the router module.",
+      "think": "* Processing request, please wait...\n",
+      "hide": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-13 16:54:08.840978",
+      "updated_at": "2026-11-13T17:08:59.450396",
+      "attachments": [],
+      "files": [],
+      "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+      "meta_data": {
+        "start_time": 1794588846.5873468,
+        "cancellation_token_id": "6e3a8c46-a9c0-44c4-a606-2135e7b183f7",
+        "model": "deepseek-flash"
+      },
+      "tool_events": [
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_00_ET_WU7RcPNYYf6kxd6PsDIX2080",
+          "status": "error",
+          "request": {
+            "query": "profiles router FastAPI APIRouter profiles",
+            "kind": "route",
+            "path": "api/codx/junior/api",
+            "limit": 10
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 121774.42917227745,
+          "error": "Tool 'project_locate' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-13T16:54:22.028Z",
+          "finished_at": "2026-11-13T16:56:23.802Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_ET_qpXjCQBVq7SSDMzTKZZJ1470",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/api/wiki.py",
+            "start_line": 1,
+            "end_line": 70
+          },
+          "response": "# api/codx/junior/api/wiki.py (lines 1-70 of 491)\n```py api/codx/junior/api/wiki.py\n\"\"\"\nWiki API: docs-site manifest, pages, assistant and update status.\n\nThe legacy endpoints (``/wiki`` and ``/wiki-engine/*``) are kept so existing\nclients and the wiki settings screen keep working. The modern docs UI uses the\n``/wiki/site``, ``/wiki/page``, ``/wiki/assistant`` and ``/wiki/updates``\nendpoints.\n\nA ``project`` query/body parameter can target a related project (child,\nparent or dependency) without switching the active project. This is what makes\na parent wiki able to navigate the wikis of the projects inside it.\n\"\"\"\n\nimport asyncio\nimport logging\nimport os\nimport time\nfrom typing import Any, Dict, Optional\nfrom urllib.parse import unquote\n\nfrom fastapi import APIRouter, Body, HTTPException, Query, Request, Response, status\nfrom fastapi.responses import FileResponse\n\nfrom codx.junior.engine import CODXJuniorSession\nfrom codx.junior.project.project_discover import (\n    find_all_projects,\n    find_project_by_name,\n    get_project_dependencies,\n    is_path_child_of,\n)\nfrom codx.junior.wiki.assistant import WikiAssistant\nfrom codx.junior.wiki.scheduler import (\n    get_wiki_scheduler,\n    read_update_status,\n    schedule_wiki_update,\n)\nfrom codx.junior.wiki.site import WikiSiteBuilder\nfrom codx.junior.wiki.wiki_manager import WikiManager\n\nfrom codx.junior.sio.sio import (\n    sio,\n    sio_api_endpoint,\n    sio_send_event,\n)\n\nlogger = logging.getLogger(__name__)\n\nrouter = APIRouter()\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef _session(request: Request) -> CODXJuniorSession:\n    session = getattr(request.state, \"codx_junior_session\", None)\n    if session is None:\n        raise HTTPException(status_code=401, detail=\"No project session\")\n    return session\n\n\ndef _related_projects(settings: Any) -> list:\n    \"\"\"Return every project whose wiki may be opened from this one.\"\"\"\n    related = [settings]\n    try:\n        related.extend(get_project_dependencies(settings))\n        related.extend(find_project_by_name(p.project_name) for p in settings.get_sub_projects())\n        current_path = settings.abs_project_path\n        related.extend(\n```\n\n> Showing the requested range lines 1-70 of 491; 421 line(s) follow it. Request them only if needed, or use `pattern=...` / the outline to jump to a symbol.",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/wiki.py",
+          "duration_ms": 1755.4417829960585,
+          "error": null,
+          "started_at": "2026-11-13T16:56:25.409Z",
+          "finished_at": "2026-11-13T16:56:27.164Z",
+          "cached": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_00_PkwZhB9djVu2l57ToRgN2526",
+          "status": "done",
+          "request": {
+            "path": "api/codx/junior/media"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n                \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n                \u251c\u2500\u2500 \ud83d\udc0d budget.py\n                \u251c\u2500\u2500 \ud83d\udc0d model.py\n                \u251c\u2500\u2500 \ud83d\udcc1 **providers**/\n                \u2502   \u2514\u2500\u2500 \ud83d\udc0d image_local.py\n                \u251c\u2500\u2500 \ud83d\udc0d providers.py\n                \u251c\u2500\u2500 \ud83d\udc0d redaction.py\n                \u251c\u2500\u2500 \ud83d\udc0d store.py\n                \u251c\u2500\u2500 \ud83d\udc0d voice.py\n                \u2514\u2500\u2500 \ud83d\udc0d worker.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
+          "output": null,
+          "duration_ms": 101375.70920027792,
+          "error": null,
+          "started_at": "2026-11-13T16:56:32.958Z",
+          "finished_at": "2026-11-13T16:58:14.334Z",
+          "cached": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_01_xNpRyTtWEHMsUL7Ft6rt9263",
+          "status": "done",
+          "request": {
+            "path": "api/codx/junior/api"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u2514\u2500\u2500 \ud83d\udcc1 **api**/\n                \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n                \u251c\u2500\u2500 \ud83d\udc0d analytics.py\n                \u251c\u2500\u2500 \ud83d\udc0d analytics_model.py\n                \u251c\u2500\u2500 \ud83d\udc0d api_logs.py\n                \u251c\u2500\u2500 \ud83d\udc0d atlas.py\n                \u251c\u2500\u2500 \ud83d\udc0d autonomy.py\n                \u251c\u2500\u2500 \ud83d\udc0d bootstrap.py\n                \u251c\u2500\u2500 \ud83d\udc0d browser.py\n                \u251c\u2500\u2500 \ud83d\udc0d browser_files.py\n                \u251c\u2500\u2500 \ud83d\udc0d browser_models.py\n                \u251c\u2500\u2500 \ud83d\udc0d calendar.py\n                \u251c\u2500\u2500 \ud83d\udc0d chat.py\n                \u251c\u2500\u2500 \ud83d\udc0d chatGPTLikeApi.py\n                \u251c\u2500\u2500 \ud83d\udc0d company.py\n                \u251c\u2500\u2500 \ud83d\udc0d computer.py\n                \u251c\u2500\u2500 \ud83d\udc0d computer_resize.py\n                \u251c\u2500\u2500 \ud83d\udc0d console.py\n                \u251c\u2500\u2500 \ud83d\udc0d db_router.py\n                \u251c\u2500\u2500 \ud83d\udc0d dsh.py\n                \u251c\u2500\u2500 \ud83d\udc0d dsh_agent.py\n                \u251c\u2500\u2500 \ud83d\udc0d file_finder.py\n                \u251c\u2500\u2500 \ud83d\udc0d files.py\n                \u251c\u2500\u2500 \ud83d\udc0d git.py\n                \u251c\u2500\u2500 \ud83d\udc0d github.py\n                \u251c\u2500\u2500 \ud83d\udc0d global_settings.py\n                \u251c\u2500\u2500 \ud83d\udc0d harness.py\n                \u251c\u2500\u2500 \ud83d\udc0d image.py\n                \u251c\u2500\u2500 \ud83d\udc0d images.py\n                \u251c\u2500\u2500 \ud83d\udc0d infra.py\n                \u251c\u2500\u2500 \ud83d\udc0d kanban.py\n                \u251c\u2500\u2500 \ud83d\udc0d knowledge.py\n                \u251c\u2500\u2500 \ud83d\udc0d log_explorer.py\n                \u251c\u2500\u2500 \ud83d\udc0d logs.py\n                \u251c\u2500\u2500 \ud83d\udc0d management.py\n                \u251c\u2500\u2500 \ud83d\udc0d media.py\n                \u251c\u2500\u2500 \ud83d\udc0d meets.py\n                \u251c\u2500\u2500 \ud83d\udc0d orchestration.py\n                \u251c\u2500\u2500 \ud83d\udc0d profiles.py\n                \u251c\u2500\u2500 \ud83d\udc0d project_search.py\n                \u251c\u2500\u2500 \ud83d\udc0d projects.py\n                \u251c\u2500\u2500 \ud83d\udc0d teams.py\n                \u251c\u2500\u2500 \ud83d\udc0d traefik.py\n                \u251c\u2500\u2500 \ud83d\udc0d users.py\n                \u251c\u2500\u2500 \ud83d\udc0d views.py\n                \u251c\u2500\u2500 \ud83d\udc0d wiki.py\n                \u251c\u2500\u2500 \ud83d\udc0d workspace_models.py\n                \u2514\u2500\u2500 \ud83d\udc0d workspaces.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
+          "output": null,
+          "duration_ms": 50575.35330951214,
+          "error": null,
+          "started_at": "2026-11-13T16:58:16.146Z",
+          "finished_at": "2026-11-13T16:59:06.721Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_A0oBiYQNVrBMc5uvfKZs4778",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/api/profiles.py",
+            "start_line": 1,
+            "end_line": 140
+          },
+          "response": "# api/codx/junior/api/profiles.py (lines 1-140 of 742)\n```py api/codx/junior/api/profiles.py\n\"\"\"\nProfiles API router \u2014 visualize and edit what a profile has learned.\n\nThis router follows the project convention: every router lives in\n``codx/junior/api/`` and exports a ``router`` attribute. It is discovered\nautomatically by :func:`codx.junior.api.discover_routers` (called from\n``codx.junior.app.load_routers``) and mounted under ``/api``, so **no change is\nneeded in ``app.py``**.\n\nResources\n---------\nThe profile is part of the path and the project comes from the request session\n(the ``codx_path`` query parameter / ``x-codx-path`` header handled by the\nsession middleware) \u2014 it is never sent in a body:\n\nGET    /api/profiles/{profile_name}/knowledge          rules + files + limits + can_write\nGET    /api/profiles/{profile_name}/knowledge/files    read one knowledge file\nPUT    /api/profiles/{profile_name}/knowledge/files    create/update a knowledge file\nDELETE /api/profiles/{profile_name}/knowledge/files    delete a project-owned file\nPUT    /api/profiles/{profile_name}/knowledge/rules    create/replace a rule (upsert by title)\nDELETE /api/profiles/{profile_name}/knowledge/rules    forget a rule\nPOST   /api/profiles/{profile_name}/knowledge/promote  move rule <-> knowledge file\n\nConventions\n-----------\n* ``PUT`` creates **and** updates (upsert semantics);\n* ``DELETE`` takes the resource name as a query parameter, because a DELETE body\n  is not reliably forwarded by proxies and HTTP clients;\n* request bodies only describe the resource (file name, content, title).\n\nStorage (owned by :class:`~codx.junior.profiles.profile_manager.ProfileManager`)\n-------------------------------------------------------------------------------\n* **Rules** \u2014 short, always-relevant instructions stored as ``## <title>``\n  blocks in ``<project .codx>/profiles/<Name>/enrich.md``. They are composed into\n  the profile content, so they reach every chat prompt and cost tokens: they are\n  addressed by title, so writing an existing title replaces it instead of adding\n  a duplicate.\n* **Knowledge files** \u2014 reference material under\n  ``<project .codx>/profiles/<Name>/knowledge/**``, indexed and retrieved on\n  demand. Base (``codx/junior/profiles/<Name>/knowledge``) and parent-project\n  files are read-only from here.\n\nPermissions\n-----------\nReading is open to any project user; writing requires\n:meth:`UserSecurityManager.can_manage_profile_knowledge` (codx-junior admin,\nproject admin or project ``knowledge_admin``) \u2014 the same rule the\n``profile_learning`` tool applies, so the UI and the tool never disagree. The\noverview reports ``can_write`` so a read-only client knows it up front.\n\nDiagram\n-------\n```mermaid\nflowchart LR\n    Client -->|GET .../knowledge| Overview\n    Client -->|GET .../knowledge/files| ReadFile\n    Client -->|PUT .../knowledge/files| WriteFile\n    Client -->|DELETE .../knowledge/files| DeleteFile\n    Client -->|PUT .../knowledge/rules| UpsertRule\n    Client -->|DELETE .../knowledge/rules| ForgetRule\n    Client -->|POST .../knowledge/promote| Promote\n\n    Overview --> ProfileManager\n    ReadFile --> ProfileManager\n    WriteFile --> ProfileManager\n    DeleteFile --> ProfileManager\n    UpsertRule --> ProfileManager\n    ForgetRule --> ProfileManager\n    Promote --> ProfileManager\n\n    ProfileManager --> Disk[.codx/profiles/NAME/enrich.md + knowledge/**]\n    ProfileManager --> Chain[base profile + parent projects - read-only]\n```\n\nMade with \u2764\ufe0f by codx-junior\n\"\"\"\n\nimport logging\nimport os\n\nfrom dataclasses import dataclass\nfrom typing import Any, Dict, Literal, Optional\n\nfrom fastapi import APIRouter, Depends, HTTPException, Path, Query, Request\nfrom pydantic import BaseModel, ConfigDict, Field\n\nfrom codx.junior.engine import CODXJuniorSession\nfrom codx.junior.model.model import CodxUser\nfrom codx.junior.profiles.profile_manager import MAX_RULE_CHARS, ProfileManager\nfrom codx.junior.security.user_management import (\n    UserSecurityManager,\n    get_authent",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/profiles.py",
+          "duration_ms": 4093.4493578970432,
+          "error": null,
+          "started_at": "2026-11-13T16:59:09.828Z",
+          "finished_at": "2026-11-13T16:59:13.921Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_HSlSbFYXWciNBAKynDsJ2492",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/media/providers.py"
+          },
+          "response": "# api/codx/junior/media/providers.py (lines 1-243 of 243)\n```py api/codx/junior/media/providers.py\n\"\"\"Media provider protocol, registry and resolution helpers.\n\nDependency free: stdlib plus the pydantic ``ProviderInfo`` from\n``codx.junior.media.model``. No network, no web framework and no settings\nimports, so the registry stays unit testable offline.\n\nThe registry answers the only question the pipeline asks: *who can serve this\ncapability right now?* \u2014 and, when nobody can, it raises ``NoProviderAvailable``\ninstead of returning ``None``.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nfrom contextlib import contextmanager\nfrom typing import Dict, Iterable, Iterator, List, Optional, Protocol, runtime_checkable\n\nfrom .model import ProviderInfo\n\n# The concrete provider implementations live in ``media/providers/`` (see\n# ``providers/image_local.py``). That folder is deliberately *not* a python\n# package: a ``providers/__init__.py`` would shadow this module and drop\n# ``ProviderRegistry`` from ``codx.junior.media.providers``. Exposing the folder\n# through ``__path__`` keeps the registry here while\n# ``codx.junior.media.providers.image_local`` stays importable.\n__path__ = [os.path.join(os.path.dirname(os.path.abspath(__file__)), \"providers\")]\n\n\nclass NoProviderAvailable(Exception):\n    \"\"\"Raised when no registered provider can serve a capability.\"\"\"\n\n    def __init__(self, capability: str, tried: Optional[Iterable[str]] = None) -> None:\n        self.capability = capability\n        self.tried: List[str] = [str(name) for name in (tried or [])]\n        message = f\"no media provider available for capability '{capability}'\"\n        if self.tried:\n            message += f\" (tried: {', '.join(self.tried)})\"\n        super().__init__(message)\n\n\n@runtime_checkable\nclass MediaProvider(Protocol):\n    \"\"\"Contract every media provider implements.\"\"\"\n\n    def info(self) -> ProviderInfo:\n        \"\"\"Static description of the provider: name, capability, model, cost.\"\"\"\n        ...\n\n    def available(self) -> bool:\n        \"\"\"Whether the provider can produce something right now.\"\"\"\n        ...\n\n    def estimate(self, request: dict) -> float:\n        \"\"\"Expected cost of ``request`` in the project currency (0.0 = free).\"\"\"\n        ...\n\n    def run(self, request: dict) -> dict:\n        \"\"\"Execute the request and return the produced payload.\"\"\"\n        ...\n\n\ndef _safe_available(provider: MediaProvider) -> bool:\n    \"\"\"``provider.available()`` that treats any failure as 'not available'.\n\n    A provider probing a local binary or a socket may raise; resolution must\n    never explode because of that, it only has to move on to the next provider.\n    \"\"\"\n    try:\n        return bool(provider.available())\n    except Exception:  # noqa: BLE001 - availability probing is best effort\n        return False\n\n\nclass ProviderRegistry:\n    \"\"\"In memory registry of media providers keyed by provider name.\"\"\"\n\n    def __init__(self) -> None:\n        self._providers: Dict[str, MediaProvider] = {}\n\n    def __len__(self) -> int:\n        return len(self._providers)\n\n    def __contains__(self, name: object) -> bool:\n        return name in self._providers\n\n    def register(self, provider: MediaProvider) -> MediaProvider:\n        \"\"\"Store ``provider`` under its ``info().name`` and return it.\"\"\"\n        name = provider.info().name\n        if not name:\n            raise ValueError(\"a media provider needs a non empty name\")\n        self._providers[name] = provider\n        return provider\n\n    def unregister(self, name: str) -> None:\n        self._providers.pop(name, None)\n\n    def clear(self) -> None:\n        self._providers.clear()\n\n    def get(self, name: str) -> MediaProvider:\n        \"\"\"Return the provider registered as ``name`` or raise ``KeyError``.\"\"\"\n        try:\n            return self._providers[name]\n        except KeyError:\n            raise KeyError(f\"unknown media provider '{name}'\") from None\n\n    def list(self, capability: Optional[str] = None) -> List[ProviderInfo]",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/providers.py",
+          "duration_ms": 1843.9888134598732,
+          "error": null,
+          "started_at": "2026-11-13T16:59:17.010Z",
+          "finished_at": "2026-11-13T16:59:18.854Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_wvmXJKPLBBJ6ZIlNgNcN2162",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/api/profiles.py",
+            "pattern": "ProfileManager\\(|def _manager|manager\\.get_profile|get_profile\\(|def _profile|_session\\(request|Depends\\(",
+            "context_lines": 4,
+            "max_chars": 20000
+          },
+          "response": "# api/codx/junior/api/profiles.py \u2014 pattern `ProfileManager\\(|def _manager|manager\\.get_profile|get_profile\\(|def _profile|_session\\(request|Depends\\(` (12 match(es); 742 lines)\n```py api/codx/junior/api/profiles.py\n   219|     manager: ProfileManager\n   220|     can_write: bool\n   221| \n   222| \n   223| def get_project_session(request: Request) -> CODXJuniorSession:\n   224|     \"\"\"\n   225|     Return the project session attached to the request by the middleware.\n   226| \n   227|     The session middleware (``app.add_codx_junior_settings``) creates it from the\n      | \u2026\n   252|     profile_name: str = Path(\n   253|         min_length=1,\n   254|         description=\"Profile name (e.g. software_developer)\",\n   255|     ),\n   256|     session: CODXJuniorSession = Depends(get_project_session),\n   257|     user: Optional[CodxUser] = Depends(get_authenticated_user),\n   258| ) -> ProfileKnowledgeContext:\n   259|     \"\"\"\n   260|     Resolve the profile of the request and the caller's write permission.\n   261| \n      | \u2026\n   276| \n   277|     Example:\n   278|         GET /api/profiles/software_developer/knowledge?codx_path=/path/to/project\n   279|     \"\"\"\n   280|     manager = ProfileManager(settings=session.settings)\n   281|     name = (profile_name or \"\").strip()\n   282| \n   283|     if not name or not manager.profile_exists(name):\n   284|         raise HTTPException(\n      | \u2026\n   308|     )\n   309| \n   310| \n   311| def profile_knowledge_admin(\n   312|     context: ProfileKnowledgeContext = Depends(profile_knowledge_context),\n   313| ) -> ProfileKnowledgeContext:\n   314|     \"\"\"\n   315|     Dependency for write endpoints: they require knowledge administration rights.\n   316| \n      | \u2026\n   381|     \"/{profile_name}/knowledge\",\n   382|     summary=\"What a profile has learned for the project\",\n   383| )\n   384| def get_profile_knowledge(\n   385|     context: ProfileKnowledgeContext = Depends(profile_knowledge_context),\n   386| ) -> Dict[str, Any]:\n   387|     \"\"\"\n   388|     Return the knowledge overview of a profile: rules, files and limits.\n   389| \n      | \u2026\n   438|         min_length=1,\n   439|         max_length=MAX_FILE_NAME_CHARS,\n   440|         description=\"Path relative to the knowledge folder\",\n   441|     ),\n   442|     context: ProfileKnowledgeContext = Depends(profile_knowledge_context),\n   443| ) -> Dict[str, Any]:\n   444|     \"\"\"\n   445|     Return the content of one knowledge file (base or any project level).\n   446| \n      | \u2026\n   481|     summary=\"Create or update a profile knowledge file\",\n   482| )\n   483| def write_knowledge_file(\n   484|     payload: KnowledgeFileWrite,\n   485|     context: ProfileKnowledgeContext = Depends(profile_knowledge_admin),\n   486| ) -> Dict[str, Any]:\n   487|     \"\"\"\n   488|     Create or update a knowledge file in the project of the request.\n   489| \n      | \u2026\n   533|         min_length=1,\n   534|         max_length=MAX_FILE_NAME_CHARS,\n   535|         description=\"Path relative to the knowledge folder\",\n   536|     ),\n   537|     context: ProfileKnowledgeContext = Depends(profile_knowledge_admin),\n   538| ) -> Dict[str, Any]:\n   539|     \"\"\"\n   540|     Delete a knowledge file owned by the project of the request.\n   541| \n      | \u2026\n   576|     summary=\"Learn (create or replace) a profile rule\",\n   577| )\n   578| def write_rule(\n   579|     payload: RuleWrite,\n   580|     context: ProfileKnowledgeContext = Depends(profile_knowledge_admin),\n   581| ) -> Dict[str, Any]:\n   582|     \"\"\"\n   583|     Upsert a rule in the project's profile enrichment (``enrich.md``).\n   584| \n      | \u2026\n   628|         min_length=1,\n   629|         max_length=MAX_QUERY_TEXT_CHARS,\n   630|         description=\"Rule title\",\n   631|     ),\n   632|     context: ProfileKnowledgeContext = Depends(profile_knowledge_admin),\n   633| ) -> Dict[str, Any]:\n   634|     \"\"\"\n   635|     Remove a rule learned by the project of the request.\n   636| \n      | \u2026\n   669|     summary=\"Move content between rules and knowledge files\",",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/profiles.py",
+          "duration_ms": 2158.006003126502,
+          "error": null,
+          "started_at": "2026-11-13T16:59:28.276Z",
+          "finished_at": "2026-11-13T16:59:30.434Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_IBhBXoL284hhw723PRkB6185",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/media/store.py",
+            "context_lines": 3,
+            "pattern": "^class |^def |    def "
+          },
+          "response": "# api/codx/junior/media/store.py \u2014 pattern `^class |^def |    def ` (23 match(es); 358 lines)\n```py api/codx/junior/media/store.py\n    66| }\n    67| \n    68| \n    69| def _as_aware(value: Optional[datetime]) -> Optional[datetime]:\n    70|     \"\"\"Normalise a timestamp to UTC; naive values are assumed to be UTC.\"\"\"\n    71|     if value is None:\n    72|         return None\n      | \u2026\n    75|     return value.astimezone(timezone.utc)\n    76| \n    77| \n    78| def _normalize_ext(ext: str, mime: str) -> str:\n    79|     \"\"\"Return a safe file extension (with the leading dot) for an asset.\n    80| \n    81|     Unknown mime types fall back to ``.bin`` so the extension is always\n      | \u2026\n    90|     return re.sub(r\"[^.a-z0-9]\", \"\", value) or \".bin\"\n    91| \n    92| \n    93| class MediaStore:\n    94|     \"\"\"Filesystem store for media jobs, episodes and content addressed assets.\"\"\"\n    95| \n    96|     def __init__(self, root: Path):\n    97|         self.root = Path(root)\n    98|         self.inbox_dir = self.root / INBOX_DIRNAME\n    99|         self.inbox_done_dir = self.inbox_dir / DONE_DIRNAME\n      | \u2026\n   111|             directory.mkdir(parents=True, exist_ok=True)\n   112| \n   113|     @classmethod\n   114|     def for_project(cls, project_path: Path) -> \"MediaStore\":\n   115|         \"\"\"Store of a project: ``<project>/.codx/media``.\"\"\"\n   116|         return cls(Path(project_path) / \".codx\" / \"media\")\n   117| \n   118|     # ------------------------------------------------------------------ writes\n   119|     def write_atomic(self, target: Path, data: bytes) -> Path:\n   120|         \"\"\"Write ``data`` to ``tmp/`` first and atomically move it to ``target``.\"\"\"\n   121|         target = Path(target)\n   122|         target.parent.mkdir(parents=True, exist_ok=True)\n      | \u2026\n   137|             raise\n   138|         return target\n   139| \n   140|     def _write_json(self, target: Path, payload: dict) -> Path:\n   141|         data = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)\n   142|         return self.write_atomic(target, data.encode(\"utf-8\") + b\"\\n\")\n   143| \n   144|     def _read_json(self, path: Path) -> Optional[dict]:\n   145|         try:\n   146|             return json.loads(Path(path).read_text(encoding=\"utf-8\"))\n   147|         except (OSError, ValueError):\n   148|             return None\n   149| \n   150|     # -------------------------------------------------------------------- jobs\n   151|     def _job_path(self, job_id: str) -> Path:\n   152|         return self.jobs_dir / f\"{job_id}{JOB_SUFFIX}\"\n   153| \n   154|     def put_job(self, job: MediaJob) -> MediaJob:\n   155|         \"\"\"Persist a job, generating an id when the job has none yet.\"\"\"\n   156|         if not job.job_id:\n   157|             job.job_id = f\"job-{utc_now():%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}\"\n      | \u2026\n   159|         self._write_json(self._job_path(job.job_id), job.model_dump(mode=\"json\"))\n   160|         return job\n   161| \n   162|     def get_job(self, job_id: str) -> Optional[MediaJob]:\n   163|         \"\"\"Load a job by id; ``None`` when it is unknown or unreadable.\"\"\"\n   164|         if not job_id:\n   165|             return None\n      | \u2026\n   171|         except ValidationError:\n   172|             return None\n   173| \n   174|     def list_jobs(self, state: Optional[str] = None) -> List[MediaJob]:\n   175|         \"\"\"All known jobs (optionally filtered by state), oldest first.\"\"\"\n   176|         jobs: List[MediaJob] = []\n   177|         for path in self.jobs_dir.glob(f\"*{JOB_SUFFIX}\"):\n      | \u2026\n   188|         jobs.sort(key=lambda item: (_as_aware(item.created_at), item.job_id))\n   189|         return jobs\n   190| \n   191|     def _lease_expired(self, job: MediaJob, now: datetime, ttl_seconds: int) -> bool:\n   192|         reference = _as_aware(job.heartbeat_at or job.updated_at)\n   193|         if reference is None:\n   194|             return True\n   195|         return reference <= now - timedelta(seconds=max(0, int(ttl_seconds)))\n ",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/store.py",
+          "duration_ms": 2655.0159510225058,
+          "error": null,
+          "started_at": "2026-11-13T16:59:38.391Z",
+          "finished_at": "2026-11-13T16:59:41.046Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_9uAXkVexuNNDp9qCiahc8992",
+          "status": "done",
+          "request": {
+            "end_line": 115,
+            "file_path": "api/codx/junior/media/store.py",
+            "start_line": 1
+          },
+          "response": "# api/codx/junior/media/store.py (lines 1-115 of 358)\n```py api/codx/junior/media/store.py\n\"\"\"Persistence layer for the Project's Channel media pipeline.\n\nThe store owns everything that lives under ``<project>/.codx/media``:\n\n    inbox/          dropped ``*.episode.json`` files waiting to be ingested\n    inbox/done/     accepted inbox files (kept for traceability)\n    jobs/           one ``<job_id>.job.json`` per MediaJob (leases + retries)\n    episodes/       one ``<episode_id>.episode.json`` per EpisodeIR\n    assets/ab/      content addressed assets, sharded by the first 2 hash chars\n    tmp/            staging area that makes every write atomic\n\nPure python: stdlib + ``media.model`` only. No app settings, no network and no\nmodule level state, so callers (and tests) can point it at any directory. A\nproject store is built with ``MediaStore.for_project(project_path)``; tests pass\na ``tmp_path``.\n\"\"\"\n\nimport hashlib\nimport json\nimport mimetypes\nimport os\nimport re\nimport tempfile\nimport uuid\nfrom contextlib import suppress\nfrom datetime import datetime, timedelta, timezone\nfrom pathlib import Path\nfrom typing import Iterable, List, Optional, Tuple\n\nfrom pydantic import ValidationError\n\nfrom .model import EpisodeIR, MediaAsset, MediaJob, utc_now\n\nJOBS_DIRNAME = \"jobs\"\nINBOX_DIRNAME = \"inbox\"\nEPISODES_DIRNAME = \"episodes\"\nASSETS_DIRNAME = \"assets\"\nTMP_DIRNAME = \"tmp\"\nDONE_DIRNAME = \"done\"\n\nJOB_SUFFIX = \".job.json\"\nEPISODE_SUFFIX = \".episode.json\"\n\nQUEUED = \"queued\"\nLEASED = \"leased\"\nRUNNING = \"running\"\nDONE = \"done\"\nFAILED = \"failed\"\n# States whose job holds a lease and can be reclaimed when the lease expires\nLEASE_STATES = (LEASED, RUNNING)\n\n# Deterministic mime -> extension fallback (``mimetypes`` misses several of these)\nMIME_EXTENSIONS = {\n    \"image/png\": \".png\",\n    \"image/jpeg\": \".jpg\",\n    \"image/webp\": \".webp\",\n    \"image/gif\": \".gif\",\n    \"audio/mpeg\": \".mp3\",\n    \"audio/wav\": \".wav\",\n    \"audio/x-wav\": \".wav\",\n    \"audio/ogg\": \".ogg\",\n    \"video/mp4\": \".mp4\",\n    \"video/webm\": \".webm\",\n    \"text/vtt\": \".vtt\",\n    \"application/pdf\": \".pdf\",\n}\n\n\ndef _as_aware(value: Optional[datetime]) -> Optional[datetime]:\n    \"\"\"Normalise a timestamp to UTC; naive values are assumed to be UTC.\"\"\"\n    if value is None:\n        return None\n    if value.tzinfo is None:\n        return value.replace(tzinfo=timezone.utc)\n    return value.astimezone(timezone.utc)\n\n\ndef _normalize_ext(ext: str, mime: str) -> str:\n    \"\"\"Return a safe file extension (with the leading dot) for an asset.\n\n    Unknown mime types fall back to ``.bin`` so the extension is always\n    present and deterministic (it is cosmetic: the asset id is the sha256).\n    \"\"\"\n    value = (ext or \"\").strip().lower()\n    if not value and mime:\n        base_mime = (mime or \"\").split(\";\")[0].strip().lower()\n        value = MIME_EXTENSIONS.get(base_mime) or mimetypes.guess_extension(base_mime) or \"\"\n    if value and not value.startswith(\".\"):\n        value = \".\" + value\n    return re.sub(r\"[^.a-z0-9]\", \"\", value) or \".bin\"\n\n\nclass MediaStore:\n    \"\"\"Filesystem store for media jobs, episodes and content addressed assets.\"\"\"\n\n    def __init__(self, root: Path):\n        self.root = Path(root)\n        self.inbox_dir = self.root / INBOX_DIRNAME\n        self.inbox_done_dir = self.inbox_dir / DONE_DIRNAME\n        self.jobs_dir = self.root / JOBS_DIRNAME\n        self.episodes_dir = self.root / EPISODES_DIRNAME\n        self.assets_dir = self.root / ASSETS_DIRNAME\n        self.tmp_dir = self.root / TMP_DIRNAME\n        for directory in (\n            self.inbox_dir,\n            self.jobs_dir,\n            self.episodes_dir,\n            self.assets_dir,\n            self.tmp_dir,\n        ):\n            directory.mkdir(parents=True, exist_ok=True)\n\n    @classmethod\n    def for_project(cls, project_path: Path) -> \"MediaStore\":\n        \"\"\"Store of a project: ``<project>/.codx/media``.\"\"\"\n```\n\n> Showing the requested range lines 1-115 of 358; 243 line(s) follow it. Request them only if needed, or use `p",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/store.py",
+          "duration_ms": 3255.9912744909525,
+          "error": null,
+          "started_at": "2026-11-13T16:59:49.838Z",
+          "finished_at": "2026-11-13T16:59:53.094Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_MnZEEpJ979OxBv2PLY5X5913",
+          "status": "done",
+          "request": {
+            "context_lines": 1,
+            "file_path": "api/codx/junior/profiles/profile_manager.py",
+            "pattern": "^class |    def |^def "
+          },
+          "response": "# api/codx/junior/profiles/profile_manager.py \u2014 pattern `^class |    def |^def ` (57 match(es); 1560 lines)\n```py api/codx/junior/profiles/profile_manager.py\n    91| \n    92| def normalize_rule_title(title: str) -> str:\n    93|     \"\"\"\n      | \u2026\n   101| \n   102| def slugify_rule_title(title: str) -> str:\n   103|     \"\"\"\n      | \u2026\n   112| \n   113| def strip_profile_enrichment(content: str) -> str:\n   114|     \"\"\"\n      | \u2026\n   122| \n   123| def generate_llm_tree(root_path, indent=\"\", is_last=True, ignore_list=None):\n   124|     if ignore_list is None:\n      | \u2026\n   150| \n   151| class ProfileManager:\n   152|     def __init__(self, settings: CODXJuniorSettings):\n   153|         self.settings = settings\n      | \u2026\n   163| \n   164|     def base_profiles(self):\n   165|         def _files (file_gen):\n   166|             return [str(file) for file in file_gen]\n      | \u2026\n   170| \n   171|     def _base_profile_path(self, profile_name: str) -> Optional[str]:\n   172|         \"\"\"\n      | \u2026\n   188| \n   189|     def project_profile_paths(self):\n   190|         def _files (file_gen):\n   191|             return [str(file) for file in file_gen]\n      | \u2026\n   204|     # -------------------------------------------------------------------------\n   205|     def profile_chain(self) -> List[\"ProfileManager\"]:\n   206|         \"\"\"\n      | \u2026\n   242| \n   243|     def owns_profile(self, profile_name: str) -> bool:\n   244|         \"\"\"\n      | \u2026\n   260| \n   261|     def profile_exists(self, profile_name: str) -> bool:\n   262|         \"\"\"\n      | \u2026\n   274| \n   275|     def profile_enrich_path(self, profile_name: str) -> str:\n   276|         \"\"\"\n      | \u2026\n   286| \n   287|     def profile_knowledge_path(self, profile_name: str) -> str:\n   288|         \"\"\"\n      | \u2026\n   297| \n   298|     def base_profile_knowledge_path(self, profile_name: str) -> str:\n   299|         \"\"\"\n      | \u2026\n   309|     @staticmethod\n   310|     def _read_text(path: str, max_size: int = MAX_KNOWLEDGE_FILE_SIZE) -> str:\n   311|         \"\"\"\n      | \u2026\n   330|     @staticmethod\n   331|     def _wrap_enrichment(project_name: str, text: str) -> str:\n   332|         \"\"\"\n      | \u2026\n   344| \n   345|     def compose_profile_content(self, profile: Profile) -> str:\n   346|         \"\"\"\n      | \u2026\n   383| \n   384|     def list_all_profiles(self):\n   385|         parent_projects = find_project_parents(project=self.settings)\n      | \u2026\n   411| \n   412|     def list_profiles(self):\n   413|         profiles = [self.load_profile(profile_path) for profile_path in self.project_profile_paths()]\n      | \u2026\n   415| \n   416|     def read_profile(self, profile_name) -> Profile:\n   417|         \"\"\"\n      | \u2026\n   458| \n   459|     def load_profile(self, profile_path) -> Profile:\n   460|         \"\"\"\n      | \u2026\n   509| \n   510|     def _migrate_profile_to_folder(self, profile_name: str, old_profile_path: str):\n   511|         \"\"\"Migrate a profile from flat structure to folder structure\"\"\"\n      | \u2026\n   534| \n   535|     def save_profile(self, profile: Profile):\n   536|         if not profile.name:\n      | \u2026\n   579| \n   580|     def delete_profile(self, profile_name):\n   581|         # Delete profile in new folder structure\n      | \u2026\n   613|     @staticmethod\n   614|     def _parse_rules(content: str) -> List[Dict[str, str]]:\n   615|         \"\"\"\n      | \u2026\n   634|     @staticmethod\n   635|     def _render_rules(rules: List[Dict[str, str]]) -> str:\n   636|         \"\"\"\n      | \u2026\n   648| \n   649|     def profile_rules(\n   650|         self,\n      | \u2026\n   690| \n   691|     def find_profile_rule(\n   692|         self,\n      | \u2026\n   717| \n   718|     def upsert_profile_rule(\n   719|         self,\n      | \u2026\n   801| \n   802|     def delete_profile_rule(self, profile_name: str, title: str) -> str:\n   803|         \"\"\"\n      | \u2026\n   846| \n   847|     def profile_knowledge_overview(self, profile_name: str) -> Dict[str, Any]:\n   848|         \"\"\"\n      | \u2026\n   880|     # -------------------------------------------------------------------------\n   8",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/profiles/profile_manager.py",
+          "duration_ms": 3347.757000476122,
+          "error": null,
+          "started_at": "2026-11-13T16:59:57.468Z",
+          "finished_at": "2026-11-13T17:00:00.816Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_fDpQcZ0RJ6VCaZblWQaC2589",
+          "status": "done",
+          "request": {
+            "end_line": 358,
+            "file_path": "api/codx/junior/media/store.py",
+            "start_line": 328
+          },
+          "response": "# api/codx/junior/media/store.py (lines 328-358 of 358)\n```py api/codx/junior/media/store.py\n    def inbox(self) -> List[Path]:\n        \"\"\"Dropped episode files waiting to be ingested, oldest name first.\"\"\"\n        if not self.inbox_dir.exists():\n            return []\n        return sorted(\n            path\n            for path in self.inbox_dir.glob(f\"*{EPISODE_SUFFIX}\")\n            if path.is_file()\n        )\n\n    def take_inbox(self) -> Tuple[List[Path], List[EpisodeIR]]:\n        \"\"\"Ingest the inbox, keeping every accepted file under ``inbox/done/``.\n\n        Unreadable files stay where they are so nothing is lost silently.\n        \"\"\"\n        self.inbox_done_dir.mkdir(parents=True, exist_ok=True)\n        paths: List[Path] = []\n        episodes: List[EpisodeIR] = []\n        for path in self.inbox():\n            payload = self._read_json(path)\n            if payload is None:\n                continue\n            try:\n                ir = EpisodeIR.model_validate(payload)\n            except ValidationError:\n                continue\n            done_path = self.inbox_done_dir / path.name\n            os.replace(path, done_path)\n            paths.append(path)\n            episodes.append(ir)\n        return paths, episodes\n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/store.py",
+          "duration_ms": 12588.431419804692,
+          "error": null,
+          "started_at": "2026-11-13T17:00:10.114Z",
+          "finished_at": "2026-11-13T17:00:22.703Z",
+          "cached": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_01_eQYJZaXPQnD7Ii6e072w5973",
+          "status": "error",
+          "request": {
+            "query": "PROJECT_STORE_KEY",
+            "include": "api/codx/**/*.py",
+            "limit": 8
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 129196.57308608294,
+          "error": "Tool 'project_locate' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-13T17:00:25.108Z",
+          "finished_at": "2026-11-13T17:02:34.305Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_Va1bBRtn7EW4l5Ts4G8B7157",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/media/__init__.py"
+          },
+          "response": "# api/codx/junior/media/__init__.py (lines 1-1 of 1)\n```py api/codx/junior/media/__init__.py\n\"\"\"Media package: models, providers, store, budget and worker for the Project's Channel.\"\"\"\n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/__init__.py",
+          "duration_ms": 6654.738061130047,
+          "error": null,
+          "started_at": "2026-11-13T17:02:43.050Z",
+          "finished_at": "2026-11-13T17:02:49.704Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_AP04eKTuubUZ1mnwyDff6398",
+          "status": "done",
+          "request": {
+            "context_lines": 2,
+            "file_path": "api/codx/junior/api/media.py",
+            "pattern": "PROJECT_STORE_KEY|def |MediaStore|voice"
+          },
+          "response": "# api/codx/junior/api/media.py \u2014 pattern `PROJECT_STORE_KEY|def |MediaStore|voice` (15 match(es); 192 lines)\n```py api/codx/junior/api/media.py\n     3| Thin HTTP layer over ``codx.junior.media`` (models, store, budget, providers).\n     4| No business logic lives here: the endpoints only translate a request into a\n     5| ``MediaStore``/``ProviderRegistry``/``BudgetGate`` call and dump the result as\n     6| plain json, so the client can consume it directly.\n     7| \n      | \u2026\n    25| from codx.junior.media.model import EpisodeIR, MediaJob, ProviderInfo\n    26| from codx.junior.media.providers import default_image_registry\n    27| from codx.junior.media.store import MediaStore\n    28| \n    29| logger = logging.getLogger(__name__)\n      | \u2026\n    44| \n    45| \n    46| def project_path(session: CODXJuniorSession) -> Path:\n    47|     \"\"\"Project directory of the active session.\"\"\"\n    48|     settings = getattr(session, \"settings\", None)\n      | \u2026\n    57| \n    58| \n    59| def store_for_project(project_dir: Path) -> MediaStore:\n    60|     \"\"\"Store of a project: ``<project>/.codx/media``.\"\"\"\n    61|     return MediaStore.for_project(Path(project_dir))\n    62| \n    63| \n    64| def budget_for_store(store: MediaStore) -> BudgetGate:\n    65|     \"\"\"Budget gate bound to the store, so its counters survive a restart.\"\"\"\n    66|     return BudgetGate(path=store.root / BUDGET_FILENAME)\n    67| \n    68| \n    69| def _store(session: CODXJuniorSession) -> MediaStore:\n    70|     return store_for_project(project_path(session))\n    71| \n    72| \n    73| def _provider_infos() -> List[ProviderInfo]:\n    74|     \"\"\"Descriptions of the built in image providers (empty when unavailable).\"\"\"\n    75|     try:\n      | \u2026\n    80| \n    81| \n    82| def _queue_counts(jobs: List[MediaJob]) -> Dict[str, int]:\n    83|     counts: Dict[str, int] = {}\n    84|     for job in jobs:\n      | \u2026\n    87| \n    88| \n    89| def asset_file(store: MediaStore, asset_id: str) -> Path:\n    90|     \"\"\"Resolve ``asset_id`` to a file stored under ``<store>/assets``.\n    91| \n      | \u2026\n   123| \n   124| @router.get(\"/providers\")\n   125| async def list_providers(\n   126|     session: CODXJuniorSession = Depends(get_current_session),\n   127| ) -> Dict[str, Any]:\n      | \u2026\n   138| \n   139| @router.get(\"/queue\")\n   140| async def get_queue(\n   141|     session: CODXJuniorSession = Depends(get_current_session),\n   142| ) -> Dict[str, Any]:\n      | \u2026\n   151| \n   152| @router.post(\"/episodes\")\n   153| async def create_episode(\n   154|     payload: Dict[str, Any] = Body(...),\n   155|     session: CODXJuniorSession = Depends(get_current_session),\n      | \u2026\n   171| \n   172| @router.get(\"/episodes/{episode_id}\")\n   173| async def get_episode(\n   174|     episode_id: str,\n   175|     session: CODXJuniorSession = Depends(get_current_session),\n      | \u2026\n   184| \n   185| @router.get(\"/assets/{asset_id}\")\n   186| async def get_asset(\n   187|     asset_id: str,\n   188|     session: CODXJuniorSession = Depends(get_current_session),\n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/media.py",
+          "duration_ms": 1322.111165151,
+          "error": null,
+          "started_at": "2026-11-13T17:02:51.043Z",
+          "finished_at": "2026-11-13T17:02:52.365Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_2yHAfM2582JisvQbm7Eg8118",
+          "status": "done",
+          "request": {
+            "end_line": 45,
+            "file_path": "api/codx/junior/api/media.py",
+            "start_line": 1
+          },
+          "response": "# api/codx/junior/api/media.py (lines 1-45 of 192)\n```py api/codx/junior/api/media.py\n\"\"\"Media API of the Project's Channel: providers, queue, episodes and assets.\n\nThin HTTP layer over ``codx.junior.media`` (models, store, budget, providers).\nNo business logic lives here: the endpoints only translate a request into a\n``MediaStore``/``ProviderRegistry``/``BudgetGate`` call and dump the result as\nplain json, so the client can consume it directly.\n\nThe router is auto discovered: ``codx.junior.api.discover_routers()`` imports\nevery module of this package and registers its ``router`` with the ``/api``\nprefix, so ``APIRouter(prefix=\"/media\")`` serves ``/api/media/*``.\n\"\"\"\n\nimport logging\nimport re\nfrom pathlib import Path\nfrom typing import Any, Dict, List, Optional\n\nfrom fastapi import APIRouter, Body, Depends, HTTPException\nfrom fastapi.responses import FileResponse\nfrom pydantic import ValidationError\n\nfrom codx.junior.api import get_current_session\nfrom codx.junior.engine import CODXJuniorSession\nfrom codx.junior.media.budget import BudgetGate\nfrom codx.junior.media.model import EpisodeIR, MediaJob, ProviderInfo\nfrom codx.junior.media.providers import default_image_registry\nfrom codx.junior.media.store import MediaStore\n\nlogger = logging.getLogger(__name__)\n\nrouter = APIRouter(prefix=\"/media\", tags=[\"media\"])\n\n#: Budget mirror kept next to the jobs/episodes/assets of the project store\nBUDGET_FILENAME = \"budget.json\"\n#: Never return more than this many jobs in a single queue snapshot\nMAX_QUEUE_JOBS = 50\n#: An asset id is a content hash; anything with a separator cannot be served\nASSET_ID_PATTERN = re.compile(r\"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\")\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\n```\n\n> Showing the requested range lines 1-45 of 192; 147 line(s) follow it. Request them only if needed, or use `pattern=...` / the outline to jump to a symbol.",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/media.py",
+          "duration_ms": 1578.5659197717905,
+          "error": null,
+          "started_at": "2026-11-13T17:03:00.944Z",
+          "finished_at": "2026-11-13T17:03:02.523Z",
+          "cached": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_01_3ZDA5ThjZQ73YwHdIRXv4902",
+          "status": "done",
+          "request": {
+            "path": "api/tests/media"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **tests**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n            \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_cover_provider.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_models.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_providers.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_redaction.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_router.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_store.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_voice.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_worker.py\n            \u2514\u2500\u2500 \ud83d\udc0d test_profile_voice.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
+          "output": null,
+          "duration_ms": 79920.32693512738,
+          "error": null,
+          "started_at": "2026-11-13T17:03:05.979Z",
+          "finished_at": "2026-11-13T17:04:25.899Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_fokhdmTiSbZTD8lUAYMx9786",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/api/__init__.py"
+          },
+          "response": "# api/codx/junior/api/__init__.py (lines 1-85 of 85)\n```py api/codx/junior/api/__init__.py\n\"\"\"\nShared API utilities used across multiple routers.\n\"\"\"\n\nimport logging\nimport os\nimport importlib\nfrom pathlib import Path\nfrom typing import List\n\nfrom fastapi import Depends, HTTPException, Request\n\nfrom codx.junior.model.model import CodxUser\nfrom codx.junior.security.user_management import get_authenticated_user\nfrom codx.junior.engine import CODXJuniorSession\n\nlogger = logging.getLogger(__name__)\n\n\ndef require_admin(user: CodxUser = Depends(get_authenticated_user)) -> CodxUser:\n    \"\"\"Dependency that raises 403 unless the authenticated user is an admin.\"\"\"\n    if not user or user.role != \"admin\":\n        logger.error(\"Access denied for user: %s\", user.username if user else \"anonymous\")\n        raise HTTPException(status_code=403, detail=\"Access denied. Admins only.\")\n    return user\n\ndef get_current_session(request: Request) -> CODXJuniorSession:\n    \"\"\"\n    Extract the active CODXJuniorSession from the incoming request state.\n\n    This mirrors the pattern used in the wiki router where the session is\n    injected into ``request.state`` by middleware before reaching the endpoint.\n\n    Args:\n        request: The incoming HTTP request.\n\n    Returns:\n        The active ``CODXJuniorSession`` attached to the request state.\n    \"\"\"\n    return request.state.codx_junior_session\n\n\ndef discover_routers() -> List[dict]:\n    \"\"\"\n    Dynamically discover all routers in the api package.\n    Each router module should export a 'router' attribute.\n    \n    Returns:\n        List of dicts with 'router', 'prefix', and 'module' keys.\n    \"\"\"\n    routers = []\n    api_package_path = Path(__file__).parent\n    \n    # Get all Python files in the api directory (excluding __init__.py and test files)\n    router_files = [\n        f.stem for f in api_package_path.glob('*.py')\n        if f.is_file() and f.stem not in ['__init__', '__pycache__']\n        and not f.name.startswith('test_')\n    ]\n    \n    for module_name in sorted(router_files):\n        try:\n            # Import the module dynamically\n            module = importlib.import_module(f'codx.junior.api.{module_name}')\n            \n            # Check if module has a 'router' attribute\n            if hasattr(module, 'router'):\n                router_obj = getattr(module, 'router')\n                routers.append({\n                    'router': router_obj,\n                    'prefix': '/api',\n                    'module': module_name\n                })\n                logger.info(f\"Loaded router from module: {module_name}\")\n            else:\n                logger.debug(f\"Module {module_name} does not export 'router' attribute\")\n        except ImportError as e:\n            logger.error(f\"Failed to import router module {module_name}: {e}\")\n        except Exception as e:\n            logger.error(f\"Error loading router from {module_name}: {e}\")\n    \n    logger.info(f\"Successfully discovered {len(routers)} routers\")\n    return routers\n\n# Made with \u2764\ufe0f by codx-junior\n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/__init__.py",
+          "duration_ms": 3232.07401484251,
+          "error": null,
+          "started_at": "2026-11-13T17:04:30.781Z",
+          "finished_at": "2026-11-13T17:04:34.013Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_jdUtdPLQEm9M6hHIszkL7117",
+          "status": "done",
+          "request": {
+            "file_path": "api/tests/media/test_media_router.py"
+          },
+          "response": "# api/tests/media/test_media_router.py (lines 1-238 of 238)\n```py api/tests/media/test_media_router.py\n\"\"\"Offline tests of the media API router.\n\nNo server, no session, no network and no media provider is exercised: the\ntests check the declared routes, the project store binding, the asset path\ntraversal guard and \u2014 when ``httpx`` is installed \u2014 the json contract of the\nendpoints through a ``TestClient`` with the session dependency overridden.\n\"\"\"\n\nfrom pathlib import Path\nfrom typing import List, Set, Tuple\n\nimport pytest\nfrom fastapi import FastAPI, HTTPException\n\nfrom codx.junior.api import media as media_api\nfrom codx.junior.media.model import MediaJob\nfrom codx.junior.media.store import MediaStore\n\nEXPECTED_ROUTES = {\n    (\"GET\", \"/media/providers\"),\n    (\"GET\", \"/media/queue\"),\n    (\"POST\", \"/media/episodes\"),\n    (\"GET\", \"/media/episodes/{episode_id}\"),\n    (\"GET\", \"/media/assets/{asset_id}\"),\n}\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef declared_routes(router) -> Set[Tuple[str, str]]:\n    \"\"\"(method, path) pairs declared by ``router``, ignoring HEAD/OPTIONS.\"\"\"\n    declared: Set[Tuple[str, str]] = set()\n    for route in getattr(router, \"routes\", []):\n        path = getattr(route, \"path\", None)\n        methods = getattr(route, \"methods\", None)\n        if not path or not methods:\n            continue\n        for method in methods:\n            if method in (\"HEAD\", \"OPTIONS\"):\n                continue\n            declared.add((method.upper(), path))\n    return declared\n\n\ndef dependency_names(dependant) -> Set[str]:\n    \"\"\"Names of every callable used as a dependency of ``dependant``.\"\"\"\n    names: Set[str] = set()\n    for sub in getattr(dependant, \"dependencies\", None) or []:\n        call = getattr(sub, \"call\", None)\n        if call is not None:\n            names.add(getattr(call, \"__name__\", str(call)))\n        names |= dependency_names(sub)\n    return names\n\n\nclass _FakeSettings:\n    def __init__(self, project_path: Path) -> None:\n        self.abs_project_path = str(project_path)\n\n\nclass _FakeSession:\n    \"\"\"Minimal stand-in for CODXJuniorSession: only the settings path is used.\"\"\"\n\n    def __init__(self, project_path: Path) -> None:\n        self.settings = _FakeSettings(project_path)\n\n\n@pytest.fixture\ndef client(tmp_path):\n    \"\"\"TestClient of the media router with the project session overridden.\"\"\"\n    pytest.importorskip(\"httpx\")\n    from fastapi.testclient import TestClient\n\n    app = FastAPI()\n    app.include_router(media_api.router, prefix=\"/api\")\n    app.dependency_overrides[media_api.get_current_session] = lambda: _FakeSession(\n        tmp_path\n    )\n    with TestClient(app) as test_client:\n        test_client.project_dir = tmp_path\n        yield test_client\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Declared surface\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_router_prefix_and_tags():\n    assert media_api.router.prefix == \"/media\"\n    assert \"media\" in media_api.router.tags\n\n\ndef test_router_declares_expected_endpoints():\n    assert declared_routes(media_api.router) == EXPECTED_ROUTES\n\n\ndef test_every_endpoint_requires_the_project_session():\n    for route in media_api.router.routes:\n        dependant = getattr(route, \"dependant\", None)\n        if dependant is None:\n            continue\n        assert \"get_current_session\" in dependency_names(dependant), route.path\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Store binding\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_store_is_bound_to_the_project_media_folder(tmp_path):\n    store = media_api.store_for_project(tmp_path)\n    assert isinstance(store, MediaStore)\n    assert store.root == tmp_path / \".codx\" / \"media\"\n    assert store.jobs_dir.is_dir()\n    assert sto",
+          "output": "Read 1 file(s) | Successfully read: api/tests/media/test_media_router.py",
+          "duration_ms": 2187.187220901251,
+          "error": null,
+          "started_at": "2026-11-13T17:04:38.102Z",
+          "finished_at": "2026-11-13T17:04:40.289Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_ykk1p6p329naeiYH6pXr6707",
+          "status": "done",
+          "request": {
+            "context_lines": 2,
+            "file_path": "api/codx/junior/media/model.py",
+            "pattern": "capability|^class |voice"
+          },
+          "response": "# api/codx/junior/media/model.py \u2014 pattern `capability|^class |voice` (14 match(es); 150 lines)\n```py api/codx/junior/media/model.py\n    18| \n    19| # Capabilities a provider can declare\n    20| ProviderCapability = Literal[\"image\", \"voice\", \"video\", \"capture\", \"assemble\"]\n    21| # Asset kinds stored under .codx/media/assets\n    22| MediaKind = Literal[\"image\", \"audio\", \"video\", \"caption\", \"doc\"]\n      | \u2026\n    26| ShotKind = Literal[\"slide\", \"replay\", \"still\", \"title\", \"transcript\"]\n    27| # Job kinds\n    28| JobKind = Literal[\"episode\", \"short\", \"cover\", \"revoice\"]\n    29| # Job lifecycle\n    30| JobState = Literal[\"queued\", \"leased\", \"running\", \"done\", \"failed\", \"rejected\"]\n    31| \n    32| \n    33| class ProviderInfo(BaseModel):\n    34|     \"\"\"Description of a media provider and of its current availability.\"\"\"\n    35| \n      | \u2026\n    37| \n    38|     name: str = Field(description=\"Provider identifier, e.g. 'comfyui', 'piper'\")\n    39|     capability: ProviderCapability = Field(\n    40|         description=\"What the provider produces: image, voice, video, capture or assemble\"\n    41|     )\n    42|     available: bool = Field(default=False, description=\"Provider reachable right now\")\n      | \u2026\n    51| \n    52| \n    53| class MediaAsset(BaseModel):\n    54|     \"\"\"A produced artifact, addressed by content hash and stored in the project.\"\"\"\n    55| \n      | \u2026\n    65| \n    66| \n    67| class RenderSpec(BaseModel):\n    68|     \"\"\"How an episode/short is rendered.\"\"\"\n    69| \n      | \u2026\n    81| \n    82| \n    83| class VoiceProfile(BaseModel):\n    84|     \"\"\"Voice used for narration; snapshotted into the episode ir.\"\"\"\n    85| \n    86|     enabled: bool = Field(default=True)\n    87|     provider: str = Field(default=\"\")\n    88|     voice_id: str = Field(default=\"\")\n    89|     model: Optional[str] = Field(default=None)\n    90|     speed: float = Field(default=1.0)\n      | \u2026\n    92|     language: Optional[str] = Field(default=None)\n    93|     reference_asset: Optional[str] = Field(\n    94|         default=None, description=\"Asset id used as voice reference (cloning)\"\n    95|     )\n    96| \n    97| \n    98| class Shot(BaseModel):\n    99|     \"\"\"One unit of the episode timeline.\"\"\"\n   100| \n      | \u2026\n   114| \n   115| \n   116| class EpisodeIR(BaseModel):\n   117|     \"\"\"Intermediate representation of an episode, persisted under .codx/media/episodes.\"\"\"\n   118| \n      | \u2026\n   124|     project: str = Field(default=\"\")\n   125|     shots: List[Shot] = Field(default_factory=list)\n   126|     voice_snapshot: Dict[str, VoiceProfile] = Field(default_factory=dict)\n   127|     sources: List[str] = Field(default_factory=list)\n   128|     created_at: datetime = Field(default_factory=utc_now)\n      | \u2026\n   130| \n   131| \n   132| class MediaJob(BaseModel):\n   133|     \"\"\"A unit of work of the media worker, persisted with leases and retries.\"\"\"\n   134| \n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/model.py",
+          "duration_ms": 3078.094679862261,
+          "error": null,
+          "started_at": "2026-11-13T17:04:54.309Z",
+          "finished_at": "2026-11-13T17:04:57.387Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_v3tRsrBQa8Xq3af8U7o79965",
+          "status": "done",
+          "request": {
+            "file_path": "api/tests/media/test_profile_voice.py",
+            "max_chars": 12000,
+            "pattern": "^import |^from |^def |^class |PROJECT_STORE_KEY|fixture"
+          },
+          "response": "# api/tests/media/test_profile_voice.py \u2014 pattern `^import |^from |^def |^class |PROJECT_STORE_KEY|fixture` (20 match(es); 181 lines)\n```py api/tests/media/test_profile_voice.py\n     9| \"\"\"\n    10| \n    11| import json\n    12| from pathlib import Path\n    13| \n    14| import pytest\n    15| \n    16| from codx.junior.media.model import VoiceProfile\n    17| from codx.junior.media.voice import (\n    18|     DEFAULT_VOICE,\n    19|     PROJECT_STORE_KEY,\n    20|     ResolvedVoice,\n    21|     resolve_voice,\n    22|     voice_snapshot,\n    23| )\n    24| from codx.junior.model.profile import Profile\n    25| \n    26| API_ROOT = Path(__file__).resolve().parents[2]\n      | \u2026\n    28| \n    29| \n    30| def make_voice(**overrides) -> VoiceProfile:\n    31|     data = {\n    32|         \"enabled\": True,\n      | \u2026\n    48| \n    49| \n    50| def test_profile_without_voice_dumps_without_voice_key():\n    51|     profile = Profile(name=\"no-voice\")\n    52| \n      | \u2026\n    59| \n    60| \n    61| def test_profile_with_voice_roundtrips():\n    62|     profile = Profile(name=\"speaker\", voice=make_voice())\n    63| \n      | \u2026\n    71| \n    72| \n    73| def test_real_profile_file_still_loads_and_saves_unchanged():\n    74|     known = []\n    75|     for folder in (BUNDLED_PROFILES, API_ROOT.parent / \".codx\" / \"profiles\"):\n      | \u2026\n    88| \n    89| \n    90| def test_disabled_profile_voice_is_silence_without_fallback():\n    91|     resolved = resolve_voice(\n    92|         \"muted\",\n      | \u2026\n   103| \n   104| \n   105| def test_disabled_profile_voice_never_uses_system_default():\n   106|     resolved = resolve_voice(\"muted\", profiles=[MUTED])\n   107| \n      | \u2026\n   110| \n   111| \n   112| def test_resolution_precedence_profile_then_project_then_system():\n   113|     project_voice = make_voice(provider=\"local\", voice_id=\"project-voice\", model=None)\n   114|     profiles = {\"speaker\": SPEAKER}\n      | \u2026\n   133| \n   134| \n   135| def test_project_default_accepts_a_mapping():\n   136|     project_voice = {\"enabled\": True, \"provider\": \"local\", \"voice_id\": \"from-dict\"}\n   137| \n      | \u2026\n   142| \n   143| \n   144| def test_unknown_profile_falls_through_and_never_raises():\n   145|     project_voice = make_voice(voice_id=\"project-voice\")\n   146| \n      | \u2026\n   158| \n   159| \n   160| def test_voice_snapshot_resolves_speaking_profiles_and_skips_disabled():\n   161|     project_voice = make_voice(provider=\"local\", voice_id=\"project-voice\", model=None)\n   162|     profiles = {\"speaker\": SPEAKER, \"muted\": MUTED, \"plain\": SILENT_BY_DEFAULT}\n      | \u2026\n   170| \n   171| \n   172| def test_voice_snapshot_accepts_a_profile_list_and_is_serializable():\n   173|     snapshot = voice_snapshot([SPEAKER, MUTED])\n   174| \n      | \u2026\n   178| \n   179| \n   180| def test_project_store_key():\n   181|     assert PROJECT_STORE_KEY == \"project\"\n```",
+          "output": "Read 1 file(s) | Successfully read: api/tests/media/test_profile_voice.py",
+          "duration_ms": 2190.694600343704,
+          "error": null,
+          "started_at": "2026-11-13T17:05:01.963Z",
+          "finished_at": "2026-11-13T17:05:04.154Z",
+          "cached": null
+        },
+        {
+          "tool": "project_write_file",
+          "tool_call_id": "call_00_RgMFKR5tuLHzVZgP33cP5548",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/api/profile_voice.py",
+            "content": "\"\"\"Profile voice API: which voice a profile speaks with, and a sample preview.\n\nThe voice is a profile property (``Profile.voice``) and the decision of *which*\nvoice is used is owned by :mod:`codx.junior.media.voice` (pure python, no I/O).\nThis router is the thin HTTP layer over it \u2014 no business logic lives here, the\nendpoints only translate the request into a media call and dump the result as\nplain json.\n\nEndpoints\n---------\nGET  /api/profiles/{profile_name}/voice          resolved voice + source + reason\nPOST /api/profiles/{profile_name}/voice/preview  synthesize a short sample\n\nThe router is auto discovered: ``codx.junior.api.discover_routers()`` imports\nevery module of this package and registers its ``router`` with the ``/api``\nprefix, so ``APIRouter(prefix=\"/profiles\")`` serves ``/api/profiles/*`` and no\nchange is needed in ``app.py``.\n\nResolution\n----------\n:func:`resolve_voice` is called with the profile loaded through the same\nmanager the profiles router uses (:class:`ProfileManager`) and with the project\ndefault voice read from the project media store (``.codx/media`` entry\n``PROJECT_STORE_KEY``). A profile that declares ``enabled: False`` is silent and\nis never overridden by the project or system voice.\n\nPreview\n-------\nThere is no TTS engine in M0. The provider is resolved through\n:mod:`codx.junior.media.providers` (the default registry) instead of a hardcoded\nvendor, so a local TTS provider can be registered later without touching this\nendpoint. When nobody can serve the ``voice`` capability the endpoint answers\n**503** with ``{\"reason\": \"no tts provider\", ...}``: it never returns fake or\nsilent audio.\n\"\"\"\n\nimport json\nimport logging\nfrom pathlib import Path as FsPath\nfrom typing import Any, Dict, Mapping, Optional, Tuple\n\nfrom fastapi import APIRouter, Depends, HTTPException, Path\nfrom fastapi.responses import JSONResponse\n\nfrom codx.junior.api import get_current_session\nfrom codx.junior.engine import CODXJuniorSession\nfrom codx.junior.media import providers as media_providers\nfrom codx.junior.media.model import VoiceProfile\nfrom codx.junior.media.store import MediaStore\nfrom codx.junior.media.voice import PROJECT_STORE_KEY, ResolvedVoice, resolve_voice\nfrom codx.junior.model.profile import Profile\nfrom codx.junior.profiles.profile_manager import ProfileManager\n\nlogger = logging.getLogger(__name__)\n\nrouter = APIRouter(prefix=\"/profiles\", tags=[\"profiles\"])\n\n#: Capability a speech provider declares (see ``media.model.ProviderCapability``)\nVOICE_CAPABILITY = \"voice\"\n#: Store file holding the project level media settings, keyed by PROJECT_STORE_KEY\nSETTINGS_FILENAME = \"settings.json\"\n#: Text of the preview sample: short on purpose, a preview must stay cheap\nPREVIEW_SAMPLE = \"This is a preview of the voice used by this profile.\"\n#: Reason reported when no provider can synthesize speech (M0 has no TTS engine)\nNO_TTS_REASON = \"no tts provider\"\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef project_path(session: CODXJuniorSession) -> FsPath:\n    \"\"\"Project directory of the active session.\"\"\"\n    settings = getattr(session, \"settings\", None)\n    value = getattr(settings, \"abs_project_path\", None)\n    if not value:\n        raise HTTPException(status_code=500, detail=\"No project path in session\")\n    return FsPath(value)\n\n\ndef store_for_project(project_dir: FsPath) -> MediaStore:\n    \"\"\"Store of a project: ``<project>/.codx/media``.\"\"\"\n    return MediaStore.for_project(FsPath(project_dir))\n\n\ndef _store(session: CODXJuniorSession) -> MediaStore:\n    return store_for_project(project_path(session))\n\n\ndef _as_voice(value: Any) -> Optional[VoiceProfile]:\n    \"\"\"Normalize a voice-shaped value (model or mapping) to ``VoiceProfile``.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, VoiceProfile):\n        return value\n    if isinstance(value, Mapping):\n        return VoiceProfile.model_validate(dict(value))\n    return None\n\n\ndef project_default_voice(store: MediaStore) -> Optional[VoiceProfile]:\n    \"\"\"Project default voice stored by the project, ``None`` when it has none.\n\n    The entry lives in the media store under ``PROJECT_STORE_KEY``. The store\n    API is preferred when it exists; otherwise the same entry is read from the\n    ``settings.json`` mirror that sits next to the jobs/episodes folders. Both\n    paths are tolerant: a missing or unreadable entry simply means \"no project\n    default\", which makes resolution fall back to the system voice.\n    \"\"\"\n    getter = getattr(store, \"get_setting\", None)\n    if callable(getter):\n        try:\n            voice = _as_voice(getter(PROJECT_STORE_KEY))\n        except Exception:  # noqa: BLE001 - a broken store is not an error here\n            logger.debug(\"Could not read the project voice from the store\", exc_info=True)\n            voice = None\n        if voice is not None:\n            return voice\n\n    settings_path = FsPath(store.root) / SETTINGS_FILENAME\n    try:\n        payload = json.loads(settings_path.read_text(encoding=\"utf-8\"))\n    except (OSError, ValueError):\n        return None\n    if not isinstance(payload, Mapping):\n        return None\n    return _as_voice(payload.get(PROJECT_STORE_KEY))\n\n\ndef load_profile(session: CODXJuniorSession, profile_name: str) -> Profile:\n    \"\"\"Load the profile of the request with the same loader the profiles API uses.\n\n    An unknown profile is a 404, never a silent fallback.\n    \"\"\"\n    name = (profile_name or \"\").strip()\n    if not name:\n        raise HTTPException(status_code=404, detail=\"Unknown profile\")\n    try:\n        manager = ProfileManager(settings=session.settings)\n        if not manager.profile_exists(name):\n            raise HTTPException(status_code=404, detail=f\"Unknown profile '{name}'\")\n        return manager.read_profile(name)\n    except HTTPException:\n        raise\n    except Exception as exc:  # noqa: BLE001 - an unreadable profile is unknown\n        logger.warning(\"Could not load profile '%s': %s\", name, exc)\n        raise HTTPException(status_code=404, detail=f\"Unknown profile '{name}'\") from exc\n\n\ndef resolve_profile_voice(\n    session: CODXJuniorSession, profile_name: str\n) -> ResolvedVoice:\n    \"\"\"Resolve the voice of ``profile_name`` for the project of the request.\"\"\"\n    profile = load_profile(session, profile_name)\n    name = (profile.name or profile_name or \"\").strip()\n    return resolve_voice(\n        name,\n        profiles={name: profile},\n        project_default=project_default_voice(_store(session)),\n    )\n\n\ndef voice_provider(voice: VoiceProfile):\n    \"\"\"Provider able to speak ``voice``, ``None`` when nobody can (yet).\n\n    Resolution goes through the media provider registry, so a local TTS\n    provider dropped in later is picked up without changing the endpoint.\n    \"\"\"\n    try:\n        return media_providers.default_registry.resolve(\n            VOICE_CAPABILITY, preferred=voice.provider or None\n        )\n    except media_providers.NoProviderAvailable:\n        return None\n\n\ndef _provider_name(provider: Any) -> Optional[str]:\n    \"\"\"Name of ``provider``, ``None`` when it cannot describe itself.\"\"\"\n    try:\n        return provider.info().name\n    except Exception:  # noqa: BLE001 - a broken provider only loses its label\n        return None\n\n\ndef voice_preview(\n    session: CODXJuniorSession, profile_name: str\n) -> Tuple[int, Dict[str, Any]]:\n    \"\"\"``(http status, body)`` of a preview: 200 sample, 409 muted, 503 no engine.\"\"\"\n    resolved = resolve_profile_voice(session, profile_name)\n    body: Dict[str, Any] = {\n        \"profile\": resolved.profile,\n        \"source\": resolved.source,\n        \"reason\": resolved.reason,\n        \"voice\": resolved.voice.model_dump(mode=\"json\"),\n        \"provider\": None,\n    }\n    if resolved.source == \"disabled\":\n        return 409, {\n            **body,\n            \"reason\": \"voice is disabled in this profile (profile is silent)\",\n        }\n\n    provider = voice_provider(resolved.voice)\n    if provider is None:\n        return 503, {**body, \"reason\": NO_TTS_REASON}\n\n    name = _provider_name(provider)\n    try:\n        sample = provider.run({\"text\": PREVIEW_SAMPLE, \"voice\": body[\"voice\"]})\n    except Exception as exc:  # noqa: BLE001 - the client learns the engine failed\n        logger.warning(\"Voice preview failed for profile '%s': %s\", profile_name, exc)\n        return 503, {**body, \"provider\": name, \"reason\": f\"tts provider failed: {exc}\"}\n    return 200, {**body, \"provider\": name, \"sample\": sample}\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Endpoints\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\n@router.get(\n    \"/{profile_name}/voice\",\n    summary=\"Voice a profile speaks with\",\n)\nasync def get_profile_voice(\n    profile_name: str = Path(\n        min_length=1,\n        description=\"Profile name (e.g. software_developer)\",\n    ),\n    session: CODXJuniorSession = Depends(get_current_session),\n) -> Dict[str, Any]:\n    \"\"\"\n    Return the voice a profile speaks with: ``voice``, ``source``, ``reason``.\n\n    ``source`` is ``profile``, ``project``, ``system`` or ``disabled`` (the\n    profile explicitly asked to stay silent, with no fallback).\n\n    Example:\n        GET /api/profiles/software_developer/voice?codx_path=/path/to/project\n    \"\"\"\n    resolved = resolve_profile_voice(session, profile_name)\n    return resolved.model_dump(mode=\"json\")\n\n\n@router.post(\n    \"/{profile_name}/voice/preview\",\n    summary=\"Synthesize a short sample of the profile voice\",\n)\nasync def preview_profile_voice(\n    profile_name: str = Path(\n        min_length=1,\n        description=\"Profile name (e.g. software_developer)\",\n    ),\n    session: CODXJuniorSession = Depends(get_current_session),\n) -> JSONResponse:\n    \"\"\"\n    Synthesize a short sample of the resolved voice.\n\n    M0 ships no TTS engine: the request is answered with **503** and\n    ``{\"reason\": \"no tts provider\", \"voice\": ...}`` instead of fake audio. A\n    profile whose voice is disabled is **409** (nothing to speak).\n    \"\"\"\n    status_code, body = voice_preview(session, profile_name)\n    return JSONResponse(status_code=status_code, content=body)\n"
+          },
+          "response": "Write completed: api/codx/junior/api/profile_voice.py (10866 bytes)",
+          "output": "\u2713 File written successfully: `api/codx/junior/api/profile_voice.py` (10866 bytes)",
+          "duration_ms": 6968.352707102895,
+          "error": null,
+          "started_at": "2026-11-13T17:05:47.805Z",
+          "finished_at": "2026-11-13T17:05:54.773Z",
+          "cached": null
+        },
+        {
+          "tool": "project_write_file",
+          "tool_call_id": "call_00_EfVOrA5U6EUqxDXuBYNQ7573",
+          "status": "done",
+          "request": {
+            "content": "\"\"\"Offline tests of the profile voice API (resolve + preview).\n\nNo server, no session state, no network and no TTS engine: the tests check the\ndeclared routes, the resolution contract (``profile`` / ``project`` / ``system``\n/ ``disabled``) and that a preview without a speech provider answers 503 instead\nof returning fake audio. The profile loader is patched, so the endpoints are\nexercised on in-memory profiles; only the project store is real (``tmp_path``).\n\"\"\"\n\nimport json\nfrom pathlib import Path\nfrom typing import Dict, Set, Tuple\n\nimport pytest\nfrom fastapi import FastAPI, HTTPException\n\nfrom codx.junior.api import profile_voice as profile_voice_api\nfrom codx.junior.media import providers as media_providers\nfrom codx.junior.media.model import ProviderInfo, VoiceProfile\nfrom codx.junior.media.providers import ProviderRegistry\nfrom codx.junior.media.store import MediaStore\nfrom codx.junior.media.voice import PROJECT_STORE_KEY\nfrom codx.junior.model.profile import Profile\n\nEXPECTED_ROUTES = {\n    (\"GET\", \"/profiles/{profile_name}/voice\"),\n    (\"POST\", \"/profiles/{profile_name}/voice/preview\"),\n}\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef declared_routes(router) -> Set[Tuple[str, str]]:\n    \"\"\"(method, path) pairs declared by ``router``, ignoring HEAD/OPTIONS.\"\"\"\n    declared: Set[Tuple[str, str]] = set()\n    for route in getattr(router, \"routes\", []):\n        path = getattr(route, \"path\", None)\n        methods = getattr(route, \"methods\", None)\n        if not path or not methods:\n            continue\n        for method in methods:\n            if method in (\"HEAD\", \"OPTIONS\"):\n                continue\n            declared.add((method.upper(), path))\n    return declared\n\n\ndef dependency_names(dependant) -> Set[str]:\n    \"\"\"Names of every callable used as a dependency of ``dependant``.\"\"\"\n    names: Set[str] = set()\n    for sub in getattr(dependant, \"dependencies\", None) or []:\n        call = getattr(sub, \"call\", None)\n        if call is not None:\n            names.add(getattr(call, \"__name__\", str(call)))\n        names |= dependency_names(sub)\n    return names\n\n\ndef make_voice(**overrides) -> VoiceProfile:\n    data = {\n        \"enabled\": True,\n        \"provider\": \"local\",\n        \"voice_id\": \"voice-1\",\n        \"model\": None,\n        \"speed\": 1.0,\n    }\n    data.update(overrides)\n    return VoiceProfile(**data)\n\n\nclass _FakeSettings:\n    def __init__(self, project_path: Path) -> None:\n        self.abs_project_path = str(project_path)\n\n\nclass _FakeSession:\n    \"\"\"Minimal stand-in for CODXJuniorSession: only the project path is used.\"\"\"\n\n    def __init__(self, project_path: Path) -> None:\n        self.settings = _FakeSettings(project_path)\n\n\nclass _FakeTtsProvider:\n    \"\"\"In-memory speech provider, enough to prove the endpoint is vendor free.\"\"\"\n\n    def __init__(self, name: str = \"fake-tts\") -> None:\n        self._name = name\n\n    def info(self) -> ProviderInfo:\n        return ProviderInfo(name=self._name, capability=\"voice\", available=True, local=True)\n\n    def available(self) -> bool:\n        return True\n\n    def estimate(self, request: dict) -> float:\n        return 0.0\n\n    def run(self, request: dict) -> dict:\n        return {\"mime\": \"audio/wav\", \"bytes\": 0, \"text\": request.get(\"text\")}\n\n\n@pytest.fixture\ndef profiles(monkeypatch) -> Dict[str, Profile]:\n    \"\"\"Patch the profile loader so the API works on in-memory profiles.\"\"\"\n    store: Dict[str, Profile] = {}\n\n    def load_profile(session, profile_name):\n        profile = store.get(profile_name)\n        if profile is None:\n            raise HTTPException(status_code=404, detail=f\"Unknown profile '{profile_name}'\")\n        return profile\n\n    monkeypatch.setattr(profile_voice_api, \"load_profile\", load_profile)\n    return store\n\n\n@pytest.fixture\ndef client(tmp_path, profiles):\n    \"\"\"TestClient of the voice router with the project session overridden.\"\"\"\n    pytest.importorskip(\"httpx\")\n    from fastapi.testclient import TestClient\n\n    app = FastAPI()\n    app.include_router(profile_voice_api.router, prefix=\"/api\")\n    app.dependency_overrides[profile_voice_api.get_current_session] = lambda: _FakeSession(\n        tmp_path\n    )\n    with TestClient(app) as test_client:\n        test_client.project_dir = tmp_path\n        test_client.profiles = profiles\n        yield test_client\n\n\n@pytest.fixture(autouse=True)\ndef empty_provider_registry():\n    \"\"\"No speech provider by default: M0 ships no TTS engine.\"\"\"\n    with media_providers.use_registry(ProviderRegistry()):\n        yield\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Declared surface\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_router_prefix_and_tags():\n    assert profile_voice_api.router.prefix == \"/profiles\"\n    assert \"profiles\" in profile_voice_api.router.tags\n\n\ndef test_router_declares_expected_endpoints():\n    assert declared_routes(profile_voice_api.router) == EXPECTED_ROUTES\n\n\ndef test_every_endpoint_requires_the_project_session():\n    for route in profile_voice_api.router.routes:\n        dependant = getattr(route, \"dependant\", None)\n        if dependant is None:\n            continue\n        assert \"get_current_session\" in dependency_names(dependant), route.path\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Resolution contract\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_resolve_reports_the_voice_declared_by_the_profile(client):\n    client.profiles[\"speaker\"] = Profile(name=\"speaker\", voice=make_voice(voice_id=\"v-speaker\"))\n\n    response = client.get(\"/api/profiles/speaker/voice\")\n    assert response.status_code == 200\n    body = response.json()\n    assert body[\"source\"] == \"profile\"\n    assert body[\"profile\"] == \"speaker\"\n    assert body[\"voice\"][\"voice_id\"] == \"v-speaker\"\n    assert body[\"voice\"][\"enabled\"] is True\n    assert \"speaker\" in body[\"reason\"]\n\n\ndef test_resolve_reports_a_disabled_voice_without_fallback(client):\n    client.profiles[\"muted\"] = Profile(name=\"muted\", voice=make_voice(enabled=False))\n\n    body = client.get(\"/api/profiles/muted/voice\").json()\n    assert body[\"source\"] == \"disabled\"\n    assert body[\"voice\"][\"enabled\"] is False\n    assert \"no fallback\" in body[\"reason\"]\n\n\ndef test_resolve_falls_back_to_the_system_voice(client):\n    client.profiles[\"plain\"] = Profile(name=\"plain\")\n\n    body = client.get(\"/api/profiles/plain/voice\").json()\n    assert body[\"source\"] == \"system\"\n    assert body[\"voice\"][\"provider\"] == \"local\"\n    assert body[\"profile\"] == \"plain\"\n\n\ndef test_resolve_inherits_the_project_default_voice(client):\n    store = MediaStore.for_project(client.project_dir)\n    settings_path = store.root / profile_voice_api.SETTINGS_FILENAME\n    settings_path.write_text(\n        json.dumps({PROJECT_STORE_KEY: {\"enabled\": True, \"provider\": \"local\", \"voice_id\": \"v-project\"}}),\n        encoding=\"utf-8\",\n    )\n    client.profiles[\"plain\"] = Profile(name=\"plain\")\n\n    body = client.get(\"/api/profiles/plain/voice\").json()\n    assert body[\"source\"] == \"project\"\n    assert body[\"voice\"][\"voice_id\"] == \"v-project\"\n\n\ndef test_resolve_reports_the_system_source_when_the_store_has_no_settings(client):\n    client.profiles[\"plain\"] = Profile(name=\"plain\")\n    assert profile_voice_api.project_default_voice(\n        MediaStore.for_project(client.project_dir)\n    ) is None\n    assert client.get(\"/api/profiles/plain/voice\").json()[\"source\"] == \"system\"\n\n\ndef test_unknown_profile_is_404(client):\n    assert client.get(\"/api/profiles/nobody/voice\").status_code == 404\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Preview contract\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_preview_answers_503_without_a_tts_provider(client):\n    client.profiles[\"speaker\"] = Profile(name=\"speaker\", voice=make_voice())\n\n    response = client.post(\"/api/profiles/speaker/voice/preview\")\n    assert response.status_code == 503\n    body = response.json()\n    assert body[\"reason\"] == \"no tts provider\"\n    assert body[\"voice\"][\"voice_id\"] == \"voice-1\"\n    assert body[\"provider\"] is None\n    # No fake/silent audio is ever produced without an engine\n    assert \"sample\" not in body\n\n\ndef test_preview_is_409_for_a_disabled_profile(client):\n    client.profiles[\"muted\"] = Profile(name=\"muted\", voice=make_voice(enabled=False))\n\n    response = client.post(\"/api/profiles/muted/voice/preview\")\n    assert response.status_code == 409\n    assert \"disabled\" in response.json()[\"reason\"]\n\n\ndef test_preview_uses_a_registered_voice_provider(client):\n    client.profiles[\"speaker\"] = Profile(name=\"speaker\", voice=make_voice())\n    registry = ProviderRegistry()\n    registry.register(_FakeTtsProvider())\n\n    with media_providers.use_registry(registry):\n        response = client.post(\"/api/profiles/speaker/voice/preview\")\n\n    assert response.status_code == 200\n    body = response.json()\n    assert body[\"provider\"] == \"fake-tts\"\n    assert body[\"sample\"][\"mime\"] == \"audio/wav\"\n    assert body[\"sample\"][\"text\"] == profile_voice_api.PREVIEW_SAMPLE\n\n\ndef test_preview_unknown_profile_is_404(client):\n    assert client.post(\"/api/profiles/nobody/voice/preview\").status_code == 404\n",
+            "file_path": "api/tests/media/test_profile_voice_api.py"
+          },
+          "response": "Write completed: api/tests/media/test_profile_voice_api.py (10624 bytes)",
+          "output": "\u2713 File written successfully: `api/tests/media/test_profile_voice_api.py` (10624 bytes)",
+          "duration_ms": 18744.817396625876,
+          "error": null,
+          "started_at": "2026-11-13T17:06:15.291Z",
+          "finished_at": "2026-11-13T17:06:34.036Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_ORWm9DGMtZGU6SwDSyK10440",
+          "status": "error",
+          "request": {
+            "container_name": "codx-junior-api",
+            "command": "/tmp/.venv_codx_junior_api/bin/python -m pytest /home/codx-junior-projects/codx-junior/codx-junior-platform/api/tests/media/test_profile_voice_api.py -q -o pythonpath=/home/codx-junior-projects/codx-junior/codx-junior-platform/api",
+            "timeout": 300
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 122556.95986188948,
+          "error": "Tool 'docker_exec' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-13T17:06:43.397Z",
+          "finished_at": "2026-11-13T17:08:45.954Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_fcezCQGZMwxfglpV4qwJ7685",
+          "status": "done",
+          "request": {
+            "command": "/tmp/.venv_codx_junior_api/bin/python -m pytest /home/codx-junior-projects/codx-junior/codx-junior-platform/api/tests/media/test_profile_voice_api.py -q -p no:cacheprovider -o pythonpath=/home/codx-junior-projects/codx-junior/codx-junior-platform/api",
+            "container_name": "codx-junior-api",
+            "timeout": 110
+          },
+          "response": "",
+          "output": null,
+          "duration_ms": 8673.455191776156,
+          "error": null,
+          "started_at": "2026-11-13T17:08:50.776Z",
+          "finished_at": "2026-11-13T17:08:59.449Z",
+          "cached": null
+        }
+      ],
+      "lifecycle_events": [
+        {
+          "status": "running",
+          "run_id": "d3fd236fc9f1",
+          "duration_ms": null,
+          "error": null,
+          "started_at": "2026-11-13T16:54:12.999Z",
+          "finished_at": null
+        }
+      ],
+      "phase_events": [
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 2 messages",
+          "started_at": "2026-11-13T16:54:14.879Z",
+          "finished_at": "2026-11-13T16:54:17.382Z",
+          "duration_ms": 2503.021240234375,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 2
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.5s",
+          "started_at": "2026-11-13T16:54:17.376Z",
+          "finished_at": "2026-11-13T16:56:23.803Z",
+          "duration_ms": 126427.86121368408,
+          "meta": {
+            "ttft_ms": 2497,
+            "prompt_tokens": 15703,
+            "completion_tokens": 198,
+            "total_tokens": 15901
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 5 messages",
+          "started_at": "2026-11-13T16:56:28.668Z",
+          "finished_at": "2026-11-13T16:56:30.961Z",
+          "duration_ms": 2293.0026054382324,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 5
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.3s",
+          "started_at": "2026-11-13T16:56:30.960Z",
+          "finished_at": "2026-11-13T16:58:14.334Z",
+          "duration_ms": 103374.88722801208,
+          "meta": {
+            "ttft_ms": 2292,
+            "prompt_tokens": 16563,
+            "completion_tokens": 170,
+            "total_tokens": 16733
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 8 messages",
+          "started_at": "2026-11-13T16:59:07.319Z",
+          "finished_at": "2026-11-13T16:59:07.903Z",
+          "duration_ms": 584.1662883758545,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 8
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.6s",
+          "started_at": "2026-11-13T16:59:07.902Z",
+          "finished_at": "2026-11-13T16:59:13.922Z",
+          "duration_ms": 6020.262002944946,
+          "meta": {
+            "ttft_ms": 584,
+            "prompt_tokens": 17521,
+            "completion_tokens": 292,
+            "total_tokens": 17813
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 11 messages",
+          "started_at": "2026-11-13T16:59:21.199Z",
+          "finished_at": "2026-11-13T16:59:24.676Z",
+          "duration_ms": 3477.893114089966,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 11
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.5s",
+          "started_at": "2026-11-13T16:59:24.676Z",
+          "finished_at": "2026-11-13T16:59:30.434Z",
+          "duration_ms": 5758.876800537109,
+          "meta": {
+            "ttft_ms": 3478,
+            "prompt_tokens": 21167,
+            "completion_tokens": 350,
+            "total_tokens": 21517
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 14 messages",
+          "started_at": "2026-11-13T16:59:43.852Z",
+          "finished_at": "2026-11-13T16:59:47.120Z",
+          "duration_ms": 3268.834352493286,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 14
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.3s",
+          "started_at": "2026-11-13T16:59:47.120Z",
+          "finished_at": "2026-11-13T16:59:53.095Z",
+          "duration_ms": 5975.177526473999,
+          "meta": {
+            "ttft_ms": 3268,
+            "prompt_tokens": 24623,
+            "completion_tokens": 402,
+            "total_tokens": 25025
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 17 messages",
+          "started_at": "2026-11-13T17:00:03.374Z",
+          "finished_at": "2026-11-13T17:00:06.723Z",
+          "duration_ms": 3349.315404891968,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 17
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.3s",
+          "started_at": "2026-11-13T17:00:06.722Z",
+          "finished_at": "2026-11-13T17:00:22.703Z",
+          "duration_ms": 15981.439590454102,
+          "meta": {
+            "ttft_ms": 3349,
+            "prompt_tokens": 28061,
+            "completion_tokens": 580,
+            "total_tokens": 28641
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 20 messages",
+          "started_at": "2026-11-13T17:02:36.296Z",
+          "finished_at": "2026-11-13T17:02:38.501Z",
+          "duration_ms": 2205.9290409088135,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 20
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.2s",
+          "started_at": "2026-11-13T17:02:38.501Z",
+          "finished_at": "2026-11-13T17:02:49.707Z",
+          "duration_ms": 11206.060886383057,
+          "meta": {
+            "ttft_ms": 2206,
+            "prompt_tokens": 28992,
+            "completion_tokens": 742,
+            "total_tokens": 29734
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 23 messages",
+          "started_at": "2026-11-13T17:02:54.264Z",
+          "finished_at": "2026-11-13T17:02:57.518Z",
+          "duration_ms": 3254.9803256988525,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 23
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.3s",
+          "started_at": "2026-11-13T17:02:57.518Z",
+          "finished_at": "2026-11-13T17:03:02.523Z",
+          "duration_ms": 5005.70821762085,
+          "meta": {
+            "ttft_ms": 3255,
+            "prompt_tokens": 30684,
+            "completion_tokens": 571,
+            "total_tokens": 31255
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 26 messages",
+          "started_at": "2026-11-13T17:04:27.035Z",
+          "finished_at": "2026-11-13T17:04:28.440Z",
+          "duration_ms": 1405.4324626922607,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 26
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.4s",
+          "started_at": "2026-11-13T17:04:28.410Z",
+          "finished_at": "2026-11-13T17:04:34.014Z",
+          "duration_ms": 5604.745626449585,
+          "meta": {
+            "ttft_ms": 1376,
+            "prompt_tokens": 32024,
+            "completion_tokens": 281,
+            "total_tokens": 32305
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 29 messages",
+          "started_at": "2026-11-13T17:04:44.380Z",
+          "finished_at": "2026-11-13T17:04:48.225Z",
+          "duration_ms": 3845.486879348755,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 29
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.8s",
+          "started_at": "2026-11-13T17:04:48.225Z",
+          "finished_at": "2026-11-13T17:04:57.388Z",
+          "duration_ms": 9163.083791732788,
+          "meta": {
+            "ttft_ms": 3845,
+            "prompt_tokens": 35060,
+            "completion_tokens": 1103,
+            "total_tokens": 36163
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 32 messages",
+          "started_at": "2026-11-13T17:05:06.826Z",
+          "finished_at": "2026-11-13T17:05:10.166Z",
+          "duration_ms": 3340.2843475341797,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 32
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.3s",
+          "started_at": "2026-11-13T17:05:10.165Z",
+          "finished_at": "2026-11-13T17:05:54.773Z",
+          "duration_ms": 44608.58225822449,
+          "meta": {
+            "ttft_ms": 3340,
+            "prompt_tokens": 37855,
+            "completion_tokens": 9143,
+            "total_tokens": 46998
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 34 messages",
+          "started_at": "2026-11-13T17:06:02.025Z",
+          "finished_at": "2026-11-13T17:06:07.417Z",
+          "duration_ms": 5392.7857875823975,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 34
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 5.4s",
+          "started_at": "2026-11-13T17:06:07.416Z",
+          "finished_at": "2026-11-13T17:06:34.037Z",
+          "duration_ms": 26621.175050735474,
+          "meta": {
+            "ttft_ms": 5392,
+            "prompt_tokens": 47029,
+            "completion_tokens": 2448,
+            "total_tokens": 49477
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 36 messages",
+          "started_at": "2026-11-13T17:06:38.311Z",
+          "finished_at": "2026-11-13T17:06:41.260Z",
+          "duration_ms": 2949.726343154907,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 36
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.9s",
+          "started_at": "2026-11-13T17:06:41.260Z",
+          "finished_at": "2026-11-13T17:08:45.954Z",
+          "duration_ms": 124694.7238445282,
+          "meta": {
+            "ttft_ms": 2950,
+            "prompt_tokens": 49506,
+            "completion_tokens": 355,
+            "total_tokens": 49861
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 38 messages",
+          "started_at": "2026-11-13T17:08:47.110Z",
+          "finished_at": "2026-11-13T17:08:47.977Z",
+          "duration_ms": 867.9304122924805,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 38
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.9s",
+          "started_at": "2026-11-13T17:08:47.977Z",
+          "finished_at": "2026-11-13T17:08:59.450Z",
+          "duration_ms": 11473.32787513733,
+          "meta": {
+            "ttft_ms": 868,
+            "prompt_tokens": 49912,
+            "completion_tokens": 374,
+            "total_tokens": 50286
+          }
+        }
+      ],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "biblio",
+        "file_editor",
+        "git",
+        "project",
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": false,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    }
+  ],
+  "created_at": "2026-11-13 16:53:37.084409",
+  "updated_at": "2026-11-13T17:27:15.525994",
+  "mode": "chat",
+  "kanban_id": "",
+  "column_id": "",
+  "board": "Project channel",
+  "column": "Blocked",
+  "sprints": [
+    "Run: Project channel M0"
+  ],
+  "priority": "high",
+  "due_date": null,
+  "progress": 100,
+  "assignees": [],
+  "wake_at": null,
+  "sort_index": null,
+  "calendar_ids": [],
+  "scheduled_start": null,
+  "scheduled_end": null,
+  "all_day": false,
+  "columns": [],
+  "chat_index": 0,
+  "url": "",
+  "branch": "",
+  "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/tasks/Project channel/Blocked/profile-voice-endpoints-resolve-preview-503-without-a-tts-engine.c466c093-2506-44e9-b570-68dd9396c487.json",
+  "llm_model": "",
+  "estimation_cost": 1799.060569725,
+  "cost": 0.0,
+  "run_id": "7bbcd9d8-2f84-4000-8b99-190d242b4d4e",
+  "run_status": null,
+  "run_step_id": "profile-voice-api",
+  "visibility": "",
+  "remote_url": "",
+  "attachments": [],
+  "knowledge_topics": [],
+  "chat_links": [],
+  "pr_view": {},
+  "history": [],
+  "session_id": null,
+  "auto_initialize": false,
+  "ignore_parent_knowledge": true,
+  "ignore_parent_files": true,
+  "external_source": null,
+  "external_id": null,
+  "external_parent_id": null,
+  "external_instance_id": null,
+  "external_status": null,
+  "external_url": null,
+  "external_updated_at": null,
+  "harness": null,
+  "harness_instance_id": null,
+  "harness_task_id": null,
+  "harness_parent_task_id": null,
+  "harness_mode": null,
+  "harness_status": null,
+  "harness_model": null,
+  "harness_usage": {},
+  "harness_cost": null,
+  "harness_metadata": {}
+}

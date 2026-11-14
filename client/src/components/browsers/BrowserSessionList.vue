@@ -45,7 +45,7 @@ import ComputerViewControls from './ComputerViewControls.vue'
           class="relative w-10 h-10 flex-shrink-0 rounded-xl flex items-center justify-center text-sm font-semibold uppercase transition-colors duration-150 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           :class="sessionItemClass(session)"
           :title="sessionTooltip(session)"
-          :aria-label="`Select session ${session.name}`"
+          :aria-label="sessionLabel('selectItem', session)"
           :aria-current="selectedSessionId === session.id ? 'true' : 'false'"
         >
           {{ sessionInitial(session) }}
@@ -55,6 +55,14 @@ import ComputerViewControls from './ComputerViewControls.vue'
             :class="statusDotClass(session.status)"
             aria-hidden="true"
           ></span>
+          <span
+            v-if="session.needs_user"
+            class="absolute -bottom-1 -right-1 flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-base-100 bg-warning text-warning-content animate-pulse"
+            :title="sessionLabels.needsYouHint"
+            aria-hidden="true"
+          >
+            <i class="fa-solid fa-hand text-[6px]"></i>
+          </span>
         </button>
 
         <!-- The list could not be fetched: say it and let the user retry
@@ -64,12 +72,12 @@ import ComputerViewControls from './ComputerViewControls.vue'
           @click="reloadSessions"
           class="w-10 h-10 flex-shrink-0 rounded-xl flex items-center justify-center text-error/80 hover:bg-error/10 transition-colors duration-150"
           :title="`Could not load sessions: ${errorMessage}`"
-          aria-label="Retry loading computer sessions"
+          :aria-label="sessionLabels.retry"
         >
           <i class="fa-solid fa-triangle-exclamation"></i>
         </button>
 
-        <div v-if="!hasError && sessions.length === 0" class="py-3 text-base-content/40" title="No computer sessions yet">
+        <div v-if="!hasError && sessions.length === 0" class="py-3 text-base-content/40" :title="sessionLabels.empty">
           <i class="fa-solid fa-inbox"></i>
         </div>
       </template>
@@ -82,24 +90,24 @@ import ComputerViewControls from './ComputerViewControls.vue'
       <button
         @click="handleRailNewSession"
         class="btn btn-sm btn-primary btn-circle"
-        title="New session"
-        aria-label="New computer session"
+        :title="sessionLabels.newItem"
+        :aria-label="sessionLabels.newItem"
       >
         <i class="fa-solid fa-plus"></i>
       </button>
       <button
         @click="browseImageLibrary"
         class="btn btn-sm btn-ghost btn-circle text-base-content/50 hover:text-base-content"
-        title="Browse the computer image library"
-        aria-label="Browse the computer image library"
+        :title="sessionLabels.browseImages"
+        :aria-label="sessionLabels.browseImages"
       >
         <i class="fa-solid fa-images"></i>
       </button>
       <button
         @click="reloadSessions"
         class="btn btn-sm btn-ghost btn-circle text-base-content/50 hover:text-base-content"
-        title="Reload sessions"
-        aria-label="Reload computer sessions"
+        :title="sessionLabels.reload"
+        :aria-label="sessionLabels.reload"
       >
         <i class="fa-solid fa-arrows-rotate"></i>
       </button>
@@ -126,7 +134,7 @@ import ComputerViewControls from './ComputerViewControls.vue'
       >
         <i class="fa-solid fa-window-restore"></i>
       </div>
-      <h2 class="text-base font-bold truncate flex-1">Computer sessions</h2>
+      <h2 class="text-base font-bold truncate flex-1">{{ sessionLabels.section }}</h2>
     </div>
 
     <div class="border-t border-base-content/10 mt-3 mb-2 flex-shrink-0"></div>
@@ -143,7 +151,7 @@ import ComputerViewControls from './ComputerViewControls.vue'
     <div class="flex-1 min-h-0 overflow-y-auto mt-1 space-y-0.5">
       <div v-if="isLoading" class="flex items-center justify-center py-8">
         <div class="loading loading-spinner loading-sm"></div>
-        <span class="ml-2 text-sm">Loading sessions...</span>
+        <span class="ml-2 text-sm">{{ sessionLabels.loading }}</span>
       </div>
 
       <!-- Failure state: the request did not succeed, so "no sessions yet"
@@ -155,17 +163,17 @@ import ComputerViewControls from './ComputerViewControls.vue'
         aria-live="polite"
       >
         <i class="fa-solid fa-triangle-exclamation text-2xl text-error/70" aria-hidden="true"></i>
-        <p class="text-sm font-semibold text-error">Could not load computer sessions</p>
+        <p class="text-sm font-semibold text-error">{{ sessionLabels.loadError }}</p>
         <p class="max-w-[18rem] break-words text-[11px] opacity-60">{{ errorMessage }}</p>
         <button class="btn btn-xs btn-outline gap-1" @click="reloadSessions">
           <i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>
-          Retry
+          {{ sessionLabels.retryShort }}
         </button>
       </div>
 
       <div v-else-if="sessions.length === 0" class="text-center py-8 text-base-content/50">
         <i class="fa-solid fa-inbox text-2xl mb-2 block"></i>
-        <p class="text-sm">No computer sessions yet</p>
+        <p class="text-sm">{{ sessionLabels.empty }}</p>
       </div>
 
       <template v-else>
@@ -178,12 +186,12 @@ import ComputerViewControls from './ComputerViewControls.vue'
           <button
             @click="handleSelectSession(session.id)"
             class="flex-1 min-w-0 flex items-center gap-2.5 pl-3 pr-2 py-2 text-left rounded-full focus:outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-            :aria-label="`Select session ${session.name}`"
+            :aria-label="sessionLabel('selectItem', session)"
             :aria-current="selectedSessionId === session.id ? 'true' : 'false'"
           >
             <span
               class="w-7 h-7 flex-shrink-0 rounded-lg flex items-center justify-center text-[11px] font-semibold uppercase"
-              :class="selectedSessionId === session.id ? 'bg-primary/20 text-primary' : 'bg-base-200 text-base-content/70'"
+              :class="sessionAvatarClass(session)"
             >
               {{ sessionInitial(session) }}
             </span>
@@ -202,6 +210,13 @@ import ComputerViewControls from './ComputerViewControls.vue'
                 <i :class="kindIcon(session)" class="text-[9px] flex-shrink-0" aria-hidden="true"></i>
                 <span class="badge badge-xs badge-ghost px-1">{{ kindLabel(session) }}</span>
                 <span class="truncate">{{ sessionSubtitle(session) }}</span>
+                <span
+                  v-if="session.needs_user"
+                  class="badge badge-xs badge-warning gap-1 animate-pulse"
+                  :title="sessionLabels.needsYouHint"
+                >
+                  <i class="fa-solid fa-hand" aria-hidden="true"></i>{{ sessionLabels.needsYou }}
+                </span>
               </span>
             </span>
             <span
@@ -218,24 +233,24 @@ import ComputerViewControls from './ComputerViewControls.vue'
             <button
               @click="handleRunSession(session.id, $event)"
               class="btn btn-ghost btn-xs btn-circle text-base-content/40 hover:text-success"
-              title="Run session"
-              :aria-label="`Run session ${session.name}`"
+              :title="sessionLabel('runItem', session)"
+              :aria-label="sessionLabel('runItem', session)"
             >
               <i class="fa-solid fa-play text-[10px]"></i>
             </button>
             <button
               @click="handleEditSession(session.id, $event)"
               class="btn btn-ghost btn-xs btn-circle text-base-content/40 hover:text-info"
-              title="Edit session"
-              :aria-label="`Edit session ${session.name}`"
+              :title="sessionLabel('editItem', session)"
+              :aria-label="sessionLabel('editItem', session)"
             >
               <i class="fa-solid fa-gear text-[10px]"></i>
             </button>
             <button
               @click="handleDeleteSession(session.id, $event)"
               class="btn btn-ghost btn-xs btn-circle text-base-content/40 hover:text-error"
-              title="Delete session"
-              :aria-label="`Delete session ${session.name}`"
+              :title="sessionLabel('deleteItem', session)"
+              :aria-label="sessionLabel('deleteItem', session)"
             >
               <i class="fa-solid fa-trash text-[10px]"></i>
             </button>
@@ -273,9 +288,9 @@ import ComputerViewControls from './ComputerViewControls.vue'
   <!-- Delete confirmation modal -->
   <ConfirmDialog
     v-if="deleteTarget"
-    title="Delete session"
-    :message="`Delete computer session '${deleteTarget.name}'?`"
-    hint="The session, its profile and its desktop state will be removed. This cannot be undone."
+    :title="sessionLabels.deleteTitle"
+    :message="deleteConfirmMessage(deleteTarget)"
+    :hint="sessionLabels.deleteHint"
     icon="fa-trash"
     icon-class="text-error"
     confirm-label="Delete"
@@ -288,6 +303,8 @@ import ComputerViewControls from './ComputerViewControls.vue'
 </template>
 
 <script>
+import { SESSION_LABELS, label } from '@/utils/sessionLabels'
+
 export default {
   name: 'BrowserSessionList',
   components: {
@@ -321,6 +338,10 @@ export default {
     }
   },
   computed: {
+    // Every user-facing name of the concept comes from utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     sessions() {
       return this.$storex.browsers.allSessions
     },
@@ -345,6 +366,13 @@ export default {
     }
   },
   methods: {
+    /** Fills a `{name}` label of the concept for one session. */
+    sessionLabel(key, session) {
+      return label(key, { name: session?.name || SESSION_LABELS.untitled })
+    },
+    deleteConfirmMessage(session) {
+      return label('deleteConfirm', { name: session?.name || SESSION_LABELS.untitled })
+    },
     sessionInitial(session) {
       const label = (session.name || session.current_url || '?').trim()
       return label.charAt(0)
@@ -389,7 +417,8 @@ export default {
     },
     /** Full mapping, shown as the row tooltip. */
     sessionTooltip(session) {
-      const lines = [session.name || 'Computer session']
+      const lines = [session.name || SESSION_LABELS.untitled]
+      if (session.needs_user) lines.push(SESSION_LABELS.needsYouHint)
       const folders = (session.folders || session.shared_folders || [])
         .map(folder => folder.mount_path || folder.host_path)
         .filter(Boolean)
@@ -406,10 +435,24 @@ export default {
       return lines.join('\n')
     },
     sessionItemClass(session) {
+      // A machine waiting for the user blinks in the warning colour until the
+      // user takes control (the API clears `needs_user` on take-control).
+      if (session.needs_user) {
+        return 'bg-warning/15 text-warning animate-pulse'
+      }
       if (this.selectedSessionId === session.id) {
         return 'bg-primary/10 text-primary'
       }
       return 'text-base-content/60 hover:bg-base-200 hover:text-base-content'
+    },
+    sessionAvatarClass(session) {
+      if (session.needs_user) {
+        return 'bg-warning/20 text-warning animate-pulse'
+      }
+      if (this.selectedSessionId === session.id) {
+        return 'bg-primary/20 text-primary'
+      }
+      return 'bg-base-200 text-base-content/70'
     },
     sessionRowClass(session) {
       if (this.selectedSessionId === session.id) {

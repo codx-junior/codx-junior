@@ -1115,7 +1115,12 @@ class ChatEngine:
         :return: The project id the turn works on, or None when unknown.
         """
         for message in reversed(chat.messages or []):
-            if message.hide or message.improvement or message.role != "user":
+            if (
+                message.hide
+                or message.improvement
+                or message.unsent
+                or message.role != "user"
+            ):
                 continue
             if message.project_id:
                 return message.project_id
@@ -1751,8 +1756,8 @@ class ChatEngine:
         clean_messages = []
         
         for message in chat.messages:
-            # Skip hidden and improvement messages
-            if message.hide or message.improvement:
+            # Skip hidden, improvement and unsent draft messages
+            if message.hide or message.improvement or message.unsent:
                 continue
             
             # Only include actual user and assistant messages
@@ -2134,7 +2139,10 @@ class ChatEngine:
         """
         try:
             duration_seconds = time.time() - start_time
-            output_message_count = len([m for m in chat.messages if m.role == "assistant"])
+            output_message_count = len([
+                m for m in chat.messages
+                if m.role == "assistant" and not m.unsent
+            ])
 
             self.analytics.record_chat_session(
                 chat_id=chat.id,
@@ -2150,7 +2158,10 @@ class ChatEngine:
                 max_iterations=max_iterations,
                 llm_model=llm_model,
                 duration_seconds=duration_seconds,
-                input_message_count=len([m for m in chat.messages if m.role == "user"]),
+                input_message_count=len([
+                    m for m in chat.messages
+                    if m.role == "user" and not m.unsent
+                ]),
                 output_message_count=output_message_count,
                 cancelled=cancelled,
                 error=error,
@@ -2590,9 +2601,13 @@ class ChatEngine:
             # ------------------------------------------------------------------
             # 2. Extract user message and basic query context
             # ------------------------------------------------------------------
+            # The unsent draft (composer text) is never part of the prompt: it
+            # must not become the current request nor the reference history.
             valid_messages = [
                 message for message in chat.messages
-                if not message.hide and not message.improvement
+                if not message.hide
+                and not message.improvement
+                and not message.unsent
             ]
             all_messages_content_lines = "".join(
                 [m.content for m in valid_messages]
@@ -3656,7 +3671,9 @@ class ChatEngine:
         valid_messages = [
             message.content
             for message in chat.messages
-            if not message.hide and not message.improvement
+            if not message.hide
+            and not message.improvement
+            and not message.unsent
         ]
 
         page_content = concat_content(valid_messages)

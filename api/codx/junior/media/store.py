@@ -76,14 +76,18 @@ def _as_aware(value: Optional[datetime]) -> Optional[datetime]:
 
 
 def _normalize_ext(ext: str, mime: str) -> str:
-    """Return a safe file extension (with the leading dot) for an asset."""
+    """Return a safe file extension (with the leading dot) for an asset.
+
+    Unknown mime types fall back to ``.bin`` so the extension is always
+    present and deterministic (it is cosmetic: the asset id is the sha256).
+    """
     value = (ext or "").strip().lower()
     if not value and mime:
         base_mime = (mime or "").split(";")[0].strip().lower()
         value = MIME_EXTENSIONS.get(base_mime) or mimetypes.guess_extension(base_mime) or ""
-    if value and not value.startswith("."):
-        value = "." + value
-    return re.sub(r"[^.a-z0-9]", "", value)
+    # Keep at least one usable character: dots alone are not an extension
+    cleaned = re.sub(r"[^.a-z0-9]", "", value).strip(".")
+    return f".{cleaned}" if cleaned else ".bin"
 
 
 class MediaStore:

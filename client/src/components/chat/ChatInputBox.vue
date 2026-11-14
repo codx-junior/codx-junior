@@ -141,6 +141,11 @@ export default {
     // project used as default / override detection.
     project: { type: Object, default: null },
     chatProject: { type: Object, default: null },
+    // Chat that owns the composer's unsent draft. It is OPTIONAL and only an
+    // explicit value enables the draft feature: a NEW-CHAT composer (quick chat
+    // dialogs, "New Task") has no chat yet, so it must never persist its text as
+    // the draft of the currently active — and unrelated — chat.
+    chatId: { type: [String, Number], default: null },
     cursorWord: { type: Object, default: () => ({}) },
     // Collapsed composer: only the pill is rendered (mobile reading mode, or any
     // viewport after the user activates the message section).
@@ -162,6 +167,14 @@ export default {
       showFindReplace: false,
       // Draft kept in memory while the composer is collapsed
       collapsedDraft: '',
+      // ── Server draft (unsent message) ──
+      // Text last synchronised with the server, so identical content is not
+      // re-saved on every keystroke.
+      draftSavedContent: '',
+      // True once the user typed: hydration never overwrites in-progress text.
+      draftDirty: false,
+      draftTimer: null,
+      draftDebounceMs: 700,
       // ── Voice note recorder ──
       isRecording: false,
       recordingSeconds: 0,
@@ -178,6 +191,13 @@ export default {
     isMobile() {
       return this.$ui.isMobile
     },
+    // Chat whose unsent draft the composer owns. ONLY the explicit `chatId` prop
+    // counts: never the active chat of the store. Falling back to the active chat
+    // leaked the text typed while creating a chat/task into an unrelated
+    // conversation, which could then hydrate it or overwrite it.
+    draftChatId() {
+      return this.chatId || null
+    },
     // Label rendered by the toolbar while recording: "0:12 / 5:00"
     recordingLabel() {
       return `${this.formatRecordingTime(this.recordingSeconds)} / ${this.formatRecordingTime(this.recordingMaxSeconds)}`
@@ -193,19 +213,39 @@ export default {
         this.isFocused = false
         // The recorder controls disappear with the toolbar, never keep the microphone open
         if (this.isRecording) this.stopVoiceNoteRecording(true)
+        // Keep the server draft in sync while the textarea is unmounted
+        this.scheduleDraftSync()
       } else {
         // Put the draft back as soon as the editor is mounted again
         this.$nextTick(() => this.restoreCollapsedDraft())
       }
+    },
+    // Chat switched: persist what is still pending for the chat being left, then
+    // hydrate the composer with the draft of the chat that is opening.
+    draftChatId(chatId, previousChatId) {
+      const hadPending = !!this.draftTimer
+      const pendingContent = this.getEditorText()
+      this.cancelDraftTimer()
+      if (hadPending && previousChatId && previousChatId !== chatId) {
+        // The pending write belonged to the chat we are leaving
+        this.draftWrite(previousChatId, pendingContent)
+      }
+      this.draftDirty = false
+      this.draftSavedContent = ''
+      this.hydrateChatDraft()
     }
   },
   mounted() {
     // Mobile: toggle the composer when the user taps inside (expand) or outside (collapse).
     // Desktop collapses on demand (see the `collapsed` prop), so no global listener there.
     document.addEventListener('click', this.onDocumentClick)
+    // Recover the draft the user left unsent in this chat
+    this.hydrateChatDraft()
   },
   unmounted() {
     document.removeEventListener('click', this.onDocumentClick)
+    // Never leave a debounce timer writing for a destroyed composer
+    this.cancelDraftTimer()
     // Release the microphone if the composer is destroyed mid-recording
     this.cleanupVoiceNoteRecorder()
   },
@@ -238,6 +278,63 @@ export default {
       if (!editor) return
       editor.value = this.collapsedDraft
       this.autoResize()
+    },
+
+    // ── Server draft (unsent message) ──────────────────────
+
+    // Fill the composer with the draft the user left unsent in this chat.
+    // It is loaded on its own and NEVER pushed into the message list.
+    hydrateChatDraft() {
+      const chatId = this.draftChatId
+      if (!chatId || this.isEditing || this.readOnly) return
+      this.$chats.getChatDraft({ chatId }).then(draft => {
+        // The chat may have changed while the request was in flight
+        if (this.draftChatId !== chatId) return
+        const content = (draft && draft.content) || ''
+        this.draftSavedContent = content
+        if (!content) return
+        // Never overwrite what the user already typed
+        if (this.draftDirty) return
+        this.$nextTick(() => {
+          if (this.draftChatId !== chatId || this.draftDirty) return
+          if (this.getEditorText()) return
+          this.setEditorText(content)
+        })
+      }).catch(() => {})
+    },
+    // Debounced write: at most one request per `draftDebounceMs` while typing.
+    scheduleDraftSync() {
+      // No owning chat (new-chat composer) ⇒ there is no draft to persist
+      if (!this.draftChatId || this.isEditing || this.readOnly) return
+      this.cancelDraftTimer()
+      this.draftTimer = setTimeout(() => {
+        this.draftTimer = null
+        this.syncDraftNow()
+      }, this.draftDebounceMs)
+    },
+    cancelDraftTimer() {
+      if (this.draftTimer) clearTimeout(this.draftTimer)
+      this.draftTimer = null
+    },
+    // Persist the current composer text when it differs from the last saved one.
+    // The store wrapper never throws, so typing is never blocked by a failure.
+    syncDraftNow() {
+      const chatId = this.draftChatId
+      // Without an explicit chatId nothing is read, written or deleted
+      if (!chatId || this.isEditing || this.readOnly) return
+      const content = this.getEditorText()
+      if (content === this.draftSavedContent) return
+      this.draftSavedContent = content
+      this.draftWrite(chatId, content)
+    },
+    // Empty text removes the draft, anything else upserts it.
+    draftWrite(chatId, content) {
+      if (!chatId) return
+      if (content) {
+        this.$chats.saveChatDraft({ chatId, content })
+      } else {
+        this.$chats.deleteChatDraft({ chatId })
+      }
     },
 
     // ── Focus handling ──────────────────────────────────────
@@ -278,6 +375,11 @@ export default {
       this.$emit('keydown', event)
     },
     onSend() {
+      // The API deletes the draft atomically when the message is sent: cancel the
+      // pending write so it never re-creates a draft right after sending.
+      this.cancelDraftTimer()
+      this.draftSavedContent = ''
+      this.draftDirty = false
       this.$emit('send')
     },
     onDrop(event) {
@@ -287,6 +389,9 @@ export default {
     onInput() {
       this.autoResize()
       this.updateCursorWord()
+      // The user is typing: never let hydration overwrite the composer
+      this.draftDirty = true
+      this.scheduleDraftSync()
     },
     getEditorText() {
       // While collapsed the editor is unmounted, return the kept draft
@@ -297,19 +402,24 @@ export default {
       if (this.$refs.editor) {
         this.$refs.editor.value = text
         this.autoResize()
-        return
+      } else {
+        // Composer is collapsed: keep the text so it is restored when expanded
+        this.collapsedDraft = text || ''
       }
-      // Composer is collapsed: keep the text so it is restored when expanded
-      this.collapsedDraft = text || ''
+      // Programmatic change from the parent (send / clear / mention): keep the
+      // server draft in sync as well.
+      this.scheduleDraftSync()
     },
     appendEditorText(text) {
       if (!this.$refs.editor) {
         // Composer is collapsed: keep the text so it is restored when expanded
         this.collapsedDraft += text || ''
-        return
+      } else {
+        this.$refs.editor.value += text
+        this.autoResize()
       }
-      this.$refs.editor.value += text
-      this.autoResize()
+      this.draftDirty = true
+      this.scheduleDraftSync()
     },
     focusEditor() {
       this.$refs.editor?.focus()

@@ -61,8 +61,13 @@ normalizes every payload before it is sent:
 * whitespace/newlines inside the base64 payload are stripped,
 * the media type is resolved from ``file_type`` → data-URI header → file
   extension, so ``application/octet-stream`` / ``image/*`` are never sent,
-* only formats vision APIs accept (PNG/JPEG/WEBP/GIF) travel as parts —
-  SVG/BMP/TIFF/HEIC are listed in the text block instead,
+* the REAL format is sniffed from the payload's magic bytes and wins over
+  ``file_type``: a phone gallery sends ``image/heic`` (accepted and stored) and
+  some shares carry no type at all,
+* only formats vision APIs accept (PNG/JPEG/WEBP/GIF) travel verbatim —
+  BMP/TIFF/HEIC/AVIF are decoded with Pillow and re-encoded as PNG/JPEG (best
+  effort, cached per payload); only images that cannot be decoded at all (SVG,
+  Pillow missing) are listed in the text block instead,
 * oversized screenshots are downscaled/re-encoded (Pillow, best effort,
   cached per payload).
 
@@ -113,19 +118,28 @@ CONVERSATION_GUARDRAIL_SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 # Attachment → vision content constants
 # ---------------------------------------------------------------------------
-
 # Raster formats accepted by the vision APIs we talk to (OpenAI compatible
-# providers and Anthropic through LiteLLM). Anything else allowed by
-# ``db.ALLOWED_IMAGE_TYPES`` (``image/svg+xml``, ``image/bmp``, ``image/tiff``,
-# ``image/heic`` ...) is not a valid ``image_url`` payload: the provider either
-# rejects it or silently replaces it with an ``[Unsupported Image]`` placeholder.
-# Those attachments therefore travel ONLY through the ``## Attachments`` block.
+# providers and Anthropic through LiteLLM). Any other image is converted to one
+# of these before being sent (:meth:`ChatPromptBuilder._reencode_image`): the
+# provider either rejects the payload or silently replaces it with an
+# ``[Unsupported Image]`` placeholder, which is exactly what "the AI cannot see
+# my screenshots" looks like.
 VISION_IMAGE_MEDIA_TYPES = frozenset({
     "image/png",
     "image/jpeg",
     "image/webp",
     "image/gif",
 })
+
+# Media type of a raster format detected from the payload itself, keyed by the
+# format name returned by :func:`sniff_image_format`. Only formats providers can
+# decode appear here: every other image is re-encoded before being sent.
+MEDIA_TYPE_BY_FORMAT = {
+    "png": "image/png",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
 
 # Media type inferred from the file name when the stored ``file_type`` is
 # missing or generic.
@@ -163,6 +177,50 @@ MAX_VISION_IMAGE_SIDE = 1_560       # longest side, in pixels
 # every following turn of the conversation.
 _IMAGE_SHRINK_CACHE: Dict[str, Dict[str, str]] = {}
 _IMAGE_CACHE_MAX_ENTRIES = 32
+
+
+def sniff_image_format(payload: str) -> str:
+    """
+    Detect the real image format of a base64 payload from its magic bytes.
+
+    ``ChatAttachment.file_type`` is whatever the client reported, and mobile
+    clients often report something else than the bytes they send: an iPhone
+    gallery screenshot is declared ``image/heic``, a picture shared from another
+    app can arrive with no type at all (``application/octet-stream``). The
+    payload is the only trustworthy source, so the format used for the model
+    request is detected here instead of being taken from the metadata.
+
+    :param payload: Bare base64 payload (already whitespace-free).
+    :return: Format name (``png``, ``jpeg``, ``gif``, ``webp``, ``bmp``,
+             ``tiff``, ``heif``) or an empty string when it is not an image.
+    """
+    if not payload:
+        return ""
+    head_b64 = payload[:96]
+    try:
+        head = base64.b64decode(head_b64 + "=" * (-len(head_b64) % 4))
+    except (binascii.Error, ValueError):
+        return ""
+
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if head.startswith(b"GIF8"):
+        return "gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "webp"
+    if head.startswith(b"BM"):
+        return "bmp"
+    if head.startswith((b"II*\x00", b"MM\x00*")):
+        return "tiff"
+    # ISO base media file: HEIC/HEIF (iPhone) and AVIF share the ``ftyp`` box.
+    if head[4:8] == b"ftyp" and head[8:12] in (
+        b"heic", b"heix", b"hevc", b"heim", b"heis", b"mif1", b"msf1",
+        b"avif", b"avis",
+    ):
+        return "heif"
+    return ""
 
 
 def concat_content(arr):
@@ -596,6 +654,104 @@ class ChatPromptBuilder:
         return result["uri"], result["note"]
 
     @classmethod
+    def _reencode_image(cls, payload: str, file_name: str):
+        """
+        Decode an image with Pillow and re-encode it as PNG or JPEG.
+
+        Covers the two cases providers cannot consume otherwise:
+
+        * a format outside :data:`VISION_IMAGE_MEDIA_TYPES` (HEIC/HEIF from a
+          phone gallery, BMP, TIFF, AVIF) is converted to a vision format,
+        * an image that exceeds the inline budget is downscaled.
+
+        Both PNG and JPEG are produced and the smaller one wins: PNG keeps
+        screenshots (text) crisp, JPEG keeps photos small. Results are cached per
+        payload because the same screenshot is re-sent on every turn.
+
+        :param payload: Bare base64 payload of the image.
+        :param file_name: Attachment name, used for logging only.
+        :return: Tuple of ``(data_uri, note)``. *data_uri* is ``None`` when the
+                 image cannot be decoded, and the note explains why.
+        """
+        cache_key = "reencode:" + hashlib.md5(payload.encode("utf-8")).hexdigest()
+        cached = _IMAGE_SHRINK_CACHE.get(cache_key)
+        if cached is not None:
+            return cached["uri"], cached["note"]
+
+        try:
+            import io
+
+            from PIL import Image
+
+            image = Image.open(io.BytesIO(base64.b64decode(payload)))
+            image.load()
+            width, height = image.size
+
+            scale = min(1.0, MAX_VISION_IMAGE_SIDE / float(max(width, height) or 1))
+            if scale < 1.0:
+                image = image.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    Image.LANCZOS,
+                )
+
+            candidates = []
+
+            png_buffer = io.BytesIO()
+            image.save(png_buffer, format="PNG", optimize=True)
+            candidates.append((
+                "data:image/png;base64,"
+                + base64.b64encode(png_buffer.getvalue()).decode("ascii"),
+                "png",
+            ))
+
+            # JPEG has no alpha channel: flatten transparent screenshots.
+            flat = image if image.mode == "RGB" else image.convert("RGB")
+            jpeg_buffer = io.BytesIO()
+            flat.save(jpeg_buffer, format="JPEG", quality=85, optimize=True)
+            candidates.append((
+                "data:image/jpeg;base64,"
+                + base64.b64encode(jpeg_buffer.getvalue()).decode("ascii"),
+                "jpeg",
+            ))
+
+            data_uri, output_format = min(candidates, key=lambda c: len(c[0]))
+            size_note = (
+                f", downscaled {width}x{height} -> "
+                f"{image.size[0]}x{image.size[1]}"
+                if scale < 1.0 else ""
+            )
+            result = {
+                "uri": data_uri,
+                "note": f"re-encoded as {output_format}{size_note}",
+            }
+            logger.info(
+                "Attachment '%s' re-encoded as %s (%d -> %d base64 chars)",
+                file_name, output_format, len(payload), len(data_uri),
+            )
+        except ImportError:
+            result = {
+                "uri": None,
+                "note": "cannot be converted (Pillow not available)",
+            }
+            logger.warning(
+                "Attachment '%s' is not a supported vision format and Pillow is "
+                "not installed; it is NOT sent to the model",
+                file_name,
+            )
+        except Exception as ex:  # noqa: BLE001 - best effort, never break the request
+            result = {
+                "uri": None,
+                "note": f"cannot be converted ({type(ex).__name__})",
+            }
+            logger.warning(
+                "Attachment '%s' could not be re-encoded for the vision API: %s",
+                file_name, ex,
+            )
+
+        cls._cache_store(_IMAGE_SHRINK_CACHE, cache_key, result)
+        return result["uri"], result["note"]
+
+    @classmethod
     def _prepare_attachment(cls, item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Resolve a single collected attachment into its outgoing representation.
@@ -605,6 +761,11 @@ class ChatPromptBuilder:
         single source of truth used by both
         :meth:`_build_attachment_parts` and
         :meth:`_build_attachment_text_block`.
+
+        Every image is sent in a format the providers decode: the real format is
+        detected from the payload itself (:func:`sniff_image_format`) and any
+        other image (HEIC/HEIF, BMP, TIFF, AVIF, an untyped share) is re-encoded
+        through :meth:`_reencode_image` instead of being dropped.
 
         :param item: Attachment item from :meth:`collect_attachments`.
         :return: Dict with keys ``item``, ``file_name``, ``media_type``,
@@ -628,28 +789,56 @@ class ChatPromptBuilder:
             "note": "",
         }
 
-        if media_type not in VISION_IMAGE_MEDIA_TYPES:
-            prepared["note"] = (
-                f"not sent to the model ({media_type} is not a supported "
-                f"vision format)"
-            )
-            return prepared
-
         if not payload:
             prepared["note"] = "not sent to the model (empty payload)"
             return prepared
 
-        data_uri = f"data:{media_type};base64,{payload}"
-        shrink_note = ""
+        # The BYTES decide, not the metadata: see :func:`sniff_image_format`.
+        detected_format = sniff_image_format(payload)
+        if not media_type.startswith("image/") and not detected_format:
+            prepared["note"] = f"not sent to the model ({media_type} is not an image)"
+            return prepared
+
+        notes = []
+        sent_media_type = MEDIA_TYPE_BY_FORMAT.get(detected_format, "")
+        if sent_media_type:
+            if sent_media_type != media_type:
+                notes.append(f"detected {sent_media_type} instead of {media_type}")
+            data_uri = f"data:{sent_media_type};base64,{payload}"
+        elif media_type in VISION_IMAGE_MEDIA_TYPES:
+            # Declared type is a vision format but the payload could not be
+            # sniffed: keep sending it and let the provider decide.
+            sent_media_type = media_type
+            data_uri = f"data:{media_type};base64,{payload}"
+        else:
+            # HEIC/HEIF from a phone gallery, BMP, TIFF, AVIF, an untyped share:
+            # decode and re-encode it instead of dropping the picture.
+            data_uri, convert_note = cls._reencode_image(payload, file_name)
+            if not data_uri:
+                prepared["note"] = (
+                    f"not sent to the model ({media_type or detected_format}, "
+                    f"{convert_note})"
+                )
+                return prepared
+            sent_media_type = data_uri.split(";")[0].partition(":")[2]
+            notes.append(convert_note)
+
         if len(data_uri) > MAX_VISION_IMAGE_CHARS:
             data_uri, shrink_note = cls._shrink_image_data_uri(
                 data_uri=data_uri,
-                payload=payload,
+                payload=data_uri.partition(",")[2],
                 file_name=file_name,
             )
+            if shrink_note:
+                notes.append(shrink_note.lstrip(", "))
+            sent_media_type = data_uri.split(";")[0].partition(":")[2]
 
+        prepared["media_type"] = sent_media_type
         prepared["part"] = {"type": "image_url", "image_url": {"url": data_uri}}
-        prepared["note"] = f"sent to the model as image ({media_type}{shrink_note})"
+        details = "".join(f", {note}" for note in notes if note)
+        prepared["note"] = (
+            f"sent to the model as image ({sent_media_type}{details})"
+        )
         return prepared
 
     # ------------------------------------------------------------------
@@ -689,7 +878,7 @@ class ChatPromptBuilder:
             )
 
         for index, message in enumerate(chat.messages):
-            if message.hide or message.improvement:
+            if message.hide or message.improvement or message.unsent:
                 continue
             self._add_message_attachments(
                 message=message,
@@ -841,7 +1030,7 @@ class ChatPromptBuilder:
         :param message: The parent chat message to evaluate.
         :return: True when the message must be part of the parent context.
         """
-        return not message.hide
+        return not message.hide and not message.unsent
 
     @staticmethod
     def format_parent_message(message):
@@ -949,7 +1138,7 @@ class ChatPromptBuilder:
             self._collect_parent_messages(chat=chat, messages=messages)
 
         for message in chat.messages[0:-1]:
-            if message.hide or message.improvement:
+            if message.hide or message.improvement or message.unsent:
                 continue
             if only_answers and not message.is_answer:
                 continue
@@ -1035,7 +1224,7 @@ class ChatPromptBuilder:
             )
 
         for message in chat.messages[0:-1]:
-            if message.hide or message.improvement:
+            if message.hide or message.improvement or message.unsent:
                 continue
             if only_answers and not message.is_answer:
                 continue

@@ -5,6 +5,7 @@ import ViewModeToggle from './ViewModeToggle.vue'
 import PinnedProjectsSwitcher from './PinnedProjectsSwitcher.vue';
 import { isMultiInstance } from '@/config/apps'
 import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
+import { SESSION_LABELS } from '@/utils/sessionLabels'
 </script>
 
 <template>
@@ -164,7 +165,7 @@ import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
            "/:projectName/browsers" route in single / mobile mode. -->
       <NavItem
         icon="fa-regular fa-compass"
-        label="Computer sessions"
+        :label="SESSION_LABELS.section"
         :is-collapsed="isCollapsed"
         @click="handleNavigateToBrowserSessions"
       />

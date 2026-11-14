@@ -214,6 +214,7 @@ import { extractCodeBlocks } from '@/utils/codeBlockExtractor'
                 :cursor-word="cursorWord"
                 :voice-language-label="$ui.voiceLanguages?.[$ui.voiceLanguage]"
                 :chat="chat"
+                :chat-id="chat && chat.id"
                 :collapsed="inputCollapsed"
                 :attachment-count="attachments?.length || 0"
                 :file-count="files?.length || 0"

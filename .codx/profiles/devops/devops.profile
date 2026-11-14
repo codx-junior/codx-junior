@@ -40,18 +40,23 @@
     "token_limit_requests": []
   },
   "tools": [
-    "project_search",
+    "project_map",
+    "project_locate",
+    "project_trace",
+    "project_impact",
     "project_read_file",
-    "project_structure",
-    "generate_tasks_tool",
+    "project_write_file",
+    "project_changes",
+    "search_codx",
     "create_task",
+    "docker_ps",
+    "docker_logs",
+    "docker_inspect",
+    "docker_stats",
+    "docker_exec",
     "docker_container",
     "docker_compose_service",
-    "docker_ps",
-    "project_write_file",
-    "project_grep",
-    "project_glob",
-    "search_codx"
+    "traefik"
   ],
   "tags": [],
   "api_settings": {

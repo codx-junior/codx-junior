@@ -131,6 +131,15 @@ import { ref } from 'vue'
                   <p v-if="notif.text && notif.title" class="text-xs text-base-content/50 mt-0.5 break-words">
                     {{ notif.text }}
                   </p>
+                  <!-- A machine waiting for the user: link to its session -->
+                  <button
+                    v-if="notificationSessionId(notif)"
+                    class="mt-1 inline-flex items-center gap-1 text-[11px] text-warning/80 hover:text-warning underline"
+                    @click.stop="openSession(notif)"
+                  >
+                    <i class="fa-solid fa-desktop text-[10px]" aria-hidden="true"></i>
+                    {{ notif.session_name || 'Open the machine' }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -238,6 +247,16 @@ export default {
     document.removeEventListener('click', this.handleClickOutside)
   },
   methods: {
+    /** Session id referenced by an event notification (machine handoff). */
+    notificationSessionId(notif) {
+      return notif?.session_id || notif?.sessionId || notif?.machine_id || null
+    },
+    openSession(notif) {
+      const sessionId = this.notificationSessionId(notif)
+      if (!sessionId) return
+      this.$storex.browsers.selectSession(sessionId)
+      this.showCard = false
+    },
     handleClickOutside(event) {
       const card = this.$el.querySelector('[class*="absolute"]')
       const button = this.$el.querySelector('button')

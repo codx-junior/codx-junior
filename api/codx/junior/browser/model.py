@@ -579,6 +579,14 @@ class BrowserSession(BaseModel):
         default=None,
         description="Chat that owns the current control lease (when known)"
     )
+    needs_user: bool = Field(
+        default=False,
+        description=(
+            "True while the session is blocked waiting for the human "
+            "(login, MFA, captcha, payment approval...). It is part of the "
+            "session payload so the warning survives a client reload"
+        )
+    )
     user_active_until: Optional[str] = Field(
         default=None,
         description="ISO timestamp until which recent user input keeps the AI paused"
@@ -881,6 +889,9 @@ class BrowserSession(BaseModel):
         value = str(controller or "").strip().lower()
         if value not in ("ai", "user", "none"):
             raise ValueError("controller must be 'ai', 'user' or 'none'")
+        # Any explicit control move resolves a pending "needs user" warning;
+        # request_handoff() raises it again right after moving the lease.
+        self.needs_user = False
         self.controller = value
         self.controller_chat_id = chat_id if value != "none" else None
         if value == "user":
@@ -930,10 +941,19 @@ class BrowserSession(BaseModel):
             return False
         return not self.user_is_active(grace_seconds=grace_seconds)
 
-    def request_handoff(self, reason: str, chat_id: Optional[str] = None) -> None:
-        """Pause the AI and ask the human to take over the page."""
+    def request_handoff(self, reason: str, chat_id: Optional[str] = None) -> bool:
+        """Pause the AI and ask the human to take over the page.
+
+        Returns:
+            bool: True only on the ``False -> True`` transition of
+            ``needs_user`` (the session was not already waiting for the human),
+            so the caller raises exactly one notification per hand-off.
+        """
+        was_waiting = self.needs_user
         self.set_controller("user", chat_id=chat_id, reason=reason)
         self.mark_user_active(seconds=600)
+        self.needs_user = True
+        return not was_waiting
 
     def add_chat(self, chat_id: str) -> None:
         """Connect a chat to this session (idempotent)."""

@@ -99,7 +99,12 @@ function finishedSteps(run) {
           <div class="flex items-center gap-1.5 min-w-0">
             <i :class="[runMeta(run.status).icon, runMeta(run.status).color]" class="text-xs shrink-0"></i>
             <span class="font-medium text-sm truncate" :title="run.name">{{ run.name || run.run_id }}</span>
-            <span class="badge badge-xs shrink-0" :class="runMeta(run.status).badge">
+            <!-- The status icon above already carries the state: the text label
+                 is only rendered from `sm` up, where there is room for it. -->
+            <span
+              class="badge badge-xs shrink-0 hidden sm:inline-flex"
+              :class="runMeta(run.status).badge"
+            >
               {{ runMeta(run.status).label }}
             </span>
           </div>

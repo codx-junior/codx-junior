@@ -40,7 +40,8 @@
   "tags": [
     "orchestration",
     "run:7bbcd9d8-2f84-4000-8b99-190d242b4d4e",
-    "step:profile-voice-model"
+    "step:profile-voice-model",
+    "run-removed"
   ],
   "file_list": [
     "api/codx/junior/model/profile.py",
@@ -79,6 +80,7 @@
       "meta_data": null,
       "tool_events": [],
       "lifecycle_events": [],
+      "phase_events": [],
       "cost": 0.0,
       "cost_info": null,
       "profiles": [
@@ -114,6 +116,7 @@
       "meta_data": null,
       "tool_events": [],
       "lifecycle_events": [],
+      "phase_events": [],
       "cost": 0.0,
       "cost_info": null,
       "profiles": [
@@ -161,7 +164,10 @@
           "response": "# api/codx/junior/media/model.py (lines 1-150 of 150)\n```py api/codx/junior/media/model.py\n\"\"\"Pydantic models for the Project's Channel media pipeline.\n\nPure data definitions: only stdlib + pydantic, no I/O and no imports from\nother codx.junior packages, so this module stays importable from the\nstore, the worker, the API router and the tests alike.\n\"\"\"\n\nfrom datetime import datetime, timezone\nfrom typing import Any, Dict, List, Literal, Optional\n\nfrom pydantic import BaseModel, ConfigDict, Field\n\n\ndef utc_now() -> datetime:\n    \"\"\"Timezone aware timestamp used as default for every ``created_at``.\"\"\"\n    return datetime.now(timezone.utc)\n\n\n# Capabilities a provider can declare\nProviderCapability = Literal[\"image\", \"voice\", \"video\", \"capture\", \"assemble\"]\n# Asset kinds stored under .codx/media/assets\nMediaKind = Literal[\"image\", \"audio\", \"video\", \"caption\", \"doc\"]\n# Render formats\nMediaFormat = Literal[\"16:9\", \"9:16\"]\n# Shot kinds inside an episode ir\nShotKind = Literal[\"slide\", \"replay\", \"still\", \"title\", \"transcript\"]\n# Job kinds\nJobKind = Literal[\"episode\", \"short\", \"cover\", \"revoice\"]\n# Job lifecycle\nJobState = Literal[\"queued\", \"leased\", \"running\", \"done\", \"failed\", \"rejected\"]\n\n\nclass ProviderInfo(BaseModel):\n    \"\"\"Description of a media provider and of its current availability.\"\"\"\n\n    model_config = ConfigDict(extra=\"allow\")\n\n    name: str = Field(description=\"Provider identifier, e.g. 'comfyui', 'piper'\")\n    capability: ProviderCapability = Field(\n        description=\"What the provider produces: image, voice, video, capture or assemble\"\n    )\n    available: bool = Field(default=False, description=\"Provider reachable right now\")\n    local: bool = Field(default=True, description=\"Runs on this machine / offline\")\n    model: Optional[str] = Field(default=None, description=\"Model or checkpoint used\")\n    reason: Optional[str] = Field(\n        default=None, description=\"Why the provider is unavailable, when it is\"\n    )\n    cost_per_unit: float = Field(\n        default=0.0, description=\"Cost per unit produced, 0 means free/local\"\n    )\n\n\nclass MediaAsset(BaseModel):\n    \"\"\"A produced artifact, addressed by content hash and stored in the project.\"\"\"\n\n    asset_id: str = Field(default=\"\", description=\"Stable asset identifier\")\n    kind: MediaKind = Field(default=\"doc\", description=\"Asset kind\")\n    path: str = Field(default=\"\", description=\"Project relative path of the asset\")\n    sha256: str = Field(default=\"\", description=\"Content hash used for caching\")\n    mime: str = Field(default=\"application/octet-stream\")\n    bytes: int = Field(default=0, description=\"Asset size in bytes\")\n    provider: str = Field(default=\"\", description=\"Provider that produced the asset\")\n    model: Optional[str] = Field(default=None, description=\"Provider model\")\n    created_at: datetime = Field(default_factory=utc_now)\n\n\nclass RenderSpec(BaseModel):\n    \"\"\"How an episode/short is rendered.\"\"\"\n\n    format: MediaFormat = Field(default=\"16:9\")\n    width: int = Field(default=1920)\n    height: int = Field(default=1080)\n    fps: int = Field(default=30)\n    loudness_target: float = Field(\n        default=-16.0, description=\"Integrated loudness target in LUFS\"\n    )\n    captions: bool = Field(default=True, description=\"Generate a caption track\")\n    burned_captions: bool = Field(\n        default=False, description=\"Burn captions into the video\"\n    )\n\n\nclass VoiceProfile(BaseModel):\n    \"\"\"Voice used for narration; snapshotted into the episode ir.\"\"\"\n\n    enabled: bool = Field(default=True)\n    provider: str = Field(default=\"\")\n    voice_id: str = Field(default=\"\")\n    model: Optional[str] = Field(default=None)\n    speed: float = Field(default=1.0)\n    style: Optional[str] = Field(default=None)\n    language: Optional[str] = Field(default=None)\n    reference_asset: Optional[str] = Field(\n        default=None, description=\"Asset id used as voice reference (cloning)\"\n    )\n\n\nclass Shot(BaseModel):\n    \"\"\"One unit of the episode timeline.\"\"\"\n\n    shot_id: str",
           "output": "Read 2 file(s) | Successfully read: api/codx/junior/media/model.py, api/codx/junior/model/profile.py",
           "duration_ms": 152.50208415091038,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "read_folder",
@@ -173,7 +179,10 @@
           "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n                \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n                \u251c\u2500\u2500 \ud83d\udc0d budget.py\n                \u251c\u2500\u2500 \ud83d\udc0d model.py\n                \u251c\u2500\u2500 \ud83d\udcc1 **providers**/\n                \u2502   \u2514\u2500\u2500 \ud83d\udc0d image_local.py\n                \u251c\u2500\u2500 \ud83d\udc0d providers.py\n                \u251c\u2500\u2500 \ud83d\udc0d redaction.py\n                \u251c\u2500\u2500 \ud83d\udc0d store.py\n                \u2514\u2500\u2500 \ud83d\udc0d worker.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
           "output": null,
           "duration_ms": 59025.717018172145,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -189,7 +198,10 @@
           "response": "# api/codx/junior/media/__init__.py (lines 1-1 of 1)\n```py api/codx/junior/media/__init__.py\n\"\"\"Media package: models, providers, store, budget and worker for the Project's Channel.\"\"\"\n```\nerror [api/tests/media/test_store.py]\nERROR: api/tests/media/test_store.py File not found",
           "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/__init__.py | Failed to read 1 file(s): api/tests/media/test_store.py",
           "duration_ms": 372.8372249752283,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -203,7 +215,10 @@
           "response": "> atlas: 1 evidence(s) | confidence 0.76 | 4996450b5705 +dirty | fresh\n\n**Best match: `set_env.sh:1` \u2014 file.**\n\n### Evidence\n1. `set_env.sh:1` \u2014 file\n   - text match\n   `1: # Root folder for new projects`\n\n### Reading order\n1. `set_env.sh:1`\n\n### Gaps\n- No symbol matched; results are file/content locations.\n- No test file matched; use `project_impact` before changing code.\n\n### Next probes\n- project_trace('set_env.sh')\n- project_impact(['set_env.sh'])",
           "output": "Best match: `set_env.sh:1` \u2014 file.",
           "duration_ms": 75345.54715454578,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "read_folder",
@@ -216,7 +231,10 @@
           "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **tests**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n            \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_cover_provider.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_models.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_providers.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_redaction.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_router.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_store.py\n            \u2514\u2500\u2500 \ud83d\udc0d test_media_worker.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
           "output": null,
           "duration_ms": 24503.271900117397,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -230,7 +248,10 @@
           "response": "> atlas: 0 evidence(s) | confidence 0.10 | 4996450b5705 +dirty | fresh\n\n**No indexed match for `exclude_none`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='exclude_none')",
           "output": "No indexed match for `exclude_none`.",
           "duration_ms": 110569.23898495734,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -245,7 +266,10 @@
           "response": "> atlas: 0 evidence(s) | confidence 0.10 | 4996450b5705 +dirty | fresh\n\n**No indexed match for `profile.model_dump|model_dump_json|save_profile`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='profile.model_dump|model_dump_json|save_')",
           "output": "No indexed match for `profile.model_dump|model_dump_json|save_profile`.",
           "duration_ms": 15997.498463839293,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -260,7 +284,10 @@
           "response": "> atlas: 0 evidence(s) | confidence 0.10 | 4996450b5705 +dirty | fresh\n\n**No indexed match for `**/profile*.py`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='**/profile*.py')",
           "output": "No indexed match for `**/profile*.py`.",
           "duration_ms": 29184.7193390131,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "read_folder",
@@ -272,7 +299,10 @@
           "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u251c\u2500\u2500 \ud83d\udcdd README.md\n            \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **agents**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d base_agent.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d devops_agent.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d git_issues_agent.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **ai**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d ai.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d ai_logger.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udcc4 anthropic.py.disabled\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d cancellation.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d llmfactory.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udcc4 mistral_ai.py.disabled\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d ollama.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d raw_log_reader.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d raw_logger.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **smol**/\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d loop_guard.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d messages.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d smol_agent.py\n            \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udc0d tool_cache.py\n            \u2502   \u2502   \u2514\u2500\u2500 \ud83d\udc0d tool_context.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d utils.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d vllm_cpu_ai.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d wallet_check.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **analytics**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d analytics.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d decision_model.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d model.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d storage.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d token_counter.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **api**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d analytics.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d analytics_model.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d api_logs.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d atlas.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d autonomy.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d bootstrap.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d browser.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d browser_files.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d browser_models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d calendar.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d chat.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d chatGPTLikeApi.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d company.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d computer.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d computer_resize.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d console.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d db_router.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d dsh.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d dsh_agent.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d file_finder.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d files.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d git.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d global_settings.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d harness.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d image.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d images.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d infra.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d kanban.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d knowledge.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d log_explorer.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d logs.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d management.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d media.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d meets.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d orchestration.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d profiles.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d project_search.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d projects.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d teams.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d traefik.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d users.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d views.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d wiki.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d workspace_models.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d workspaces.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **api_logs**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d api_logs.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d model.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d storage.py\n            \u251c\u2500\u2500 \ud83d\udc0d app.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **atlas**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udcdd README.md\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d curator.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d indexer.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d query.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d related.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d store.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **autonomy**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d prompts.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d service.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d store.py\n            \u2502   \u2514\u2500\u2500 \ud83d\udc0d worker.py\n            \u251c\u2500\u2500 \ud83d\udc0d background.py\n            \u251c\u2500\u2500 \ud83d\udcc1 **board_manager**/\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d constants.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d models.py\n            \u2502   \u251c\u2500\u2500 \ud83d\udc0d service.py\n    ",
           "output": null,
           "duration_ms": 76405.45547194779,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -289,7 +319,10 @@
           "response": "# api/codx/junior/profiles/profile_manager.py \u2014 pattern `model_dump|exclude_none|exclude_unset|yaml\\.|json\\.dump` (2 match(es); 1560 lines)\n```py api/codx/junior/profiles/profile_manager.py\n   560|             logger.info(f\"Saved profile content to: {markdown_content_path}\")\n   561|         \n   562|         # Save profile JSON without content property\n   563|         with open(profile_path, 'w') as f:\n   564|             profile_data = profile.model_dump()\n   565|             profile_data['content'] = None\n   566|             profile_data['parsed_content'] = None\n   567|             f.write(json.dumps(profile_data, indent=2))\n   568| \n   569|         # Every client caches the profile list: announce the change so the\n   570|         # other tabs/users reload it instead of rendering a stale list. Best\n   571|         # effort: the write already succeeded.\n```\n# api/codx/junior/profiles/wiki.profile \u2014 pattern `model_dump|exclude_none|exclude_unset|yaml\\.|json\\.dump` (0 match(es); 8 lines)\n\n> No line matches `model_dump|exclude_none|exclude_unset|yaml\\.|json\\.dump`. The pattern is case-sensitive. Try a shorter pattern, or read a line range if you know where the code is.",
           "output": "Read 2 file(s) | Successfully read: api/codx/junior/profiles/profile_manager.py, api/codx/junior/profiles/wiki.profile",
           "duration_ms": 2359.702918678522,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -302,7 +335,10 @@
           "response": "Failed to exec in container codx-junior-api: command must not contain ';': docker exec runs without a shell, so issue one command per call",
           "output": "\u274c Error: command must not contain ';': docker exec runs without a shell, so issue one command per call",
           "duration_ms": 822.0791611820459,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -315,7 +351,10 @@
           "response": "docker exec in codx-junior-api (exit 0):\nName: pydantic\nVersion: 2.12.5\nSummary: Data validation using Python type hints\nHome-page: \nAuthor: \nAuthor-email: Samuel Colvin <s@muelcolvin.com>, Eric Jolibois <em.jolibois@gmail.com>, Hasan Ramezani <hasan.r67@gmail.com>, Adrian Garcia Badaracco <1755071+adriangb@users.noreply.github.com>, Terrence Dorsey <terry@pydantic.dev>, David Montague <david@pydantic.dev>, Serge Matveenko <lig@countzero.co>, Marcelo Trylesinski <marcelotryle@gmail.com>, Sydney Runkle <sydneymarierunkle@gmail.com>, David Hewitt <mail@davidhewitt.io>, Alex Hall <alex.mojaki@gmail.com>, Victorien Plot <contact@vctrn.dev>, Douwe Maan <hi@douwe.me>\nLicense: \nLocation: /tmp/.venv_codx_junior_api/lib/python3.11/site-packages\nRequires: annotated-types, pydantic-core, typing-extensions, typing-inspection\nRequired-by: banks, fastapi, langchain, langchain-classic, langchain-core, langgraph, langsmith, llama-cloud, llama-cloud-services, llama-index-core, llama-index-instrumentation, llama-index-workflows, openai, pydantic-settings",
           "output": "> Running: `docker exec codx-junior-api /tmp/.venv_codx_junior_api/bin/python -m pip show pydantic`\nOutput:\n\nName: pydantic\nVersion: 2.12.5\nSummary: Data validation using Python type hints\nHome-page: \nAuthor: \nAuthor-email: Samuel Colvin <s@muelcolvin.com>, Eric Jolibois <em.jolibois@gmail.com>, Hasan Ramezani <hasan.r67@gmail.com>, Adrian Garcia Badaracco <1755071+adriangb@users.noreply.github.com>, Terrence Dorsey <terry@pydantic.dev>, David Montague <david@pydantic.dev>, Serge Matveenko <lig@countzero.co>, Marcelo Trylesinski <marcelotryle@gmail.com>, Sydney Runkle <sydneymarierunkle@gmail.com>, David Hewitt <mail@davidhewitt.io>, Alex Hall <alex.mojaki@gmail.com>, Victorien Plot <contact@vctrn.dev>, Douwe Maan <hi@douwe.me>\nLicense: \nLocation: /tmp/.venv_codx_junior_api/lib/python3.11/site-packages\nRequires: annotated-types, pydantic-core, typing-extensions, typing-inspection\nRequired-by: banks, fastapi, langchain, langchain-classic, langchain-core, langgraph, langsmith, llama-cloud, llama-cloud-services, llama-index-core, llama-index-instrumentation, llama-index-workflows, openai, pydantic-settings",
           "duration_ms": 2082.40357413888,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -329,7 +368,10 @@
           "response": "error [api/requirements.txt]\nERROR: api/requirements.txt File not found",
           "output": "Read 0 file(s) | Failed to read 1 file(s): api/requirements.txt",
           "duration_ms": 474.2896929383278,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_write_file",
@@ -342,7 +384,10 @@
           "response": "Write completed: api/codx/junior/media/voice.py (7343 bytes)",
           "output": "\u2713 File written successfully: `api/codx/junior/media/voice.py` (7343 bytes)",
           "duration_ms": 1497.8786297142506,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "apply_file_changes",
@@ -372,7 +417,10 @@
           "response": "Applied 4 change(s) to api/codx/junior/media/voice.py",
           "output": "```py api/codx/junior/media/voice.py\n\"\"\"Voice resolution for the Project's Channel.\n\nThe voice is a property of the profile (``Profile.voice``), but an episode can\nbe produced with a project wide default voice or with no configuration at all.\nThis module owns that decision and nothing else: pure python, no I/O, and the\nonly import is ``codx.junior.media.model`` (stdlib + pydantic), so the profile\nmodel, the worker, the router and the tests can all import it without cycles.\n\nResolution order used when a profile has to speak:\n\n1. ``profile`` \u2013 the profile's own voice, when its ``enabled`` flag is true;\n2. ``project`` \u2013 the project default voice (``.codx/media`` ``project`` entry);\n3. ``system``  \u2013 ``DEFAULT_VOICE``, the offline fallback.\n\n``enabled: False`` on the profile is SILENCE: the profile explicitly asked not\nto be voiced, so resolution stops there (``source='disabled'``) and it never\nfalls back to the project or system voice. This is a feature - muting a\nprofile must keep it muted even in a project that defines a default voice.\n\nA profile that is unknown (or that simply has no voice configured) is not an\nerror: resolution falls through to the project and then to the system voice.\n\"\"\"\n\nfrom typing import Any, Dict, List, Literal, Mapping, Optional, Tuple\n\nfrom pydantic import BaseModel, Field\n\nfrom codx.junior.media.model import VoiceProfile\n\n__all__ = [\n    \"DEFAULT_VOICE\",\n    \"PROJECT_STORE_KEY\",\n    \"ResolvedVoice\",\n    \"VoiceSource\",\n    \"resolve_voice\",\n    \"voice_snapshot\",\n]\n\n# Where the resolved voice comes from: profile, project, system, or the\n# explicit silence declared by a profile with ``enabled: False``.\nVoiceSource = Literal[\"profile\", \"project\", \"system\", \"disabled\"]\n\n# Key used by the media store to persist the project default voice\nPROJECT_STORE_KEY = \"project\"\n\n# Offline system fallback: used when neither the profile nor the project\n# declares a voice. ``provider='local'`` keeps the promise of no external\n# service in this milestone (a local TTS provider resolves it).\nDEFAULT_VOICE = VoiceProfile(\n    enabled=True,\n    provider=\"local\",\n    voice_id=\"default\",\n    model=None,\n    speed=1.0,\n    style=None,\n    language=None,\n)\n\nclass ResolvedVoice(BaseModel):\n    \"\"\"Result of :func:`resolve_voice`, ready to be shown in the UI.\"\"\"\n\n    voice: VoiceProfile = Field(\n        default_factory=lambda: DEFAULT_VOICE.model_copy(deep=True),\n        description=\"Voice to speak with\",\n    )\n    source: VoiceSource = Field(\n        default=\"system\",\n        description=\"Origin of the voice: profile, project, system or disabled\",\n    )\n    reason: str = Field(\n        default=\"system default voice\",\n        description=\"Human readable explanation shown in the UI\",\n    )\n    profile: Optional[str] = Field(\n        default=None, description=\"Profile the resolution was requested for\"\n    )\n\n\ndef _as_voice(value: Any) -> Optional[VoiceProfile]:\n    \"\"\"Normalize a voice-shaped value (model, mapping or None) to a model.\"\"\"\n    if value is None:\n        return None\n    if isinstance(value, VoiceProfile):\n        return value\n    if isinstance(value, Mapping):\n        return VoiceProfile.model_validate(dict(value))\n    return None\n\n\ndef _profile_name(entry: Any) -> Optional[str]:\n    \"\"\"Best effort profile name for a profile entry (model or mapping).\"\"\"\n    if entry is None or isinstance(entry, (str, VoiceProfile)):\n        return None\n    if isinstance(entry, Mapping):\n        name = entry.get(\"name\")\n    else:\n        name = getattr(entry, \"name\", None)\n    return str(name) if name else None\n\n\ndef _profile_voice(entry: Any) -> Optional[VoiceProfile]:\n    \"\"\"Voice declared by a profile entry, ``None`` when it has none.\"\"\"\n    if entry is None or isinstance(entry, (str, VoiceProfile)):\n        return None\n    value = entry.get(\"voice\") if isinstance(entry, Mapping) else getattr(entry, \"voice\", None)\n    return _as_voice(value)\n\n\ndef _iterate_profiles(profiles: Any) -> List[Tuple[str, Any]]:\n    \"\"\"Normalize ``profiles`` (mapping or iterable) to ``(name, entry)`` pairs.\"\"\"\n    if not profiles:\n        return []\n    if isinstance(profiles, Mapping):\n        return [(str(name), entry) for name, entry in profiles.items()]\n    items: List[Tuple[str, Any]] = []\n    for entry in profiles:\n        name = _profile_name(entry)\n        if name is not None:\n            items.append((name, entry))\n    return items\n\n\ndef _lookup_profile_voice(profile_name: Optional[str], profiles: Any) -> Optional[VoiceProfile]:\n    \"\"\"Voice configured by ``profile_name``, ``None`` when absent or unset.\"\"\"\n    if not profile_name or not profiles:\n        return None\n    for name, entry in _iterate_profiles(profiles):\n        if name == profile_name:\n            return _profile_voice(entry)\n    return None\n\n\ndef resolve_voice(\n    profile_name: Optional[str] = None,\n    profiles: Any = None,\n    project_default: Any = None,\n    system_default: Optional[VoiceProfile] = DEFAULT_VOICE,\n) -> ResolvedVoice:\n    \"\"\"Resolve the voice a profile speaks with.\n\n    ``profiles`` accepts a mapping ``name -> Profile`` or an iterable of\n    profiles; ``project_default`` accepts a ``VoiceProfile`` or a mapping.\n    A disabled voice on the profile means silence and is never overridden.\n    \"\"\"\n    profile_voice = _lookup_profile_voice(profile_name, profiles)\n    if profile_voice is not None:\n        if not profile_voice.enabled:\n            return ResolvedVoice(\n                voice=profile_voice.model_copy(deep=True),\n                source=\"disabled\",\n                reason=(\n                    f\"voice is disabled in profile '{profile_name}' \"\n                    \"(profile is silent, no fallback)\"\n                ),\n                profile=profile_name,\n            )\n        return ResolvedVoice(\n            voice=profile_voice.model_copy(deep=True),\n            source=\"profile\",\n            reason=f\"voice configured in profile '{profile_name}'\",\n            profile=profile_name,\n        )\n\n    project_voice = _as_voice(project_default)\n    if project_voice is not None and project_voice.enabled:\n        return ResolvedVoice(\n            voice=project_voice.model_copy(deep=True),\n            source=\"project\",\n            reason=\"inherited from project\",\n            profile=profile_name,\n        )\n\n    voice = _as_voice(system_default) or DEFAULT_VOICE\n    return ResolvedVoice(\n        voice=voice.model_copy(deep=True),\n        source=\"system\",\n        reason=\"system default voice (no voice configured)\",\n        profile=profile_name,\n    )\n\n\ndef voice_snapshot(\n    profiles: Any = None,\n    project_default: Any = None,\n    system_default: Optional[VoiceProfile] = DEFAULT_VOICE,\n) -> Dict[str, VoiceProfile]:\n    \"\"\"Build the ``EpisodeIR.voice_snapshot`` for the speaking profiles.\n\n    Every profile is resolved through :func:`resolve_voice`, so the snapshot\n    holds a concrete voice per speaking profile. Disabled profiles are left\n    out: they do not speak and must not leak a fallback voice into the episode.\n    \"\"\"\n    snapshot: Dict[str, VoiceProfile] = {}\n    for name, _entry in _iterate_profiles(profiles):\n        resolved = resolve_voice(\n            name,\n            profiles=profiles,\n            project_default=project_default,\n            system_default=system_default,\n        )\n        if resolved.source == \"disabled\":\n            continue\n        snapshot[name] = resolved.voice.model_copy(deep=True)\n    return snapshot\n\n```",
           "duration_ms": 2951.5208397060633,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "apply_file_changes",
@@ -394,7 +442,10 @@
           "response": "Applied 2 change(s) to api/codx/junior/model/profile.py",
           "output": "```py api/codx/junior/model/profile.py\nfrom pydantic import BaseModel, Field\nfrom typing import Any, Dict, List, Optional\n\nfrom codx.junior.media.model import VoiceProfile\nfrom codx.junior.model.user import CodxUser\n\n\nclass ProfileGuardrailSettings(BaseModel):\n    \"\"\"Security policy applied to a profile.\n\n    Every profile carries a guardrail policy. When multiple profiles work\n    together in a chat, their policies are aggregated before a request is\n    processed.\n    \"\"\"\n\n    enabled: bool = Field(\n        description=\"Enable guardrails for this profile\",\n        default=False,\n    )\n    scope: Optional[str] = Field(\n        description=\"Natural-language scope description used for relevance checks\",\n        default=None,\n    )\n    scope_keywords: List[str] = Field(\n        description=\"Keywords that indicate a request is on-scope\",\n        default_factory=list,\n    )\n    scope_similarity_threshold: float = Field(\n        description=\"Minimum cosine similarity for the embedding scope check\",\n        default=0.35,\n    )\n    allowed_tools: List[str] = Field(\n        description=\"Tool allowlist for this profile (empty = no tools allowed)\",\n        default_factory=list,\n    )\n    refusal_message: str = Field(\n        default=\"I can only answer questions within my configured scope.\"\n    )\n    risk_threshold: float = Field(\n        description=\"Cumulative risk score that forces a block\",\n        default=10.0,\n    )\n    use_llm_classifier: bool = Field(\n        description=\"Placeholder for a future local decision model\",\n        default=False,\n    )\n\n\nclass ProfileApiSettings(BaseModel):\n    active: bool = Field(description=\"Model is visible through API\", default=False)\n    model_name: Optional[str] = Field(description=\"Model's name\", default=None)\n    description: Optional[str] = Field(description=\"Model's description\", default=None)\n\n\nclass Profile(BaseModel):\n    name: str = Field(default=\"\")\n    url: str = Field(default=\"\")\n    avatar: str = Field(default=\"\")\n    description: str = Field(default=\"\")\n    category: str = Field(default=\"\", description=\"Profile category: global, file, coding, ...\")\n    file_match: str = Field(default=\"\",\n        description=\"Optional regex to apply profiles based on file absolute path.\")\n    content: Optional[str] = Field(default=None)\n    parsed_content: Optional[str] = Field(default=None)\n    path: str = Field(default=\"\")\n    profiles: Optional[List[str]] = Field(default=[], description=\"Linked profiles to include with this profile\")\n    team: Optional[List[str]] = Field(\n        default=[],\n        description=(\n            \"Profile names the LLM can use in new tasks. They are NOT active in \"\n            \"the chat: they are listed as a name/description table in the system \"\n            \"prompt, after the profile composition.\"\n        )\n    )\n    llm_model: Optional[str] = Field(default='')\n    use_knowledge: Optional[bool] = Field(default=True)\n    user: Optional[CodxUser] = Field(default=CodxUser())\n    tools: Optional[List[str]] = Field(default=[])\n    tags: Optional[List[str]] = Field(default=[])\n    api_settings: Optional[ProfileApiSettings] = Field(description=\"Indicates if the profile is accessible through the LLM API\", default=ProfileApiSettings())\n    guardrails: ProfileGuardrailSettings = Field(\n        description=\"Guardrail policy applied when this profile is active\",\n        default=ProfileGuardrailSettings(),\n    )\n    chat_mode: Optional[str] = Field(description=\"Affects on how conversation works. Like writing a document or chat messages\", default=None)\n    actor: Optional[Dict[str, Any]] = Field(\n        description=(\n            \"Actor declaration of the profile: when ``actor.enabled`` is true the \"\n            \"profile works on its own (shifts on its boards, weekly schedule, \"\n            \"budgets) without a human in the loop. Settings live in \"\n            \"codx.junior.autonomy.models.ActorConfig (role, policy, session, \"\n            \"boards, interval_minutes, schedule, mode, budgets, instructions...). \"\n            \"Kept as a plain mapping so this core model never depends on the \"\n            \"actor package. The legacy ``autonomy`` key is read as a fallback \"\n            \"and migrated on save.\"\n        ),\n        default=None,\n    )\n    autonomy: Optional[Dict[str, Any]] = Field(\n        description=(\n            \"Legacy actor declaration (superseded by ``actor``): when \"\n            \"``autonomy.enabled`` is true the profile becomes an autonomous \"\n            \"agent that takes shifts on its own board. Still read, migrated to \"\n            \"``actor`` on save, never written by new code.\"\n        ),\n        default=None,\n    )\n    voice: Optional[VoiceProfile] = Field(\n        description=(\n            \"Voice used when this profile speaks in the Project's Channel. \"\n            \"``enabled=False`` means the profile is silent (no fallback). \"\n            \"Omitted from the serialized profile when unset, so existing \"\n            \".codx/profiles files keep their current bytes.\"\n        ),\n        default=None,\n        exclude_if=lambda voice: voice is None,\n    )\n    project_id: Optional[str] = Field(description=\"Profile's project\", default=None)\n    chat_id: Optional[str] = Field(default=\"\", description=\"Unique identifier for chat\")\n```",
           "duration_ms": 2583.589557558298,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_write_file",
@@ -407,7 +458,10 @@
           "response": "Write completed: api/tests/media/test_profile_voice.py (6115 bytes)",
           "output": "\u2713 File written successfully: `api/tests/media/test_profile_voice.py` (6115 bytes)",
           "duration_ms": 5151.884146034718,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -421,7 +475,10 @@
           "response": null,
           "output": null,
           "duration_ms": 302422.0492746681,
-          "error": "Tool 'docker_exec' timed out after 300s and was aborted. The operation may still be finishing in the background; check its effect before retrying."
+          "error": "Tool 'docker_exec' timed out after 300s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -435,7 +492,10 @@
           "response": "docker exec in codx-junior-api (exit 0):\n...........                                                              [100%]\n11 passed in 0.08s",
           "output": "> Running: `docker exec codx-junior-api /tmp/.venv_codx_junior_api/bin/python -m pytest /home/codx-junior-projects/codx-junior/codx-junior-platform/api/tests/media/test_profile_voice.py -q -x -o pythonpath=/home/codx-junior-projects/codx-junior/codx-junior-platform/api`\nOutput:\n\n...........                                                              [100%]\n11 passed in 0.08s",
           "duration_ms": 1839.5702149719,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -449,7 +509,10 @@
           "response": "",
           "output": null,
           "duration_ms": 84754.53150831163,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         }
       ],
       "lifecycle_events": [
@@ -457,9 +520,12 @@
           "status": "running",
           "run_id": "834059c81304",
           "duration_ms": null,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null
         }
       ],
+      "phase_events": [],
       "cost": 0.0,
       "cost_info": null,
       "profiles": [
@@ -480,7 +546,7 @@
     }
   ],
   "created_at": "2026-11-13 12:22:24.567235",
-  "updated_at": "2026-11-13T12:37:29.482777",
+  "updated_at": "2026-11-13T16:52:30.199872",
   "mode": "chat",
   "kanban_id": "",
   "column_id": "",
@@ -493,7 +559,12 @@
   "due_date": null,
   "progress": 100,
   "assignees": [],
+  "wake_at": null,
   "sort_index": null,
+  "calendar_ids": [],
+  "scheduled_start": null,
+  "scheduled_end": null,
+  "all_day": false,
   "columns": [],
   "chat_index": 0,
   "url": "",

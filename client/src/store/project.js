@@ -109,6 +109,40 @@ const promiseOrDefault = async (p, def) => {
   return res
 }
 
+// ── Last board opened in the Kanban ─────────────────────────────────────────
+// The Kanban reopens on the board the user opened last. The selection lives in
+// the store (`activeBoard`) and is lost on reload, so it is mirrored in
+// localStorage PER PROJECT (a single key would make the board of one project
+// open in another). A remembered title is always validated against the loaded
+// kanban, so a deleted or renamed board is ignored instead of opening an empty
+// canvas.
+const LAST_BOARD_KEY = 'lastBoard'
+
+function lastBoardStorageKey(project) {
+  const id = project?.project_id || project?.codx_path
+  return id ? `${LAST_BOARD_KEY}:${id}` : null
+}
+
+function readLastBoard(project) {
+  const key = lastBoardStorageKey(project)
+  if (!key) return null
+  try {
+    return localStorage.getItem(key)
+  } catch (error) {
+    return null
+  }
+}
+
+function saveLastBoard(project, board) {
+  const key = lastBoardStorageKey(project)
+  if (!key) return
+  try {
+    localStorage.setItem(key, board)
+  } catch (error) {
+    console.error('Failed to save last board:', error)
+  }
+}
+
 async function ensureFilesLoaded(project, forceReload = false) {
   const { $state, $api } = project
   if (!$state || !$api) return
@@ -890,7 +924,35 @@ export const actions = actionTree(
       if (!state.kanban) {
         await $storex.projects.loadKanban()
       }
-      state.activeBoard = boardName
+      state.activeBoard = boardName || null
+      // Remember the board so the Kanban reopens on it (see restoreActiveBoard).
+      // Leaving the board (boardName empty) keeps the memory: going back to the
+      // board list is not "opening another board".
+      if (boardName) saveLastBoard(state.activeProject, boardName)
+    },
+
+    /**
+     * Resolve the board the Kanban must open with, for the given project.
+     *
+     * Candidates, in order: the board remembered in localStorage for this
+     * project (written on every selection, so it is the strongest signal), the
+     * board already selected in the store and the board flagged `active` by the
+     * kanban itself. The first one that still exists wins, so this never selects
+     * a board that was deleted or renamed.
+     *
+     * @returns {string|null} The board to open (null = show the board list).
+     */
+    restoreActiveBoard({ state }, project) {
+      const targetProject = project || state.activeProject
+      const boards = targetProject?.$state?.kanban?.boards || {}
+      const candidates = [
+        readLastBoard(targetProject),
+        state.activeBoard,
+        Object.keys(boards).find(title => boards[title]?.active)
+      ]
+      const board = candidates.find(title => title && boards[title]) || null
+      state.activeBoard = board
+      return board
     },
     getChatProject({ state }, chat) {
       return state.allProjectsById[chat.project_id || chat.owner_project_id] || state.activeProject
@@ -918,6 +980,8 @@ export const actions = actionTree(
       if (!targetProject?.$api) return
       
       targetProject.$state.kanban = await targetProject.$api.chats.kanban.load()
+      // Reopen on the board that was open the last time in this project.
+      $storex.projects.restoreActiveBoard(targetProject)
       return targetProject.$state.kanban
     },
 

@@ -50,6 +50,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from codx.junior.media.model import VoiceProfile
 from codx.junior.model.profile import (
     Profile,
     ProfileApiSettings,
@@ -86,6 +87,20 @@ MAX_CONTENT_WARNING_CHARS = 20000
 # A summary listing is read to CHOOSE a profile: the description is truncated
 # so a long one cannot turn the selection step into a full definition dump.
 MAX_SUMMARY_DESCRIPTION_CHARS = 280
+
+# Fields of ``codx.junior.media.model.VoiceProfile``: how the profile sounds in
+# the Project's Channel. Listed explicitly so a typo in the tool arguments fails
+# here instead of being silently dropped by the model.
+VOICE_FIELDS = (
+    "enabled",
+    "provider",
+    "voice_id",
+    "model",
+    "speed",
+    "style",
+    "language",
+    "reference_asset",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +243,9 @@ def _profile_definition(profile: Profile, include_content: bool = False) -> Dict
         ),
         "actor": profile.actor or {},
         "autonomy": profile.autonomy or {},
+        "voice": (
+            profile.voice.model_dump() if profile.voice else None
+        ),
         "path": profile.path,
         "project_id": profile.project_id,
         "has_content": bool(profile.content),
@@ -868,6 +886,43 @@ def _normalize_autonomy(value: Any) -> Optional[Dict[str, Any]]:
     return AutonomyConfig.from_store_value(value).normalized().model_dump()
 
 
+def _normalize_voice(value: Any) -> Optional[VoiceProfile]:
+    """
+    Validate and normalize the ``voice`` mapping of a profile.
+
+    The mapping carries exactly the fields of
+    :class:`codx.junior.media.model.VoiceProfile`: how the profile sounds when
+    it narrates in the Project's Channel. An omitted mapping (``None``) means
+    "leave the stored voice untouched", never "reset it".
+
+    Args:
+        value: Raw mapping coming from the tool arguments.
+
+    Returns:
+        The normalized :class:`VoiceProfile`, or None when nothing was provided.
+
+    Raises:
+        ValueError: When the value is not an object or a field is unknown.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(
+            "voice must be an object, e.g. "
+            "{'enabled': True, 'provider': 'piper', 'voice_id': 'en_US-amy-medium'}"
+        )
+    unknown = sorted(set(value) - set(VOICE_FIELDS))
+    if unknown:
+        raise ValueError(
+            f"Unknown voice field(s) {unknown}. Valid fields: "
+            f"{', '.join(VOICE_FIELDS)}"
+        )
+    try:
+        return VoiceProfile(**value)
+    except ValueError as ex:
+        raise ValueError(f"Invalid voice: {ex}") from ex
+
+
 def _action_create(
     manager: ProfileManager,
     name: str,
@@ -885,6 +940,7 @@ def _action_create(
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
     autonomy: Optional[Dict[str, Any]] = None,
+    voice: Optional[Dict[str, Any]] = None,
 ) -> ToolResponse:
     """
     Create a new profile (both files) in the project.
@@ -910,6 +966,11 @@ def _action_create(
             ``{enabled, board, interval_minutes, max_runtime_minutes, max_agenda,
             mode ('active'|'dry_run'), budget_cxjcoins, instructions, wake_at,
             notify}``.
+        voice: Optional voice mapping (the :class:`VoiceProfile` fields:
+            ``{enabled, provider, voice_id, model, speed, style, language,
+            reference_asset}``) used when the profile speaks in the Project's
+            Channel. Omitted means "no voice set": the project and then the
+            system default apply. ``enabled: false`` makes the profile silent.
 
     Returns:
         ToolResponse describing the created profile.
@@ -955,6 +1016,7 @@ def _action_create(
         url=url or "",
         api_settings=ProfileApiSettings(**(api_settings or {})),
         actor=_normalize_autonomy(autonomy),
+        voice=_normalize_voice(voice),
         project_id=manager.settings.project_id,
     )
     profile.path = _profile_paths(manager, name)["profile"]
@@ -989,6 +1051,7 @@ def _action_update(
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
     autonomy: Optional[Dict[str, Any]] = None,
+    voice: Optional[Dict[str, Any]] = None,
 ) -> ToolResponse:
     """
     Update an existing project profile, merging the provided fields.
@@ -1014,6 +1077,10 @@ def _action_update(
         api_settings: New ``{active, model_name, description}``.
         autonomy: New autonomy mapping (``None`` keeps it, a mapping without
             ``enabled`` disables the agent).
+        voice: New voice mapping (``None`` keeps it, so an omitted voice leaves
+            the stored profile untouched). A mapping without ``enabled`` keeps
+            the field default (``True``): send ``{'enabled': False}`` to make the
+            profile silent in the channel.
 
     Returns:
         ToolResponse describing the updated profile.
@@ -1072,6 +1139,9 @@ def _action_update(
         overrides["api_settings"] = ProfileApiSettings(**api_settings)
     if autonomy is not None:
         overrides["actor"] = _normalize_autonomy(autonomy)
+    # An omitted voice is NOT an override: the stored voice must stay untouched.
+    if voice is not None:
+        overrides["voice"] = _normalize_voice(voice)
 
     if not overrides:
         raise ValueError(
@@ -1202,6 +1272,12 @@ def _write_response(
         f"- Links: profiles `{', '.join(profile.profiles or []) or 'none'}` | "
         f"tools `{', '.join(profile.tools or []) or 'none'}`",
     ]
+    if profile.voice:
+        lines.append(
+            f"- Voice: {'enabled' if profile.voice.enabled else 'disabled'} | "
+            f"provider `{profile.voice.provider or 'default'}` | "
+            f"voice `{profile.voice.voice_id or 'default'}`"
+        )
     if changed_fields:
         lines.append(f"- Changed: {', '.join(changed_fields)}")
     if warnings:
@@ -1251,6 +1327,7 @@ def profile_management(
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
     autonomy: Optional[Dict[str, Any]] = None,
+    voice: Optional[Dict[str, Any]] = None,
     query: Optional[str] = None,
     include_inherited: bool = False,
     **kwargs,
@@ -1321,6 +1398,12 @@ def profile_management(
             wake_at, notify}``. With ``enabled: true`` the profile becomes an
             autonomous agent that takes shifts on its own board without a human
             in the loop (create/update).
+        voice: ``{enabled, provider, voice_id, model, speed, style, language,
+            reference_asset}``: how the profile sounds when it speaks in the
+            Project's Channel (create/update). Optional and backward compatible:
+            an omitted voice leaves the stored profile untouched. ``enabled:
+            false`` means the profile never speaks (no fallback voice); omitted
+            fields inherit the project voice, then the system default.
         query: ``list`` / ``list_summary`` only. Case-insensitive filter on
             name, description and tags.
         include_inherited: ``list`` / ``list_summary`` only. Include read-only
@@ -1415,6 +1498,7 @@ def profile_management(
                 url=url,
                 api_settings=api_settings,
                 autonomy=autonomy,
+                voice=voice,
             )
 
         if action == "update":
@@ -1435,6 +1519,7 @@ def profile_management(
                 url=url,
                 api_settings=api_settings,
                 autonomy=autonomy,
+                voice=voice,
             )
 
         return _action_delete(
@@ -1605,6 +1690,7 @@ def create_profile(
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
     autonomy: Optional[Dict[str, Any]] = None,
+    voice: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -1628,6 +1714,7 @@ def create_profile(
         url: Optional documentation URL.
         api_settings: Optional ``{active, model_name, description}``.
         autonomy: Optional autonomy mapping (see ``profile_management``).
+        voice: Optional voice mapping (see ``profile_management``).
         **kwargs: Internal. Injected by the agent runtime: ``settings``.
 
     Returns:
@@ -1651,6 +1738,7 @@ def create_profile(
         url=url,
         api_settings=api_settings,
         autonomy=autonomy,
+        voice=voice,
         **kwargs,
     )
 
@@ -1672,6 +1760,7 @@ def update_profile(
     url: Optional[str] = None,
     api_settings: Optional[Dict[str, Any]] = None,
     autonomy: Optional[Dict[str, Any]] = None,
+    voice: Optional[Dict[str, Any]] = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -1694,6 +1783,8 @@ def update_profile(
         url: New documentation URL.
         api_settings: New ``{active, model_name, description}``.
         autonomy: New autonomy mapping (see ``profile_management``).
+        voice: New voice mapping (see ``profile_management``). Omitted keeps the
+            stored voice untouched.
         **kwargs: Internal. Injected by the agent runtime: ``settings``.
 
     Returns:
@@ -1717,6 +1808,7 @@ def update_profile(
         url=url,
         api_settings=api_settings,
         autonomy=autonomy,
+        voice=voice,
         **kwargs,
     )
 
@@ -1747,6 +1839,64 @@ def delete_profile(
         **kwargs,
     )
 
+
+# Schema of the optional ``voice`` object shared by every profile write tool:
+# the fields are exactly those of ``codx.junior.media.model.VoiceProfile``.
+VOICE_TOOL_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Voice used when the profile speaks in the Project's Channel. The whole "
+        "object is optional: omit it to leave the stored voice untouched. "
+        "enabled=false means the profile never speaks (there is no fallback "
+        "voice); omitted fields inherit the project voice and then the system "
+        "default."
+    ),
+    "properties": {
+        "enabled": {
+            "type": "boolean",
+            "description": (
+                "Whether the profile speaks. false = silent, no fallback "
+                "(default true)."
+            )
+        },
+        "provider": {
+            "type": "string",
+            "description": (
+                "Voice provider, e.g. 'piper'. Empty inherits the default."
+            )
+        },
+        "voice_id": {
+            "type": "string",
+            "description": (
+                "Voice of the provider, e.g. 'en_US-amy-medium'."
+            )
+        },
+        "model": {
+            "type": "string",
+            "description": "Optional model override for the provider."
+        },
+        "speed": {
+            "type": "number",
+            "description": "Speaking rate (default 1.0)."
+        },
+        "style": {
+            "type": "string",
+            "description": "Optional style hint, e.g. 'narration'."
+        },
+        "language": {
+            "type": "string",
+            "description": (
+                "Optional language/locale of the narration, e.g. 'en-US'."
+            )
+        },
+        "reference_asset": {
+            "type": "string",
+            "description": (
+                "Optional asset id used as voice reference (cloning)."
+            )
+        }
+    }
+}
 
 # Tool JSON definition
 PROFILE_MANAGEMENT_TOOL_JSON = {
@@ -1974,6 +2124,7 @@ PROFILE_MANAGEMENT_TOOL_JSON = {
                         }
                     }
                 },
+                "voice": VOICE_TOOL_SCHEMA,
                 "query": {
                     "type": "string",
                     "description": (
@@ -2319,7 +2470,8 @@ PROFILE_CREATE_TOOL_JSON = {
                             "description": "Comment the shift report on the agent board."
                         }
                     }
-                }
+                },
+                "voice": VOICE_TOOL_SCHEMA
             },
             "required": ["profile_name", "content"]
         }
@@ -2494,7 +2646,8 @@ PROFILE_UPDATE_TOOL_JSON = {
                             "description": "Description exposed by the API"
                         }
                     }
-                }
+                },
+                "voice": VOICE_TOOL_SCHEMA
             },
             "required": ["profile_name"]
         }

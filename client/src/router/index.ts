@@ -21,6 +21,7 @@ const Desktop = () => import('@/components/desktop/Desktop.vue')
 const KanbanBoardView = () => import('@/components/kanban/board/KanbanBoardView.vue')
 const BrowsersSessionManager = () => import('@/components/browsers/BrowsersSessionManager.vue')
 const SolopreneurView = () => import('@/views/SolopreneurView.vue')
+const ProfileEditorView = () => import('@/views/ProfileEditorView.vue')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WELCOME SCREEN
@@ -221,6 +222,15 @@ const router = createRouter({
       path: '/:projectName/team/:teamId?',
       name: 'team',
       component: TeamView
+    },
+    {
+      // Full-page profile editor. The team drawer is a 32rem panel, too narrow
+      // for the voice settings, so those live in their own screen. Opened from
+      // the drawer ("open full editor") with the profile name in the URL.
+      path: '/:projectName/profiles/:name/edit',
+      name: 'profile-edit',
+      component: ProfileEditorView,
+      meta: { ...mobile('Edit profile', 'more', { hideTabs: true }) }
     },
     {
       // Company — the top-level hybrid organization above projects.

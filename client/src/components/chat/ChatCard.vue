@@ -14,7 +14,7 @@ import ProjectIcon from '../ProjectIcon.vue'
       <!-- Header: Icon, Name, Timestamp -->
       <div class="flex items-start justify-between gap-2">
         <div class="flex items-center gap-2 min-w-0">
-          <ChatIcon :mode="chat?.mode" class="shrink-0" />
+          <ChatIcon :mode="chat?.mode" :attention="chatNeedsUser" class="shrink-0" />
           <div class="min-w-0 flex-1">
             <h3 class="font-semibold text-sm truncate">{{ chat?.name || 'Untitled' }}</h3>
             <div class="text-xs text-base-content/50">
@@ -78,6 +78,12 @@ export default {
   computed: {
     chatProject() {
       return this.$chats.getChatWorkingProject(this.chat)
+    },
+    // A machine session of this task needs the user: derived from the session
+    // payload (`needs_user`) so it survives a reload and stops blinking as soon
+    // as the user takes control.
+    chatNeedsUser() {
+      return (this.$storex.ui.attentionChatIds || []).includes(this.chat?.id)
     }
   },
   methods: {

@@ -184,8 +184,14 @@ class DesktopRuntime:
 
     def request_handoff(self, reason: str, chat_id: Optional[str] = None) -> None:
         """Pause the AI and ask the human to take over."""
-        self.session.request_handoff(reason, chat_id=chat_id)
+        raised = self.session.request_handoff(reason, chat_id=chat_id)
         self.manager.save_session(self.session)
+        if raised:
+            # One warning per hand-off (``needs_user`` guards the transition);
+            # the flag itself is persisted for the next page load.
+            self.manager.notify_needs_user(
+                self.session, reason=reason, chat_id=chat_id
+            )
 
     def take_control(self, chat_id: Optional[str] = None, reason: Optional[str] = None) -> None:
         """Give control to the human."""

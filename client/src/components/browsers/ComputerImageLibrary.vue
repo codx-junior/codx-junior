@@ -10,6 +10,8 @@
  * A custom image reference is still possible for advanced users; the backend
  * then falls back to screenshot-only viewing.
  */
+import { SESSION_LABELS } from '@/utils/sessionLabels'
+
 export default {
   name: 'ComputerImageLibrary',
   props: {
@@ -46,6 +48,10 @@ export default {
     }
   },
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     categories() {
       return [...new Set(this.images.map(image => image.category).filter(Boolean))].sort()
     },
@@ -366,7 +372,7 @@ export default {
     :class="embedded ? 'flex flex-col min-h-0' : 'modal modal-open'"
     :role="embedded ? null : 'dialog'"
     :aria-modal="embedded ? null : 'true'"
-    :aria-label="embedded ? null : 'Desktop image library'"
+    :aria-label="embedded ? null : sessionLabels.imageLibrary"
     @click.self="embedded ? null : $emit('close')"
   >
     <div
@@ -376,7 +382,7 @@ export default {
       <!-- Title (both modes own their chrome now) -->
       <div class="flex items-center gap-2 flex-shrink-0">
         <i class="fa-solid fa-images text-primary" aria-hidden="true"></i>
-        <h3 class="flex-1 text-sm font-bold">Desktop image library</h3>
+        <h3 class="flex-1 text-sm font-bold">{{ sessionLabels.imageLibrary }}</h3>
         <button
           type="button"
           class="btn btn-xs btn-ghost btn-square"

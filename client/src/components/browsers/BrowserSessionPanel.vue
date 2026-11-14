@@ -4,6 +4,7 @@ import DesktopViewer from './DesktopViewer.vue'
 import Chat from '@/components/chat/Chat.vue'
 import ConfirmDialog from '../ConfirmDialog.vue'
 import VerticalSplitter from '../layout/VerticalSplitter.vue'
+import { SESSION_LABELS, label } from '@/utils/sessionLabels'
 
 export default {
   name: 'BrowserSessionPanel',
@@ -35,6 +36,13 @@ export default {
     }
   },
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
+    deleteConfirmMessage() {
+      return label('deleteConfirm', { name: this.selectedSession?.name || SESSION_LABELS.untitled })
+    },
     selectedSession() {
       return this.$storex.browsers.selectedSession
     },
@@ -803,7 +811,7 @@ export default {
     <div v-if="!selectedSession && !isEditing" class="flex items-center justify-center h-full text-base-content/50">
       <div class="text-center">
         <i class="fa-solid fa-desktop text-4xl mb-3 block opacity-25"></i>
-        <p class="text-sm">Select a computer session</p>
+        <p class="text-sm">{{ sessionLabels.noSelection }}</p>
         <p class="text-xs opacity-60 mt-1">The AI and you control the same computer.</p>
       </div>
     </div>
@@ -811,13 +819,13 @@ export default {
     <!-- Edit Mode -->
     <div v-else-if="isEditing" class="flex flex-col h-full">
       <div class="sticky top-0 bg-base-100 border-b border-base-content/10 p-4">
-        <h3 class="text-lg font-bold">Session settings</h3>
+        <h3 class="text-lg font-bold">{{ sessionLabels.settingsTitle }}</h3>
         <p class="text-xs opacity-60 mt-0.5">{{ selectedSession?.name }}</p>
       </div>
       <div class="p-4 space-y-4 flex-1 overflow-y-auto">
         <div class="form-control">
           <label class="label">
-            <span class="label-text font-semibold">Session Name *</span>
+            <span class="label-text font-semibold">{{ sessionLabels.nameField }} *</span>
           </label>
           <input
             v-model="editFormData.name"
@@ -972,7 +980,7 @@ export default {
           </p>
         </template>
         <p v-else class="text-xs opacity-60">
-          Remote sessions keep their own hardware. Only the name and connection settings can change.
+          {{ sessionLabels.remoteSettingsHint }}
         </p>
       </div>
       <div class="border-t border-base-content/10 p-4 flex flex-col gap-2">
@@ -1321,8 +1329,8 @@ export default {
          with the confirmation used by the session list. -->
     <ConfirmDialog
       v-if="showDeleteConfirm && selectedSession"
-      title="Delete session"
-      :message="`Delete computer session '${selectedSession.name}'?`"
+      :title="sessionLabels.deleteTitle"
+      :message="deleteConfirmMessage"
       :details="selectedSession.url ? [selectedSession.url] : []"
       hint="The session, its container and the live browser state will be removed. This cannot be undone."
       icon="fa-trash"

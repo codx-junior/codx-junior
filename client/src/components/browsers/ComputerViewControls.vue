@@ -1,12 +1,16 @@
 <script>
 /**
- * Stage controls: one machine or the wall, the wall arrangement and the wall
+ * Stage controls: one co-desktop or the wall, the wall arrangement and the wall
  * selection.
  *
  * They live in the sessions sidebar — the expanded list and the collapsed icon
- * rail — instead of a toolbar above the stage: the machines get every pixel of
- * the grid area and the controls stay reachable when the sidebar is folded.
+ * rail — instead of a toolbar above the stage: the co-desktops get every pixel
+ * of the grid area and the controls stay reachable when the sidebar is folded.
+ *
+ * Every name of the concept comes from utils/sessionLabels.js.
  */
+import { SESSION_LABELS } from '@/utils/sessionLabels'
+
 export default {
   name: 'ComputerViewControls',
   props: {
@@ -23,6 +27,10 @@ export default {
     }
   },
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     isGridView() {
       return this.$storex.browsers.isGridView
     },
@@ -53,8 +61,8 @@ export default {
       type="button"
       class="flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-150 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       :class="!isGridView ? 'bg-primary/15 text-primary' : 'text-base-content/60 hover:bg-base-200 hover:text-base-content'"
-      title="Single view: one machine"
-      aria-label="Single view"
+      :title="sessionLabels.singleHint"
+      :aria-label="sessionLabels.singleHint"
       :aria-pressed="!isGridView ? 'true' : 'false'"
       @click="setViewMode('single')"
     >
@@ -64,8 +72,8 @@ export default {
       type="button"
       class="flex h-10 w-10 items-center justify-center rounded-xl transition-colors duration-150 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       :class="isGridView ? 'bg-primary/15 text-primary' : 'text-base-content/60 hover:bg-base-200 hover:text-base-content'"
-      title="Grid view: several machines at once"
-      aria-label="Grid view"
+      :title="sessionLabels.gridHint"
+      :aria-label="sessionLabels.gridHint"
       :aria-pressed="isGridView ? 'true' : 'false'"
       @click="setViewMode('grid')"
     >
@@ -90,8 +98,8 @@ export default {
       <button
         type="button"
         class="relative flex h-10 w-10 items-center justify-center rounded-xl text-base-content/60 transition-colors duration-150 hover:bg-base-200 hover:text-base-content focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-        :title="`Select the machines on the wall (${gridSessionsCount})`"
-        aria-label="Select the machines on the wall"
+        :title="`${sessionLabels.wallPick} (${gridSessionsCount})`"
+        :aria-label="sessionLabels.wallPick"
         @click="$emit('manage')"
       >
         <i class="fa-solid fa-list-check text-[13px]" aria-hidden="true"></i>
@@ -111,7 +119,7 @@ export default {
         type="button"
         class="btn btn-xs join-item flex-1 gap-1"
         :class="!isGridView && 'btn-active'"
-        title="One machine at a time"
+        :title="sessionLabels.singleHintLong"
         :aria-pressed="!isGridView ? 'true' : 'false'"
         @click="setViewMode('single')"
       >
@@ -122,7 +130,7 @@ export default {
         type="button"
         class="btn btn-xs join-item flex-1 gap-1"
         :class="isGridView && 'btn-active'"
-        title="Watch several machines at once"
+        :title="sessionLabels.gridHintLong"
         :aria-pressed="isGridView ? 'true' : 'false'"
         @click="setViewMode('grid')"
       >
@@ -151,11 +159,11 @@ export default {
       v-if="isGridView"
       type="button"
       class="btn btn-xs btn-outline w-full justify-start gap-1.5"
-      title="Choose the machines on the wall"
+      :title="sessionLabels.wallPickHint"
       @click="$emit('manage')"
     >
       <i class="fa-solid fa-list-check" aria-hidden="true"></i>
-      <span class="flex-1 text-left">Machines</span>
+      <span class="flex-1 text-left">{{ sessionLabels.section }}</span>
       <span class="badge badge-xs">{{ gridSessionsCount }}</span>
     </button>
   </div>

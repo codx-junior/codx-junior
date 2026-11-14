@@ -102,6 +102,8 @@ VALID_ACTIONS = [
     "update_task",
     "request_changes",
     "request_help",
+    "archive_task",
+    "restore_task",
 ]
 
 # Tolerant aliases so a slightly different verb never crashes the run.
@@ -121,6 +123,10 @@ ACTION_ALIASES = {
     "comment": "request_help",
     "help": "request_help",
     "ask": "request_help",
+    # Task archiving (compressed out of the live tree)
+    "archive": "archive_task",
+    "restore": "restore_task",
+    "unarchive": "restore_task",
     # Board / sprint / column management
     "new_board": "create_board",
     "add_board": "create_board",
@@ -2102,6 +2108,7 @@ def _action_list_tasks(
     status: Optional[str] = None,
     query: Optional[str] = None,
     limit: Optional[int] = None,
+    include_archived: bool = False,
 ) -> ToolResponse:
     """
     List the project's tasks with optional filters.
@@ -2118,11 +2125,13 @@ def _action_list_tasks(
         status: Only tasks with this status (case-insensitive).
         query: Case-insensitive substring matched against name and description.
         limit: Maximum number of tasks returned.
+        include_archived: Also list the archived (compressed) tasks. They carry
+            no messages while archived: restore them to read the conversation.
 
     Returns:
         ToolResponse with a Markdown table (user) and JSON (model).
     """
-    chats = chat_manager.list_chats()
+    chats = chat_manager.list_chats(include_archived=include_archived)
 
     if board:
         chats = [c for c in chats if (c.board or "").lower() == board.lower()]
@@ -2160,6 +2169,8 @@ def _action_list_tasks(
     for chat in chats:
         sprints = ", ".join(chat.sprints or []) or "-"
         name = (chat.name or "(unnamed)").replace("|", "/")
+        if getattr(chat, "archived", False):
+            name = f"🗄️ {name}"
         lines.append(
             f"`{_short_id(chat)}` | {name} | {chat.status or '-'} | "
             f"{chat.board}/{chat.column} | {sprints} | {chat.updated_at}"
@@ -2203,6 +2214,84 @@ def _action_get_task(chat_manager, chat_id: str) -> ToolResponse:
     return ToolResponse(
         user_response=user_response,
         llm_response=_json(_task_dict(chat, include_messages=True)),
+    )
+
+
+def _action_archive_task(
+    chat_manager,
+    chat_id: str,
+    username: Optional[str] = None,
+) -> ToolResponse:
+    """
+    Archive a task: compress it and take it out of the live tree.
+
+    The task stops appearing on the boards, in the listings and in search
+    (``list_tasks`` only shows it again with ``include_archived=true``) and the
+    space it used is released. The payload keeps the original file name, so
+    ``restore_task`` brings it back byte for byte, in the same board/column.
+
+    Args:
+        chat_manager: The project ChatManager.
+        chat_id: Id of the task to archive.
+        username: User (or profile) recorded as the author.
+
+    Returns:
+        ToolResponse with the archive entry (size before/after).
+
+    Raises:
+        ValueError: When the task does not exist (propagated to the caller,
+            which renders it as a normal tool failure).
+    """
+    entry = chat_manager.archive_chat(chat_id=chat_id, user=username)
+
+    original = int(entry.get("original_size") or 0)
+    size = int(entry.get("size") or 0)
+    ratio = round(original / size, 1) if size else 0
+    name = entry.get("name") or chat_id
+
+    return ToolResponse(
+        user_response=(
+            f"🗄️ Task archived: **{name}** (`{entry.get('chat_id')}`)\n"
+            f"- location: {entry.get('board') or '-'}/{entry.get('column') or '-'}\n"
+            f"- size: {original} -> {size} bytes ({ratio}x)\n"
+            "- it no longer appears on the boards or in the listings; "
+            "restore it with action='restore_task'"
+        ),
+        llm_response=_json({"archived": True, "task": entry, "ratio": ratio}),
+    )
+
+
+def _action_restore_task(
+    chat_manager,
+    chat_id: str,
+    username: Optional[str] = None,
+) -> ToolResponse:
+    """
+    Restore an archived task back into its board/column.
+
+    The destination folders come from the kanban catalogue (they are immutable),
+    so a task archived before a board or column rename still lands where the
+    catalogue points to.
+
+    Args:
+        chat_manager: The project ChatManager.
+        chat_id: Id of the archived task.
+        username: User (or profile) doing it (only logged).
+
+    Returns:
+        ToolResponse with the restored task summary.
+
+    Raises:
+        ValueError: When the task is not archived.
+    """
+    chat = chat_manager.restore_chat(chat_id=chat_id, user=username)
+
+    return ToolResponse(
+        user_response=(
+            f"♻️ Task restored to {chat.board}/{chat.column}\n\n"
+            f"{_task_summary(chat)}"
+        ),
+        llm_response=_json({"restored": True, "task": _task_dict(chat)}),
     )
 
 
@@ -2781,6 +2870,7 @@ async def project_manager(
     disable_knowledge: bool = False,
     query: Optional[str] = None,
     limit: Optional[int] = None,
+    include_archived: Optional[bool] = None,
     board_type: Optional[str] = None,
     new_name: Optional[str] = None,
     columns: Optional[List[str]] = None,
@@ -2853,6 +2943,8 @@ async def project_manager(
         disable_knowledge: For request_changes, skip knowledge retrieval.
         query: For list_tasks, case-insensitive filter on name/description.
         limit: For list_tasks, maximum number of tasks returned.
+        include_archived: For list_tasks, also list the archived (compressed)
+            tasks (default false: they are invisible everywhere).
         board_type: ``kanban`` (default) or ``sprint`` on ``create_board``.
         new_name: New board/sprint name on ``update_board``.
         columns: Column titles to create on ``create_board``/``create_sprint``.
@@ -2979,6 +3071,7 @@ async def project_manager(
                 status=status,
                 query=query,
                 limit=limit if limit is not None else DEFAULT_LIST_LIMIT,
+                include_archived=bool(include_archived),
             )
 
         if resolved_action == "get_task":
@@ -3049,6 +3142,24 @@ async def project_manager(
                 wait=wait,
             )
 
+        if resolved_action == "archive_task":
+            if not chat_id:
+                raise ValueError("chat_id is required for action='archive_task'")
+            return _action_archive_task(
+                chat_manager=chat_manager,
+                chat_id=chat_id,
+                username=_username(**kwargs),
+            )
+
+        if resolved_action == "restore_task":
+            if not chat_id:
+                raise ValueError("chat_id is required for action='restore_task'")
+            return _action_restore_task(
+                chat_manager=chat_manager,
+                chat_id=chat_id,
+                username=_username(**kwargs),
+            )
+
         # request_help
         if not chat_id:
             raise ValueError("chat_id is required for action='request_help'")
@@ -3109,7 +3220,10 @@ PROJECT_MANAGER_TOOL_JSON = {
             "sprints; also priority, due date, progress, assignees, tags), "
             "'request_changes' (add a comment AND process the task through the AI "
             "engine) and "
-            "'request_help' (add a comment WITHOUT processing, to ask the user for help). "
+            "'request_help' (add a comment WITHOUT processing, to ask the user for help), "
+            "'archive_task' (compress a task out of the live tree: it stops appearing "
+            "in the listings, boards and search but can be restored later) and "
+            "'restore_task' (bring an archived task back into its board/column). "
             "Every destination is validated: a task can NEVER be created or moved to a "
             "board, column, sprint or state that does not exist. Invalid values are "
             "rejected with an error listing the available options, so create the "
@@ -3135,7 +3249,9 @@ PROJECT_MANAGER_TOOL_JSON = {
                         "  - 'create_task': create a new task chat (requires name + description)\n"
                         "  - 'update_task': change status / move between boards, columns, sprints\n"
                         "  - 'request_changes': add a comment and process the task (runs the engine)\n"
-                        "  - 'request_help': add a comment without processing (ask the user)"
+                        "  - 'request_help': add a comment without processing (ask the user)\n"
+                        "  - 'archive_task': compress a task out of the live tree\n"
+                        "  - 'restore_task': bring an archived task back into its board/column"
                     )
                 },
                 "chat_id": {
@@ -3352,6 +3468,14 @@ PROJECT_MANAGER_TOOL_JSON = {
                 "limit": {
                     "type": "integer",
                     "description": "For list_tasks: maximum number of tasks to return."
+                },
+                "include_archived": {
+                    "type": "boolean",
+                    "description": (
+                        "For list_tasks: also list the archived (compressed) tasks. "
+                        "Defaults to false: an archived task is invisible to the "
+                        "listings, the boards and the search until it is restored."
+                    )
                 }
             },
             "required": ["action"]

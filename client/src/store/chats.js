@@ -1407,6 +1407,44 @@ export const actions = actionTree(
         console.error('[chats store] Failed to update chat status:', error)
       }
     },
+    // ── Unsent draft (composer) ───────────────────────────────────────────
+    // The draft is stored server side as an "unsent" message that the API keeps
+    // out of the conversation (lists, prompts, socket events, exports). These
+    // thin wrappers resolve the owning project and hide the HTTP layer from the
+    // composer; they never write the draft into `state.chats` message arrays.
+    async getChatDraft({ state }, { chatId } = {}) {
+      if (!chatId) return null
+      const project = getChatProject(state.chats[chatId] || { id: chatId })
+      if (!project?.$api) return null
+      try {
+        return await project.$api.chats.getChatDraft(chatId)
+      } catch (error) {
+        console.error('[chats store] Failed to load chat draft:', error)
+        return null
+      }
+    },
+    async saveChatDraft({ state }, { chatId, content } = {}) {
+      if (!chatId) return null
+      const project = getChatProject(state.chats[chatId] || { id: chatId })
+      if (!project?.$api) return null
+      try {
+        return await project.$api.chats.saveChatDraft(chatId, content)
+      } catch (error) {
+        console.error('[chats store] Failed to save chat draft:', error)
+        return null
+      }
+    },
+    async deleteChatDraft({ state }, { chatId } = {}) {
+      if (!chatId) return null
+      const project = getChatProject(state.chats[chatId] || { id: chatId })
+      if (!project?.$api) return null
+      try {
+        return await project.$api.chats.deleteChatDraft(chatId)
+      } catch (error) {
+        console.error('[chats store] Failed to delete chat draft:', error)
+        return null
+      }
+    },
     // ── Threads ─────────────────────────────────────────────────────────────
     // A thread is a chat bound to ONE message of its parent chat:
     //   parent_id  → the chat that owns the message

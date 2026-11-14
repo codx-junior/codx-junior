@@ -40,9 +40,48 @@ const FALLBACK_STATUS = 'todo'
 export const BOARD_EXPORT_FORMAT = 'codx-junior-board'
 export const BOARD_EXPORT_VERSION = 1
 
+// ─── Last board opened ────────────────────────────────────────────────────────
+// A board panel remembers its own selection (app params / route), but a FRESH
+// entry — the "Tasks" item of the menu, a reload without a board in the URL —
+// used to fall back to the first board of the list. The board the user opened
+// last is mirrored here, PER PROJECT (a single key would leak the board of one
+// project into another) and always validated against the loaded kanban, so a
+// deleted or renamed board is ignored instead of opening an empty canvas.
+const LAST_BOARD_KEY = 'lastKanbanBoard'
+
+function lastBoardStorageKey(project) {
+  const targetProject = getActiveProject(project)
+  const id = targetProject?.project_id || targetProject?.codx_path
+  return id ? `${LAST_BOARD_KEY}:${id}` : null
+}
+
+function readLastBoardId(project) {
+  const key = lastBoardStorageKey(project)
+  if (!key) return null
+  try {
+    return localStorage.getItem(key) || null
+  } catch (error) {
+    return null
+  }
+}
+
+function writeLastBoardId(project, boardId) {
+  const key = lastBoardStorageKey(project)
+  if (!key || !boardId) return
+  try {
+    localStorage.setItem(key, boardId)
+  } catch (error) {
+    console.error('Failed to save the last kanban board:', error)
+  }
+}
+
 export const state = () => ({
   filter: null,
   loadingChats: 0,
+  // Board opened last in the ACTIVE project (see the `lastBoardId` getter).
+  // Mirrored in localStorage (see `readLastBoardId`) because the store is
+  // rebuilt on every reload.
+  lastOpenedBoardId: null,
 })
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -429,6 +468,19 @@ export const getters = getterTree(state, {
     return getters.storedBoards.find(b => sameKey(b.id, boardId)) || null
   },
 
+  // Board to reopen when nothing else requests one (see
+  // `KanbanBoardView.initialBoardId`): the last board the user opened in this
+  // project, resolved against the boards that still exist, so a deleted or
+  // renamed board is ignored instead of opening an empty canvas.
+  lastBoardId: (state, getters) => {
+    // `state.lastOpenedBoardId` is filled by `loadKanban`; the localStorage read
+    // is the fallback for a panel that mounts before the kanban finishes
+    // loading (the router view reads this in `created()`).
+    const remembered = state.lastOpenedBoardId || readLastBoardId()
+    const board = remembered ? getters.boardById(remembered) : null
+    return board ? board.id : null
+  },
+
   isVirtualBoard: (state, getters) => (boardId) => sameKey(boardId, NO_BOARD_ID),
 
   isSprintBoard: (state, getters) => (boardId) =>
@@ -735,6 +787,12 @@ export const getters = getterTree(state, {
 // ─── Mutations ────────────────────────────────────────────────────────────────
 
 export const mutations = mutationTree(state, {
+  // Board opened last in this project: remembered so the Kanban reopens on it
+  // (see `KanbanBoardView.initialBoardId`).
+  setLastOpenedBoard(state, boardId) {
+    state.lastOpenedBoardId = boardId || null
+  },
+
   setFilter(state, filter) {
     state.filter = filter || null
   },
@@ -842,12 +900,23 @@ export const actions = actionTree(
       await $storex.kanban.loadKanban()
     },
 
+    // Remember the board the user opened, so a fresh entry into the Kanban
+    // (menu item, reload without a board in the URL) reopens it.
+    rememberBoard({ state }, boardId) {
+      if (!boardId) return
+      mutations.setLastOpenedBoard(state, boardId)
+      writeLastBoardId(null, boardId)
+    },
+
     async loadKanban({ state }, project) {
       const targetProject = getActiveProject(project)
       if (!targetProject?.$api) return
       const kanban = await targetProject.$api.chats.kanban.load()
       if (!targetProject.$state) return
       targetProject.$state.kanban = kanban
+      // Restore the board opened last in this project (the memory is per project
+      // and survives a reload in localStorage).
+      mutations.setLastOpenedBoard(state, readLastBoardId(targetProject))
       return kanban
     },
 

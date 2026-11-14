@@ -100,13 +100,13 @@ const missingCards = computed(() => (props.run?.steps || []).filter(step => !ste
             <th class="w-6">#</th>
             <th>Task</th>
             <th>Step status</th>
-            <th>Chat status</th>
+            <th class="hidden md:table-cell">Chat status</th>
             <th>Board / column</th>
-            <th>Profile</th>
+            <th class="hidden md:table-cell">Profile</th>
             <th class="text-right">Turns</th>
             <th class="text-right">Cost</th>
-            <th class="text-right">Duration</th>
-            <th>Updated</th>
+            <th class="hidden md:table-cell text-right">Duration</th>
+            <th class="hidden md:table-cell">Updated</th>
             <th></th>
           </tr>
         </thead>
@@ -128,16 +128,16 @@ const missingCards = computed(() => (props.run?.steps || []).filter(step => !ste
                 {{ row.statusLabel }}
               </span>
             </td>
-            <td class="text-[11px]">{{ row.chatStatus || '—' }}</td>
+            <td class="hidden md:table-cell text-[11px]">{{ row.chatStatus || '—' }}</td>
             <td class="text-[11px]">
               {{ row.board }}
               <span v-if="row.column && row.column !== '—'" class="text-base-content/50"> / {{ row.column }}</span>
             </td>
-            <td class="text-[11px]">{{ row.profile || '—' }}</td>
+            <td class="hidden md:table-cell text-[11px]">{{ row.profile || '—' }}</td>
             <td class="text-right text-[11px] tabular-nums">{{ row.attempts }}</td>
             <td class="text-right text-[11px] tabular-nums">{{ row.cost }}</td>
-            <td class="text-right text-[11px] tabular-nums">{{ row.duration }}</td>
-            <td class="text-[11px]">{{ formatTime(row.updated) }}</td>
+            <td class="hidden md:table-cell text-right text-[11px] tabular-nums">{{ row.duration }}</td>
+            <td class="hidden md:table-cell text-[11px]">{{ formatTime(row.updated) }}</td>
             <td>
               <button
                 class="btn btn-xs btn-outline"

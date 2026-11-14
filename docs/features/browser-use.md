@@ -1,7 +1,7 @@
 # Browser use and co-browsing
 
 > Browser sessions are the `kind="browser"` case of
-> [computer sessions](/features/computer-use). The same manager, control lease
+> [co-desktops](/features/computer-use). The same manager, control lease
 > and activity trail now also drive Linux desktops, Windows/macOS VMs and remote
 > VNC/SSH machines.
 
@@ -11,7 +11,7 @@ there is one page, one history, one cookie jar and one live view.
 
 ## What you can do
 
-- Open a browser session from **Computer sessions** or from a chat and watch the
+- Open a browser session from **Coworking** or from a chat and watch the
   page live while the AI works.
 - Click, type, scroll and navigate directly in the live view; the AI sees the
   same page on its next tool call.
@@ -64,7 +64,7 @@ there is one page, one history, one cookie jar and one live view.
 
 ### From the UI
 
-Open **Computer sessions**, create a browser session with a name and optional start URL,
+Open **Coworking**, create a browser session with a name and optional start URL,
 then select it. The live browser is embedded in the panel:
 
 - address bar, back, forward and refresh send actions through the REST API;

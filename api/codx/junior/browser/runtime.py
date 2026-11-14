@@ -222,7 +222,7 @@ class BrowserRuntime:
 
     def request_handoff(self, reason: str, chat_id: Optional[str] = None) -> None:
         """Pause the AI and ask the human to take over."""
-        self.session.request_handoff(reason, chat_id=chat_id)
+        raised = self.session.request_handoff(reason, chat_id=chat_id)
         self.manager.save_session(self.session)
         self.manager.log_activity(
             self.session,
@@ -233,6 +233,12 @@ class BrowserRuntime:
             url=self.session.current_url,
             title=self.session.current_title,
         )
+        if raised:
+            # One warning per hand-off: ``needs_user`` stays persisted until the
+            # control returns, so a reload keeps blinking without a new ping.
+            self.manager.notify_needs_user(
+                self.session, reason=reason, chat_id=chat_id
+            )
 
     def release(self, chat_id: Optional[str] = None) -> None:
         """Give control back to the AI."""

@@ -694,8 +694,11 @@ async def computer_control(
             user_response=f"ℹ️ Control of `{session.id[:8]}`:\n```\n{state}\n```",
             llm_response=f"Computer control state for session {session.id}:\n{state}",
         )
+    needs_user_notice = False
     if action in ("handoff", "request_handoff", "request"):
-        session.request_handoff(reason or "The user needs to take over", chat_id=chat_id)
+        needs_user_notice = session.request_handoff(
+            reason or "The user needs to take over", chat_id=chat_id
+        )
         message = "The AI paused; the user has been asked to take control."
     elif action in ("take_control", "take"):
         session.set_controller("user", chat_id=chat_id, reason=reason)
@@ -717,6 +720,9 @@ async def computer_control(
         session, actor="ai", action=f"control:{action}", chat_id=chat_id,
         params={"reason": reason},
     )
+    if needs_user_notice:
+        # Only on the False -> True transition: one warning per hand-off.
+        manager.notify_needs_user(session, reason=reason, chat_id=chat_id)
     try:
         from codx.junior.browser import events as browser_events
         browser_events.broadcast_control(session)

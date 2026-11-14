@@ -40,7 +40,8 @@
   "tags": [
     "orchestration",
     "run:7bbcd9d8-2f84-4000-8b99-190d242b4d4e",
-    "step:media-router"
+    "step:media-router",
+    "run-removed"
   ],
   "file_list": [
     "api/codx/junior/api/media.py",
@@ -77,6 +78,7 @@
       "meta_data": null,
       "tool_events": [],
       "lifecycle_events": [],
+      "phase_events": [],
       "cost": 0.0,
       "cost_info": null,
       "profiles": [
@@ -111,6 +113,7 @@
       "meta_data": null,
       "tool_events": [],
       "lifecycle_events": [],
+      "phase_events": [],
       "cost": 0.0,
       "cost_info": null,
       "profiles": [
@@ -157,7 +160,10 @@
           "response": "# api/codx/junior/api/wiki.py (lines 1-90 of 491)\n```py api/codx/junior/api/wiki.py\n\"\"\"\nWiki API: docs-site manifest, pages, assistant and update status.\n\nThe legacy endpoints (``/wiki`` and ``/wiki-engine/*``) are kept so existing\nclients and the wiki settings screen keep working. The modern docs UI uses the\n``/wiki/site``, ``/wiki/page``, ``/wiki/assistant`` and ``/wiki/updates``\nendpoints.\n\nA ``project`` query/body parameter can target a related project (child,\nparent or dependency) without switching the active project. This is what makes\na parent wiki able to navigate the wikis of the projects inside it.\n\"\"\"\n\nimport asyncio\nimport logging\nimport os\nimport time\nfrom typing import Any, Dict, Optional\nfrom urllib.parse import unquote\n\nfrom fastapi import APIRouter, Body, HTTPException, Query, Request, Response, status\nfrom fastapi.responses import FileResponse\n\nfrom codx.junior.engine import CODXJuniorSession\nfrom codx.junior.project.project_discover import (\n    find_all_projects,\n    find_project_by_name,\n    get_project_dependencies,\n    is_path_child_of,\n)\nfrom codx.junior.wiki.assistant import WikiAssistant\nfrom codx.junior.wiki.scheduler import (\n    get_wiki_scheduler,\n    read_update_status,\n    schedule_wiki_update,\n)\nfrom codx.junior.wiki.site import WikiSiteBuilder\nfrom codx.junior.wiki.wiki_manager import WikiManager\n\nfrom codx.junior.sio.sio import (\n    sio,\n    sio_api_endpoint,\n    sio_send_event,\n)\n\nlogger = logging.getLogger(__name__)\n\nrouter = APIRouter()\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef _session(request: Request) -> CODXJuniorSession:\n    session = getattr(request.state, \"codx_junior_session\", None)\n    if session is None:\n        raise HTTPException(status_code=401, detail=\"No project session\")\n    return session\n\n\ndef _related_projects(settings: Any) -> list:\n    \"\"\"Return every project whose wiki may be opened from this one.\"\"\"\n    related = [settings]\n    try:\n        related.extend(get_project_dependencies(settings))\n        related.extend(find_project_by_name(p.project_name) for p in settings.get_sub_projects())\n        current_path = settings.abs_project_path\n        related.extend(\n            project\n            for project in find_all_projects().values()\n            if project.abs_project_path\n            and (\n                is_path_child_of(project.abs_project_path, current_path)\n                or is_path_child_of(current_path, project.abs_project_path)\n            )\n        )\n    except Exception as ex:  # pragma: no cover - discovery is optional\n        logger.debug(\"Cannot resolve related projects for wiki: %s\", ex)\n    # Include the whole hierarchy under the same root, so clicking a sibling\n    # or cousin project in the docs tree is allowed too.\n    try:\n        root = min(\n            [settings] + [p for p in related if p and is_path_child_of(settings.abs_project_path, p.abs_project_path)],\n            key=lambda project: len(project.abs_project_path or \"\"),\n        )\n        root_path = root.abs_project_path\n        for project in find_all_projects().values():\n            if not project.abs_project_path:\n```\n\n> Showing the requested range lines 1-90 of 491; 401 line(s) follow it. Request them only if needed, or use `pattern=...` / the outline to jump to a symbol.",
           "output": "Read 1 file(s) | Successfully read: api/codx/junior/api/wiki.py",
           "duration_ms": 1931.7786395549774,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -170,7 +176,10 @@
           "response": "> atlas: 0 evidence(s) | confidence 0.10 | e21bd265eb8d +dirty | fresh\n\n**No indexed match for `class MediaStore`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='class MediaStore')",
           "output": "No indexed match for `class MediaStore`.",
           "duration_ms": 98882.55702517927,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "read_folder",
@@ -183,7 +192,10 @@
           "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n                \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n                \u251c\u2500\u2500 \ud83d\udc0d budget.py\n                \u251c\u2500\u2500 \ud83d\udc0d model.py\n                \u251c\u2500\u2500 \ud83d\udcc1 **providers**/\n                \u2502   \u2514\u2500\u2500 \ud83d\udc0d image_local.py\n                \u251c\u2500\u2500 \ud83d\udc0d providers.py\n                \u251c\u2500\u2500 \ud83d\udc0d redaction.py\n                \u2514\u2500\u2500 \ud83d\udc0d store.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
           "output": null,
           "duration_ms": 22675.85550621152,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -196,7 +208,10 @@
           "response": "> atlas: 0 evidence(s) | confidence 0.10 | e21bd265eb8d +dirty | fresh\n\n**No indexed match for `def get_current_session`.**\n\n### Gaps\n- The atlas found no symbol, path, route, document or content match.\n- Try a shorter identifier, a file extension filter, or `project_map()` first.\n\n### Next probes\n- project_health()\n- project_map(query='def get_current_session')",
           "output": "No indexed match for `def get_current_session`.",
           "duration_ms": 88605.86474463344,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -211,7 +226,10 @@
           "response": "# api/codx/junior/api/__init__.py (lines 1-85 of 85)\n```py api/codx/junior/api/__init__.py\n\"\"\"\nShared API utilities used across multiple routers.\n\"\"\"\n\nimport logging\nimport os\nimport importlib\nfrom pathlib import Path\nfrom typing import List\n\nfrom fastapi import Depends, HTTPException, Request\n\nfrom codx.junior.model.model import CodxUser\nfrom codx.junior.security.user_management import get_authenticated_user\nfrom codx.junior.engine import CODXJuniorSession\n\nlogger = logging.getLogger(__name__)\n\n\ndef require_admin(user: CodxUser = Depends(get_authenticated_user)) -> CodxUser:\n    \"\"\"Dependency that raises 403 unless the authenticated user is an admin.\"\"\"\n    if not user or user.role != \"admin\":\n        logger.error(\"Access denied for user: %s\", user.username if user else \"anonymous\")\n        raise HTTPException(status_code=403, detail=\"Access denied. Admins only.\")\n    return user\n\ndef get_current_session(request: Request) -> CODXJuniorSession:\n    \"\"\"\n    Extract the active CODXJuniorSession from the incoming request state.\n\n    This mirrors the pattern used in the wiki router where the session is\n    injected into ``request.state`` by middleware before reaching the endpoint.\n\n    Args:\n        request: The incoming HTTP request.\n\n    Returns:\n        The active ``CODXJuniorSession`` attached to the request state.\n    \"\"\"\n    return request.state.codx_junior_session\n\n\ndef discover_routers() -> List[dict]:\n    \"\"\"\n    Dynamically discover all routers in the api package.\n    Each router module should export a 'router' attribute.\n    \n    Returns:\n        List of dicts with 'router', 'prefix', and 'module' keys.\n    \"\"\"\n    routers = []\n    api_package_path = Path(__file__).parent\n    \n    # Get all Python files in the api directory (excluding __init__.py and test files)\n    router_files = [\n        f.stem for f in api_package_path.glob('*.py')\n        if f.is_file() and f.stem not in ['__init__', '__pycache__']\n        and not f.name.startswith('test_')\n    ]\n    \n    for module_name in sorted(router_files):\n        try:\n            # Import the module dynamically\n            module = importlib.import_module(f'codx.junior.api.{module_name}')\n            \n            # Check if module has a 'router' attribute\n            if hasattr(module, 'router'):\n                router_obj = getattr(module, 'router')\n                routers.append({\n                    'router': router_obj,\n                    'prefix': '/api',\n                    'module': module_name\n                })\n                logger.info(f\"Loaded router from module: {module_name}\")\n            else:\n                logger.debug(f\"Module {module_name} does not export 'router' attribute\")\n        except ImportError as e:\n            logger.error(f\"Failed to import router module {module_name}: {e}\")\n        except Exception as e:\n            logger.error(f\"Error loading router from {module_name}: {e}\")\n    \n    logger.info(f\"Successfully discovered {len(routers)} routers\")\n    return routers\n\n# Made with \u2764\ufe0f by codx-junior\n```\n# api/codx/junior/media/store.py (lines 1-354 of 354)\n```py api/codx/junior/media/store.py\n\"\"\"Persistence layer for the Project's Channel media pipeline.\n\nThe store owns everything that lives under ``<project>/.codx/media``:\n\n    inbox/          dropped ``*.episode.json`` files waiting to be ingested\n    inbox/done/     accepted inbox files (kept for traceability)\n    jobs/           one ``<job_id>.job.json`` per MediaJob (leases + retries)\n    episodes/       one ``<episode_id>.episode.json`` per EpisodeIR\n    assets/ab/      content addressed assets, sharded by the first 2 hash chars\n    tmp/            staging area that makes every write atomic\n\nPure python: stdlib + ``media.model`` only. No app settings, no network and no\nmodule level state, so callers (and tests) can point it at any directory. A\nproject store is built with ``MediaStore.for_project(project_path)``; tests pass\na ``tmp_path``.\n\"\"\"\n\nimport hashlib\nimport json\nimport mimetypes\ni",
           "output": "Read 2 file(s) | Successfully read: api/codx/junior/api/__init__.py, api/codx/junior/media/store.py",
           "duration_ms": 845.85633687675,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -226,7 +244,10 @@
           "response": "# api/codx/junior/media/providers.py (lines 1-243 of 243)\n```py api/codx/junior/media/providers.py\n\"\"\"Media provider protocol, registry and resolution helpers.\n\nDependency free: stdlib plus the pydantic ``ProviderInfo`` from\n``codx.junior.media.model``. No network, no web framework and no settings\nimports, so the registry stays unit testable offline.\n\nThe registry answers the only question the pipeline asks: *who can serve this\ncapability right now?* \u2014 and, when nobody can, it raises ``NoProviderAvailable``\ninstead of returning ``None``.\n\"\"\"\n\nfrom __future__ import annotations\n\nimport os\nfrom contextlib import contextmanager\nfrom typing import Dict, Iterable, Iterator, List, Optional, Protocol, runtime_checkable\n\nfrom .model import ProviderInfo\n\n# The concrete provider implementations live in ``media/providers/`` (see\n# ``providers/image_local.py``). That folder is deliberately *not* a python\n# package: a ``providers/__init__.py`` would shadow this module and drop\n# ``ProviderRegistry`` from ``codx.junior.media.providers``. Exposing the folder\n# through ``__path__`` keeps the registry here while\n# ``codx.junior.media.providers.image_local`` stays importable.\n__path__ = [os.path.join(os.path.dirname(os.path.abspath(__file__)), \"providers\")]\n\n\nclass NoProviderAvailable(Exception):\n    \"\"\"Raised when no registered provider can serve a capability.\"\"\"\n\n    def __init__(self, capability: str, tried: Optional[Iterable[str]] = None) -> None:\n        self.capability = capability\n        self.tried: List[str] = [str(name) for name in (tried or [])]\n        message = f\"no media provider available for capability '{capability}'\"\n        if self.tried:\n            message += f\" (tried: {', '.join(self.tried)})\"\n        super().__init__(message)\n\n\n@runtime_checkable\nclass MediaProvider(Protocol):\n    \"\"\"Contract every media provider implements.\"\"\"\n\n    def info(self) -> ProviderInfo:\n        \"\"\"Static description of the provider: name, capability, model, cost.\"\"\"\n        ...\n\n    def available(self) -> bool:\n        \"\"\"Whether the provider can produce something right now.\"\"\"\n        ...\n\n    def estimate(self, request: dict) -> float:\n        \"\"\"Expected cost of ``request`` in the project currency (0.0 = free).\"\"\"\n        ...\n\n    def run(self, request: dict) -> dict:\n        \"\"\"Execute the request and return the produced payload.\"\"\"\n        ...\n\n\ndef _safe_available(provider: MediaProvider) -> bool:\n    \"\"\"``provider.available()`` that treats any failure as 'not available'.\n\n    A provider probing a local binary or a socket may raise; resolution must\n    never explode because of that, it only has to move on to the next provider.\n    \"\"\"\n    try:\n        return bool(provider.available())\n    except Exception:  # noqa: BLE001 - availability probing is best effort\n        return False\n\n\nclass ProviderRegistry:\n    \"\"\"In memory registry of media providers keyed by provider name.\"\"\"\n\n    def __init__(self) -> None:\n        self._providers: Dict[str, MediaProvider] = {}\n\n    def __len__(self) -> int:\n        return len(self._providers)\n\n    def __contains__(self, name: object) -> bool:\n        return name in self._providers\n\n    def register(self, provider: MediaProvider) -> MediaProvider:\n        \"\"\"Store ``provider`` under its ``info().name`` and return it.\"\"\"\n        name = provider.info().name\n        if not name:\n            raise ValueError(\"a media provider needs a non empty name\")\n        self._providers[name] = provider\n        return provider\n\n    def unregister(self, name: str) -> None:\n        self._providers.pop(name, None)\n\n    def clear(self) -> None:\n        self._providers.clear()\n\n    def get(self, name: str) -> MediaProvider:\n        \"\"\"Return the provider registered as ``name`` or raise ``KeyError``.\"\"\"\n        try:\n            return self._providers[name]\n        except KeyError:\n            raise KeyError(f\"unknown media provider '{name}'\") from None\n\n    def list(self, capability: Optional[str] = None) -> List[ProviderInfo]",
           "output": "Read 2 file(s) | Successfully read: api/codx/junior/media/providers.py, api/codx/junior/media/budget.py",
           "duration_ms": 1600.6331574171782,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -241,7 +262,10 @@
           "response": "# api/codx/junior/media/model.py (lines 1-150 of 150)\n```py api/codx/junior/media/model.py\n\"\"\"Pydantic models for the Project's Channel media pipeline.\n\nPure data definitions: only stdlib + pydantic, no I/O and no imports from\nother codx.junior packages, so this module stays importable from the\nstore, the worker, the API router and the tests alike.\n\"\"\"\n\nfrom datetime import datetime, timezone\nfrom typing import Any, Dict, List, Literal, Optional\n\nfrom pydantic import BaseModel, ConfigDict, Field\n\n\ndef utc_now() -> datetime:\n    \"\"\"Timezone aware timestamp used as default for every ``created_at``.\"\"\"\n    return datetime.now(timezone.utc)\n\n\n# Capabilities a provider can declare\nProviderCapability = Literal[\"image\", \"voice\", \"video\", \"capture\", \"assemble\"]\n# Asset kinds stored under .codx/media/assets\nMediaKind = Literal[\"image\", \"audio\", \"video\", \"caption\", \"doc\"]\n# Render formats\nMediaFormat = Literal[\"16:9\", \"9:16\"]\n# Shot kinds inside an episode ir\nShotKind = Literal[\"slide\", \"replay\", \"still\", \"title\", \"transcript\"]\n# Job kinds\nJobKind = Literal[\"episode\", \"short\", \"cover\", \"revoice\"]\n# Job lifecycle\nJobState = Literal[\"queued\", \"leased\", \"running\", \"done\", \"failed\", \"rejected\"]\n\n\nclass ProviderInfo(BaseModel):\n    \"\"\"Description of a media provider and of its current availability.\"\"\"\n\n    model_config = ConfigDict(extra=\"allow\")\n\n    name: str = Field(description=\"Provider identifier, e.g. 'comfyui', 'piper'\")\n    capability: ProviderCapability = Field(\n        description=\"What the provider produces: image, voice, video, capture or assemble\"\n    )\n    available: bool = Field(default=False, description=\"Provider reachable right now\")\n    local: bool = Field(default=True, description=\"Runs on this machine / offline\")\n    model: Optional[str] = Field(default=None, description=\"Model or checkpoint used\")\n    reason: Optional[str] = Field(\n        default=None, description=\"Why the provider is unavailable, when it is\"\n    )\n    cost_per_unit: float = Field(\n        default=0.0, description=\"Cost per unit produced, 0 means free/local\"\n    )\n\n\nclass MediaAsset(BaseModel):\n    \"\"\"A produced artifact, addressed by content hash and stored in the project.\"\"\"\n\n    asset_id: str = Field(default=\"\", description=\"Stable asset identifier\")\n    kind: MediaKind = Field(default=\"doc\", description=\"Asset kind\")\n    path: str = Field(default=\"\", description=\"Project relative path of the asset\")\n    sha256: str = Field(default=\"\", description=\"Content hash used for caching\")\n    mime: str = Field(default=\"application/octet-stream\")\n    bytes: int = Field(default=0, description=\"Asset size in bytes\")\n    provider: str = Field(default=\"\", description=\"Provider that produced the asset\")\n    model: Optional[str] = Field(default=None, description=\"Provider model\")\n    created_at: datetime = Field(default_factory=utc_now)\n\n\nclass RenderSpec(BaseModel):\n    \"\"\"How an episode/short is rendered.\"\"\"\n\n    format: MediaFormat = Field(default=\"16:9\")\n    width: int = Field(default=1920)\n    height: int = Field(default=1080)\n    fps: int = Field(default=30)\n    loudness_target: float = Field(\n        default=-16.0, description=\"Integrated loudness target in LUFS\"\n    )\n    captions: bool = Field(default=True, description=\"Generate a caption track\")\n    burned_captions: bool = Field(\n        default=False, description=\"Burn captions into the video\"\n    )\n\n\nclass VoiceProfile(BaseModel):\n    \"\"\"Voice used for narration; snapshotted into the episode ir.\"\"\"\n\n    enabled: bool = Field(default=True)\n    provider: str = Field(default=\"\")\n    voice_id: str = Field(default=\"\")\n    model: Optional[str] = Field(default=None)\n    speed: float = Field(default=1.0)\n    style: Optional[str] = Field(default=None)\n    language: Optional[str] = Field(default=None)\n    reference_asset: Optional[str] = Field(\n        default=None, description=\"Asset id used as voice reference (cloning)\"\n    )\n\n\nclass Shot(BaseModel):\n    \"\"\"One unit of the episode timeline.\"\"\"\n\n    shot_id: str",
           "output": "Read 2 file(s) | Successfully read: api/codx/junior/media/model.py, api/codx/junior/media/__init__.py",
           "duration_ms": 367.8530640900135,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_locate",
@@ -256,7 +280,10 @@
           "response": "> atlas fallback: 3 locator(s) | index unavailable or empty\n\n### Evidence\n- `api/codx/junior/media/worker.py:73` \u2014 fallback content match\n- `api/codx/junior/media/store.py:266` \u2014 fallback content match\n- `api/codx/junior/media/providers/image_local.py:167` \u2014 fallback content match",
           "output": "Found 3 locator(s) in fallback mode.",
           "duration_ms": 19750.37786923349,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_read_file",
@@ -270,7 +297,10 @@
           "response": "# api/codx/junior/media/store.py (lines 240-354 of 354)\n```py api/codx/junior/media/store.py\n        \"\"\"Mark a job done with its produced assets and accumulated cost.\"\"\"\n        job = self.get_job(job_id)\n        if job is None:\n            return None\n        job.state = DONE\n        job.assets = list(assets or [])\n        job.cost = float(job.cost or 0.0) + float(cost or 0.0)\n        job.error = None\n        job.heartbeat_at = None\n        return self.put_job(job)\n\n    def fail(self, job_id: str, error: str) -> Optional[MediaJob]:\n        \"\"\"Record an error: requeue while retries are left, otherwise fail.\"\"\"\n        job = self.get_job(job_id)\n        if job is None:\n            return None\n        job.error = str(error)\n        job.worker_id = None\n        job.heartbeat_at = None\n        if job.attempts < job.max_attempts:\n            job.state = QUEUED\n        else:\n            job.state = FAILED\n        return self.put_job(job)\n\n    # ------------------------------------------------------------------ assets\n    def put_asset(\n        self,\n        content: bytes,\n        kind: str,\n        mime: str,\n        provider: str = \"\",\n        model: str = \"\",\n        ext: str = \"\",\n    ) -> MediaAsset:\n        \"\"\"Store bytes content addressed by sha256, idempotently.\n\n        The same bytes always map to the same asset id and path, so a repeated\n        call never writes a duplicate file (content addressed caching).\n        \"\"\"\n        if isinstance(content, (bytearray, memoryview)):\n            content = bytes(content)\n        if not isinstance(content, bytes):\n            raise TypeError(\"put_asset expects bytes\")\n        digest = hashlib.sha256(content).hexdigest()\n        relative = Path(ASSETS_DIRNAME) / digest[:2] / f\"{digest}{_normalize_ext(ext, mime)}\"\n        target = self.root / relative\n        if not target.exists():\n            self.write_atomic(target, content)\n        return MediaAsset(\n            asset_id=digest,\n            kind=kind,\n            path=relative.as_posix(),\n            sha256=digest,\n            mime=mime or \"application/octet-stream\",\n            bytes=len(content),\n            provider=provider or \"\",\n            model=model or None,\n        )\n\n    # ---------------------------------------------------------------- episodes\n    def _episode_path(self, episode_id: str) -> Path:\n        return self.episodes_dir / f\"{episode_id}{EPISODE_SUFFIX}\"\n\n    def get_episode(self, episode_id: str) -> Optional[EpisodeIR]:\n        \"\"\"Load an episode ir; ``None`` when it is unknown or unreadable.\"\"\"\n        if not episode_id:\n            return None\n        payload = self._read_json(self._episode_path(episode_id))\n        if payload is None:\n            return None\n        try:\n            return EpisodeIR.model_validate(payload)\n        except ValidationError:\n            return None\n\n    def put_episode(self, ir: EpisodeIR) -> EpisodeIR:\n        \"\"\"Persist an episode ir as ``episodes/<episode_id>.episode.json``.\"\"\"\n        if not ir.episode_id:\n            ir.episode_id = f\"ep-{utc_now():%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}\"\n        self._write_json(self._episode_path(ir.episode_id), ir.model_dump(mode=\"json\"))\n        return ir\n\n    # ------------------------------------------------------------------- inbox\n    def inbox(self) -> List[Path]:\n        \"\"\"Dropped episode files waiting to be ingested, oldest name first.\"\"\"\n        if not self.inbox_dir.exists():\n            return []\n        return sorted(\n            path\n            for path in self.inbox_dir.glob(f\"*{EPISODE_SUFFIX}\")\n            if path.is_file()\n        )\n\n    def take_inbox(self) -> Tuple[List[Path], List[EpisodeIR]]:\n        \"\"\"Ingest the inbox, keeping every accepted file under ``inbox/done/``.\n\n        Unreadable files stay where they are so nothing is lost silently.\n        \"\"\"\n        self.inbox_done_dir.mkdir(parents=True, exist_ok=True)\n        paths: List[Path] = []\n        episodes: List[EpisodeIR] = []\n        for path in self.i",
           "output": "Read 1 file(s) | Successfully read: api/codx/junior/media/store.py",
           "duration_ms": 321.2390523403883,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_write_file",
@@ -283,7 +313,10 @@
           "response": "Write completed: api/codx/junior/api/media.py (7635 bytes)",
           "output": "\u2713 File written successfully: `api/codx/junior/api/media.py` (7635 bytes)",
           "duration_ms": 1779.6341609209776,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "project_write_file",
@@ -296,7 +329,10 @@
           "response": "Write completed: api/tests/media/test_media_router.py (9768 bytes)",
           "output": "\u2713 File written successfully: `api/tests/media/test_media_router.py` (9768 bytes)",
           "duration_ms": 9337.049461901188,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "apply_file_changes",
@@ -314,7 +350,10 @@
           "response": "Applied 1 change(s) to api/tests/media/test_media_router.py",
           "output": "```py api/tests/media/test_media_router.py\n\"\"\"Offline tests of the media API router.\n\nNo server, no session, no network and no media provider is exercised: the\ntests check the declared routes, the project store binding, the asset path\ntraversal guard and \u2014 when ``httpx`` is installed \u2014 the json contract of the\nendpoints through a ``TestClient`` with the session dependency overridden.\n\"\"\"\n\nfrom pathlib import Path\nfrom typing import List, Set, Tuple\n\nimport pytest\nfrom fastapi import FastAPI, HTTPException\n\nfrom codx.junior.api import media as media_api\nfrom codx.junior.media.model import MediaJob\nfrom codx.junior.media.store import MediaStore\n\nEXPECTED_ROUTES = {\n    (\"GET\", \"/media/providers\"),\n    (\"GET\", \"/media/queue\"),\n    (\"POST\", \"/media/episodes\"),\n    (\"GET\", \"/media/episodes/{episode_id}\"),\n    (\"GET\", \"/media/assets/{asset_id}\"),\n}\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Helpers\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef declared_routes(router) -> Set[Tuple[str, str]]:\n    \"\"\"(method, path) pairs declared by ``router``, ignoring HEAD/OPTIONS.\"\"\"\n    declared: Set[Tuple[str, str]] = set()\n    for route in getattr(router, \"routes\", []):\n        path = getattr(route, \"path\", None)\n        methods = getattr(route, \"methods\", None)\n        if not path or not methods:\n            continue\n        for method in methods:\n            if method in (\"HEAD\", \"OPTIONS\"):\n                continue\n            declared.add((method.upper(), path))\n    return declared\n\n\ndef dependency_names(dependant) -> Set[str]:\n    \"\"\"Names of every callable used as a dependency of ``dependant``.\"\"\"\n    names: Set[str] = set()\n    for sub in getattr(dependant, \"dependencies\", None) or []:\n        call = getattr(sub, \"call\", None)\n        if call is not None:\n            names.add(getattr(call, \"__name__\", str(call)))\n        names |= dependency_names(sub)\n    return names\n\n\nclass _FakeSettings:\n    def __init__(self, project_path: Path) -> None:\n        self.abs_project_path = str(project_path)\n\n\nclass _FakeSession:\n    \"\"\"Minimal stand-in for CODXJuniorSession: only the settings path is used.\"\"\"\n\n    def __init__(self, project_path: Path) -> None:\n        self.settings = _FakeSettings(project_path)\n\n\n@pytest.fixture\ndef client(tmp_path):\n    \"\"\"TestClient of the media router with the project session overridden.\"\"\"\n    pytest.importorskip(\"httpx\")\n    from fastapi.testclient import TestClient\n\n    app = FastAPI()\n    app.include_router(media_api.router, prefix=\"/api\")\n    app.dependency_overrides[media_api.get_current_session] = lambda: _FakeSession(\n        tmp_path\n    )\n    with TestClient(app) as test_client:\n        test_client.project_dir = tmp_path\n        yield test_client\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Declared surface\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_router_prefix_and_tags():\n    assert media_api.router.prefix == \"/media\"\n    assert \"media\" in media_api.router.tags\n\n\ndef test_router_declares_expected_endpoints():\n    assert declared_routes(media_api.router) == EXPECTED_ROUTES\n\n\ndef test_every_endpoint_requires_the_project_session():\n    for route in media_api.router.routes:\n        dependant = getattr(route, \"dependant\", None)\n        if dependant is None:\n            continue\n        assert \"get_current_session\" in dependency_names(dependant), route.path\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Store binding\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_store_is_bound_to_the_project_media_folder(tmp_path):\n    store = media_api.store_for_project(tmp_path)\n    assert isinstance(store, MediaStore)\n    assert store.root == tmp_path / \".codx\" / \"media\"\n    assert store.jobs_dir.is_dir()\n    assert store.episodes_dir.is_dir()\n    assert store.assets_dir.is_dir()\n\n\ndef test_store_uses_for_project(tmp_path, monkeypatch):\n    calls: List[Path] = []\n    original = MediaStore.for_project.__func__\n\n    def spy(cls, project_path):\n        calls.append(Path(project_path))\n        return original(cls, project_path)\n\n    monkeypatch.setattr(MediaStore, \"for_project\", classmethod(spy))\n    store = media_api.store_for_project(tmp_path)\n    assert calls == [tmp_path]\n    assert store.root == tmp_path / \".codx\" / \"media\"\n\n\ndef test_budget_is_bound_to_the_store_root(tmp_path):\n    store = media_api.store_for_project(tmp_path)\n    gate = media_api.budget_for_store(store)\n    assert gate.path == store.root / media_api.BUDGET_FILENAME\n    snapshot = gate.snapshot()\n    assert snapshot[\"path\"] == str(store.root / media_api.BUDGET_FILENAME)\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Assets: path traversal guard\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\n@pytest.mark.parametrize(\n    \"asset_id\",\n    [\"../etc/passwd\", \"..\", \"../../secret.png\", \"a/b\", \"assets/../../x\", \"\", \"   \"],\n)\ndef test_asset_path_traversal_is_rejected(tmp_path, asset_id):\n    store = media_api.store_for_project(tmp_path)\n    with pytest.raises(HTTPException) as excinfo:\n        media_api.asset_file(store, asset_id)\n    assert excinfo.value.status_code == 400\n\n\ndef test_unknown_asset_is_not_found(tmp_path):\n    store = media_api.store_for_project(tmp_path)\n    with pytest.raises(HTTPException) as excinfo:\n        media_api.asset_file(store, \"ab\" + \"0\" * 30)\n    assert excinfo.value.status_code == 404\n\n\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Endpoint contract through a TestClient\n# \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n\ndef test_providers_endpoint_returns_registry_and_budget(client):\n    response = client.get(\"/api/media/providers\")\n    assert response.status_code == 200\n    body = response.json()\n    assert isinstance(body[\"providers\"], list)\n    assert isinstance(body[\"capabilities\"], list)\n    assert \"run_budget\" in body[\"budget\"]\n    assert body[\"budget\"][\"currency\"]\n\n\ndef test_queue_endpoint_counts_oldest_jobs(client):\n    store = media_api.store_for_project(client.project_dir)\n    store.put_job(MediaJob(kind=\"cover\", state=\"queued\"))\n    store.put_job(MediaJob(kind=\"episode\", state=\"failed\"))\n\n    body = client.get(\"/api/media/queue\").json()\n    assert body[\"counts\"] == {\"failed\": 1, \"queued\": 1}\n    assert len(body[\"jobs\"]) == 2\n    assert {job[\"state\"] for job in body[\"jobs\"]} == {\"failed\", \"queued\"}\n\n\ndef test_queue_endpoint_is_empty_on_a_fresh_project(client):\n    body = client.get(\"/api/media/queue\").json()\n    assert body == {\"counts\": {}, \"jobs\": []}\n\n\ndef test_create_and_fetch_episode(client):\n    payload = {\n        \"title\": \"Channel M0\",\n        \"format\": \"9:16\",\n        \"shots\": [{\"shot_id\": \"s1\", \"kind\": \"title\", \"narration\": \"hello\"}],\n    }\n    created = client.post(\"/api/media/episodes\", json=payload)\n    assert created.status_code == 200\n    ir = created.json()\n    assert ir[\"episode_id\"]\n    assert ir[\"title\"] == \"Channel M0\"\n    assert ir[\"format\"] == \"9:16\"\n\n    fetched = client.get(f\"/api/media/episodes/{ir['episode_id']}\")\n    assert fetched.status_code == 200\n    assert fetched.json() == ir\n\n\ndef test_create_episode_rejects_an_invalid_payload(client):\n    response = client.post(\"/api/media/episodes\", json={\"shots\": \"not-a-list\"})\n    assert response.status_code == 400\n    assert response.json()[\"detail\"]\n\n\ndef test_unknown_episode_is_404(client):\n    assert client.get(\"/api/media/episodes/does-not-exist\").status_code == 404\n\n\ndef test_asset_is_served_from_the_store(client):\n    store = media_api.store_for_project(client.project_dir)\n    asset = store.put_asset(b\"cover-bytes\", kind=\"image\", mime=\"image/png\", ext=\".png\")\n\n    response = client.get(f\"/api/media/assets/{asset.asset_id}\")\n    assert response.status_code == 200\n    assert response.content == b\"cover-bytes\"\n\n\ndef test_asset_traversal_through_the_endpoint_is_rejected(client):\n    response = client.get(\"/api/media/assets/..%2F..%2Fetc%2Fpasswd\")\n    assert response.status_code in (400, 404)\n\n```",
           "duration_ms": 7204.669002443552,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -328,7 +367,10 @@
           "response": null,
           "output": null,
           "duration_ms": 302365.1789724827,
-          "error": "Tool 'docker_exec' timed out after 300s and was aborted. The operation may still be finishing in the background; check its effect before retrying."
+          "error": "Tool 'docker_exec' timed out after 300s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "read_folder",
@@ -341,7 +383,10 @@
           "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **tests**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **media**/\n            \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_cover_provider.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_models.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_providers.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_redaction.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_router.py\n            \u251c\u2500\u2500 \ud83d\udc0d test_media_store.py\n            \u2514\u2500\u2500 \ud83d\udc0d test_media_worker.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
           "output": null,
           "duration_ms": 88853.89947704971,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         },
         {
           "tool": "docker_exec",
@@ -355,7 +400,10 @@
           "response": "",
           "output": null,
           "duration_ms": 142427.99291573465,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null,
+          "cached": null
         }
       ],
       "lifecycle_events": [
@@ -363,9 +411,12 @@
           "status": "running",
           "run_id": "63267a8ba3b1",
           "duration_ms": null,
-          "error": null
+          "error": null,
+          "started_at": null,
+          "finished_at": null
         }
       ],
+      "phase_events": [],
       "cost": 0.0,
       "cost_info": null,
       "profiles": [
@@ -386,7 +437,7 @@
     }
   ],
   "created_at": "2026-11-13 12:06:59.007813",
-  "updated_at": "2026-11-13T12:22:15.805975",
+  "updated_at": "2026-11-13T16:52:27.804796",
   "mode": "chat",
   "kanban_id": "",
   "column_id": "",
@@ -399,7 +450,12 @@
   "due_date": null,
   "progress": 100,
   "assignees": [],
+  "wake_at": null,
   "sort_index": null,
+  "calendar_ids": [],
+  "scheduled_start": null,
+  "scheduled_end": null,
+  "all_day": false,
   "columns": [],
   "chat_index": 0,
   "url": "",

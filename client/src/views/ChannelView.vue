@@ -4,6 +4,7 @@
 // The Library tab reuses the existing documentation browser instead of a
 // placeholder, so the wiki UI (tree, search, assistant) is never duplicated.
 import WikiView from '@/views/WikiView.vue'
+import ContentCreatorPanel from '@/components/channel/ContentCreatorPanel.vue'
 </script>
 
 <template>
@@ -18,6 +19,19 @@ import WikiView from '@/views/WikiView.vue'
           <div class="text-[0.65rem] font-bold uppercase tracking-[0.18em] opacity-50">Project channel</div>
           <h1 class="truncate text-base font-bold leading-tight">{{ channelName }}</h1>
         </div>
+        <!-- Admins create content from here: the panel is a tab (?tab=creator)
+             but it is not one of the five public sections, so it lives on the
+             header instead of the tab bars. -->
+        <button
+          v-if="isAdmin && activeTab !== 'creator'"
+          type="button"
+          class="ml-auto flex min-h-[44px] items-center gap-2 rounded-lg px-3 text-xs font-semibold text-base-content/70 transition-colors hover:bg-base-content/5"
+          title="Create content"
+          @click="selectTab('creator')"
+        >
+          <i class="fa-solid fa-plus" aria-hidden="true"></i>
+          <span class="hidden sm:inline">Create</span>
+        </button>
         <!-- The docs live inside the channel as the Library tab; the standalone
              "/:projectName/wiki" page stays one tap away for old deep links. -->
         <RouterLink
@@ -163,6 +177,12 @@ import WikiView from '@/views/WikiView.vue'
         <p class="mt-3 text-center text-xs italic opacity-50">No shorts have been generated yet.</p>
       </section>
 
+      <!-- Creator: admins describe and build new content. Same shell, same
+           ?tab= deep link, but it is not one of the public tab bar entries. -->
+      <section v-else-if="activeTab === 'creator'" class="h-full min-h-0">
+        <ContentCreatorPanel />
+      </section>
+
       <!-- Episodes / Learn: placeholder panels -->
       <section v-else class="px-4 py-4">
         <div class="rounded-xl border border-dashed border-base-content/20 bg-base-200/40 px-4 py-8 text-center">
@@ -207,13 +227,13 @@ import WikiView from '@/views/WikiView.vue'
     <div v-show="playerOpen" class="fixed inset-0 z-30 flex flex-col bg-base-100">
       <div class="aspect-video w-full shrink-0"></div>
       <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-[calc(1.5rem_+_env(safe-area-inset-bottom))] pt-4">
-        <h2 class="text-base font-bold leading-tight">{{ currentEpisode.title }}</h2>
-        <p class="mt-1 text-xs opacity-60">{{ currentEpisode.subtitle }}</p>
+        <h2 class="text-base font-bold leading-tight">{{ playerEpisode.title }}</h2>
+        <p class="mt-1 text-xs opacity-60">{{ playerEpisode.subtitle }}</p>
 
         <section class="mt-5" aria-label="Chapters">
           <h3 class="text-xs font-bold uppercase tracking-[0.18em] opacity-50">Chapters</h3>
-          <ul v-if="currentEpisode.chapters.length" class="mt-2 flex flex-col gap-1">
-            <li v-for="chapter in currentEpisode.chapters" :key="chapter.at">
+          <ul v-if="playerEpisode.chapters.length" class="mt-2 flex flex-col gap-1">
+            <li v-for="chapter in playerEpisode.chapters" :key="chapter.at">
               <button
                 type="button"
                 class="flex min-h-[44px] w-full items-center gap-3 rounded-lg px-2 text-left text-sm hover:bg-base-content/5"
@@ -229,8 +249,8 @@ import WikiView from '@/views/WikiView.vue'
 
         <section class="mt-5" aria-label="Transcript">
           <h3 class="text-xs font-bold uppercase tracking-[0.18em] opacity-50">Transcript</h3>
-          <div v-if="currentEpisode.transcript.length" class="mt-2 flex flex-col gap-2">
-            <p v-for="(line, index) in currentEpisode.transcript" :key="index" class="text-sm leading-relaxed">
+          <div v-if="playerEpisode.transcript.length" class="mt-2 flex flex-col gap-2">
+            <p v-for="(line, index) in playerEpisode.transcript" :key="index" class="text-sm leading-relaxed">
               <span class="mr-2 font-mono text-xs opacity-50">{{ line.at }}</span>{{ line.text }}
             </p>
           </div>
@@ -250,7 +270,7 @@ import WikiView from '@/views/WikiView.vue'
         playsinline
         preload="metadata"
         :src="videoSrc"
-        :aria-label="currentEpisode.title"
+        :aria-label="playerEpisode.title || undefined"
         @click="togglePlay"
         @play="playing = true"
         @pause="playing = false"
@@ -322,7 +342,7 @@ import WikiView from '@/views/WikiView.vue'
 
 <script>
 export default {
-  components: { WikiView },
+  components: { WikiView, ContentCreatorPanel },
   props: [],
   data() {
     return {
@@ -333,8 +353,9 @@ export default {
       playing: false,
       episodePlaceholders: [1, 2, 3, 4],
       shortPlaceholders: [1, 2, 3, 4, 5, 6],
-      // The five sections of the channel. `?tab=` holds one of these ids.
-      tabs: [
+      // Every section of the channel, including the admin-only Creator. `?tab=`
+      // holds one of these ids; the computed `tabs` hides the admin sections.
+      allTabs: [
         {
           id: 'home',
           label: 'Home',
@@ -373,11 +394,34 @@ export default {
           title: 'Learn',
           description: 'Ask about what you just watched, scoped to this page or episode.',
           empty: 'The teaching assistant is not wired yet.'
+        },
+        {
+          // Admins only: describe content, attach sources and build it. Kept in
+          // `allTabs` so a deep link resolves, filtered out of `tabs` for the
+          // tab bars and reached from the header button.
+          id: 'creator',
+          label: 'Creator',
+          icon: 'fa-solid fa-wand-magic-sparkles',
+          title: 'Creator',
+          description: 'Turn an idea into a brief and build a video, short, podcast, wiki page, slides or guide.',
+          adminOnly: true
         }
       ]
     }
   },
   computed: {
+    // Admin-only sections (Creator) are hidden from the tab bars but stay
+    // resolvable by deep link, so ?tab=creator never renders an empty screen.
+    isAdmin() {
+      try {
+        return Boolean(this.$storex.users.isAdmin)
+      } catch (ex) {
+        return false
+      }
+    },
+    tabs() {
+      return this.allTabs.filter(tab => !tab.adminOnly || this.isAdmin)
+    },
     // Name shown in the header: the active project's channel.
     channelName() {
       const project = this.$storex.projects.activeProject
@@ -419,6 +463,20 @@ export default {
     videoSrc() {
       return (this.currentEpisode && this.currentEpisode.src) || undefined
     },
+    // The overlay (`v-show`) and the persistent <video> are ALWAYS rendered, so
+    // neither may read from a possibly-null `currentEpisode`: `v-show` still
+    // evaluates its children, and reading `.title` of null threw during render
+    // and aborted the whole app mount whenever no episode was loaded.
+    playerEpisode() {
+      return this.currentEpisode || {
+        id: null,
+        title: '',
+        subtitle: '',
+        src: null,
+        chapters: [],
+        transcript: []
+      }
+    },
     // One element, two layouts: full-bleed while the overlay is open, a
     // thumbnail above the tab bar while the user browses other tabs.
     stageClass() {
@@ -454,7 +512,7 @@ export default {
   },
   methods: {
     isKnownTab(tab) {
-      return typeof tab === 'string' && this.tabs.some(item => item.id === tab)
+      return typeof tab === 'string' && this.allTabs.some(item => item.id === tab)
     },
     // Selecting a tab only rewrites the query: no navigation away from the
     // channel, and the panel stays mounted (the <video> keeps its position).

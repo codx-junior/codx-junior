@@ -1,11 +1,13 @@
 <script>
 /**
- * "Which machines go on the wall" picker.
+ * "Which co-desktops go on the wall" picker.
  *
  * A modal on purpose: the same dialog has to work from the desktop toolbar, the
  * mobile header and the empty-wall call to action, and an inline dropdown would
  * be clipped by the panels that host the grid.
  */
+import { SESSION_LABELS } from '@/utils/sessionLabels'
+
 export default {
   name: 'ComputerGridPicker',
   props: {
@@ -14,6 +16,10 @@ export default {
   },
   emits: ['toggle', 'select-all', 'clear', 'close'],
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     selectedCount() {
       return this.selectedIds.length
     }
@@ -59,7 +65,7 @@ export default {
       <div class="flex max-h-[80vh] w-full max-w-sm flex-col overflow-hidden rounded-2xl border border-base-content/10 bg-base-100 shadow-2xl">
         <div class="flex items-center gap-2 border-b border-base-content/10 px-4 py-3">
           <i class="fa-solid fa-table-cells-large text-primary" aria-hidden="true"></i>
-          <h3 id="computer-grid-picker-title" class="flex-1 text-sm font-bold">Machines on the wall</h3>
+          <h3 id="computer-grid-picker-title" class="flex-1 text-sm font-bold">{{ sessionLabels.wallTitle }}</h3>
           <span class="badge badge-sm">{{ selectedCount }}</span>
           <button class="btn btn-ghost btn-xs btn-square" title="Close" aria-label="Close" @click="$emit('close')">
             <i class="fa-solid fa-xmark"></i>
@@ -68,7 +74,7 @@ export default {
 
         <div class="flex-1 overflow-y-auto p-1.5">
           <p v-if="!sessions.length" class="px-2 py-6 text-center text-xs opacity-60">
-            No computer sessions yet.
+            {{ sessionLabels.empty }}
           </p>
           <label
             v-for="session in sessions"

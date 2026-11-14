@@ -26,7 +26,7 @@ import {
     because they become bind mounts; VMs see the project root at /shared (Z: on
     Windows) and remote machines have no mounts.
   -->
-  <modal close title="New computer session" @close="close">
+  <modal close :title="sessionLabels.create" @close="close">
     <div class="flex flex-col gap-4 md:w-[36rem]">
 
       <!-- ── Wizard steps ──────────────────────────────────────────────── -->
@@ -855,6 +855,8 @@ const emptyForm = () => ({
 const DOWNLOADS_FOLDER = '.codx/browser_downloads'
 const COMPUTER_DOWNLOADS_FOLDER = '.codx/computer_downloads'
 
+import { SESSION_LABELS } from '@/utils/sessionLabels'
+
 export default {
   name: 'BrowserSessionCreateModal',
   components: { BrowserFolderPicker, ComputerImageLibrary },
@@ -891,6 +893,10 @@ export default {
     }
   },
   computed: {
+    // Section/item names of the concept live in utils/sessionLabels.js
+    sessionLabels() {
+      return SESSION_LABELS
+    },
     isBrowser() {
       return this.form.kind === 'browser'
     },
@@ -1058,7 +1064,7 @@ export default {
         macos: 'Mac build machine',
         remote: 'Office Mac mini',
         browser: 'Invoice hunt'
-      }[this.form.kind] || 'Computer session'
+      }[this.form.kind] || SESSION_LABELS.untitled
     },
     projectName() {
       return this.$project?.project_name ||
@@ -1359,7 +1365,7 @@ export default {
     errorMessage(error) {
       return error?.response?.data?.detail ||
         error?.message ||
-        'Could not create the computer session'
+        SESSION_LABELS.createError
     },
     async create() {
       if (!this.canCreate) return

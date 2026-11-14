@@ -119,7 +119,7 @@ DOCKER_TOOLS = [
     "docker_ps", "docker_logs", "docker_inspect", "docker_images",
     "docker_build", "docker_pull", "docker_run", "docker_start",
     "docker_stop", "docker_restart", "docker_container", "docker_exec",
-    "docker_compose_service",
+    "docker_compose_service", "traefik",
 ]
 BROWSER_TOOLS = [
     "start_session", "browse_action", "get_screenshot", "get_source_code",

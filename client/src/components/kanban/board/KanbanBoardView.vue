@@ -877,11 +877,16 @@ export default {
       return this.app?.tabId || this.params?.params?.app?.tabId || null
     },
     // Resolve the initial board from the board requested through params/route
-    // (snapshotted in `created`), falling back to the first available board.
+    // (snapshotted in `created`).
+    //
+    // With nothing requested the Kanban reopens the board that was open the last
+    // time in this project (see `$storex.kanban.lastBoardId`) instead of the
+    // first board of the list, and only falls back to the first board on a first
+    // visit / when the remembered one no longer exists.
     initialBoardId() {
       const requested = this.initialRequestedBoardId
       if (requested && this.$storex.kanban.boardById(requested)) return requested
-      return this.$storex.kanban.allBoards[0]?.id || null
+      return this.$storex.kanban.lastBoardId || this.$storex.kanban.allBoards[0]?.id || null
     },
     isMobile() {
       return this.$ui.isMobile
@@ -1249,11 +1254,13 @@ export default {
       this.syncRouteParams()
     },
     // Switching boards invalidates the inline task detail pane, unless the pane
-    // is being restored for that same board (see `restoreSideTask`)
-    activeBoardId() {
+    // is being restored for that same board (see `restoreSideTask`). The board is
+    // also remembered here, so the next fresh entry into the Kanban reopens it.
+    activeBoardId(boardId) {
       if (!this.restoreSideTask()) this.sideTaskId = null
       this.editingColumn = null
       this.ensureManagerProfiles()
+      this.$storex.kanban.rememberBoard(boardId)
     },
     // Remember the task the detail pane is showing, so the saved layout reopens
     // the same task detail
@@ -1274,9 +1281,10 @@ export default {
       this.showBoardList = false
     },
     // If the selected board disappears (deleted / renamed / project change),
-    // fall back to the first available board. Also applies a board requested
-    // through params that only becomes available after the boards finish
-    // loading (reload case), so each panel keeps its own board.
+    // fall back to the board that was last open in this project and then to the
+    // first available one. Also applies a board requested through params that
+    // only becomes available after the boards finish loading (reload case), so
+    // each panel keeps its own board.
     boards(boards) {
       const requested = this.initialRequestedBoardId
       if (requested && !this.boardAppliedFromParams && this.$storex.kanban.boardById(requested)) {
@@ -1287,7 +1295,10 @@ export default {
         return
       }
       if (this.activeBoardId && !this.$storex.kanban.boardById(this.activeBoardId)) {
-        this.activeBoardId = boards[0]?.id || null
+        // Nothing selected yet (the boards finished loading after mount) or the
+        // open board disappeared (deleted / renamed / project change): reopen the
+        // board that was last open in this project, then the first of the list.
+        this.activeBoardId = this.$storex.kanban.lastBoardId || boards[0]?.id || null
         this.showBoardList = !this.activeBoardId
       }
     },

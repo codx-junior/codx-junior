@@ -1118,7 +1118,12 @@ class BrowserManager:
 
     async def _ensure_keep_alive_tab(self, browser: Browser, session: BrowserSession) -> None:
         """
-        Guarantee the protected tab that keeps the browser window alive.
+        Guarantee the protected tab that keeps the browser window alive, and drop
+        the blank tabs left behind by failed navigations.
+
+        This is the single post-connect hook of both browser runtimes (legacy
+        ``connect_browser`` and ``BrowserRuntime``), so the tab-strip hygiene
+        runs once per connection whichever entry point opened it.
 
         Best effort: a session without the tab still works, it is only less
         resilient to the user closing every tab.
@@ -1132,6 +1137,13 @@ class BrowserManager:
         except Exception as ex:
             logger.warning(
                 "Could not ensure the keep-alive tab for session %s: %s",
+                str(session.id)[:8], ex,
+            )
+        try:
+            await browser_tabs.tidy_blank_tabs(browser)
+        except Exception as ex:
+            logger.debug(
+                "Could not tidy the blank tabs of session %s: %s",
                 str(session.id)[:8], ex,
             )
 
@@ -1300,6 +1312,62 @@ class BrowserManager:
         # Live UI (no 7 s polling).  Best effort by design.
         browser_events.broadcast_activity(session_id, entry)
         return entry
+
+    def notify_needs_user(
+        self,
+        session: BrowserSession,
+        reason: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> bool:
+        """
+        Tell connected clients that *session* is waiting for the human.
+
+        ``session.needs_user`` is the source of truth (it is persisted, so the
+        warning survives a reload); this raises the matching notification so the
+        bell and the blinking icons light up.  Callers pass only the
+        ``False -> True`` transition, which is what keeps one hand-off to exactly
+        one notification.  Best effort by design: a socket failure must never
+        break the hand-off itself.
+
+        Args:
+            session: Session waiting for the human.
+            reason: Why the human is needed (login, MFA, captcha, payment...).
+            chat_id: Chat that requested the hand-off (used for deep links).
+
+        Returns:
+            bool: True when the notification was queued.
+        """
+        try:
+            from codx.junior.events.event_manager import EventManager
+
+            label = session.name or str(session.id)[:8]
+            detail = (reason or "").strip().rstrip(".")
+            text = f"'{label}' needs you"
+            if detail:
+                text = f"{text}: {detail}"
+            text = f"{text}. Take control to continue."
+            payload: Dict[str, Any] = {
+                "type": "notification",
+                "title": session.kind_label,
+                "text": text,
+                "level": "warning",
+                "session": {
+                    "id": session.id,
+                    "name": session.name,
+                    "kind": session.kind,
+                    "needs_user": True,
+                },
+            }
+            if chat_id:
+                payload["chat"] = {"id": chat_id}
+            EventManager(codx_path=self.settings.codx_path).send_notification(**payload)
+            return True
+        except Exception as ex:  # pragma: no cover - notifications are best effort
+            logger.warning(
+                "Could not notify that session %s needs the user: %s",
+                getattr(session, "id", "?"), ex,
+            )
+            return False
 
     def get_activity(self, session_id: str, limit: int = 100) -> list:
         """Return the most recent activity entries for a session."""

@@ -2,6 +2,7 @@ import { getterTree, mutationTree, actionTree } from 'typed-vuex'
 import { $storex } from '.'
 import { API } from '../api/api'
 import { desktopSizeOptions } from '../utils/desktopSizes'
+import { SESSION_LABELS } from '../utils/sessionLabels'
 
 export const namespaced = true
 
@@ -490,14 +491,14 @@ export const actions = actionTree(
     async stopSession({ commit }, sessionId) {
       const session = await API.computers.stop(sessionId)
       commit('updateSession', session)
-      notify('success', 'Computer session stopped')
+      notify('success', SESSION_LABELS.noticeStopped)
       return session
     },
 
     async restartSession({ commit }, sessionId) {
       const session = await API.computers.restart(sessionId)
       commit('updateSession', session)
-      notify('success', 'Computer session restarted')
+      notify('success', SESSION_LABELS.noticeRestarted)
       return session
     },
 
@@ -506,7 +507,7 @@ export const actions = actionTree(
       try {
         await API.computers.delete(sessionId)
         commit('deleteSession', sessionId)
-        notify('success', 'Computer session deleted')
+        notify('success', SESSION_LABELS.noticeDeleted)
       } catch (error) {
         commit('setError', error.message || 'Failed to delete session')
         notify('error', error.message || 'Failed to delete session')

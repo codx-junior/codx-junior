@@ -60,6 +60,15 @@ def test_archive_folder_is_storage_not_a_chat(tmp_path):
     assert is_store_file(os.path.join(str(tmp_path), "Bugs", "To do", f"x.{CHAT_ID}.json")) is False
 
 
+def test_hidden_ancestor_is_not_storage(tmp_path):
+    """The tasks tree lives under ``.codx``: a hidden ancestor hides nothing."""
+    live_chat = os.path.join(
+        str(tmp_path), ".codx", "tasks", "Bugs", "To do", f"x.{CHAT_ID}.json"
+    )
+    assert is_store_file(live_chat) is False
+    assert is_store_file(os.path.join(str(tmp_path), ".codx", "tasks", ARCHIVE_DIR, "index.json")) is True
+
+
 def test_archive_compresses_and_removes_the_live_file(tmp_path):
     tasks_path = str(tmp_path)
     chat_file = _write_chat(tasks_path)

@@ -98,9 +98,13 @@ def is_store_file(file_path: str) -> bool:
     ``kanban.json``, everything under ``boards/`` and the ``.archive`` folder
     (which holds the compressed archived tasks and their own catalogue).
 
-    Any hidden path (a path segment starting with ``.``) is storage too: the
-    archive folder is hidden on purpose, so a task moves out of the live tree
-    the moment it is archived.
+    ONLY THOSE NAMES ARE STORAGE. A hidden *ancestor* is never storage: the
+    tasks tree itself lives under the hidden ``.codx`` folder (and a project
+    may sit under any dot-folder as well), so treating "any segment starting
+    with a dot" as storage classifies every chat as a store file and empties
+    every listing: tasks and chats disappear from the board, the sidebar,
+    ``/api/chats`` and search. Archived tasks are already covered by
+    ``ARCHIVE_DIR``.
 
     Args:
         file_path: Absolute or relative file path.
@@ -115,9 +119,7 @@ def is_store_file(file_path: str) -> bool:
         part for part in os.path.normpath(str(file_path)).split(os.sep)
         if part and part not in (os.curdir, os.pardir)
     ]
-    if BOARDS_DIR in parts or ARCHIVE_DIR in parts:
-        return True
-    return any(part.startswith(".") for part in parts)
+    return BOARDS_DIR in parts or ARCHIVE_DIR in parts
 
 
 def clean_profiles(value: Any) -> List[str]:

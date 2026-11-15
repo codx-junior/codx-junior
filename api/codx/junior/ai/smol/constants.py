@@ -32,6 +32,20 @@ DEFAULT_MAX_TOOL_CALLS: int = 5
 ENV_TOOL_TIMEOUT_SECONDS: str = "CODX_JUNIOR_TOOL_TIMEOUT_SECONDS"
 DEFAULT_TOOL_TIMEOUT_SECONDS: float = 120.0
 
+# ── Tool parallelism ──────────────────────────────────────────────────────────
+# Independent tool calls of the SAME model round run concurrently: a round that
+# asks for six independent reads used to pay the sum of the six latencies, and a
+# harness turn can issue dozens of calls. Mutating and session-bound calls act as
+# a barrier so the model's call order is still honoured (see
+# ``codx.junior.ai.smol.parallel``).
+#
+# ``tool_parallelism`` caps how many calls of one batch run at the same time:
+# the server is shared with other chats/workers, so an unbounded fan-out would
+# starve them. Priority: model/provider ``tool_parallelism`` > env > default.
+ENV_TOOL_PARALLELISM: str = "CODX_JUNIOR_TOOL_PARALLELISM"
+DEFAULT_TOOL_PARALLELISM: int = 8
+MAX_TOOL_PARALLELISM: int = 32
+
 # Maximum number of sequential tool-call rounds (each round may contain
 # multiple parallel tool calls) before aborting the conversation.
 MAX_TOOL_ROUNDS: int = 20

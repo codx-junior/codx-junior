@@ -355,7 +355,9 @@ class ToolCallAccumulator:
 
 
 def make_assistant_tool_calls_message(
-    tool_calls: Dict[str, Dict[str, Any]], content: str = ""
+    tool_calls: Dict[str, Dict[str, Any]],
+    content: str = "",
+    reasoning_content: str = "",
 ) -> Dict[str, Any]:
     """
     Create an assistant message recording tool calls.
@@ -375,9 +377,20 @@ def make_assistant_tool_calls_message(
     (observed with parallel calls), the missing parts get the documented
     ``skip_thought_signature_validator`` sentinel so the turn is not rejected.
 
+    DeepSeek thinking mode (``deepseek-reasoner`` / ``deepseek-flash``) returns
+    the chain of thought in ``reasoning_content`` and, for requests carrying
+    the ``tools`` parameter, REQUIRES it to be echoed back on the assistant
+    message of every previous turn — including the rounds that did not call a
+    tool. Dropping it makes the continuation fail with ``400 — The
+    `reasoning_content` in the thinking mode must be passed back to the API``.
+    The value is only echoed when the provider produced it, so OpenAI-style
+    providers (which reject unknown message fields) never receive the key.
+
     Args:
         tool_calls: Dict of tool call info keyed by call_id.
         content:    Optional assistant reasoning/preamble.
+        reasoning_content: Provider chain of thought to echo back verbatim
+                           (empty when the provider did not return one).
 
     Returns:
         OpenAI assistant message dict with tool_calls.
@@ -441,11 +454,17 @@ def make_assistant_tool_calls_message(
 
         tool_calls_payload.append(tool_call_payload)
 
-    return {
+    message: Dict[str, Any] = {
         "role": "assistant",
         "content": content or None,
         "tool_calls": tool_calls_payload,
     }
+    # Echo the provider's chain of thought verbatim. Only added when present:
+    # the key is a provider extension (DeepSeek thinking mode) and strict
+    # OpenAI-compatible endpoints reject unknown message fields.
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+    return message
 
 
 def make_tool_message(tool_call_id: str, content: str) -> Dict[str, Any]:

@@ -137,8 +137,16 @@ from codx.junior.ai.smol.constants import (
     TOOL_LIMIT_FACTS_MAX_CHARS,
     TOOL_LIMIT_RETHINK_TEMPLATE,
     TOOL_LIMIT_RETHINK_LOGS_LABEL,
+    ENV_TOOL_PARALLELISM,
+    DEFAULT_TOOL_PARALLELISM,
+    MAX_TOOL_PARALLELISM,
 )
 from codx.junior.ai.smol.loop_guard import LoopGuard, ToolLoopError
+from codx.junior.ai.smol.parallel import (
+    describe_batches,
+    is_exclusive_tool,
+    plan_tool_batches,
+)
 from codx.junior.ai.smol.messages import (
     ToolCallAccumulator,
     make_assistant_tool_calls_message,
@@ -623,17 +631,25 @@ class SmolAgent:
         # tool used to block the whole chat turn (and the event loop) forever.
         # Priority: tool settings > model/provider > env > default.
         self.tool_timeout_seconds: float = self._resolve_tool_timeout_seconds()
+        # How many independent tool calls of ONE round may run concurrently.
+        # Most tools are I/O bound (file reads, HTTP, git/docker CLI), so a
+        # round of independent calls costs the latency of its slowest call
+        # instead of the sum. Mutating/session-bound calls are barriers, see
+        # codx.junior.ai.smol.parallel. 1 restores sequential execution.
+        self.tool_parallelism: int = self._resolve_tool_parallelism()
 
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         logger.info(
             "SmolAgent created. USER: %s, MODEL: %s, URL: %s, "
-            "MAX_TOOL_CALLS: %s, MAX_ITERATIONS: %s, TOOL_TIMEOUT: %ss",
+            "MAX_TOOL_CALLS: %s, MAX_ITERATIONS: %s, TOOL_TIMEOUT: %ss, "
+            "TOOL_PARALLELISM: %d",
             user.username if user else "NONE",
             self.model,
             self.base_url,
             self.llm_settings.max_tool_calls,
             self.llm_settings.max_iterations,
             self.tool_timeout_seconds,
+            self.tool_parallelism,
         )
 
     def _build_system_message(self) -> str:
@@ -1218,7 +1234,12 @@ class SmolAgent:
                 break
 
             request_id = str(uuid.uuid4())
-            content, tool_calls, usage_info = await self._stream_completion(
+            (
+                content,
+                tool_calls,
+                usage_info,
+                reasoning_content,
+            ) = await self._stream_completion(
                 kwargs=kwargs,
                 openai_messages=openai_messages,
                 headers=provider_headers,
@@ -1403,7 +1424,11 @@ class SmolAgent:
 
             # Add message to record which tools were requested
             openai_messages.append(
-                make_assistant_tool_calls_message(tool_calls, content=content)
+                make_assistant_tool_calls_message(
+                    tool_calls,
+                    content=content,
+                    reasoning_content=reasoning_content,
+                )
             )
 
             # Process cached tool calls (no execution, just emit events)
@@ -1467,24 +1492,20 @@ class SmolAgent:
                     len(openai_messages),
                 )
 
-            # Process uncached tool calls — check cancellation between each
-            # tool execution so a cancellation request is honoured promptly
-            # even when multiple tools are being processed sequentially in
-            # one round.
-            for tool_id, tool_call in uncached_calls.items():
-                # Cancellation checkpoint BEFORE each tool.
-                # _execute_tool also calls checkpoint internally, but checking
-                # here ensures we never start a tool when already cancelled.
-                run_context.checkpoint()
+            # Execute the round's uncached tools. Independent calls are
+            # CONCURRENT (see `_execute_tool_round` / parallel.py); mutating or
+            # session-bound calls are a barrier, so the model's call order is
+            # preserved. Cancellation is checked before every call, so a cancel
+            # request is honoured promptly even with several calls in flight.
+            round_results = await self._execute_tool_round(
+                uncached_calls,
+                run_context=run_context,
+                request_id=request_id,
+                chat_id=chat_id,
+                tool_cache=tool_cache,
+            )
 
-                tool_result = await self._execute_tool(
-                    tool_call,
-                    request_id=request_id,
-                    chat_id=chat_id,
-                    run_context=run_context,
-                    tool_cache=tool_cache,
-                )
-
+            for tool_id, tool_call, tool_result in round_results:
                 if isinstance(tool_result, ToolResponse):
                     # Dual-response tool:
                     # - user_response → delivered as a collapsible message
@@ -1889,6 +1910,90 @@ class SmolAgent:
             f"> `{details}`\n\n"
         )
 
+    @staticmethod
+    def _is_reasoning_content_error(ex: BaseException) -> bool:
+        """
+        Detect the DeepSeek thinking-mode rejection.
+
+        DeepSeek answers ``400`` with ``The `reasoning_content` in the thinking
+        mode must be passed back to the API`` when a request carrying ``tools``
+        does not echo the chain of thought of a previous turn. The check is on
+        the message text: there is no dedicated error code, and other
+        OpenAI-compatible providers never produce it.
+
+        Args:
+            ex: The exception raised by the provider.
+
+        Returns:
+            True when the failure is the missing-reasoning rejection.
+        """
+        return "reasoning_content" in str(ex).lower()
+
+    def _create_completion(
+        self,
+        kwargs: Dict[str, Any],
+        openai_messages: List[Dict[str, Any]],
+        headers: Dict[str, str],
+        request_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+    ) -> Any:
+        """
+        Create the streaming completion, self-healing the thinking-mode 400.
+
+        The agent now echoes the chain of thought it captured on every
+        assistant tool-call message (see
+        :func:`~codx.junior.ai.smol.messages.make_assistant_tool_calls_message`),
+        but the reasoning of the turns that came from earlier history cannot be
+        reconstructed. Thinking mode is the only thing that requires the CoT,
+        so when the provider rejects the request for exactly that reason the
+        completion is retried ONCE with thinking explicitly disabled: the round
+        degrades (no chain of thought) instead of the whole turn dying with a
+        ``400``.
+
+        Any other failure is re-raised untouched, so the caller keeps its
+        verbose error logging.
+
+        Args:
+            kwargs:          Base OpenAI request kwargs.
+            openai_messages: Conversation to send.
+            headers:         Extra request headers.
+            request_id:      Request identifier (log context).
+            chat_id:         Chat identifier (log context).
+
+        Returns:
+            The streaming response object.
+        """
+        try:
+            return self.client.chat.completions.create(
+                **kwargs,
+                messages=openai_messages,
+                extra_headers=headers,
+            )
+        except Exception as ex:
+            if not self._is_reasoning_content_error(ex):
+                raise
+
+            retry_kwargs: Dict[str, Any] = {
+                key: value for key, value in kwargs.items() if key != "reasoning_effort"
+            }
+            retry_kwargs["extra_body"] = {
+                **(kwargs.get("extra_body") or {}),
+                "thinking": {"type": "disabled"},
+            }
+            logger.warning(
+                "SmolAgent: provider rejected the request because the thinking "
+                "mode requires a previous reasoning_content (model=%s "
+                "request_id=%s chat_id=%s); retrying with thinking disabled",
+                self.model,
+                request_id,
+                chat_id,
+            )
+            return self.client.chat.completions.create(
+                **retry_kwargs,
+                messages=openai_messages,
+                extra_headers=headers,
+            )
+
     async def _stream_completion(
         self,
         kwargs: Dict[str, Any],
@@ -1901,7 +2006,7 @@ class SmolAgent:
         chat_id: Optional[str] = None,
         system_message: Optional[str] = None,
         vision_content: Optional[List[Dict[str, Any]]] = None,
-    ) -> Tuple[str, Dict[str, Dict[str, Any]], Any]:
+    ) -> Tuple[str, Dict[str, Dict[str, Any]], Any, str]:
         """
         Stream one completion, collecting content, tool calls and usage.
 
@@ -1937,7 +2042,10 @@ class SmolAgent:
                                to merge into the final user message.
 
         Returns:
-            Tuple of ``(content, tool_calls, usage_info)``.
+            Tuple of ``(content, tool_calls, usage_info, reasoning_content)``.
+            ``reasoning_content`` is the provider chain of thought (DeepSeek
+            thinking mode) and is empty when none was returned; it is echoed
+            back on the assistant message, never shown to the user.
 
         Raises:
             AgentCancelled: If cancellation is requested mid-stream.
@@ -2020,10 +2128,12 @@ class SmolAgent:
         first_chunk_at: Optional[float] = None
         chunk_count = 0
         try:
-            response_stream = self.client.chat.completions.create(
-                **kwargs,
-                messages=openai_messages,
-                extra_headers=headers,
+            response_stream = self._create_completion(
+                kwargs=kwargs,
+                openai_messages=openai_messages,
+                headers=headers,
+                request_id=request_id,
+                chat_id=chat_id,
             )
             request_headers_ms = (time.monotonic() - request_started) * 1000
         except Exception as ex:
@@ -2045,6 +2155,10 @@ class SmolAgent:
             raise
 
         content_parts: List[str] = []
+        # Provider chain of thought (DeepSeek thinking mode returns it in
+        # `reasoning_content`). Kept apart from `content`: it is never shown to
+        # the user, only echoed back on the assistant message of the round.
+        reasoning_parts: List[str] = []
         accumulator = ToolCallAccumulator()
         usage_info: Any = None
 
@@ -2075,6 +2189,14 @@ class SmolAgent:
                 choice = chunk.choices[0]
                 if getattr(choice.delta, "tool_calls", None):
                     accumulator.add(choice.delta.tool_calls)
+                # Thinking mode: the chain of thought arrives on its own delta
+                # field, at the same level as `content`. Accumulated raw (no
+                # cleaning) so it can be echoed back verbatim on the assistant
+                # message of this round (DeepSeek requires it when `tools` are
+                # sent, otherwise the continuation fails with a 400).
+                reasoning_delta = getattr(choice.delta, "reasoning_content", None)
+                if isinstance(reasoning_delta, str) and reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
                 if choice.delta.content:
                     cleaned = clean_string(choice.delta.content)
                     content_parts.append(cleaned)
@@ -2121,6 +2243,7 @@ class SmolAgent:
 
         send_callback("", True)
         content = "".join(content_parts)
+        reasoning_content = "".join(reasoning_parts)
 
         # Time frame: one line per completion with the wall-clock window, the
         # provider wait and the receive (network) phase. Analysing a slow run is
@@ -2135,7 +2258,8 @@ class SmolAgent:
         logger.info(
             "SmolAgent: LLM timing model=%s provider=%s base_url=%s "
             "request_ms=%.0f first_token_ms=%s stream_ms=%s total_ms=%.0f "
-            "chunks=%d chars=%d tool_calls=%d request_id=%s chat_id=%s run=%s",
+            "chunks=%d chars=%d reasoning_chars=%d tool_calls=%d "
+            "request_id=%s chat_id=%s run=%s",
             self.model,
             self.llm_settings.provider or "?",
             self.base_url,
@@ -2145,6 +2269,7 @@ class SmolAgent:
             total_ms,
             chunk_count,
             len(content),
+            len(reasoning_content),
             len(accumulator.tool_calls),
             request_id,
             chat_id,
@@ -2185,7 +2310,7 @@ class SmolAgent:
             except OSError as ex:
                 logger.warning("SmolAgent: failed to archive message: %s", ex)
 
-        return content, accumulator.get_tool_calls(), usage_info
+        return content, accumulator.get_tool_calls(), usage_info, reasoning_content
 
     # ── Tool execution ─────────────────────────────────────────────────────────
 
@@ -2407,12 +2532,286 @@ class SmolAgent:
                 return await asyncio.wait_for(result, timeout=timeout)
             return await result
 
+        # Always run a sync tool in a worker thread, even when the timeout is
+        # disabled: a blocking Python call executed inline would freeze the
+        # event loop and silently serialize every other call of the round,
+        # cancelling out tool parallelism.
         if timeout > 0:
             return await asyncio.wait_for(
                 self._run_sync_tool_in_thread(func, params, func_name),
                 timeout=timeout,
             )
-        return func(**params)
+        return await self._run_sync_tool_in_thread(func, params, func_name)
+
+    # ── Tool round scheduler (concurrency) ───────────────────────────────────
+
+    def _resolve_tool_parallelism(self) -> int:
+        """
+        Resolve how many tool calls of one round may run concurrently.
+
+        Priority:
+
+        1. ``AISettings.tool_parallelism`` (model > provider),
+        2. ``CODX_JUNIOR_TOOL_PARALLELISM``,
+        3. :data:`DEFAULT_TOOL_PARALLELISM`.
+
+        The value is clamped to ``[1, MAX_TOOL_PARALLELISM]``; ``1`` restores
+        the previous fully sequential behaviour.
+
+        Returns:
+            Maximum number of concurrent tool calls (never below 1).
+        """
+        configured = getattr(self.llm_settings, "tool_parallelism", None)
+        if configured is None:
+            raw_env = os.environ.get(ENV_TOOL_PARALLELISM, "").strip()
+            configured = raw_env or DEFAULT_TOOL_PARALLELISM
+
+        try:
+            value = int(configured)
+        except (TypeError, ValueError):
+            logger.warning(
+                "SmolAgent: invalid tool parallelism %r, using %d",
+                configured,
+                DEFAULT_TOOL_PARALLELISM,
+            )
+            value = DEFAULT_TOOL_PARALLELISM
+        return max(1, min(value, MAX_TOOL_PARALLELISM))
+
+    def _tool_is_exclusive(self, tool_call: Dict[str, Any]) -> bool:
+        """
+        Return True when the call must run ALONE, in the model's order.
+
+        Mutating tools (working tree, git index, board, shared browser page...)
+        and heavy subprocess runs are barriers: running them concurrently with
+        their neighbours would reorder side effects or let a call observe stale
+        state. Everything else — the vast majority, and every I/O bound read —
+        runs concurrently. See :mod:`codx.junior.ai.smol.parallel`.
+
+        Args:
+            tool_call: Dict with keys ``id``, ``function``, ``arguments``.
+
+        Returns:
+            True when the call belongs in its own batch.
+        """
+        func_name: str = tool_call.get("function", "")
+        for tool in self.tools:
+            if tool["tool_json"]["function"]["name"] != func_name:
+                continue
+            return is_exclusive_tool(
+                func_name,
+                tool.get("settings") or {},
+                tool.get("tags") or [],
+            )
+        return is_exclusive_tool(func_name)
+
+    async def _execute_tool_round(
+        self,
+        tool_calls: Dict[str, Dict[str, Any]],
+        run_context: AgentRunContext,
+        request_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        tool_cache: Optional[ToolCache] = None,
+    ) -> List[Tuple[str, Dict[str, Any], Union[str, ToolResponse]]]:
+        """
+        Execute every uncached call of one round, maximising concurrency.
+
+        The round is split into batches (:func:`plan_tool_batches`): consecutive
+        independent calls run together, mutating/session-bound calls run alone.
+        Batches are executed in order, so a call always observes the effect of
+        every call the model issued before it; only calls emitted back-to-back
+        share the wall clock.
+
+        Cancellation is checked before every call and propagated, so a cancelled
+        turn stops as soon as the in-flight batch settles.
+
+        Args:
+            tool_calls:  Mapping of tool_call_id → tool_call (model order).
+            run_context: Unified runtime context for this run.
+            request_id:  Traceability link to the triggering LLM request.
+            chat_id:     Chat identifier for analytics.
+            tool_cache:  Optional tool result cache for this conversation.
+
+        Returns:
+            List of ``(tool_id, tool_call, result)`` in the ORIGINAL model
+            order, whatever order the calls actually finished in.
+        """
+        calls: List[Tuple[str, Dict[str, Any]]] = list(tool_calls.items())
+        if not calls:
+            return []
+
+        parallelism = max(1, int(getattr(self, "tool_parallelism", 1) or 1))
+        batches = plan_tool_batches(calls, self._tool_is_exclusive)
+
+        if len(calls) > 1:
+            logger.info(
+                "SmolAgent: %d tool call(s) scheduled in %d batch(es) "
+                "(parallelism=%d): %s",
+                len(calls),
+                len(batches),
+                parallelism,
+                describe_batches(batches),
+            )
+
+        results: List[Tuple[str, Dict[str, Any], Union[str, ToolResponse]]] = []
+        semaphore = asyncio.Semaphore(parallelism)
+
+        for batch in batches:
+            if len(batch) == 1 or parallelism == 1:
+                for tool_id, tool_call in batch:
+                    results.append(
+                        (
+                            tool_id,
+                            tool_call,
+                            await self._execute_single_tool(
+                                tool_call,
+                                run_context=run_context,
+                                request_id=request_id,
+                                chat_id=chat_id,
+                                tool_cache=tool_cache,
+                            ),
+                        )
+                    )
+                continue
+
+            results.extend(
+                await self._execute_tool_batch(
+                    batch,
+                    semaphore=semaphore,
+                    run_context=run_context,
+                    request_id=request_id,
+                    chat_id=chat_id,
+                    tool_cache=tool_cache,
+                )
+            )
+
+        return results
+
+    async def _execute_single_tool(
+        self,
+        tool_call: Dict[str, Any],
+        run_context: AgentRunContext,
+        request_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        tool_cache: Optional[ToolCache] = None,
+    ) -> Union[str, ToolResponse]:
+        """
+        Execute one tool call after a cancellation checkpoint.
+
+        The checkpoint is taken here (and again inside :meth:`_execute_tool`) so
+        a tool is never STARTED once the run is cancelled, even when several
+        calls are in flight.
+
+        Args:
+            tool_call:   Dict with keys ``id``, ``function``, ``arguments``.
+            run_context: Unified runtime context for this run.
+            request_id:  Traceability link to the triggering LLM request.
+            chat_id:     Chat identifier for analytics.
+            tool_cache:  Optional tool result cache for this conversation.
+
+        Returns:
+            The tool result (string or :class:`ToolResponse`); ``_execute_tool``
+            never raises for tool errors.
+
+        Raises:
+            AgentCancelled: When the run was cancelled.
+        """
+        run_context.checkpoint()
+        return await self._execute_tool(
+            tool_call,
+            request_id=request_id,
+            chat_id=chat_id,
+            run_context=run_context,
+            tool_cache=tool_cache,
+        )
+
+    async def _execute_tool_batch(
+        self,
+        batch: List[Tuple[str, Dict[str, Any]]],
+        run_context: AgentRunContext,
+        semaphore: "asyncio.Semaphore",
+        request_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        tool_cache: Optional[ToolCache] = None,
+    ) -> List[Tuple[str, Dict[str, Any], Union[str, ToolResponse]]]:
+        """
+        Run the independent calls of *batch* concurrently.
+
+        Every call is its own task, bounded by *semaphore* so a wide batch does
+        not spawn unbounded threads/requests on a shared server. Results are
+        returned in the batch order, which is what keeps the conversation
+        (``assistant.tool_calls`` followed by one ``tool`` message per call)
+        identical to sequential execution.
+
+        Args:
+            batch:       ``(tool_id, tool_call)`` pairs to run concurrently.
+            run_context: Unified runtime context for this run.
+            semaphore:   Concurrency limiter shared by the whole round.
+            request_id:  Traceability link to the triggering LLM request.
+            chat_id:     Chat identifier for analytics.
+            tool_cache:  Optional tool result cache for this conversation.
+
+        Returns:
+            List of ``(tool_id, tool_call, result)`` in batch order.
+
+        Raises:
+            AgentCancelled: When the run was cancelled during the batch.
+        """
+        started = time.monotonic()
+
+        async def run_one(
+            tool_id: str, tool_call: Dict[str, Any]
+        ) -> Union[str, ToolResponse]:
+            async with semaphore:
+                return await self._execute_single_tool(
+                    tool_call,
+                    run_context=run_context,
+                    request_id=request_id,
+                    chat_id=chat_id,
+                    tool_cache=tool_cache,
+                )
+
+        tasks = [
+            asyncio.create_task(
+                run_one(tool_id, tool_call),
+                name=f"smol-tool-{tool_call.get('function', tool_id)}",
+            )
+            for tool_id, tool_call in batch
+        ]
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+
+        results: List[Tuple[str, Dict[str, Any], Union[str, ToolResponse]]] = []
+        cancelled: Optional[BaseException] = None
+        for (tool_id, tool_call), outcome in zip(batch, outcomes):
+            if isinstance(outcome, BaseException):
+                if isinstance(
+                    outcome, (AgentCancelled, asyncio.CancelledError, CancelledError)
+                ):
+                    # Keep the first cancellation: the turn is aborting and its
+                    # partial results are discarded by the caller anyway.
+                    cancelled = cancelled or outcome
+                    continue
+                # ``_execute_tool`` converts tool errors into strings, so an
+                # escaping exception is an internal failure: hand it to the
+                # model as a tool error instead of aborting the whole round.
+                logger.exception(
+                    "SmolAgent: tool '%s' crashed in a parallel batch",
+                    tool_call.get("function"),
+                )
+                outcome = (
+                    f"Error executing tool '{tool_call.get('function')}': {outcome}"
+                )
+            results.append((tool_id, tool_call, outcome))
+
+        logger.info(
+            "SmolAgent: %d tool(s) executed in parallel in %.0fms: %s",
+            len(batch),
+            (time.monotonic() - started) * 1000,
+            ", ".join(str(call.get("function")) for _, call in batch),
+        )
+
+        if cancelled is not None:
+            raise cancelled
+        return results
 
     async def _execute_tool(
         self,

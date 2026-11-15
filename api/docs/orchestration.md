@@ -106,8 +106,9 @@ Key properties relevant to orchestration:
 2. build OpenAI messages from the conversation,
 3. select tools (profile tools + agent-injected profile tools),
 4. stream a completion,
-5. if the model requests tools: cache lookup, `LoopGuard`, execute each tool,
-   append tool results, repeat,
+5. if the model requests tools: cache lookup, `LoopGuard`, plan the round
+   (`_execute_tool_round`), execute it (independent calls concurrently,
+   mutating calls alone), append tool results, repeat,
 6. stop on no tool calls or on a graceful loop/cost limit,
 7. return a typed `AgentRunResult` (content, messages, cost, tool stats, cache
    stats).
@@ -117,6 +118,9 @@ Strengths:
 * streaming + callbacks, cancellation, analytics, verbose provider errors,
 * loop guard (iterations, tool count, stuck loop),
 * per-conversation tool cache,
+* **parallel tool execution**: independent calls of a round run concurrently
+  (`ai/smol/parallel.py`), mutating/session-bound calls act as a barrier so the
+  model's call order is preserved (see *Tool parallelism* below),
 * dual-response tools (`ToolResponse`: user output + LLM feedback + logs + cost),
 * tools can be sync or async; `settings`, `session`, `tool_cache` injected by
   signature (`_execute_tool`, `:1720`),
@@ -127,7 +131,6 @@ Limits for complex work:
 * **one context**. Every tool result (file contents, logs, search results) is
   appended to the same conversation; long objectives exhaust the window and
   degrade reasoning.
-* **sequential tools**. Tool calls in a round run one by one; no fan-out.
 * **no durable continuation**. When the run ends, nothing resumes it; the board
   budget idea existed only in the LRT draft.
 * **no plan object**. The model can reason in text, but there is no persisted,
@@ -135,6 +138,57 @@ Limits for complex work:
 * **tools are profile-gated**. A worker task with no profile has no tools.
 * **tool cache can hide state**. A stateful tool (status/plan) would return a
   stale cached result; there was no opt-out.
+
+#### Tool parallelism
+
+A model round can carry many calls and a harness turn can issue dozens of them.
+Executing them sequentially paid the **sum** of their latencies, which is where
+most of a round's wall clock went.
+
+`ai/smol/parallel.py` classifies each call and groups the ordered round into
+batches (`SmolAgent._execute_tool_round`):
+
+| Call | Execution |
+| --- | --- |
+| Reads / searches / inspect (`project_read_file`, `project_locate`, `docker_logs`, `fetch_webpage`, `repository_*`...) | concurrent, every call of the batch at once |
+| Mutations (`project_write_file`, `apply_file_changes`, `orchestrator`, `create_task`, `project_manager`, `docker_compose_service`...) | alone, in model order (barrier) |
+| Shared interactive sessions (`browser*`, `computer*`, `get_screenshot`) | alone: one page / one desktop per project |
+| Heavy subprocess runs (`qa_run_tests`, `qa_review_changes`...) | alone |
+
+Batches run in order and the calls inside a batch run concurrently, so the
+model's call order is preserved exactly — a call never observes the state from
+before a preceding call — while a burst of independent reads costs the latency
+of its slowest call instead of the sum.
+
+Concurrency is bounded by `tool_parallelism` (`AISettings.tool_parallelism` >
+`CODX_JUNIOR_TOOL_PARALLELISM` > default 8, clamped to 32); `1` restores the
+previous sequential behaviour. A single tool overrides its classification with
+`ToolSettings.parallel` (`True` = may run concurrently, `False` = barrier).
+
+Results are collected in the original order, so the conversation sent to the
+provider is identical to sequential execution, and synchronous tools always run
+in a worker thread — subprocess and HTTP work releases the GIL, which is what
+makes this scale on a server.
+
+#### Thinking mode (`reasoning_content`)
+
+DeepSeek thinking mode returns the chain of thought in `reasoning_content`, at
+the same level as `content`. For requests carrying the `tools` parameter the
+provider **requires** that field to be echoed back on the assistant message of
+every previous turn; omitting it fails the whole turn with
+`400 — The 'reasoning_content' in the thinking mode must be passed back to the API`.
+
+`_stream_completion` now accumulates `reasoning_content` deltas separately from
+the visible `content` (`content` is never polluted with reasoning), and
+`make_assistant_tool_calls_message` echoes it back verbatim — the same pattern
+already used for Gemini's `extra_content.google.thought_signature`. The key is
+only added when the provider actually produced a CoT, so strict
+OpenAI-compatible endpoints that reject unknown message fields are unaffected.
+
+As a last-resort safety net, `_create_completion` recognises that specific 400
+and retries the round **once** with `extra_body={"thinking": {"type":
+"disabled"}}`. The turn degrades (no chain of thought) instead of dying; any
+other error is re-raised untouched so the verbose provider diagnostics are kept.
 
 ### 2.3 Profiles and tools — the capability layer
 

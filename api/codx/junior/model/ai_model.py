@@ -129,6 +129,16 @@ class AISettings(BaseModel):
             "means the runtime default/environment value is used."
         )
     )
+    tool_parallelism: Optional[int] = Field(
+        default=None,
+        description=(
+            "Resolved maximum number of tool calls of one model round that may "
+            "run concurrently (model-level takes precedence over "
+            "provider-level). ``None`` means the runtime "
+            "CODX_JUNIOR_TOOL_PARALLELISM/default value is used; ``1`` disables "
+            "tool parallelism."
+        )
+    )
 
 
 KNOWLEDGE_MODEL = os.environ.get('CODX_JUNIOR_LLMFACTORY_KNOWLEDGE_MODEL')

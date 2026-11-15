@@ -125,6 +125,16 @@ class ToolSettings(BaseModel):
             "processing) must opt out."
         )
     )
+    parallel: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Concurrency policy inside a model round. None (default) lets the "
+            "agent classify the tool from its registry tags/name (mutations "
+            "and shared interactive sessions are serialized, everything else "
+            "runs concurrently). True forces concurrent execution, False "
+            "forces a barrier: the call runs alone, in model order."
+        )
+    )
     timeout_seconds: Optional[float] = Field(
         default=None,
         description=(

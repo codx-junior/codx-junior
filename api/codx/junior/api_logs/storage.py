@@ -1,8 +1,10 @@
 import json
 import logging
 import os
+import queue
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from codx.junior.api_logs.model import ApiCallEvent
@@ -11,6 +13,131 @@ logger = logging.getLogger(__name__)
 
 # One file per day to keep individual files small
 FILE_DATE_FORMAT = "%Y-%m-%d"
+
+# ── Write-behind pipeline ─────────────────────────────────────────────────────
+# ``write()`` used to run on the request path: a process-wide ``threading.Lock``
+# plus one ``open``/``write``/``flush`` per request inside the event loop. With
+# Socket.IO long-polling and several browsers that lock serialised EVERY request
+# of the platform and the syscall ran on the loop thread.
+#
+# Events are now handed to a bounded in-process queue (never blocking) and a
+# single daemon writer thread batches them into one append per file.
+WRITE_QUEUE_MAXSIZE = int(os.environ.get("CODX_JUNIOR_API_LOGS_QUEUE_SIZE", "50000"))
+BATCH_MAX_LINES = int(os.environ.get("CODX_JUNIOR_API_LOGS_BATCH_LINES", "500"))
+BATCH_MAX_SECONDS = float(os.environ.get("CODX_JUNIOR_API_LOGS_BATCH_SECONDS", "0.5"))
+# Append-only JSONL files are never deleted otherwise: keep a bounded window.
+RETENTION_DAYS = int(os.environ.get("CODX_JUNIOR_API_LOGS_RETENTION_DAYS", "30"))
+PRUNE_INTERVAL_SECONDS = 3600
+
+_WRITE_QUEUE: "queue.Queue" = queue.Queue(maxsize=WRITE_QUEUE_MAXSIZE)
+_WRITER_THREAD: Optional[threading.Thread] = None
+_WRITER_START_LOCK = threading.Lock()
+_WRITTEN_EVENTS = 0
+_DROPPED_EVENTS = 0
+_KNOWN_BASE_PATHS: set = set()
+
+
+def _prune_old_files(keep_days: int) -> None:
+    """Delete ``*_api_calls.jsonl`` files older than ``keep_days``."""
+    if keep_days <= 0:
+        return
+    cutoff = (datetime.utcnow() - timedelta(days=keep_days)).strftime(FILE_DATE_FORMAT)
+    for base_path in list(_KNOWN_BASE_PATHS):
+        try:
+            for fname in os.listdir(base_path):
+                if not fname.endswith("_api_calls.jsonl"):
+                    continue
+                date_part = fname.replace("_api_calls.jsonl", "")
+                if len(date_part) == 10 and date_part < cutoff:
+                    os.remove(os.path.join(base_path, fname))
+                    logger.info("ApiLogStorage: pruned expired log %s", fname)
+        except OSError as ex:
+            logger.error("ApiLogStorage: cannot prune %s: %s", base_path, ex)
+
+
+def _flush_batch(batch: List[tuple]) -> None:
+    """Append a batch of ``(file_path, line)`` items, one write per file."""
+    global _WRITTEN_EVENTS
+    by_file: dict = {}
+    for file_path, line in batch:
+        by_file.setdefault(file_path, []).append(line)
+    for file_path, lines in by_file.items():
+        try:
+            with open(file_path, "a", encoding="utf-8") as fh:
+                fh.write("\n".join(lines))
+                fh.write("\n")
+            _WRITTEN_EVENTS += len(lines)
+        except OSError as ex:
+            logger.error("ApiLogStorage.write failed for %s: %s", file_path, ex)
+    for _ in batch:
+        _WRITE_QUEUE.task_done()
+
+
+def _writer_loop() -> None:
+    """Daemon writer: drain the queue in batches and flush once per file."""
+    last_prune = 0.0
+    while True:
+        try:
+            first = _WRITE_QUEUE.get(timeout=BATCH_MAX_SECONDS)
+        except queue.Empty:
+            first = None
+
+        if first is not None:
+            batch = [first]
+            while len(batch) < BATCH_MAX_LINES:
+                try:
+                    batch.append(_WRITE_QUEUE.get_nowait())
+                except queue.Empty:
+                    break
+            _flush_batch(batch)
+
+        now = time.monotonic()
+        if now - last_prune >= PRUNE_INTERVAL_SECONDS:
+            last_prune = now
+            try:
+                _prune_old_files(RETENTION_DAYS)
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.error("ApiLogStorage: prune failed: %s", ex)
+
+
+def _ensure_writer() -> None:
+    """Start the writer thread once per process."""
+    global _WRITER_THREAD
+    if _WRITER_THREAD is not None and _WRITER_THREAD.is_alive():
+        return
+    with _WRITER_START_LOCK:
+        if _WRITER_THREAD is not None and _WRITER_THREAD.is_alive():
+            return
+        _WRITER_THREAD = threading.Thread(
+            target=_writer_loop,
+            name="ApiLogWriter",
+            daemon=True,
+        )
+        _WRITER_THREAD.start()
+
+
+def flush_pending(timeout: float = 2.0) -> None:
+    """
+    Block until every queued event is on disk (bounded by ``timeout``).
+
+    Used by readers so a freshly recorded call is visible immediately, and by
+    tests that assert on the file contents.
+    """
+    _ensure_writer()
+    deadline = time.monotonic() + timeout
+    while _WRITE_QUEUE.unfinished_tasks and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
+def queue_stats() -> dict:
+    """Return the write-behind pipeline counters (used by ``/api/health``)."""
+    return {
+        "queue_depth": _WRITE_QUEUE.qsize(),
+        "queue_maxsize": WRITE_QUEUE_MAXSIZE,
+        "written_events": _WRITTEN_EVENTS,
+        "dropped_events": _DROPPED_EVENTS,
+        "writer_alive": bool(_WRITER_THREAD and _WRITER_THREAD.is_alive()),
+    }
 
 
 class ApiLogStorage:
@@ -25,7 +152,10 @@ class ApiLogStorage:
     ``codx.junior.globals.API_LOGS_DATA_PATH``).
 
     Each line is a JSON-encoded ``ApiCallEvent`` dict (JSONL format).
-    A threading lock guards concurrent writes within the same process.
+
+    Writes are asynchronous: :meth:`write` only enqueues the serialised line and
+    a single daemon writer thread batches the appends, so the request path never
+    waits on the filesystem nor on a process-wide lock.
 
     Diagram:
     classDiagram
@@ -38,8 +168,6 @@ class ApiLogStorage:
         }
     """
 
-    _lock = threading.Lock()
-
     def __init__(self, logs_path: str) -> None:
         """
         Args:
@@ -49,6 +177,7 @@ class ApiLogStorage:
         """
         self.base_path = logs_path
         os.makedirs(self.base_path, exist_ok=True)
+        _KNOWN_BASE_PATHS.add(self.base_path)
         logger.info("ApiLogStorage initialized at: %s", self.base_path)
 
     # ── Helpers ────────────────────────────────────────────────────────────────
@@ -66,28 +195,37 @@ class ApiLogStorage:
 
     def write(self, event: ApiCallEvent) -> None:
         """
-        Append an ApiCallEvent to today's JSONL file.
+        Enqueue an ApiCallEvent for today's JSONL file.
 
-        Thread-safe via module-level lock. Logs on success and errors.
+        Never blocks and never raises: this runs on the request path. When the
+        queue is full (the writer thread died or the disk cannot keep up) the
+        event is dropped and counted instead of stalling the event loop.
 
         Args:
             event: The API call event to persist.
         """
-        file_path = self._current_file_path()
-        line = json.dumps(event.to_dict(), ensure_ascii=False)
-        with self._lock:
-            try:
-                with open(file_path, "a", encoding="utf-8") as fh:
-                    fh.write(line + "\n")
-                logger.debug(
-                    "ApiLogStorage: wrote api call method=%s path=%s status=%s duration=%.3fs",
-                    event.method,
-                    event.path,
-                    event.status_code,
-                    event.duration_seconds,
+        global _DROPPED_EVENTS
+        try:
+            line = json.dumps(event.to_dict(), ensure_ascii=False)
+        except (TypeError, ValueError) as ex:
+            logger.error("ApiLogStorage.write: cannot serialise event: %s", ex)
+            return
+
+        _ensure_writer()
+        try:
+            _WRITE_QUEUE.put_nowait((self._current_file_path(), line))
+        except queue.Full:
+            _DROPPED_EVENTS += 1
+            if _DROPPED_EVENTS % 1000 == 1:
+                logger.warning(
+                    "ApiLogStorage queue full (%d): dropped %d events so far",
+                    WRITE_QUEUE_MAXSIZE,
+                    _DROPPED_EVENTS,
                 )
-            except OSError as ex:
-                logger.error("ApiLogStorage.write failed: %s", ex)
+
+    def flush(self, timeout: float = 2.0) -> None:
+        """Block until every queued event has been written (bounded)."""
+        flush_pending(timeout=timeout)
 
     # ── Read ───────────────────────────────────────────────────────────────────
 
@@ -122,9 +260,11 @@ class ApiLogStorage:
         Returns:
             List of matching ApiCallEvent objects ordered by timestamp.
         """
+        # Serve the freshest data: a call recorded microseconds ago must be
+        # visible here instead of waiting for the batch window.
+        flush_pending()
         available = self.list_available_dates()
         matching_files = []
-
         for date_str in available:
             if start_date and date_str < start_date:
                 continue

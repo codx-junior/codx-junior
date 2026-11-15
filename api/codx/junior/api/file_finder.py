@@ -34,6 +34,37 @@ QUERY_VALUE_NEW_FOLDER = "newfolder"
 QUERY_VALUE_NEW_FILE = "newfile"
 QUERY_VALUE_SAVE = "save"
 
+
+def _write_text_sync(file_path: str, content: str) -> None:
+    """
+    Write *content* to *file_path* as UTF-8 (runs in a worker thread).
+
+    The routers of this module are ``async def`` because they read
+    ``UploadFile``/``Request``, but the filesystem calls must never run on the
+    event loop: the API runs a single uvicorn worker, so one slow write froze
+    every other client of the platform.
+
+    :param file_path: Destination file; its parent folder must exist.
+    :param content: Text to write.
+    """
+    with open(file_path, "w", encoding="utf-8") as file_handle:
+        file_handle.write(content)
+
+
+def _write_bytes_sync(file_path: str, data: bytes) -> None:
+    """
+    Create the parent folder of *file_path* and write *data* (worker thread).
+
+    :param file_path: Destination file.
+    :param data: Bytes to write.
+    """
+    parent = os.path.dirname(file_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(file_path, "wb") as file_handle:
+        file_handle.write(data)
+
+
 @router.get("/file-finder/files")
 async def list_files(request: Request) -> Dict[str, Any]:
     """
@@ -123,15 +154,19 @@ async def upload_file(request: Request, file: UploadFile = None) -> Dict[str, An
     logger.info("Uploading file: %s to absolute path: %s", relative_file_path, abs_file_path)
 
     try:
-        # Ensure the target directory exists
-        os.makedirs(os.path.dirname(abs_file_path), exist_ok=True)
+        # Ensure the target directory exists (created with the write below,
+        # inside the worker thread)
         
-        with open(abs_file_path, 'wb') as fw:
-            while True:
-                data = await file.read(1024 * 10) # Read in chunks
-                if not data:
-                    break
-                fw.write(data)
+        # Only the read is async: the chunks are collected first and the whole
+        # file is written in ONE offloaded call, so the event loop is never
+        # blocked by makedirs()/open()/write().
+        chunks = []
+        while True:
+            data = await file.read(1024 * 10)  # Read in chunks
+            if not data:
+                break
+            chunks.append(data)
+        await asyncio.to_thread(_write_bytes_sync, abs_file_path, b"".join(chunks))
     except Exception as e:
         logger.error("Error during file upload: %s", e)
         return JSONResponse(content={"error": f"Error uploading file: {e}"}, status_code=500)
@@ -139,7 +174,7 @@ async def upload_file(request: Request, file: UploadFile = None) -> Dict[str, An
     return {"ok": 1, "file_path": relative_file_path, "abs_file_path": abs_file_path}
 
 @router.post("/file-finder/delete")
-async def delete_item(request: Request, payload: Dict[str, List[Dict[str, str]]] = Body(...)) -> Dict[str, Any]:
+def delete_item(request: Request, payload: Dict[str, List[Dict[str, str]]] = Body(...)) -> Dict[str, Any]:
     """
     Delete one or more files or directories.
 
@@ -217,7 +252,7 @@ async def delete_item(request: Request, payload: Dict[str, List[Dict[str, str]]]
     return response_content
 
 @router.post("/file-finder/rename")
-async def rename_item(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
+def rename_item(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
     """
     Rename a file or directory.
 
@@ -275,7 +310,7 @@ async def rename_item(request: Request, payload: Dict[str, str] = Body(...)) -> 
         return JSONResponse(content={"error": f"Error renaming item: {e}"}, status_code=500)
 
 @router.post("/file-finder/archive")
-async def archive_items(request: Request, payload: Dict[str, List[Dict[str, str]]] = Body(...)) -> Dict[str, Any]:
+def archive_items(request: Request, payload: Dict[str, List[Dict[str, str]]] = Body(...)) -> Dict[str, Any]:
     """
     Archive (zip) one or more files or directories.
 
@@ -336,7 +371,7 @@ async def archive_items(request: Request, payload: Dict[str, List[Dict[str, str]
         return JSONResponse(content={"error": f"Error archiving items: {e}"}, status_code=500)
 
 @router.post("/file-finder/unarchive")
-async def unarchive_items(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
+def unarchive_items(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
     """
     Unarchive (unzip) a file.
 
@@ -424,11 +459,10 @@ async def create_new_file(request: Request, payload: Dict[str, str] = Body(...))
             return JSONResponse(content={"error": f"File already exists: {file_name}"}, status_code=409)
 
         # Ensure parent directory exists
-        os.makedirs(folder_path, exist_ok=True)
+        await asyncio.to_thread(os.makedirs, folder_path, exist_ok=True)
 
-        # Create the empty file
-        with open(file_path, 'w', encoding='utf-8') as f:
-            pass # Creates an empty file
+        # Create the empty file (filesystem work runs off the event loop)
+        await asyncio.to_thread(_write_text_sync, file_path, "")
 
         logger.info("Successfully created file: %s", file_path)
         # Return info similar to what find_files might return for a single file
@@ -480,7 +514,7 @@ async def create_new_folder(request: Request, payload: Dict[str, str] = Body(...
             logger.warning("Folder already exists: %s", new_folder_path)
             return JSONResponse(content={"error": f"Folder already exists: {folder_name}"}, status_code=409)
 
-        os.makedirs(new_folder_path, exist_ok=True)
+        await asyncio.to_thread(os.makedirs, new_folder_path, exist_ok=True)
         logger.info("Successfully created folder: %s", new_folder_path)
         
         return {
@@ -636,7 +670,7 @@ async def download_file(request: Request) -> JSONResponse:
 
 
 @router.post("/file-finder/copy")
-async def copy_item(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
+def copy_item(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
     """
     Copy a file or directory from a source path to a destination path.
 
@@ -685,7 +719,7 @@ async def copy_item(request: Request, payload: Dict[str, str] = Body(...)) -> Di
         return JSONResponse(content={"error": f"Error copying item: {e}"}, status_code=500)
 
 @router.post("/file-finder/move")
-async def move_item(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
+def move_item(request: Request, payload: Dict[str, str] = Body(...)) -> Dict[str, Any]:
     """
     Move a file or directory from a source path to a destination path.
 
@@ -768,11 +802,12 @@ async def save_file_content(request: Request, payload: Dict[str, str] = Body(...
         resolved_file_path = file_manager.get_file_path(file_path_param)
         
         # Ensure the directory exists
-        os.makedirs(os.path.dirname(resolved_file_path), exist_ok=True)
+        await asyncio.to_thread(
+            os.makedirs, os.path.dirname(resolved_file_path), exist_ok=True
+        )
 
-        # Save the content to the file
-        with open(resolved_file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        # Save the content to the file (off the event loop)
+        await asyncio.to_thread(_write_text_sync, resolved_file_path, content)
         
         logger.info("Successfully saved content to file: %s", resolved_file_path)
         

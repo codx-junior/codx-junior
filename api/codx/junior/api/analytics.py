@@ -1694,7 +1694,7 @@ def admin_get_decision_model_log(
     "/admin/pricing",
     summary="[Admin] List providers and models with current pricing",
 )
-async def get_pricing(
+def get_pricing(
     _: CodxUser = Depends(require_admin),
 ):
     """
@@ -1740,7 +1740,7 @@ async def get_pricing(
     "/admin/pricing/provider/{provider_name}",
     summary="[Admin] Update provider-level pricing",
 )
-async def update_provider_pricing(
+def update_provider_pricing(
     provider_name: str,
     body: PricingUpdateRequest,
     _: CodxUser = Depends(require_admin),
@@ -1776,7 +1776,7 @@ async def update_provider_pricing(
     "/admin/pricing/model/{provider_name}/{model_name}",
     summary="[Admin] Update model-level pricing",
 )
-async def update_model_pricing(
+def update_model_pricing(
     provider_name: str,
     model_name: str,
     body: PricingUpdateRequest,
@@ -1849,7 +1849,7 @@ async def update_model_pricing(
     "/admin/pricing/recalculate",
     summary="[Admin] Recalculate historical events with new pricing",
 )
-async def recalculate_pricing(
+def recalculate_pricing(
     body: RecalculateRequest,
     _: CodxUser = Depends(require_admin),
 ):

@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import jwt
 import bcrypt
@@ -29,6 +30,22 @@ from codx.junior.model.user import (
 from codx.junior.settings import CODXJuniorSettings
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_token(token: Optional[str]) -> str:
+    """
+    Return a non-reversible fingerprint of an authentication token for logs.
+
+    SECURITY: bearer tokens were logged verbatim by several branches of the
+    login/authentication path (``logger.info(f"... token {token}")``), so anyone
+    with read access to the container logs owned every active session. Only a
+    truncated SHA-256 digest is emitted; the token itself never reaches a log.
+    """
+    if not token or not str(token).strip():
+        return "<none>"
+    digest = hashlib.sha256(str(token).strip().encode("utf-8")).hexdigest()[:12]
+    return f"<token sha256:{digest}>"
+
 
 # Project permissions that allow changing what the profiles learn in the
 # project (rules written to the profile enrichment and knowledge files).
@@ -401,7 +418,7 @@ class UserSecurityManager():
             if token:
                 user = self.get_user_from_token(token)
                 if not user:
-                    logging.error(f"Invalid token login {token}")
+                    logging.error(f"Invalid token login {_redact_token(token)}")
                     return None
             try:
                 stored_user = self.find_user(username=user.username)
@@ -444,7 +461,7 @@ class UserSecurityManager():
                         
                         return stored_user
                 else:
-                    logger.error(f"Invalid login, stored_user not found for {user}, token: {token}")    
+                    logger.error(f"Invalid login, stored_user not found for {user}, token: {_redact_token(token)}")    
             except Exception as ex:
                 logging.error(f"Invalid user login {ex} {user}")
             
@@ -452,7 +469,7 @@ class UserSecurityManager():
             
         try:
             logged_user = do_login(user=user, token=token)
-            logger.info(f"do_login user: {user} token: {token} logged_user: {logged_user}")
+            logger.info(f"do_login user: {user} token: {_redact_token(token)} logged_user: {logged_user}")
             if logged_user:
                 user_login = self.find_user_login(username=logged_user.username)
                 
@@ -464,7 +481,7 @@ class UserSecurityManager():
                 logged_user.token = user_login.token
             return logged_user
         except Exception as ex:
-            logger.error(f"Invalid login {ex} {user} token: {token}")
+            logger.error(f"Invalid login {ex} {user} token: {_redact_token(token)}")
             return None
 
     def update_user(self, user: CodxUser, password: str = None):
@@ -588,7 +605,16 @@ def get_authenticated_user(request: Request) -> CodxUser:
     if token:
         user = user_security_manager.login_user(token=token)
     user_name = user.username if user else ""
-    logger.info(f"Authenticating request: {request.url} token {token}: {user_name} - headers: {request.headers}")
+    # SECURITY: the raw token and the whole header map (authorization, cookies)
+    # were logged at INFO on EVERY request. Log header NAMES only and keep the
+    # token as a digest; request authentication is trace-level noise anyway.
+    logger.debug(
+        "Authenticating request: %s token %s: %s - headers: %s",
+        request.url,
+        _redact_token(token),
+        user_name,
+        sorted(request.headers.keys()),
+    )
     return user
 
 
@@ -598,5 +624,5 @@ def get_authenticated_user_from_token(token: str) -> CodxUser:
     if token:
         user = user_security_manager.login_user(token=token)
     user_name = user.username if user else ""
-    logger.info(f"WebSocket token {token}: {user_name}")
+    logger.info(f"WebSocket token {_redact_token(token)}: {user_name}")
     return user

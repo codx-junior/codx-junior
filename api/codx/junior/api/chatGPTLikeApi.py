@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import datetime
 from fastapi import APIRouter, Request
@@ -6,6 +7,7 @@ from codx.junior.engine import (
   CODXJuniorSession
 )
 from codx.junior.profiles.profile_manager import ProfileManager
+from codx.junior.project.project_discover import find_all_projects
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +29,11 @@ def get_active_profiles_for_api():
 
 router = APIRouter()
 
+# Sync on purpose: it walks every project and profile on disk. FastAPI runs a
+# plain ``def`` endpoint in its worker thread pool, so the single uvicorn worker
+# keeps serving other clients while this one reads the filesystem.
 @router.get("/v1/models", tags=["chatgpt"])
-async def list_models():
+def list_models():
     return {"object": "list", "data": get_active_profiles_for_api()}
 
 
@@ -37,7 +42,9 @@ async def create_completion(request: Request):
     body = await request.json()
     model = body.get("model")
     project_name, profile_name = model.split("/")
-    project = [p for p in find_all_projects().values() if p.project_name == project_name][0]
+    # Discovery may scan the filesystem: never run it on the event loop.
+    all_projects = await asyncio.to_thread(find_all_projects)
+    project = [p for p in all_projects.values() if p.project_name == project_name][0]
     session = CODXJuniorSession(settings=project)
     messages = body.get("messages")
     chat = await session.api_chat_with_project(profile_name=profile_name, messages=messages)

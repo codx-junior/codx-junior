@@ -27,6 +27,7 @@ backward compatibility but is no longer the dashboard path.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -492,7 +493,12 @@ async def dsh_rename_task(
         chat = _sync_for_instance(request, chosen).find_chat(session_id)
         if chat is not None:
             chat.name = title
-            _session(request).get_chat_manager().save_chat(chat=chat, chat_only=True)
+            # The chat store is rewritten as a whole JSON document: off-load it.
+            await asyncio.to_thread(
+                _session(request).get_chat_manager().save_chat,
+                chat=chat,
+                chat_only=True,
+            )
     except Exception:  # pragma: no cover - the DSH rename already succeeded
         logger.warning("dsh_rename_task: could not update mirror chat", exc_info=True)
     return {"ok": True, "instance_id": chosen, **(result or {})}

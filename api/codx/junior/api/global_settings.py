@@ -56,7 +56,7 @@ def get_settings_manager() -> GlobalSettingsManager:
 # ===========================================================================
 
 @router.get("/global/settings")
-async def get_all_settings(
+def get_all_settings(
     user: CodxUser = Depends(is_admin_user),
 ) -> GlobalSettings:
     """Return the full GlobalSettings object assembled from all section files."""
@@ -85,7 +85,7 @@ async def update_all_settings(
 # ===========================================================================
 
 @router.get("/global/settings/section/{section}")
-async def get_section(
+def get_section(
     section: str,
     user: CodxUser = Depends(is_admin_user),
     manager: GlobalSettingsManager = Depends(get_settings_manager),
@@ -145,7 +145,7 @@ async def update_section(
 # ===========================================================================
 
 @router.get("/global/settings//history/{section}")
-async def get_section_history(
+def get_section_history(
     section: str,
     user: CodxUser = Depends(is_admin_user),
     manager: GlobalSettingsManager = Depends(get_settings_manager),
@@ -162,7 +162,7 @@ async def get_section_history(
 
 
 @router.get("/global/settings//history/{section}/{timestamp}")
-async def get_section_version(
+def get_section_version(
     section: str,
     timestamp: str,
     user: CodxUser = Depends(is_admin_user),
@@ -185,7 +185,7 @@ async def get_section_version(
 
 
 @router.post("/global/settings//history/{section}/{timestamp}/rollback")
-async def rollback_section(
+def rollback_section(
     section: str,
     timestamp: str,
     user: CodxUser = Depends(is_admin_user),
@@ -221,7 +221,7 @@ async def rollback_section(
 # ===========================================================================
 
 @router.get("/global/settings//plugins")
-async def read_plugins(
+def read_plugins(
     user: CodxUser = Depends(is_admin_user),
 ) -> List[Plugin]:
     """List all registered plugins."""
@@ -243,7 +243,7 @@ async def add_plugin(
 
 
 @router.delete("/global/settings//plugins/{plugin_name}")
-async def remove_plugin(
+def remove_plugin(
     plugin_name: str,
     user: CodxUser = Depends(is_admin_user),
 ) -> dict:
@@ -269,7 +269,7 @@ async def exec_plugin(
 
 
 @router.get("/global/settings//plugins/load_from_file")
-async def load_plugins_from_file(
+def load_plugins_from_file(
     request: Request,
     user: CodxUser = Depends(is_admin_user),
 ) -> dict:

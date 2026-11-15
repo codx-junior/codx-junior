@@ -4,6 +4,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+from starlette.concurrency import run_in_threadpool
+
 from codx.junior.ai.cancellation import CANCELLATION_REGISTRY
 from codx.junior.chat_searcher import SearchFilters
 from codx.junior.model.model import CodxUser
@@ -78,6 +80,26 @@ def _conversation_messages(chat) -> list:
     from codx.junior.db import _visible_messages
 
     return _visible_messages(getattr(chat, "messages", None) or [])
+
+
+def _conversation_response(chat):
+    """
+    Strip the unsent drafts from a chat that is about to be returned.
+
+    Every message endpoint answers with the WHOLE chat (``POST/PUT/DELETE
+    /chats/message``, ``POST /chats/metadata``) and the client merges that
+    payload message by message (``mergeMessages`` in ``store/chats.js``). A
+    draft still held in memory would therefore be re-created as a conversation
+    bubble: the user saw the same text twice (the draft promoted to a bubble
+    next to the real message). See :func:`codx.junior.db.conversation_response`.
+
+    :param chat: The chat returned by a message endpoint (``None`` or an error
+        dict are returned untouched).
+    :return: The same chat with its ``unsent`` messages removed.
+    """
+    from codx.junior.db import conversation_response
+
+    return conversation_response(chat)
 
 
 def _draft_response(chat_id: Optional[str], message) -> dict:
@@ -165,7 +187,7 @@ def _resolve_chat_manager(request: Request, data: Optional[dict] = None):
 
 
 @router.post("/chat/cancel")
-async def chat_cancel(request: Request, data: Optional[dict] = None):
+def chat_cancel(request: Request, data: Optional[dict] = None):
     """
     Cancel / stop a chat turn by chat_id or cancellation token UUID.
 
@@ -297,7 +319,7 @@ def chat_processing(request: Request):
 
 
 @router.post("/chat/turn/rerun")
-async def chat_turn_rerun(request: Request, data: Optional[dict] = None):
+def chat_turn_rerun(request: Request, data: Optional[dict] = None):
     """
     Re-run the last turn of a chat whose execution died.
 
@@ -534,7 +556,7 @@ def api_list_archived_chats(request: Request):
 
 
 @router.post("/chats/archive")
-async def api_archive_chat(request: Request, data: Optional[dict] = None):
+def api_archive_chat(request: Request, data: Optional[dict] = None):
     """
     Archive a task: compress it and take it out of the live tree.
 
@@ -572,7 +594,7 @@ async def api_archive_chat(request: Request, data: Optional[dict] = None):
 
 
 @router.post("/chats/restore")
-async def api_restore_chat(request: Request, data: Optional[dict] = None):
+def api_restore_chat(request: Request, data: Optional[dict] = None):
     """
     Restore an archived task back into its board/column.
 
@@ -982,7 +1004,12 @@ async def api_save_chat_draft(request: Request):
 
     try:
         chat_manager = request.state.codx_junior_session.get_chat_manager()
-        message = upsert_unsent_message(
+        # Saving the draft reloads and rewrites the whole chat file. In the
+        # event loop that blocked EVERY request while the user was typing
+        # (the header is called once per debounced keystroke), which is exactly
+        # what made clicking "send" feel unresponsive. Run it in the pool.
+        message = await run_in_threadpool(
+            upsert_unsent_message,
             chat_id=chat_id,
             content=data.get("content") or "",
             author=author,
@@ -1064,7 +1091,10 @@ async def api_add_message(request: Request):
             logger.error("api_add_message: missing chat_id or message")
             return {"error": "missing chat_id or message"}
         
-        chat = chat_manager.find_by_id(chat_id=chat_id)
+        # Loading, writing and clearing the chat are file operations: they run
+        # in the worker pool so a send never freezes the event loop (and every
+        # other request with it, which is what made the composer feel laggy).
+        chat = await run_in_threadpool(chat_manager.find_by_id, chat_id=chat_id)
         if not chat:
             logger.error("api_add_message: chat not found: %s", chat_id)
             return {"error": f"chat '{chat_id}' not found"}
@@ -1079,7 +1109,9 @@ async def api_add_message(request: Request):
             )
 
         message = Message(**message_data)
-        updated_chat = chat_manager.add_message(chat=chat, message=message)
+        updated_chat = await run_in_threadpool(
+            chat_manager.add_message, chat=chat, message=message
+        )
 
         # Sending CONSUMES the composer draft (unless the payload IS the draft):
         # the unsent message is discarded together with the real one, so no
@@ -1088,7 +1120,9 @@ async def api_add_message(request: Request):
             try:
                 from codx.junior.db import delete_unsent_message
 
-                delete_unsent_message(chat_id, chat_manager=chat_manager)
+                await run_in_threadpool(
+                    delete_unsent_message, chat_id, chat_manager=chat_manager
+                )
             except Exception as draft_ex:  # pragma: no cover - best effort
                 logger.warning(
                     "api_add_message: could not clear the draft of chat '%s': %s",
@@ -1096,7 +1130,8 @@ async def api_add_message(request: Request):
                     draft_ex,
                 )
 
-        return updated_chat
+        # The client merges the messages of this payload: never send the draft.
+        return _conversation_response(updated_chat)
     except HTTPException:
         raise
     except Exception as ex:
@@ -1151,7 +1186,9 @@ async def api_update_message(request: Request):
             )
 
         message = Message(**message_data)
-        updated_chat = chat_manager.update_message(chat=chat, message=message)
+        updated_chat = _conversation_response(
+            chat_manager.update_message(chat=chat, message=message)
+        )
         
         return updated_chat
     except HTTPException:
@@ -1162,7 +1199,7 @@ async def api_update_message(request: Request):
 
 
 @router.delete("/chats/message")
-async def api_remove_message(request: Request):
+def api_remove_message(request: Request):
     """
     Remove a message from a chat (merge-safe).
 
@@ -1189,7 +1226,9 @@ async def api_remove_message(request: Request):
             logger.error("api_remove_message: chat not found: %s", chat_id)
             return {"error": f"chat '{chat_id}' not found"}
         
-        updated_chat = chat_manager.remove_message(chat=chat, message_doc_id=message_doc_id)
+        updated_chat = _conversation_response(
+            chat_manager.remove_message(chat=chat, message_doc_id=message_doc_id)
+        )
         
         return updated_chat
     except Exception as ex:
@@ -1236,7 +1275,9 @@ async def api_update_chat_metadata(request: Request):
             return {"error": f"chat '{chat_id}' not found"}
         
         # Delegate metadata update to chat_manager
-        updated_chat = chat_manager.update_chat_metadata(chat=chat, metadata=metadata)
+        updated_chat = _conversation_response(
+            chat_manager.update_chat_metadata(chat=chat, metadata=metadata)
+        )
         
         return updated_chat
     except Exception as ex:
@@ -1546,7 +1587,7 @@ async def api_chat_from_url(request: Request):
 
 
 @router.post("/chats/sub-tasks", deprecated=True)
-async def api_chat_subtasks(request: Request):
+def api_chat_subtasks(request: Request):
     """
     DEPRECATED — AI sub-task generation (HTTP 410 Gone).
 
@@ -1682,7 +1723,11 @@ async def api_save_chat(request: Request):
                 if not getattr(chat, field, None):
                     setattr(chat, field, getattr(existing, field, None))
             chat_only = True
-        saved_chat = chat_manager.save_chat(chat=chat, chat_only=chat_only)
+        # The chat store is rewritten as a whole JSON document: off-load it so
+        # the single uvicorn worker keeps serving other clients.
+        saved_chat = await asyncio.to_thread(
+            chat_manager.save_chat, chat=chat, chat_only=chat_only
+        )
         
         return saved_chat
     except Exception as ex:
@@ -1759,7 +1804,7 @@ def api_delete_kanban(request: Request):
         return {"error": f"Failed to delete kanban: {str(ex)}"}
 
 @router.put("/chats/mark-seen/{chat_id}/{message_id}")
-async def api_mark_message_as_seen(
+def api_mark_message_as_seen(
     request: Request, 
     chat_id: str, 
     message_id: str,
@@ -1817,7 +1862,7 @@ async def api_mark_message_as_seen(
         return {"error": f"Failed to mark message as seen: {str(ex)}", "success": False}
 
 @router.put("/chats/mark-seen/{chat_id}/{message_id}")
-async def api_mark_message_as_seen(
+def api_mark_message_as_seen(
     request: Request, 
     chat_id: str, 
     message_id: str,
@@ -1875,7 +1920,7 @@ async def api_mark_message_as_seen(
         return {"error": f"Failed to mark message as seen: {str(ex)}", "success": False}
 
 @router.put("/chats/unmark-seen/{chat_id}/{message_id}")
-async def api_unmark_message_as_seen(
+def api_unmark_message_as_seen(
     request: Request, 
     chat_id: str, 
     message_id: str,

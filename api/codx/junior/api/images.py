@@ -27,6 +27,7 @@ graph TD
     D --> E
 """
 
+import asyncio
 import hashlib
 import logging
 import mimetypes
@@ -38,6 +39,28 @@ from fastapi.responses import FileResponse
 from codx.junior.settings import CODXJuniorSettings
 
 logger = logging.getLogger(__name__)
+
+
+def _store_image_file_sync(image_path: str, file_content: bytes) -> bool:
+    """
+    Persist an uploaded image unless it already exists.
+
+    Images are content addressed (the name is the md5 of the payload), so an
+    existing file already holds these exact bytes and is never rewritten.
+    This runs in a worker thread: ``POST /api/images`` is ``async`` because it
+    reads the ``UploadFile``, but the disk write must not block the single
+    uvicorn worker that serves every other client.
+
+    :param image_path: Absolute destination path.
+    :param file_content: Raw image bytes.
+    :return: True when the file was written, False when it already existed.
+    """
+    os.makedirs(os.path.dirname(image_path), exist_ok=True)
+    if os.path.exists(image_path):
+        return False
+    with open(image_path, "wb") as file_object:
+        file_object.write(file_content)
+    return True
 
 router = APIRouter(tags=["images"])
 
@@ -193,10 +216,7 @@ async def api_upload_image(request: Request, file: UploadFile = File(...)):
     relative_path = f"{MESSAGE_IMAGES_SUB_FOLDER}/{hashlib.md5(file_content).hexdigest()}{extension}"
     image_path = os.path.join(settings.get_images_folder_path(), relative_path)
 
-    os.makedirs(os.path.dirname(image_path), exist_ok=True)
-    if not os.path.exists(image_path):
-        with open(image_path, "wb") as file_object:
-            file_object.write(file_content)
+    if await asyncio.to_thread(_store_image_file_sync, image_path, file_content):
         logger.info("Image uploaded: %s", image_path)
 
     return {

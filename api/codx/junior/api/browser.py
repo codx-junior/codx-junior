@@ -72,7 +72,7 @@ READ_ONLY_ACTIONS = {"text", "read", "links", "snapshot", "screenshot"}
 # Helpers
 # ============================================================================
 
-async def get_session_context(request: Request) -> CODXJuniorSession:
+def get_session_context(request: Request) -> CODXJuniorSession:
     """Dependency: get the current session context from request state."""
     session = getattr(request.state, 'codx_junior_session', None)
     if not session:
@@ -211,7 +211,9 @@ async def create_session(request: Request, req: BrowserSessionCreateRequest):
 
         if chat and chat_manager:
             browser_manager.save_session_to_chat(browser_session, chat)
-            chat_manager.save_chat(chat)
+            # The chat store is rewritten as a whole JSON document: keep it off
+            # the event loop, the single worker must stay responsive.
+            await asyncio.to_thread(chat_manager.save_chat, chat)
 
         # Start the recorder/watcher without blocking the response.  If the
         # user drives before the AI, their actions must still be visible.
@@ -393,7 +395,7 @@ async def open_session_chat(
                 profiles=[profile_name] if profile_available else [],
                 meta_data={},
             )
-            chat_manager.save_chat(chat)
+            await asyncio.to_thread(chat_manager.save_chat, chat)
 
         # The chat explicitly asks to operate this computer: make sure the
         # matching profile (and therefore its tools) is active.
@@ -401,7 +403,7 @@ async def open_session_chat(
             chat.profiles = [*(chat.profiles or []), profile_name]
 
         browser_manager.save_session_to_chat(browser_session, chat)
-        chat_manager.save_chat(chat)
+        await asyncio.to_thread(chat_manager.save_chat, chat)
         logger.info(
             "open_session_chat: session %s linked to chat %s",
             session_id[:8], chat.id,
@@ -1122,7 +1124,9 @@ async def sio_browser_create(sid: str, data: dict, codxjunior_session: CODXJunio
 
         if chat:
             browser_manager.save_session_to_chat(browser_session, chat)
-            ChatManager(codxjunior_session.settings).save_chat(chat)
+            await asyncio.to_thread(
+                ChatManager(codxjunior_session.settings).save_chat, chat
+            )
 
         _emit(channel, {
             "status": "ready",

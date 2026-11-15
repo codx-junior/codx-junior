@@ -10,6 +10,7 @@ Workspace creation follows a two-step process:
 2. Edition: Edit workspace files (Dockerfile, docker-compose.yaml, .env, etc.)
 """
 
+import asyncio
 import logging
 from typing import List
 from uuid import uuid4
@@ -27,6 +28,31 @@ from codx.junior.workspaces.workspace_manager import WorkspaceManager
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
+
+
+def _write_workspace_file_sync(
+    file_path: Path, content: str, workspace_id: str
+) -> None:
+    """
+    Write a workspace file and bump the workspace ``updated_at``.
+
+    Both the file write and the global-settings read/write hit the disk, so the
+    whole sequence runs in a worker thread: the endpoint is ``async`` only
+    because of its dependencies and must not block the event loop.
+
+    :param file_path: File to overwrite (already validated inside the workspace).
+    :param content: New file content.
+    :param workspace_id: Workspace whose timestamp is refreshed.
+    """
+    with open(file_path, "w") as file_handle:
+        file_handle.write(content)
+
+    global_settings = read_global_settings()
+    for workspace in global_settings.workspaces:
+        if workspace.id == workspace_id:
+            workspace.updated_at = datetime.now().isoformat()
+            write_global_settings(global_settings)
+            break
 
 router = APIRouter()
 
@@ -448,16 +474,10 @@ async def update_workspace_file(
         raise HTTPException(status_code=400, detail="Invalid file path")
     
     try:
-        with open(file_path, "w") as f:
-            f.write(body.content)
-        
-        # Update workspace updated_at timestamp
-        global_settings = read_global_settings()
-        for idx, ws in enumerate(global_settings.workspaces):
-            if ws.id == workspace_id:
-                ws.updated_at = datetime.now().isoformat()
-                write_global_settings(global_settings)
-                break
+        # File write + updated_at timestamp, both off the event loop
+        await asyncio.to_thread(
+            _write_workspace_file_sync, file_path, body.content, workspace_id
+        )
         
         logger.info("Admin '%s' updated file '%s' in workspace '%s'", user.username, filename, workspace.name)
         return WorkspaceFileContent(filename=filename, content=body.content)

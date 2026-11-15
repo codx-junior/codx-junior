@@ -752,6 +752,28 @@ def _visible_messages(messages: Optional[List[Message]]) -> List[Message]:
     return [message for message in (messages or []) if not message.unsent]
 
 
+def conversation_response(chat: Any) -> Any:
+    """
+    Strip the unsent drafts from a chat that is about to be returned.
+
+    Every message endpoint answers with the WHOLE chat (``POST/PUT/DELETE
+    /chats/message``, ``POST /chats/metadata``) and the client merges that
+    payload message by message (``mergeMessages`` in ``store/chats.js``). A
+    draft still held in memory would therefore come back as a conversation
+    bubble: the same text appeared twice, once as the promoted draft and once
+    as the real message.
+
+    :param chat: The chat returned by a message endpoint (``None`` and error
+        payloads are returned untouched).
+    :return: The same chat with its ``unsent`` messages removed.
+    """
+    if chat is None or isinstance(chat, dict):
+        return chat
+    if getattr(chat, "messages", None):
+        chat.messages = _visible_messages(chat.messages)
+    return chat
+
+
 def _find_unsent_message(chat: "Chat") -> Optional[Message]:
     """
     Return the unsent draft of *chat* (the most recent one when legacy data has

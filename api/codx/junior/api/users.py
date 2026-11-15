@@ -10,7 +10,8 @@ from codx.junior.engine import (
 from codx.junior.security.user_management import (
     UserSecurityManager,
     get_authenticated_user,
-    is_github_admin_account
+    is_github_admin_account,
+    _redact_token,
 )
 from codx.junior.model.user import CodxUser, CodxUserLogin
 from codx.junior.model.model import GlobalSettings
@@ -27,10 +28,29 @@ router = APIRouter()
 
 @router.get("/forward-auth")
 async def proxy_forward_auth(request: Request):
-    logger.info("[proxy_forward_auth] headers: %s", request.headers)
-    cookies = request.headers.get("cookie", "").split(":")[-1].split(";")
-    logger.info("[proxy_forward_auth] cookies: %s", cookies)
-    
+    """Traefik forwardAuth probe.
+
+    This runs for every proxied request (static assets included), so it must
+    stay silent unless the log level is debug. Values are never logged: the
+    ``cookie`` header carries the ``codx-session`` JWT and the upstream IdP
+    cookie, so only the header names and the cookie names are reported.
+    """
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "[proxy_forward_auth] header names: %s",
+            sorted(request.headers.keys()),
+        )
+        cookie_names = [
+            part.split("=", 1)[0]
+            for part in request.headers.get("cookie", "").split(";")
+            if "=" in part
+        ]
+        logger.debug(
+            "[proxy_forward_auth] cookie names: %s cookie:%s",
+            cookie_names,
+            _redact_token(request.headers.get("cookie")),
+        )
+
     return "ok"
 
 @router.get("/users/oauth-login-url/{oauth_provider}")

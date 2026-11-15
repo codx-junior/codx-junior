@@ -124,12 +124,24 @@ function mergeMessage(target, source) {
   return target
 }
 
+// The composer draft travels as an `unsent` message so it survives a reload,
+// but it is NEVER part of the conversation: it must not become a bubble, be
+// counted or be sent to the model. The API already filters it from every
+// payload; this is the client-side guarantee, applied to every list that
+// enters the store (a stray draft here showed the same text twice).
+function conversationMessages(messages) {
+  if (!Array.isArray(messages)) return messages
+  if (!messages.some(message => message?.unsent)) return messages
+  return messages.filter(message => !message?.unsent)
+}
+
 // Patch the conversation message by message (see `mergeMessage`). The array
 // keeps its identity while the MESSAGE LIST is the same, so `chat.messages` is
 // not invalidated by a mere content refresh.
 function mergeMessages(current, next) {
   if (!Array.isArray(next)) return next
-  if (!Array.isArray(current) || !current.length) return next
+  const incomingMessages = conversationMessages(next)
+  if (!Array.isArray(current) || !current.length) return incomingMessages
 
   const byKey = new Map()
   current.forEach(message => {
@@ -137,7 +149,7 @@ function mergeMessages(current, next) {
     if (key) byKey.set(key, message)
   })
 
-  const merged = next.map(incoming => {
+  const merged = incomingMessages.map(incoming => {
     const key = messageKey(incoming)
     const existing = key ? byKey.get(key) : null
     return existing ? mergeMessage(existing, incoming) : incoming
@@ -209,6 +221,9 @@ function applyChatEventMessage(state, chatId, message) {
   // summary (last message only) would end up with an incomplete history.
   if (state.chatLoadingStatus[chatId] !== ENTITY_STATUS.LOADED) return false
   if (!Array.isArray(chat.messages)) return false
+
+  // An unsent draft is composer state, never a conversation message
+  if (message.unsent) return false
 
   const key = messageKey(message)
   if (!key) return false
@@ -881,6 +896,29 @@ export const actions = actionTree(
 
       reloadsInFlight[chatId] = request
       return request
+    },
+    // Local echo of a message the user just sent. Clearing the composer and
+    // rendering the bubble must not wait for the round trip: the message
+    // endpoint reloads, rewrites and returns the WHOLE chat, which takes
+    // seconds on a long conversation. The caller generates the `doc_id` and
+    // sends it to the server, so the response patches this very entry instead
+    // of appending a second copy of the same text.
+    addLocalMessage({ state }, { chat, message }) {
+      const target = state.chats?.[chat?.id]
+      if (!target || !message) return
+      if (!Array.isArray(target.messages)) target.messages = []
+      const key = messageKey(message)
+      if (key && target.messages.some(m => messageKey(m) === key)) return
+      target.messages = [...target.messages, message]
+      const timestamp = message.timestamp || message.created_at
+      if (timestamp) $storex.chats.updateChatLastMessageAt({ chatId: chat.id, timestamp })
+    },
+    // Rollback of the local echo when the server rejected the message.
+    removeLocalMessage({ state }, { chat, messageDocId }) {
+      const target = state.chats?.[chat?.id]
+      if (!target || !Array.isArray(target.messages) || !messageDocId) return
+      const remaining = target.messages.filter(m => messageKey(m) !== messageDocId)
+      if (remaining.length !== target.messages.length) target.messages = remaining
     },
     async addMessage({ state }, { chat, message }) {
       if (!chat?.id) return

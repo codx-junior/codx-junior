@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.get("/files")
-async def list_files(request: Request):
+def list_files(request: Request):
     """
     List files in a directory.
 
@@ -38,7 +38,7 @@ async def list_files(request: Request):
 
 
 @router.get("/files/read")
-async def read_file(request: Request):
+def read_file(request: Request):
     """
     Read a file and return its content with metadata.
 
@@ -68,7 +68,7 @@ async def read_file(request: Request):
 
 
 @router.get("/files/preview")
-async def preview_file(request: Request):
+def preview_file(request: Request):
     """
     Stream a file's binary content directly for preview/playback.
     
@@ -109,7 +109,7 @@ async def preview_file(request: Request):
 
 
 @router.get("/files/download")
-async def download_file(request: Request):
+def download_file(request: Request):
     """
     Download a file's binary content as an attachment.
 

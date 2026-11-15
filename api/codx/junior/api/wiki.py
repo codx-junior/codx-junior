@@ -337,7 +337,9 @@ async def wiki_create(
     manager = WikiManager(settings=settings)
     await asyncio.to_thread(manager.ensure_initial_wiki, True)
     settings = manager.settings
-    find_all_projects()
+    # Refresh the discovery snapshot off the event loop: the scan reads the
+    # filesystem and used to freeze every client of the API while it ran.
+    await asyncio.to_thread(find_all_projects)
     site = await asyncio.to_thread(manager.build_site)
     return {
         "ok": True,

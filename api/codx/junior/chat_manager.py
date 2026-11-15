@@ -119,6 +119,7 @@ import os
 import json
 import uuid
 import shutil
+import threading
 
 from slugify import slugify
 
@@ -152,6 +153,73 @@ from codx.junior.project.project_discover import find_project_by_id
 from codx.junior.security.ciso.payload import redact_payload
 
 logger = logging.getLogger(__name__)
+
+
+# -----------------------------------------------------------------------------
+# Chat metadata cache (the ``GET /api/chats`` hot path)
+# -----------------------------------------------------------------------------
+# Listing chats used to read and fully validate (pydantic) EVERY task file of
+# the project on every request, just to return metadata: with a large project
+# (hundreds of MB spread over the tasks tree) that took more than ten seconds
+# while the client waited for its main screen. The cache keeps the parsed Chat
+# keyed by ``(mtime_ns, size)``, so an unchanged file costs a single ``os.stat``
+# and a rewritten file (``store_chat``) invalidates itself. Entries are always
+# handed out as deep copies, because callers of ``list_chats`` are free to
+# mutate the objects they receive.
+_CHAT_INFO_CACHE: Dict[str, Any] = {}
+_CHAT_INFO_CACHE_MAX = 5000
+_CHAT_INFO_CACHE_LOCK = threading.Lock()
+
+
+def _chat_file_signature(file_path: str):
+    """
+    Return the cheap change signature of a chat file.
+
+    :param file_path: Path of the chat file.
+    :return: ``(mtime_ns, size)`` tuple, or ``None`` when the file cannot be
+        stat'ed (missing/permission), which disables the cache for it.
+    """
+    try:
+        stat = os.stat(file_path)
+        return (stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+
+
+def _chat_info_cache_get(file_path: str, signature) -> Optional[Chat]:
+    """
+    Return a cached copy of the chat metadata when the file is unchanged.
+
+    :param file_path: Path of the chat file.
+    :param signature: Current ``(mtime_ns, size)`` of the file.
+    :return: A detached copy of the cached Chat, or ``None`` on a miss.
+    """
+    if signature is None:
+        return None
+    with _CHAT_INFO_CACHE_LOCK:
+        entry = _CHAT_INFO_CACHE.get(file_path)
+    if not entry or entry[0] != signature:
+        return None
+    return entry[1].model_copy(deep=True)
+
+
+def _chat_info_cache_put(file_path: str, signature, chat: Chat) -> None:
+    """
+    Store the chat metadata for *file_path* under *signature*.
+
+    :param file_path: Path of the chat file.
+    :param signature: ``(mtime_ns, size)`` the chat was read with.
+    :param chat: Chat whose metadata is reused by ``list_chats``.
+    """
+    if signature is None:
+        return
+    cached = chat.model_copy(deep=True)
+    with _CHAT_INFO_CACHE_LOCK:
+        if len(_CHAT_INFO_CACHE) >= _CHAT_INFO_CACHE_MAX:
+            # Cheap bound: the cache is only an accelerator, rebuilding it
+            # costs one full read of the tree and never loses data.
+            _CHAT_INFO_CACHE.clear()
+        _CHAT_INFO_CACHE[file_path] = (signature, cached)
 
 
 def _parse_timestamp(value: Optional[str]) -> datetime:
@@ -527,7 +595,16 @@ class ChatManager:
 
         def _load_chat_info(file_path: str) -> Optional[Chat]:
             try:
-                return self.load_chat_from_path(chat_file=file_path, chat_only=True)
+                signature = _chat_file_signature(file_path)
+                cached = _chat_info_cache_get(file_path, signature)
+                if cached is not None:
+                    return cached
+                chat = self.load_chat_from_path(chat_file=file_path, chat_only=True)
+                # Only cache when the file did not change while it was being
+                # read, otherwise the stale signature would hide the update.
+                if chat is not None and _chat_file_signature(file_path) == signature:
+                    _chat_info_cache_put(file_path, signature, chat)
+                return chat
             except (OSError, ValueError, KeyError) as ex:
                 # ValueError covers json.JSONDecodeError and pydantic validation
                 logger.error("Error loading chat '%s': %s", file_path, ex)
@@ -1323,8 +1400,27 @@ class ChatManager:
                 chat.id,
                 chat.file_path,
             )
-        with open(chat.file_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(payload, indent=2))
+        # CONCURRENCY: the write must be atomic. ``open(..., "w")`` truncates
+        # the file and then refills it, so a reader running at the same time
+        # (another request, the background worker, a socket handler) used to
+        # see a partially written task and fail with
+        # ``Extra data: line N column 2`` — corrupting the very artifact this
+        # module is meant to preserve. Writing to a sibling temp file and
+        # renaming it keeps readers on either the old or the new content,
+        # never in between (``os.replace`` is atomic on POSIX).
+        tmp_path = f"{chat.file_path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps(payload, indent=2))
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, chat.file_path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    logger.warning("Could not remove temp chat file %s", tmp_path)
 
     def delete_chat(self, file_path: Optional[str] = None, chat_id: Optional[str] = None) -> None:
         """

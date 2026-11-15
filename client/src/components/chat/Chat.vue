@@ -491,7 +491,9 @@ export default {
       return this.chat.mode === 'group'
     },
     visibleMessages() {
-      return this.chat?.messages?.filter(m => !m.hide || this.showHidden) || []
+      // An `unsent` message is the draft of the composer that owns it: it is
+      // never part of the conversation, so it is never rendered here either.
+      return this.chat?.messages?.filter(m => (!m.hide || this.showHidden) && !m.unsent) || []
     },
     lastAIMessage() {
       const lastAiMessages = this.activeMessages?.filter(m => m.role === 'assistant').reverse()
@@ -1283,10 +1285,34 @@ export default {
         task_item
       })
     },
+    // RFC4122 v4 identity for a message created locally, so the client and the
+    // server agree on it (the server stores the message with this `doc_id`).
+    newMessageId() {
+      if (window.crypto?.randomUUID) return window.crypto.randomUUID()
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16)
+      })
+    },
     async postMyMessage({ message, task_item }) {
       const userMessage = this.getUserMessage({ message, task_item })
-      await this.chatSvc.addMessage({ chat: this.chat, message: userMessage })
+      // Optimistic send: the endpoint reloads, rewrites and returns the WHOLE
+      // chat, which takes seconds on a long conversation. The composer is
+      // cleared and the bubble rendered immediately; the response then patches
+      // this very message (same `doc_id`) instead of appending a second copy.
+      if (!userMessage.doc_id) userMessage.doc_id = this.newMessageId()
+      if (!userMessage.created_at) userMessage.created_at = new Date().toISOString()
       this.cleanUserInputAndWaitAnswer()
+      this.$chats.addLocalMessage({ chat: this.chat, message: userMessage })
+      try {
+        await this.chatSvc.addMessage({ chat: this.chat, message: userMessage })
+      } catch (error) {
+        // Rollback: never lose the text the user typed
+        this.$chats.removeLocalMessage({ chat: this.chat, messageDocId: userMessage.doc_id })
+        if (!this.editorText) this.setEditorText(message)
+        this.$ui?.addNotification?.({ text: 'Could not send the message, please retry', type: 'error' })
+        throw error
+      }
       return userMessage
     },
     cleanUserInputAndWaitAnswer() {

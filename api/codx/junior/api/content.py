@@ -95,7 +95,7 @@ def _brief_payload(workspace: ContentWorkspace, brief: ContentBrief) -> Dict[str
 
 
 @router.get("/formats")
-async def list_formats(
+def list_formats(
     session: CODXJuniorSession = Depends(get_current_session),
 ) -> Dict[str, Any]:
     """Output formats the creator offers, plus the profiles involved."""
@@ -107,7 +107,7 @@ async def list_formats(
 
 
 @router.get("/items")
-async def list_items(
+def list_items(
     session: CODXJuniorSession = Depends(get_current_session),
 ) -> Dict[str, Any]:
     """Every content item of the project, most recently updated first."""
@@ -129,7 +129,7 @@ async def list_items(
 
 
 @router.post("/items")
-async def create_item(
+def create_item(
     payload: Dict[str, Any] = Body(...),
     session: CODXJuniorSession = Depends(get_current_session),
     user: CodxUser = Depends(require_admin),
@@ -153,7 +153,7 @@ async def create_item(
 
 
 @router.get("/items/{content_id}")
-async def get_item(
+def get_item(
     content_id: str,
     session: CODXJuniorSession = Depends(get_current_session),
 ) -> Dict[str, Any]:
@@ -164,7 +164,7 @@ async def get_item(
 
 
 @router.post("/items/{content_id}")
-async def update_item(
+def update_item(
     content_id: str,
     payload: Dict[str, Any] = Body(...),
     session: CODXJuniorSession = Depends(get_current_session),
@@ -181,7 +181,7 @@ async def update_item(
 
 
 @router.delete("/items/{content_id}")
-async def delete_item(
+def delete_item(
     content_id: str,
     session: CODXJuniorSession = Depends(get_current_session),
     user: CodxUser = Depends(require_admin),
@@ -199,7 +199,7 @@ async def delete_item(
 
 
 @router.post("/items/{content_id}/sources")
-async def add_source(
+def add_source(
     content_id: str,
     payload: Dict[str, Any] = Body(...),
     session: CODXJuniorSession = Depends(get_current_session),
@@ -223,7 +223,7 @@ async def add_source(
 
 
 @router.post("/items/{content_id}/uploads")
-async def upload_source(
+def upload_source(
     content_id: str,
     payload: Dict[str, Any] = Body(...),
     session: CODXJuniorSession = Depends(get_current_session),
@@ -263,7 +263,7 @@ async def upload_source(
 
 
 @router.delete("/items/{content_id}/sources/{source_id}")
-async def delete_source(
+def delete_source(
     content_id: str,
     source_id: str,
     session: CODXJuniorSession = Depends(get_current_session),
@@ -279,7 +279,7 @@ async def delete_source(
 
 
 @router.get("/items/{content_id}/file/{name:path}")
-async def get_file(
+def get_file(
     content_id: str,
     name: str,
     session: CODXJuniorSession = Depends(get_current_session),
@@ -300,7 +300,7 @@ async def get_file(
 
 
 @router.post("/items/{content_id}/build")
-async def build_item(
+def build_item(
     content_id: str,
     payload: Dict[str, Any] = Body(default={}),
     session: CODXJuniorSession = Depends(get_current_session),

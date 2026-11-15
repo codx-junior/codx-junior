@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/browsers", tags=["browser"])
 
 
-async def get_session_context(request: Request) -> CODXJuniorSession:
+def get_session_context(request: Request) -> CODXJuniorSession:
     """Dependency: get the current session context from request state."""
     session = getattr(request.state, "codx_junior_session", None)
     if not session:

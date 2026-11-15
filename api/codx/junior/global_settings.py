@@ -11,6 +11,8 @@ import os
 import json
 import logging
 import pathlib
+import threading
+import time
 import traceback
 from datetime import datetime
 from typing import Optional
@@ -32,6 +34,29 @@ logger = logging.getLogger(__name__)
 # Global in-memory state
 # ---------------------------------------------------------------------------
 GLOBAL_SETTINGS: Optional[GlobalSettings] = None
+
+# ``read_global_settings()`` is called on EVERY authenticated request (see
+# ``UserSecurityManager.__init__``) and twice per project discovery. Assembling
+# GlobalSettings means reading every section file from disk, so the API paid a
+# multi-file read per request just to decode a JWT.
+#
+# The cache is deliberately short lived (2 s by default) and is invalidated by
+# the writers, so a change made by another process (the background worker) is
+# picked up almost immediately while the hot path stays in memory.
+GLOBAL_SETTINGS_CACHE_SECONDS = float(
+    os.environ.get("CODX_JUNIOR_GLOBAL_SETTINGS_CACHE_SECONDS", "2")
+)
+_GLOBAL_SETTINGS_LOCK = threading.RLock()
+_GLOBAL_SETTINGS_CACHE: Optional[GlobalSettings] = None
+_GLOBAL_SETTINGS_CACHED_AT = 0.0
+
+
+def invalidate_global_settings_cache() -> None:
+    """Drop the cached GlobalSettings so the next read hits the section files."""
+    global _GLOBAL_SETTINGS_CACHE, _GLOBAL_SETTINGS_CACHED_AT
+    with _GLOBAL_SETTINGS_LOCK:
+        _GLOBAL_SETTINGS_CACHE = None
+        _GLOBAL_SETTINGS_CACHED_AT = 0.0
 
 # ---------------------------------------------------------------------------
 # Manager singleton
@@ -92,26 +117,47 @@ def _migrate_legacy_settings() -> None:
 # Core read / write
 # ---------------------------------------------------------------------------
 
-def read_global_settings() -> GlobalSettings:
+def read_global_settings(refresh: bool = False) -> GlobalSettings:
     """
     Read GlobalSettings by assembling all section files via the manager.
 
-    Falls back to defaults for any missing sections.
+    Falls back to defaults for any missing sections. Successful reads are
+    memoised for ``GLOBAL_SETTINGS_CACHE_SECONDS`` (see the module constant):
+    the result is shared, never copied, and every writer invalidates the cache
+    so callers cannot observe a stale object after saving.
+
+    Args:
+        refresh: Bypass the cache and read the section files again.
 
     Returns:
         Assembled GlobalSettings instance.
     """
-    global GLOBAL_SETTINGS
-    manager = get_manager()
-    all_data = manager.read_all()
+    global GLOBAL_SETTINGS, _GLOBAL_SETTINGS_CACHE, _GLOBAL_SETTINGS_CACHED_AT
 
-    try:
-        GLOBAL_SETTINGS = GlobalSettings(**all_data) if all_data else GlobalSettings()
-    except (ValueError, TypeError) as ex:
-        logger.error("Error assembling GlobalSettings from sections: %s", ex)
-        GLOBAL_SETTINGS = GlobalSettings()
+    with _GLOBAL_SETTINGS_LOCK:
+        now = time.monotonic()
+        if (
+            not refresh
+            and _GLOBAL_SETTINGS_CACHE is not None
+            and GLOBAL_SETTINGS_CACHE_SECONDS > 0
+            and (now - _GLOBAL_SETTINGS_CACHED_AT) < GLOBAL_SETTINGS_CACHE_SECONDS
+        ):
+            GLOBAL_SETTINGS = _GLOBAL_SETTINGS_CACHE
+            return _GLOBAL_SETTINGS_CACHE
 
-    return GLOBAL_SETTINGS
+        manager = get_manager()
+        all_data = manager.read_all()
+
+        try:
+            settings = GlobalSettings(**all_data) if all_data else GlobalSettings()
+        except (ValueError, TypeError) as ex:
+            logger.error("Error assembling GlobalSettings from sections: %s", ex)
+            settings = GlobalSettings()
+
+        GLOBAL_SETTINGS = settings
+        _GLOBAL_SETTINGS_CACHE = settings
+        _GLOBAL_SETTINGS_CACHED_AT = now
+        return settings
 
 
 def write_global_settings(global_settings: GlobalSettings) -> None:
@@ -135,6 +181,12 @@ def write_global_settings(global_settings: GlobalSettings) -> None:
 
         _apply_git_config(global_settings)
         GLOBAL_SETTINGS = global_settings
+        # The object we just wrote IS the fresh state: cache it instead of
+        # forcing the next read to go back to disk.
+        global _GLOBAL_SETTINGS_CACHE, _GLOBAL_SETTINGS_CACHED_AT
+        with _GLOBAL_SETTINGS_LOCK:
+            _GLOBAL_SETTINGS_CACHE = global_settings
+            _GLOBAL_SETTINGS_CACHED_AT = time.monotonic()
     except (OSError, TypeError) as ex:
         logger.exception(
             "Error saving global settings: %s\n%s", ex, traceback.format_exc()
@@ -155,7 +207,7 @@ def write_settings_section(section: str, data: any) -> None:
     manager.write_section(section, data)
 
     # Refresh in-memory global settings after partial update
-    GLOBAL_SETTINGS = read_global_settings()
+    GLOBAL_SETTINGS = read_global_settings(refresh=True)
 
 
 def get_global_settings() -> Optional[GlobalSettings]:

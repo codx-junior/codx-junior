@@ -3,6 +3,7 @@ import faulthandler
 import logging
 import os
 import shutil
+import threading
 import time
 import traceback
 import uuid
@@ -61,6 +62,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from starlette.status import HTTP_504_GATEWAY_TIMEOUT
+from starlette.datastructures import MutableHeaders
 
 from contextlib import asynccontextmanager
 
@@ -130,7 +132,7 @@ _API_LOG_SKIP_PREFIXES = ("/api/static", "/api/socket.io")
 _API_LOG_SKIP_PATHS = ("/api/health",)
 
 
-def record_api_call(request: Request, duration_seconds: float, status_code: int, response=None, error=None) -> None:
+def record_api_call(request: Request, duration_seconds: float, status_code: int, response=None, error=None, response_size: int = None) -> None:
     """
     Persist a single API call performance event.
 
@@ -172,12 +174,13 @@ def record_api_call(request: Request, duration_seconds: float, status_code: int,
                 project_name = ""
                 project_id = ""
 
-        response_size = 0
-        if response is not None:
-            try:
-                response_size = int(response.headers.get("content-length", 0) or 0)
-            except (ValueError, AttributeError):
-                response_size = 0
+        if response_size is None:
+            response_size = 0
+            if response is not None:
+                try:
+                    response_size = int(response.headers.get("content-length", 0) or 0)
+                except (ValueError, AttributeError):
+                    response_size = 0
 
         _api_logs_instance.record(
             path=route_path,
@@ -267,6 +270,9 @@ async def startup_event():
         bootstrap_ai_from_env()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to run the AI bootstrap: %s", ex)
+    # Event-loop lag sampler backing /api/health: the cheapest way to notice
+    # that a synchronous call has crept back onto the event loop.
+    asyncio.create_task(_event_loop_lag_monitor())
     logger.info("FASTAPI startup")
 
 
@@ -301,77 +307,219 @@ def startup_event():
 
 @app.exception_handler(Exception)
 async def my_exception_handler(request: Request, ex: Exception):
-    return JSONResponse(status_code=500, 
-        content=traceback.format_exception(ex))
+    # SECURITY: this handler used to return ``traceback.format_exception(ex)``
+    # as the response body, disclosing internal paths, module names and library
+    # versions to every unauthenticated caller on every 500. The traceback is
+    # logged server-side; the client only receives a correlation id.
+    error_id = uuid.uuid4().hex[:12]
+    logger.error(
+        "Unhandled error %s on %s %s: %s",
+        error_id,
+        request.method,
+        request.url,
+        ex,
+        exc_info=ex,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error_id": error_id,
+        },
+    )
 
-@app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    start_time = time.time()
-    response = None
-    status_code = 500
-    error_message = None
+# ``CODXJuniorSession`` used to re-read ``.codx/project.json`` on EVERY request
+# (the middleware builds one session per request). Parsed settings are cached per
+# codx_path and invalidated by the file mtime, so a settings save is picked up
+# immediately without paying a disk read on the hot path.
+_SESSION_SETTINGS_CACHE = {}
+_SESSION_SETTINGS_LOCK = threading.Lock()
+
+
+def _load_cached_settings(codx_path: str):
+    """Return ``CODXJuniorSettings`` for *codx_path*, cached by project.json mtime."""
+    project_file = os.path.join(codx_path, "project.json")
     try:
-        response = await call_next(request)
-        status_code = response.status_code
-        process_time = time.time() - start_time
-        response.headers["X-Process-Time"] = str(process_time)
-        return response
-    except Exception as ex:
-        error_message = str(ex)
-        raise
-    finally:
-        process_time = time.time() - start_time
-        logger.info("Request %s - %d ms", request.url, process_time * 1000)
-        record_api_call(
-            request=request,
-            duration_seconds=process_time,
-            status_code=status_code,
-            response=response,
-            error=error_message,
-        )
+        mtime = os.path.getmtime(project_file)
+    except OSError:
+        return None
+
+    cached = _SESSION_SETTINGS_CACHE.get(codx_path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
+    settings = CODXJuniorSettings.from_project_file(project_file)
+    with _SESSION_SETTINGS_LOCK:
+        _SESSION_SETTINGS_CACHE[codx_path] = (mtime, settings)
+    return settings
 
 
 def get_codx_junior_session(request, codx_path):
     user = get_authenticated_user(request=request)
     sid = request.headers.get("x-sid")
     channel = SessionChannel(sid=sid, sio=sio)
+    settings = _load_cached_settings(codx_path) if codx_path else None
+    if settings is not None:
+        return CODXJuniorSession(settings=settings,
+                                  codx_path=codx_path,
+                                  channel=channel,
+                                  user=user)
     return CODXJuniorSession(codx_path=codx_path, 
                               channel=channel,
                               user=user)
 
-@app.middleware("http")
-async def add_codx_junior_settings(request: Request, call_next):
+def _attach_session(request: Request, scope) -> None:
+    """
+    Build the request-scoped ``CODXJuniorSession`` from ``?codx_path``.
+
+    Same contract as the removed middleware: a failure here never breaks the
+    request, it only leaves ``request.state.codx_junior_session`` unset.
+    """
     codx_path = request.query_params.get("codx_path")
-    if codx_path and codx_path not in ["undefined", "null"]:
-        try:
-            codx_path = request.query_params.get("codx_path")
-            codx_path = request.headers.get("x-codx-path", codx_path)
-            request.state.codx_junior_session = get_codx_junior_session(request, codx_path)
-            request.state.codx_junior_session.update_last_access_time()
-        except Exception as ex:
-            logger.error("Error loading settings %s: %s\n%s", codx_path, ex, request.url)
-    return await call_next(request)
-
-# Adding a middleware returning a 504 error if the request processing time is above a certain threshold
-@app.middleware("http")
-async def timeout_middleware(request: Request, call_next):
+    codx_path = request.headers.get("x-codx-path", codx_path)
+    if not codx_path or codx_path in ["undefined", "null"]:
+        return
     try:
-        start_time = time.time()
-        timeout = GLOBAL_REQUEST_TIMEOUT_SECONDS
-        if request.url.path.startswith((BROWSER_LIFECYCLE_PREFIX, COMPUTER_LIFECYCLE_PREFIX)):
-            timeout = BROWSER_REQUEST_TIMEOUT_SECONDS
-        logger.info("HTTP starting: %s", request.url)
-        return await asyncio.wait_for(call_next(request), timeout=timeout)
+        session = get_codx_junior_session(request, codx_path)
+        scope.setdefault("state", {})["codx_junior_session"] = session
+        session.update_last_access_time()
+    except Exception as ex:
+        logger.error("Error loading settings %s: %s\n%s", codx_path, ex, request.url)
 
-    except asyncio.TimeoutError:
-        process_time = time.time() - start_time
-        return JSONResponse({'detail': 'Request processing time exceeded limit',
-                             'processing_time': process_time},
-                            status_code=HTTP_504_GATEWAY_TIMEOUT)
+
+# Paths whose performance is either noise (the log reader itself, static assets,
+# the Socket.IO polling transport) or a health probe.
+NO_API_LOG_PATHS = ("/api/health",)
+NO_API_LOG_PREFIXES = ("/api/static", "/api/socket.io")
+
+
+class ApiRequestMiddleware:
+    """
+    Session resolution, timeout, timing and API-call logging in ONE ASGI layer.
+
+    It replaces three stacked ``BaseHTTPMiddleware`` classes. Each of those adds
+    an anyio task and a memory-object stream per request and rebuilds the
+    request/response stream, which breaks cancellation and corrupted the
+    Engine.IO polling transport (``KeyError: 'REQUEST_METHOD'``). A raw ASGI
+    middleware keeps the body untouched and adds zero task hops.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        start_time = time.time()
+        path = scope.get("path") or ""
+        request = Request(scope, receive)
+
+        timeout = GLOBAL_REQUEST_TIMEOUT_SECONDS
+        if path.startswith((BROWSER_LIFECYCLE_PREFIX, COMPUTER_LIFECYCLE_PREFIX)):
+            timeout = BROWSER_REQUEST_TIMEOUT_SECONDS
+
+        _attach_session(request, scope)
+
+        status_code = 500
+        response_size = 0
+        response_started = False
+        error_message = None
+
+        async def send_wrapper(message):
+            nonlocal status_code, response_started, response_size
+            if message["type"] == "http.response.start":
+                response_started = True
+                status_code = message["status"]
+                headers = MutableHeaders(scope=message)
+                headers["X-Process-Time"] = str(time.time() - start_time)
+                try:
+                    response_size = int(headers.get("content-length", 0) or 0)
+                except (TypeError, ValueError):
+                    response_size = 0
+            await send(message)
+
+        try:
+            await asyncio.wait_for(
+                self.app(scope, receive, send_wrapper),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            process_time = time.time() - start_time
+            error_message = "Request processing time exceeded limit"
+            status_code = HTTP_504_GATEWAY_TIMEOUT
+            logger.error("HTTP timeout after %.1fs: %s", process_time, request.url)
+            if not response_started:
+                await JSONResponse(
+                    {"detail": "Request processing time exceeded limit",
+                     "processing_time": process_time},
+                    status_code=HTTP_504_GATEWAY_TIMEOUT,
+                )(scope, receive, send)
+        except Exception as ex:
+            error_message = str(ex) or ex.__class__.__name__
+            raise
+        finally:
+            process_time = time.time() - start_time
+            logger.info("Request %s - %d ms", request.url, process_time * 1000)
+            if path not in NO_API_LOG_PATHS and not path.startswith(NO_API_LOG_PREFIXES):
+                # ``record_api_call`` only enqueues: the write happens off the
+                # event loop, so it can never stall other clients again.
+                record_api_call(
+                    request=request,
+                    duration_seconds=process_time,
+                    status_code=status_code,
+                    error=error_message,
+                    response_size=response_size,
+                )
+
+
+app.add_middleware(ApiRequestMiddleware)
+
+
+# ── Health ────────────────────────────────────────────────────────────────────
+# Event-loop lag is the signal that matters for this API: when a synchronous
+# call sneaks back into the loop, lag jumps and this probe shows it.
+_LAG_SAMPLE_INTERVAL = 0.5
+_EVENT_LOOP_LAG = {"last_ms": 0.0, "max_ms": 0.0}
+_APP_STARTED_AT = time.time()
+
+
+async def _event_loop_lag_monitor():  # pragma: no cover - background sampler
+    while not APP_STOP_EVENT.is_set():
+        started = time.perf_counter()
+        try:
+            await asyncio.sleep(_LAG_SAMPLE_INTERVAL)
+        except asyncio.CancelledError:
+            return
+        lag_ms = max(
+            0.0,
+            (time.perf_counter() - started - _LAG_SAMPLE_INTERVAL) * 1000,
+        )
+        _EVENT_LOOP_LAG["last_ms"] = round(lag_ms, 1)
+        if lag_ms > _EVENT_LOOP_LAG["max_ms"]:
+            _EVENT_LOOP_LAG["max_ms"] = round(lag_ms, 1)
+
 
 @app.get("/api/health")
 def api_health_check():
-    return "ok"
+    """
+    Liveness plus the runtime signals that actually explain a slow API.
+
+    This endpoint used to answer ``"ok"`` while the event loop was blocked for
+    ten seconds at a time, which made it useless as a probe.
+    """
+    from codx.junior.api_logs.storage import queue_stats
+    from codx.junior.project.project_discover import get_all_projects_snapshot
+
+    snapshot = get_all_projects_snapshot()
+    return {
+        "status": "ok",
+        "uptime_seconds": round(time.time() - _APP_STARTED_AT, 1),
+        "event_loop_lag_ms": dict(_EVENT_LOOP_LAG),
+        "projects_cached": len(snapshot) if snapshot is not None else None,
+        "api_log_pipeline": queue_stats(),
+    }
 
 @app.post("/api/run/improve")
 async def api_run_improve(chat: Chat, request: Request):
@@ -408,7 +556,9 @@ def api_settings_check(request: Request):
 async def api_save_settings(request: Request):
     settings = await request.json()
     settings = CODXJuniorSettings.from_json(settings).save_project()
-    find_all_projects()
+    # Discovery walks the filesystem: never run it inline on the event loop,
+    # one blocked loop freezes every other client of the platform.
+    await asyncio.to_thread(find_all_projects)
     # The saved settings ARE the catalogue item of the project (name, icon,
     # repo…): announce it so every client refreshes its project list. This
     # endpoint runs without a project session, so the event is built from the

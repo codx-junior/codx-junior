@@ -2,7 +2,7 @@ import os
 import logging
 import subprocess
 from datetime import datetime, timedelta
-from threading import Thread
+from threading import Lock, Thread
 from typing import Dict, Generator, List, Optional
 
 from codx.junior.profiling.profiler import profile_function
@@ -19,6 +19,36 @@ logger = logging.getLogger(__name__)
 
 _ALL_PROJECTS: Optional[Dict[str, CODXJuniorSettings]] = None
 _ALL_PROJECTS_PROC: Optional[Thread] = None
+
+# ── Discovery single-flight and freshness ──────────────────────────────────────
+# ``_DISCOVERY_LOCK`` guards the "start exactly one scan" decision. Before, the
+# guard was ``if not _ALL_PROJECTS_PROC or force``: every cold caller and every
+# ``force=True`` caller spawned its own thread running its own ``find /``, so N
+# concurrent callers produced N concurrent full-filesystem walks. That is what
+# pinned the CPU at 380 % and wrote gigabytes of block I/O.
+_DISCOVERY_LOCK = Lock()
+_SCAN_RUNNING = False
+_ALL_PROJECTS_UPDATED_AT: Optional[datetime] = None
+
+# How long a discovery snapshot is trusted before a background refresh is due.
+DISCOVERY_TTL_SECONDS = int(
+    os.environ.get("CODX_JUNIOR_PROJECT_DISCOVERY_TTL_SECONDS", "120")
+)
+# Upper bound a cold-start caller waits for the first snapshot.
+DISCOVERY_WAIT_SECONDS = float(
+    os.environ.get("CODX_JUNIOR_PROJECT_DISCOVERY_WAIT_SECONDS", "5")
+)
+
+# Bounded filesystem scan used instead of ``find /``.
+MAX_SCAN_DEPTH = int(os.environ.get("CODX_JUNIOR_PROJECT_SCAN_DEPTH", "6"))
+MAX_SCAN_DIRS = int(os.environ.get("CODX_JUNIOR_PROJECT_SCAN_DIRS", "20000"))
+SCAN_SKIP_DIRS = {
+    ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
+    "__pycache__", "site-packages", "dist", "build", "target", "vendor",
+    "bower_components", ".worktrees", ".next", ".nuxt", ".cache",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".idea",
+    ".gradle", "Pods",
+}
 
 # Fragment of the git dir a linked worktree points to:
 # ``<main repo>/.git/worktrees/<name>``
@@ -171,13 +201,16 @@ def find_all_projects(force: bool = False) -> Dict[str, CODXJuniorSettings]:
     global _ALL_PROJECTS_PROC
     global _ALL_PROJECTS
 
-    if not _ALL_PROJECTS_PROC or force:
-        _ALL_PROJECTS_PROC = Thread(target=_update_all_projects)
-        _ALL_PROJECTS_PROC.start()
+    with _DISCOVERY_LOCK:
+        if _needs_scan(force):
+            _start_scan_locked()
+        proc = _ALL_PROJECTS_PROC
 
-    if not _ALL_PROJECTS and _ALL_PROJECTS_PROC:
-        logger.info("Waiting for _ALL_PROJECTS_PROC to finish discovery.")
-        _ALL_PROJECTS_PROC.join(timeout=60)
+    if _ALL_PROJECTS is None and proc is not None:
+        # Cold start: wait for the very first snapshot, but never for a minute.
+        # The scan is bounded now and the caller is usually an HTTP request.
+        logger.info("Waiting for the first project discovery snapshot.")
+        proc.join(timeout=DISCOVERY_WAIT_SECONDS)
 
     return _ALL_PROJECTS
 
@@ -386,6 +419,175 @@ def get_project_dependencies(settings: CODXJuniorSettings) -> List[CODXJuniorSet
 # Private helpers
 # ---------------------------------------------------------------------------
 
+def _needs_scan(force: bool) -> bool:
+    """Return True when a new discovery scan should be scheduled."""
+    if force or _ALL_PROJECTS is None or _ALL_PROJECTS_UPDATED_AT is None:
+        return True
+    age = (datetime.now() - _ALL_PROJECTS_UPDATED_AT).total_seconds()
+    return age >= DISCOVERY_TTL_SECONDS
+
+
+def _start_scan_locked() -> None:
+    """Start one scan. Must be called with ``_DISCOVERY_LOCK`` held."""
+    global _ALL_PROJECTS_PROC, _SCAN_RUNNING
+    if _SCAN_RUNNING:
+        # A scan is already in flight: every caller shares its result instead of
+        # launching a second filesystem walk.
+        return
+    _SCAN_RUNNING = True
+    _ALL_PROJECTS_PROC = Thread(
+        target=_run_discovery,
+        name="ProjectDiscovery",
+        daemon=True,
+    )
+    _ALL_PROJECTS_PROC.start()
+
+
+def _run_discovery() -> None:
+    """Thread target: run one scan and always release the single-flight flag."""
+    global _ALL_PROJECTS_PROC, _SCAN_RUNNING, _ALL_PROJECTS_UPDATED_AT
+    try:
+        _update_all_projects()
+    except Exception as ex:  # pragma: no cover - a scan must never kill the flag
+        logger.exception("Project discovery failed: %s", ex)
+    finally:
+        with _DISCOVERY_LOCK:
+            _ALL_PROJECTS_PROC = None
+            _SCAN_RUNNING = False
+            _ALL_PROJECTS_UPDATED_AT = datetime.now()
+
+
+def get_project_scan_roots() -> List[str]:
+    """
+    Return the directories scanned for ``.codx/project.json``.
+
+    The configured projects root, its parent and ``$HOME`` are scanned by
+    default; extra roots can be added with ``CODX_JUNIOR_PROJECT_SCAN_ROOTS``
+    (comma or path-separator separated). Roots already covered by a shallower
+    one are dropped so a project is never walked twice.
+    """
+    candidates: List[str] = []
+
+    configured = os.environ.get("CODX_JUNIOR_PROJECT_SCAN_ROOTS", "")
+    for raw in configured.replace(os.pathsep, ",").split(","):
+        raw = raw.strip()
+        if raw:
+            candidates.append(os.path.abspath(os.path.expanduser(raw)))
+
+    projects_root = get_projects_root_path()
+    if projects_root:
+        projects_root = os.path.abspath(os.path.expanduser(projects_root))
+        candidates.append(projects_root)
+        candidates.append(os.path.dirname(projects_root))
+
+    if CODX_JUNIOR_PROJECTS_PATH:
+        candidates.append(os.path.abspath(CODX_JUNIOR_PROJECTS_PATH))
+
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(os.path.abspath(home))
+
+    roots: List[str] = []
+    for root in candidates:
+        if not root or not os.path.isdir(root) or root == os.sep:
+            continue
+        if root in roots:
+            continue
+        if any(is_path_child_of(root, existing) for existing in roots):
+            continue
+        roots.append(root)
+    return roots
+
+
+def _scan_codx_paths_roots() -> List[str]:
+    """
+    Walk the configured roots and return every ``<project>/.codx`` directory.
+
+    Depth and directory count are bounded and heavy folders (``node_modules``,
+    VCS metadata, virtualenvs, dot-directories) are pruned, so the scan costs a
+    few milliseconds instead of the 10.7 s measured for ``find /``.
+    """
+    roots = get_project_scan_roots()
+    found: List[str] = []
+    seen = set()
+    visited = 0
+
+    for root in roots:
+        root_depth = root.rstrip(os.sep).count(os.sep)
+        for dir_path, dir_names, _file_names in os.walk(root, followlinks=False):
+            visited += 1
+            if visited > MAX_SCAN_DIRS:
+                logger.warning(
+                    "Project discovery stopped after %d directories "
+                    "(CODX_JUNIOR_PROJECT_SCAN_DIRS); configure "
+                    "CODX_JUNIOR_PROJECT_SCAN_ROOTS to narrow the scan.",
+                    MAX_SCAN_DIRS,
+                )
+                return found
+
+            if ".codx" in dir_names:
+                codx_path = os.path.join(dir_path, ".codx")
+                if codx_path not in seen and os.path.isfile(
+                    os.path.join(codx_path, "project.json")
+                ):
+                    seen.add(codx_path)
+                    found.append(codx_path)
+
+            depth = dir_path.rstrip(os.sep).count(os.sep) - root_depth
+            if depth >= MAX_SCAN_DEPTH:
+                dir_names[:] = []
+                continue
+
+            # ``.codx`` was already captured above: never descend into it
+            dir_names[:] = [
+                name for name in dir_names
+                if name not in SCAN_SKIP_DIRS and not name.startswith(".")
+            ]
+
+    logger.info(
+        "Project discovery: %d project files under %d roots (%d directories walked)",
+        len(found),
+        len(roots),
+        visited,
+    )
+    return found
+
+
+def _scan_codx_paths_with_find() -> List[str]:
+    """
+    Legacy full-filesystem scan (``find / -name .codx``).
+
+    Kept only as an escape hatch for installations whose projects live outside
+    the configured roots: it blocks for ~10 s and saturates the disk, so it is
+    opt-in through ``CODX_JUNIOR_PROJECT_SCAN_MODE=find``.
+    """
+    import subprocess
+
+    logger.warning(
+        "Project discovery is using the legacy 'find /' scan "
+        "(CODX_JUNIOR_PROJECT_SCAN_MODE=find); this blocks the filesystem."
+    )
+    result = subprocess.run(
+        ["find", "/", "-name", ".codx"],
+        cwd="/",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    all_codx_paths = result.stdout.decode("utf-8", errors="replace").split("\n")
+    return [
+        path for path in all_codx_paths
+        if path and os.path.isfile(f"{path}/project.json")
+    ]
+
+
+def _scan_codx_paths() -> List[str]:
+    """Return the ``.codx`` directories that hold a ``project.json``."""
+    mode = os.environ.get("CODX_JUNIOR_PROJECT_SCAN_MODE", "roots").strip().lower()
+    if mode == "find":
+        return _scan_codx_paths_with_find()
+    return _scan_codx_paths_roots()
+
+
 @profile_function
 def _update_all_projects() -> None:
     """
@@ -418,14 +620,7 @@ def _update_all_projects() -> None:
     projects_root_path = get_projects_root_path()
     user_security_manager = UserSecurityManager()
 
-    result = subprocess.run(
-        ["find", "/", "-name", ".codx"],
-        cwd="/",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    all_codx_paths = result.stdout.decode("utf-8").split("\n")
-    paths = [p for p in all_codx_paths if os.path.isfile(f"{p}/project.json")]
+    paths = _scan_codx_paths()
 
     logger.info("[find_all_projects] projects root path: %s", projects_root_path)
     logger.info("[find_all_projects] found %d project files", len(paths))
@@ -487,7 +682,6 @@ def _update_all_projects() -> None:
             logger.exception("Error loading project %s: %s", codx_path, exc)
 
     _ALL_PROJECTS = all_projects
-    _ALL_PROJECTS_PROC = None
 
 
 def find_project_parents(

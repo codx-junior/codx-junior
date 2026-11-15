@@ -110,6 +110,13 @@
         <span class="whitespace-nowrap">{{ counterText }}</span>
       </span>
 
+      <!-- ── Parallelism ──
+           How many calls ran AT THE SAME TIME (`utils/turnMetrics.js`). The bar
+           shows what the turn did, this says whether it overlapped that work or
+           queued it — the difference between 10 s and 40 s for the same tools.
+           Hidden for a single call, which cannot overlap anything. -->
+      <ChatTurnMetrics :message="message" variant="chip" :now="now" />
+
       <!-- Read-receipt state: double check while the countdown runs -->
       <i
         v-if="seenPending"
@@ -143,8 +150,10 @@
 
 <script>
 import { categoryVisual, phaseVisual, toolVisual } from '../../utils/toolVisuals.js'
+import ChatTurnMetrics from './ChatTurnMetrics.vue'
 
 export default {
+  components: { ChatTurnMetrics },
   props: {
     // Assistant message owning the turn (`tool_events` + `meta_data.time_taken`)
     message: { type: Object, default: null },

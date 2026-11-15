@@ -126,3 +126,8 @@ Guards that must never be dropped: citation gate (narration without evidence ref
 ## Path filters must not match hidden ancestors
 
 Never filter project files by "any path segment starting with a dot": the control plane itself is `.codx`, so the rule hides every chat/task file and empties all listings (board, sidebar, `/api/chats`, search). Filter by concrete names under the tasks root (`index.json`, `kanban.json`, `boards/`, `.archive/`) instead. Regression: `api/tests/test_task_archive.py::test_hidden_ancestor_is_not_storage`.
+
+## DeepSeek thinking mode / reasoning_content contract
+
+DeepSeek thinking mode (`deepseek-flash`, `deepseek-reasoner`): when the request carries `tools`, the API requires `reasoning_content` of every previous assistant turn to be echoed back (even turns without tool calls) — otherwise `400 The reasoning_content in the thinking mode must be passed back to the API`. Toggle with `extra_body={"thinking":{"type":"enabled|disabled"}}`, effort with `reasoning_effort` (low/high/max).
+In codx-junior this is handled in `api/codx/junior/ai/smol/smol_agent.py`: `_prepare_thinking_messages` fills missing CoT with `""` before sending, `_create_completion` retries with thinking disabled (sticky `_thinking_disabled` for the rest of the turn) and finally drops the echoed CoT. Never add `reasoning_content` for non-DeepSeek providers (OpenAI-compatible endpoints reject unknown fields).

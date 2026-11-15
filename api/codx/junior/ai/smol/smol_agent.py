@@ -637,6 +637,12 @@ class SmolAgent:
         # instead of the sum. Mutating/session-bound calls are barriers, see
         # codx.junior.ai.smol.parallel. 1 restores sequential execution.
         self.tool_parallelism: int = self._resolve_tool_parallelism()
+        # Sticky thinking-mode switch. Thinking-mode providers (DeepSeek) reject
+        # a request that carries ``tools`` when the chain of thought of a
+        # previous assistant turn is missing. Once the provider rejects the
+        # payload for that reason the turn continues WITHOUT thinking mode,
+        # so the rejected payload is never re-sent round after round.
+        self._thinking_disabled: bool = False
 
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         logger.info(
@@ -1910,6 +1916,10 @@ class SmolAgent:
             f"> `{details}`\n\n"
         )
 
+    #: Attempts allowed for the thinking-mode self-healing (as configured, with
+    #: thinking disabled, and with the echoed chain of thought dropped).
+    MAX_THINKING_ATTEMPTS: int = 3
+
     @staticmethod
     def _is_reasoning_content_error(ex: BaseException) -> bool:
         """
@@ -1929,6 +1939,173 @@ class SmolAgent:
         """
         return "reasoning_content" in str(ex).lower()
 
+    def _uses_thinking_dialect(self, openai_messages: List[Dict[str, Any]]) -> bool:
+        """
+        Tell whether the payload speaks the ``reasoning_content`` dialect.
+
+        The field is a provider extension: strict OpenAI-compatible endpoints
+        reject unknown message fields, so it may only be added when the provider
+        (or the conversation already carrying the field) uses it.
+
+        Args:
+            openai_messages: Conversation about to be sent.
+
+        Returns:
+            True for a thinking-mode provider or a payload that already echoes a
+            chain of thought.
+        """
+        provider = str(self.llm_settings.provider or "").lower()
+        model = str(self.model or "").lower()
+        if "deepseek" in provider or "deepseek" in model:
+            return True
+        return any("reasoning_content" in message for message in openai_messages)
+
+    def _prepare_thinking_messages(
+        self,
+        openai_messages: List[Dict[str, Any]],
+        kwargs: Dict[str, Any],
+    ) -> int:
+        """
+        Close the ``reasoning_content`` holes of the conversation before sending.
+
+        DeepSeek documents that a request carrying ``tools`` MUST echo back the
+        chain of thought of every previous assistant turn — including the turns
+        that did not call a tool. The agent owns the CoT of the rounds it
+        streamed itself, but a turn replayed from the chat history has none, and
+        that single hole makes the provider reject the WHOLE request with::
+
+            400 — The `reasoning_content` in the thinking mode must be passed
+            back to the API
+
+        The missing values are filled with the empty string: the provider
+        validates the presence of the field, and an empty CoT simply states that
+        no chain of thought was recorded for that turn (accepted by
+        ``deepseek-flash``). A message that carries neither content nor tool
+        calls is dropped instead: it can never be part of a valid request
+        (``Invalid assistant message: content or tool_calls must be set``).
+
+        Providers that do not use the field, and requests without ``tools``
+        (where the field is ignored), are left untouched.
+
+        Args:
+            openai_messages: Conversation about to be sent (mutated in place).
+            kwargs:          Request kwargs (``tools`` decides whether the
+                             provider enforces the rule).
+
+        Returns:
+            Number of assistant messages that received a synthetic empty CoT.
+        """
+        if not kwargs.get("tools"):
+            return 0
+        if not self._uses_thinking_dialect(openai_messages):
+            return 0
+
+        kept: List[Dict[str, Any]] = []
+        filled = 0
+        dropped = 0
+        for message in openai_messages:
+            if message.get("role") == "assistant":
+                has_text = bool(message.get("content"))
+                has_tools = bool(message.get("tool_calls"))
+                if not has_text and not has_tools and not message.get("reasoning_content"):
+                    dropped += 1
+                    continue
+                if not message.get("reasoning_content"):
+                    message["reasoning_content"] = ""
+                    filled += 1
+            kept.append(message)
+
+        if dropped:
+            openai_messages[:] = kept
+            logger.warning(
+                "SmolAgent: dropped %d empty assistant message(s) without "
+                "content, tool calls or reasoning_content (the provider rejects "
+                "them with a 400)",
+                dropped,
+            )
+        if filled:
+            logger.debug(
+                "SmolAgent: filled %d assistant message(s) with an empty "
+                "reasoning_content (thinking mode requires the field when tools "
+                "are sent)",
+                filled,
+            )
+        return filled
+
+    def _thinking_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Return the request kwargs matching the current thinking state.
+
+        While thinking mode is enabled the kwargs are returned untouched. Once
+        the provider has rejected the payload (see
+        :meth:`_create_completion`) the effort hint is removed and thinking is
+        explicitly disabled for the remaining rounds of the turn.
+
+        Args:
+            kwargs: Base OpenAI request kwargs.
+
+        Returns:
+            Kwargs to use for the request.
+        """
+        if not self._thinking_disabled:
+            return kwargs
+        disabled_kwargs: Dict[str, Any] = {
+            key: value for key, value in kwargs.items() if key != "reasoning_effort"
+        }
+        disabled_kwargs["extra_body"] = {
+            **(kwargs.get("extra_body") or {}),
+            "thinking": {"type": "disabled"},
+        }
+        return disabled_kwargs
+
+    @staticmethod
+    def _drop_reasoning_content(openai_messages: List[Dict[str, Any]]) -> int:
+        """
+        Remove every echoed chain of thought (last-resort thinking fallback).
+
+        A provider that still rejects the payload after thinking mode was
+        disabled leaves the agent no other lever: the CoT is dropped so the
+        request looks like a plain non-thinking conversation.
+
+        Args:
+            openai_messages: Conversation about to be sent (mutated in place).
+
+        Returns:
+            Number of messages the field was removed from.
+        """
+        removed = 0
+        for message in openai_messages:
+            if "reasoning_content" in message:
+                message.pop("reasoning_content", None)
+                removed += 1
+        return removed
+
+    @staticmethod
+    def _thinking_payload_summary(openai_messages: List[Dict[str, Any]]) -> str:
+        """
+        Describe where the chain of thought is present or missing.
+
+        A missing CoT is the only cause of the thinking-mode 400, so the log line
+        must show WHICH assistant turn broke the rule instead of only the error
+        text.
+
+        Args:
+            openai_messages: Conversation that was rejected.
+
+        Returns:
+            Compact summary such as ``0:assistant+cot 2:tool 4:assistant-cot+tc``.
+        """
+        parts: List[str] = []
+        for index, message in enumerate(openai_messages):
+            role = message.get("role")
+            if role not in ("assistant", "tool"):
+                continue
+            cot = message.get("reasoning_content")
+            cot_flag = "+cot" if cot else ("-cot" if "reasoning_content" in message else "?cot")
+            tool_flag = "+tc" if message.get("tool_calls") else ""
+            parts.append(f"{index}:{role}{cot_flag}{tool_flag}")
+        return " ".join(parts)
+
     def _create_completion(
         self,
         kwargs: Dict[str, Any],
@@ -1945,13 +2122,17 @@ class SmolAgent:
         :func:`~codx.junior.ai.smol.messages.make_assistant_tool_calls_message`),
         but the reasoning of the turns that came from earlier history cannot be
         reconstructed. Thinking mode is the only thing that requires the CoT,
-        so when the provider rejects the request for exactly that reason the
-        completion is retried ONCE with thinking explicitly disabled: the round
-        degrades (no chain of thought) instead of the whole turn dying with a
-        ``400``.
+        so the holes are filled first (:meth:`_prepare_thinking_messages`) and,
+        when the provider still rejects the request for exactly that reason, the
+        round degrades instead of the whole turn dying with a ``400``:
 
-        Any other failure is re-raised untouched, so the caller keeps its
-        verbose error logging.
+          1. the request is retried with thinking explicitly DISABLED, and the
+             switch is sticky so no later round of the turn re-sends thinking,
+          2. as a last resort the echoed CoT is dropped and the request is sent
+             as a plain non-thinking conversation.
+
+        Every failure that is not the thinking-mode rejection is re-raised
+        untouched, so the caller keeps its verbose error logging.
 
         Args:
             kwargs:          Base OpenAI request kwargs.
@@ -1963,36 +2144,50 @@ class SmolAgent:
         Returns:
             The streaming response object.
         """
-        try:
-            return self.client.chat.completions.create(
-                **kwargs,
-                messages=openai_messages,
-                extra_headers=headers,
-            )
-        except Exception as ex:
-            if not self._is_reasoning_content_error(ex):
-                raise
+        # Preflight: a single missing ``reasoning_content`` makes the provider
+        # reject the WHOLE request, so the holes are closed before sending.
+        self._prepare_thinking_messages(openai_messages, kwargs)
 
-            retry_kwargs: Dict[str, Any] = {
-                key: value for key, value in kwargs.items() if key != "reasoning_effort"
-            }
-            retry_kwargs["extra_body"] = {
-                **(kwargs.get("extra_body") or {}),
-                "thinking": {"type": "disabled"},
-            }
-            logger.warning(
-                "SmolAgent: provider rejected the request because the thinking "
-                "mode requires a previous reasoning_content (model=%s "
-                "request_id=%s chat_id=%s); retrying with thinking disabled",
-                self.model,
-                request_id,
-                chat_id,
-            )
-            return self.client.chat.completions.create(
-                **retry_kwargs,
-                messages=openai_messages,
-                extra_headers=headers,
-            )
+        for attempt in range(self.MAX_THINKING_ATTEMPTS):
+            if attempt == self.MAX_THINKING_ATTEMPTS - 1:
+                removed = self._drop_reasoning_content(openai_messages)
+                logger.warning(
+                    "SmolAgent: thinking mode was rejected twice; dropping %d "
+                    "echoed reasoning_content field(s) and retrying "
+                    "(model=%s request_id=%s chat_id=%s)",
+                    removed,
+                    self.model,
+                    request_id,
+                    chat_id,
+                )
+            try:
+                return self.client.chat.completions.create(
+                    **self._thinking_kwargs(kwargs),
+                    messages=openai_messages,
+                    extra_headers=headers,
+                )
+            except Exception as ex:
+                if (
+                    not self._is_reasoning_content_error(ex)
+                    or attempt == self.MAX_THINKING_ATTEMPTS - 1
+                ):
+                    raise
+
+                # Degrade ONCE per turn and remember it: every later round of
+                # this turn is sent with thinking disabled, so the rejected
+                # payload is never rebuilt and re-sent.
+                self._thinking_disabled = True
+                logger.warning(
+                    "SmolAgent: provider rejected the request because the thinking "
+                    "mode requires a previous reasoning_content (model=%s "
+                    "request_id=%s chat_id=%s attempt=%d); retrying with thinking "
+                    "disabled for the rest of the turn. payload=%s",
+                    self.model,
+                    request_id,
+                    chat_id,
+                    attempt + 1,
+                    self._thinking_payload_summary(openai_messages),
+                )
 
     async def _stream_completion(
         self,

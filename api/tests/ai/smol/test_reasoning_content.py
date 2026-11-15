@@ -281,8 +281,9 @@ class TestReasoningErrorRetry:
         assert agent.client.chat.completions.create.call_count == 1
 
     def test_failed_retry_raises_the_retry_error(self, agent):
-        """A retry that fails again surfaces that error (no infinite loop)."""
+        """Every retry failing surfaces that error (no infinite loop)."""
         agent.client.chat.completions.create.side_effect = [
+            FakeAPIError("reasoning_content must be passed back"),
             FakeAPIError("reasoning_content must be passed back"),
             FakeAPIError("reasoning_content must be passed back"),
         ]
@@ -294,4 +295,86 @@ class TestReasoningErrorRetry:
                 headers={},
             )
 
-        assert agent.client.chat.completions.create.call_count == 2
+        assert agent.client.chat.completions.create.call_count == 3
+
+
+# ──────────────────────────────────────────────
+# PREFLIGHT PAYLOAD NORMALISATION
+# ──────────────────────────────────────────────
+
+
+class TestThinkingPayloadPreparation:
+    """A missing CoT is closed before sending, so the provider never rejects."""
+
+    def test_missing_reasoning_is_filled(self, agent):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "call_1", "type": "function",
+                             "function": {"name": "get_date", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "2026-11-15"},
+            {"role": "user", "content": "thanks"},
+        ]
+
+        filled = agent._prepare_thinking_messages(
+            messages, {"tools": [{"type": "function"}]}
+        )
+
+        assert filled == 1
+        assert messages[1]["reasoning_content"] == ""
+
+    def test_no_tools_leaves_the_payload_untouched(self, agent):
+        """Without the tools parameter the provider ignores the field."""
+        messages = [{"role": "assistant", "content": "hello"}]
+
+        assert agent._prepare_thinking_messages(messages, {}) == 0
+        assert "reasoning_content" not in messages[0]
+
+    def test_openai_provider_is_untouched(self, agent):
+        """Strict OpenAI endpoints reject unknown message fields."""
+        agent.llm_settings = Mock(provider="openai", model="gpt-4")
+        agent.model = "gpt-4"
+        messages = [{"role": "assistant", "content": "hello"}]
+
+        filled = agent._prepare_thinking_messages(
+            messages, {"tools": [{"type": "function"}]}
+        )
+
+        assert filled == 0
+        assert "reasoning_content" not in messages[0]
+
+    def test_empty_assistant_message_is_dropped(self, agent):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None},
+        ]
+
+        agent._prepare_thinking_messages(messages, {"tools": [{"type": "function"}]})
+
+        assert messages == [{"role": "user", "content": "hi"}]
+
+    def test_thinking_disabled_is_sticky(self, agent):
+        """A degraded round must not re-enable thinking on the next round."""
+        stream = [make_chunk(content="ok", finish_reason="stop")]
+        agent.client.chat.completions.create.side_effect = [
+            FakeAPIError("reasoning_content must be passed back"),
+            stream,
+            stream,
+        ]
+
+        agent._create_completion(
+            kwargs={"model": "deepseek-flash", "stream": True},
+            openai_messages=[{"role": "user", "content": "hi"}],
+            headers={},
+        )
+        # Second round of the same turn: thinking is already disabled.
+        agent._create_completion(
+            kwargs={"model": "deepseek-flash", "stream": True,
+                    "reasoning_effort": "high"},
+            openai_messages=[{"role": "user", "content": "hi"}],
+            headers={},
+        )
+
+        last_kwargs = agent.client.chat.completions.create.call_args.kwargs
+        assert last_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in last_kwargs

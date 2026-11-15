@@ -42,6 +42,18 @@ import Markdown from '../Markdown.vue'
       </span>
     </div>
 
+    <!-- ── Parallelism of the turn ──
+         The one reading neither the table below nor the timeline bar gives: how
+         much of the tool work OVERLAPPED. It sits above the tabs because it
+         describes the turn, not one tab, and it repeats the number the message
+         header shows — same `utils/turnMetrics.js`, same arithmetic. -->
+    <ChatTurnMetrics
+      :message="message"
+      variant="summary"
+      :now="now"
+      class="border-b border-base-300/40"
+    />
+
     <!-- ── Tabs ── -->
     <div class="flex items-center gap-1 px-1.5 pt-1 border-b border-base-300/50 shrink-0 bg-base-100">
       <button
@@ -150,6 +162,11 @@ import Markdown from '../Markdown.vue'
              slowest call — so the expensive or failed one is spotted without
              opening anything. The row expands into request, result and output. -->
         <div v-if="toolEvents.length" class="divide-y divide-base-300/40">
+          <!-- ── Parallelism: the waterfall of the calls ──
+               Lanes placed on the real clock: two calls on the same row never
+               overlap, two calls on different rows visibly do. It is the only
+               place where "these three calls ran together" can be SEEN. -->
+          <ChatTurnMetrics :message="message" variant="lanes" :now="now" />
           <!-- Family legend: the same chips the Events tab uses -->
           <div class="flex flex-wrap items-center gap-1 px-2 py-1.5 bg-base-200/30">
             <span
@@ -306,8 +323,10 @@ import Markdown from '../Markdown.vue'
 
 <script>
 import { categoryVisual, phaseVisual, toolVisual } from '../../utils/toolVisuals.js'
+import ChatTurnMetrics from './ChatTurnMetrics.vue'
 
 export default {
+  components: { ChatTurnMetrics },
   // `panelId` is the id the timeline strip points at with aria-controls
   props: ['message', 'panelId'],
   data() {

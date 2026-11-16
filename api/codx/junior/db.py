@@ -291,6 +291,18 @@ class Message(BaseModel):
     task_item: str = Field(default='')
     content: str = Field(default='')
     think: Optional[str] = Field(default=None)
+    reasoning_content: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider chain of thought (DeepSeek thinking-mode "
+            "``reasoning_content``) of this assistant message. It is NEVER "
+            "rendered to the user: it is stored only so the next request can "
+            "echo it back, which the provider REQUIRES whenever the request "
+            "carries the ``tools`` parameter (otherwise it answers 400 'The "
+            "`reasoning_content` in the thinking mode must be passed back to "
+            "the API'). See ``codx.junior.ai.smol.messages``."
+        )
+    )
     hide: bool = Field(default=False)
     unsent: bool = Field(
         default=False,
@@ -353,6 +365,17 @@ class Message(BaseModel):
     disable_knowledge: Optional[bool] = Field(default=False)
     read_by: List[str] = Field(default=[], description="List of usernames who have viewed this assistant message; automatically populated when users view the message")
     error: Optional[str] = Field(default=None)
+    reply_to: Optional[str] = Field(
+        default=None,
+        description=(
+            "doc_id of the message this one ANSWERS. An assistant response always "
+            "carries the doc_id of the user message it was produced for, so a "
+            "response is never an orphan: clients render it next to its question "
+            "and the chat engine can tell which request a running response "
+            "belongs to (at most ONE live response per chat, see "
+            "codx.junior.chat.turn_store)."
+        )
+    )
     linked_chat_ids: Optional[List[str]] = Field(default=[], description="Linked chat ids")
 
     def get_project_id(self) -> Optional[str]:

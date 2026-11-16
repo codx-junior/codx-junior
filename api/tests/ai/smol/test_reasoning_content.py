@@ -7,11 +7,13 @@ it is missing the continuation fails with::
 
     400 — The `reasoning_content` in the thinking mode must be passed back to the API
 
-which used to kill whole chat turns. These tests cover the three pieces of the
+which used to kill whole chat turns. These tests cover the four pieces of the
 fix:
 
   • the stream accumulator captures ``reasoning_content`` deltas,
   • the assistant tool-call message echoes it back verbatim,
+  • a chain of thought stored on a history message survives the conversion to
+    the OpenAI payload (``to_openai_message``) instead of being stripped,
   • a provider that still rejects the request is retried once with the
     thinking mode disabled instead of failing the turn.
 """
@@ -20,7 +22,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from codx.junior.ai.smol.messages import make_assistant_tool_calls_message
+from codx.junior.ai.smol.messages import (
+    make_assistant_tool_calls_message,
+    to_openai_message,
+    to_openai_messages,
+)
 from codx.junior.ai.smol.smol_agent import SmolAgent
 
 
@@ -378,3 +384,146 @@ class TestThinkingPayloadPreparation:
         last_kwargs = agent.client.chat.completions.create.call_args.kwargs
         assert last_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
         assert "reasoning_effort" not in last_kwargs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HISTORY REPLAY
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestHistoryReasoningReplay:
+    """A stored CoT must survive the conversion of the chat history."""
+
+    def test_reasoning_content_survives_the_conversion(self):
+        message = to_openai_message(
+            {
+                "role": "assistant",
+                "content": "It is 2026-11-15.",
+                "reasoning_content": "The tool answered, I can reply now.",
+            }
+        )
+
+        assert message["reasoning_content"] == "The tool answered, I can reply now."
+        assert message["content"] == "It is 2026-11-15."
+
+    def test_key_is_absent_when_nothing_was_stored(self):
+        """Strict OpenAI-compatible endpoints reject unknown message fields."""
+        message = to_openai_message({"role": "assistant", "content": "hello"})
+
+        assert "reasoning_content" not in message
+
+    def test_blank_reasoning_is_not_sent(self):
+        message = to_openai_message(
+            {"role": "assistant", "content": "hello", "reasoning_content": "  "}
+        )
+
+        assert "reasoning_content" not in message
+
+    def test_history_keeps_the_cot_in_the_payload(self):
+        messages = to_openai_messages(
+            [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": "hello",
+                    "reasoning_content": "a real chain of thought",
+                },
+            ],
+            system="be nice",
+        )
+
+        assert messages[0]["role"] == "system"
+        assert messages[2]["reasoning_content"] == "a real chain of thought"
+
+
+class TestThinkingDialectDetection:
+    """The DeepSeek endpoint counts, even behind a generic provider name."""
+
+    def test_deepseek_model_enables_the_dialect(self, agent):
+        agent.llm_settings = Mock(provider="custom")
+        agent.model = "deepseek-flash"
+        agent.base_url = "https://my-gateway.example.com/v1"
+
+        assert agent._uses_thinking_dialect([{"role": "user", "content": "hi"}])
+
+    def test_deepseek_endpoint_enables_the_dialect(self, agent):
+        """A gateway in front of DeepSeek keeps the same contract."""
+        agent.llm_settings = Mock(provider="custom")
+        agent.model = "flash"
+        agent.base_url = "https://api.deepseek.com/v1"
+
+        assert agent._uses_thinking_dialect([{"role": "user", "content": "hi"}])
+
+    def test_other_providers_are_left_alone(self, agent):
+        agent.llm_settings = Mock(provider="openai")
+        agent.model = "gpt-4.1-mini"
+        agent.base_url = "https://api.openai.com/v1"
+
+        assert not agent._uses_thinking_dialect([{"role": "user", "content": "hi"}])
+
+
+class TestStoredReasoningReplay:
+    """The CoT of a persisted turn is replayed verbatim, never fabricated."""
+
+    def test_real_cot_is_kept_for_deepseek(self, agent):
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done",
+             "reasoning_content": "the real chain of thought"},
+        ]
+
+        filled = agent._prepare_thinking_messages(
+            messages, {"tools": [{"type": "function"}]}
+        )
+
+        assert filled == 0
+        assert messages[1]["reasoning_content"] == "the real chain of thought"
+
+    def test_foreign_cot_is_stripped_for_other_providers(self, agent):
+        """A chat re-run with another model must not leak the field (400)."""
+        agent.llm_settings = Mock(provider="openai")
+        agent.model = "gpt-4.1-mini"
+        agent.base_url = "https://api.openai.com/v1"
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done",
+             "reasoning_content": "a deepseek chain of thought"},
+        ]
+
+        agent._prepare_thinking_messages(messages, {"tools": [{"type": "function"}]})
+
+        assert "reasoning_content" not in messages[1]
+
+    def test_payload_without_tools_never_carries_the_field(self, agent):
+        messages = [
+            {"role": "assistant", "content": "done", "reasoning_content": "a cot"},
+        ]
+
+        agent._prepare_thinking_messages(messages, {})
+
+        assert "reasoning_content" not in messages[0]
+
+    def test_db_message_replays_its_cot(self):
+        from codx.junior.chat.chat_prompt_builder import ChatPromptBuilder
+        from codx.junior.db import Message as DbMessage
+
+        stored = DbMessage(
+            role="assistant",
+            content="It is 2026-11-15.",
+            reasoning_content="a stored chain of thought",
+        )
+
+        payload = to_openai_message(ChatPromptBuilder.convert_message(stored))
+
+        assert payload["reasoning_content"] == "a stored chain of thought"
+        assert payload["content"] == "It is 2026-11-15."
+
+    def test_db_message_without_cot_adds_no_key(self):
+        from codx.junior.chat.chat_prompt_builder import ChatPromptBuilder
+        from codx.junior.db import Message as DbMessage
+
+        stored = DbMessage(role="assistant", content="hello")
+
+        payload = to_openai_message(ChatPromptBuilder.convert_message(stored))
+
+        assert "reasoning_content" not in payload

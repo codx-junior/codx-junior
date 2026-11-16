@@ -119,5 +119,18 @@ class AgentRunResult(BaseModel):
     loop_limit_reached: bool = Field(
         default=False, description="True when LoopGuard stopped the run."
     )
+    reasoning_content: str = Field(
+        default="",
+        description=(
+            "Chain of thought produced by a thinking-mode provider (DeepSeek "
+            "``reasoning_content``) across the rounds of the turn. It is NEVER "
+            "shown to the user: ChatEngine stores it on the response message "
+            "so the next request can echo it back, because with ``tools`` "
+            "present the provider requires the CoT of every previous turn "
+            "(otherwise it answers 400 'The `reasoning_content` in the "
+            "thinking mode must be passed back to the API'). Empty for "
+            "providers without thinking mode."
+        ),
+    )
 
 # Made with ❤️ by codx-junior

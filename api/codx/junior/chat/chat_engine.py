@@ -109,6 +109,29 @@ CHAT_INIT_MAX_MESSAGES = 6
 def _is_refine(mode) -> bool:
     return mode in [CHAT_MODE_TASK, CHAT_MODE_TUTORIAL] 
 
+def _is_orchestration_owned(chat: Any) -> bool:
+    """
+    Return True when the turns of *chat* are scheduled by orchestration.
+
+    A run main task (supervisor), a run step card (worker) and a delegated
+    subagent chat receive their turns from the orchestration worker, which
+    already owns the "do not run two turns on this chat" policy (see
+    ``OrchestrationService._chat_is_processing``). The engine must not apply its
+    own single-response guard there: it would silently swallow a supervisor
+    round the run needs to advance.
+
+    :param chat: The chat about to run a turn.
+    :return: True when the orchestration worker owns the chat's turns.
+    """
+    return bool(
+        getattr(chat, "run_id", None)
+        or getattr(chat, "run_step_id", None)
+        or getattr(chat, "mode", "") in (
+            ORCHESTRATION.CHAT_MODE_ORCHESTRATE,
+            ORCHESTRATION.CHAT_MODE_DELEGATE,
+        )
+    )
+
 # Prompt used to auto-initialize an auto_initialize chat's metadata.
 #
 # Only the chat NAME is suggested here: the board/column destination is decided
@@ -308,6 +331,64 @@ class ChatEngine:
         return new_chat_message(role=role, content=content)
 
     # -------------------------------------------------------------------------
+    # Helper: the assistant response of a turn (ADDED association)
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _new_response_message(cls, user_message: Optional[Message]) -> Message:
+        """
+        Create the assistant message that answers *user_message*.
+
+        A response always ANSWERS one message: the ``doc_id`` of that message is
+        stamped on the response (``reply_to``) BEFORE the AI call. Without the
+        association a chat accumulates "Processing request, please wait..."
+        placeholders that belong to no question — the duplicates produced by
+        overlapping or interrupted turns — and a client cannot render a response
+        next to the request it answers.
+
+        :param user_message: The user message this turn answers (may be None).
+        :return: A new assistant message with ``reply_to`` set.
+        """
+        response_message = cls._new_chat_message("assistant")
+        response_message.reply_to = getattr(user_message, "doc_id", None) or None
+        return response_message
+
+    # -------------------------------------------------------------------------
+    # Helper: the response message of a RESUMED turn (ADDED, one bubble only)
+    # -------------------------------------------------------------------------
+    @classmethod
+    def _open_response_message(
+        cls,
+        chat: Optional[Chat],
+        turn_id: Optional[str],
+    ) -> Optional[Message]:
+        """
+        Return the response message a RESUMED turn is already streaming into.
+
+        The recovery worker resumes an interrupted turn in ANOTHER process (or
+        after a restart) while the response message it was writing is still
+        open (``done=False``). Creating a fresh message for the resume leaves the
+        previous one on "Processing request, please wait..." for ever: a single
+        request ends up with two (or more) assistant bubbles, which is exactly
+        the duplication this rule removes. The resumed attempt therefore REUSES
+        its own message instead of appending a new one.
+
+        :param chat: The chat being resumed.
+        :param turn_id: Durable turn id of the resumed attempt (None for a new
+                        turn: a new request always gets a new message).
+        :return: The open assistant message of *turn_id*, or None.
+        """
+        if chat is None or not turn_id:
+            return None
+        for message in reversed(list(getattr(chat, "messages", []) or [])):
+            if getattr(message, "role", "") != "assistant":
+                continue
+            if getattr(message, "done", True) is not False:
+                continue
+            if (getattr(message, "meta_data", None) or {}).get("turn_id") == turn_id:
+                return message
+        return None
+
+    # -------------------------------------------------------------------------
     # Helper: append message avoiding duplicates (ADDED for crash-safety)
     # -------------------------------------------------------------------------
     @staticmethod
@@ -330,6 +411,134 @@ class ChatEngine:
             )
             return
         chat.messages.append(message)
+
+    # -------------------------------------------------------------------------
+    # Helper: the USER message a response answers (ADDED)
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _last_user_message(messages: List[Message]) -> Optional[Message]:
+        """
+        Return the last USER message of *messages*, or None when there is none.
+
+        A response is produced FOR a user message. An interrupted turn can leave
+        an open ("processing") assistant message at the tail of the chat, and
+        taking the tail message as the request would answer that half-written
+        response instead of the user's question: the model would receive a
+        truncated assistant text as the current request, and the new response
+        would not be associated with any message at all.
+
+        :param messages: The visible messages of the chat (drafts and hidden
+                         messages already filtered out).
+        :return: The most recent user message, or None.
+        """
+        for message in reversed(list(messages or [])):
+            if getattr(message, "role", "") == "user":
+                return message
+        return None
+
+    # -------------------------------------------------------------------------
+    # Helper: at most ONE live response per chat (ADDED)
+    # -------------------------------------------------------------------------
+    def _running_response_turns(self, chat: Chat) -> Tuple[bool, List[str]]:
+        """
+        Decide whether a NEW turn may start for *chat*.
+
+        The assistant response message is created BEFORE the AI call and
+        persisted while it streams, so two concurrent turns of the same chat
+        leave two (or more) assistant messages stuck on "Processing request,
+        please wait..." for a SINGLE user message, both streaming into the same
+        transcript, both billing the chat and both replacing the cancellation
+        token of the other.
+
+        The verdict comes from the durable turn records
+        (:mod:`codx.junior.chat.turn_store`):
+
+        * a LIVE response that is still making progress OWNS the chat: the new
+          turn is refused and nothing is started (``blocked=True``),
+        * a SEALED response - its turn finished, died or stalled - can never
+          produce an answer any more: it is stopped and its message is closed so
+          the new turn starts cleanly (``blocked=False``).
+
+        :param chat: The chat about to run a turn.
+        :return: ``(blocked, superseded_turn_ids)``: whether the turn must be
+                 skipped, and the sealed turn ids whose response messages must
+                 be repaired before the new response is created.
+        """
+        if chat is None or not getattr(chat, "id", None):
+            return (False, [])
+        if _is_orchestration_owned(chat):
+            # The orchestration worker schedules these turns and already applies
+            # the same guard (OrchestrationService._chat_is_processing).
+            return (False, [])
+
+        store = self._turn_store_for_chat(chat)
+        if store is None:
+            return (False, [])
+
+        live = store.live_response(chat.id)
+        if live is not None:
+            logger.info(
+                "Chat '%s' already has a live response (turn '%s', status=%s, "
+                "heartbeat %ss ago): not starting a new one",
+                chat.id,
+                live.turn_id,
+                live.status,
+                int(store.activity_age(live)),
+            )
+            return (True, [])
+
+        # No live response: every turn still on disk is SEALED (finished, dead or
+        # stalled). A stalled turn can never answer, so it is stopped here (its
+        # owner unwinds through the cancellation watcher) and its message is
+        # repaired, instead of being left on "processing" next to the new
+        # response.
+        superseded: List[str] = []
+        for record in store.find_active(chat_id=chat.id):
+            logger.info(
+                "Chat '%s': sealing the response of dead turn '%s' (status=%s)",
+                chat.id,
+                record.turn_id,
+                record.status,
+            )
+            store.request_cancel(record.turn_id)
+            superseded.append(record.turn_id)
+        return (False, superseded)
+
+    def _turn_store_for_chat(
+        self,
+        chat: Chat,
+        turn_codx_path: Optional[str] = None,
+    ):
+        """
+        Return the durable turn store that owns the turns of *chat*.
+
+        Turn records live next to the CHAT (its owner project), not necessarily
+        next to this engine: a chat can live in another project and its turns
+        must still be found from here.
+
+        :param chat: The chat whose turns are looked up.
+        :param turn_codx_path: Explicit project path, when it is already known.
+        :return: The store, or None when no project path can be resolved.
+        """
+        try:
+            manager = self.get_chat_manager(
+                project_id=getattr(chat, "owner_project_id", None)
+            )
+            codx_path = (
+                turn_codx_path
+                or getattr(getattr(manager, "settings", None), "codx_path", None)
+                or getattr(self.settings, "codx_path", None)
+            )
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning(
+                "Could not resolve the turn store of chat '%s': %s",
+                getattr(chat, "id", ""),
+                ex,
+            )
+            return None
+        if not codx_path:
+            return None
+        return get_turn_store(codx_path)
 
     # -------------------------------------------------------------------------
     # Helper: resolve chat mode flags
@@ -1665,6 +1874,15 @@ class ChatEngine:
                 # on cost_info and streamed to clients via message-event.
                 response_message.cost = run_result.cost.iteration_cost_cxjcoins
                 response_message.cost_info = run_result.cost
+                # Echo the chain of thought back on the next request. With
+                # `tools` present, thinking-mode providers (DeepSeek) reject a
+                # payload that does not carry the `reasoning_content` of every
+                # previous turn, so it is persisted with the message and
+                # replayed by ChatPromptBuilder on the following turns. It is
+                # never rendered to the user.
+                response_message.reasoning_content = (
+                    run_result.reasoning_content or None
+                )
 
         except Exception as ex:
             logger.exception(
@@ -2369,6 +2587,34 @@ class ChatEngine:
                 self.settings.project_id
             )
 
+        is_root_iteration = iteration == 0
+
+        # ------------------------------------------------------------------
+        # ONE response per chat: never start a second turn while the response of
+        # the previous one is still being produced.
+        #
+        # The check MUST happen before the cancellation token is registered:
+        # ``CANCELLATION_REGISTRY.register`` REPLACES the token of the chat, so a
+        # duplicate send would silently orphan the token of the turn already
+        # running (its "stop" button would stop nothing) besides leaving a
+        # second assistant message on "Processing request, please wait..." for
+        # the same user message.
+        #
+        # A SEALED response (its turn finished, died or stalled) cannot answer
+        # any more: it is stopped and closed so this turn can start. A LIVE one
+        # owns the chat and the request is ignored — nothing is started.
+        # ------------------------------------------------------------------
+        superseded_turn_ids: List[str] = []
+        if is_root_iteration and not turn_id:
+            blocked, superseded_turn_ids = self._running_response_turns(chat)
+            if blocked:
+                logger.info(
+                    "chat_with_project: chat '%s' is already producing a "
+                    "response; the new turn is ignored",
+                    chat.id,
+                )
+                return chat, []
+
         # ------------------------------------------------------------------
         # Register a cancellation token for this chat turn.
         # Only register at the outermost iteration to avoid replacing an
@@ -2382,7 +2628,6 @@ class ChatEngine:
         # ------------------------------------------------------------------
         cancellation_key = str(chat.doc_id or chat.id or id(chat))
         cancellation_token: Optional[CancellationToken] = None
-        is_root_iteration = iteration == 0
         if is_root_iteration:
             cancellation_token = CANCELLATION_REGISTRY.register(cancellation_key)
             logger.info(
@@ -2410,14 +2655,7 @@ class ChatEngine:
         turn_watcher = None
         turn_outcome = "failed"
         turn_error: Optional[str] = None
-        is_orchestration_chat = bool(
-            getattr(chat, "run_id", None)
-            or getattr(chat, "run_step_id", None)
-            or getattr(chat, "mode", "") in (
-                ORCHESTRATION.CHAT_MODE_ORCHESTRATE,
-                ORCHESTRATION.CHAT_MODE_DELEGATE,
-            )
-        )
+        is_orchestration_chat = _is_orchestration_owned(chat)
         if is_root_iteration:
             try:
                 manager = self.get_chat_manager(project_id=chat.owner_project_id)
@@ -2441,6 +2679,11 @@ class ChatEngine:
                     note="",
                     error="The previous turn was interrupted by an application restart",
                     skip_turn_ids=turn_store.live_turn_ids(),
+                    # A stalled turn was SEALED by the guard above: its response
+                    # message is closed too, even though its lock is still held,
+                    # so the chat never shows two "processing" messages for the
+                    # same request.
+                    superseded_turn_ids=superseded_turn_ids,
                 )
                 # Persist the chat (client messages, new chat id) BEFORE the
                 # turn record: recovery reloads the chat by id from disk.
@@ -2621,7 +2864,14 @@ class ChatEngine:
             last_ai_messages = [m for m in valid_messages if m.role == "assistant"]
             last_ai_message = last_ai_messages[-1] if last_ai_messages else None
 
-            user_message = valid_messages[-1] if valid_messages else Message(content="")
+            # A response is produced FOR a user message, never for another
+            # assistant message: an interrupted turn can leave an open
+            # ("processing") assistant message at the tail of the chat, and
+            # taking that tail as the request would answer the half-written
+            # response instead of the user's question.
+            user_message = self._last_user_message(valid_messages) or (
+                valid_messages[-1] if valid_messages else Message(content="")
+            )
             query = user_message.content
             task_item = user_message.task_item
 
@@ -2663,7 +2913,42 @@ class ChatEngine:
             #    upcoming run will be attached to this message and persisted on
             #    every change.
             # ------------------------------------------------------------------
-            response_message = self._new_chat_message("assistant")
+            # ASSOCIATION: a response always answers ONE message. The doc_id of
+            # the user message is stamped on it BEFORE the AI call, so the
+            # response can never be an orphan: clients render it next to its
+            # question and the engine can tell which request a running response
+            # belongs to (one live response per chat). See
+            # :meth:`_new_response_message`.
+            resumed_response = self._open_response_message(chat, turn_id)
+            if resumed_response is not None:
+                # RESUME: the turn was interrupted with its response message
+                # still open. Reuse THAT message (one bubble per request) and
+                # reset what the interrupted attempt streamed, so the retry does
+                # not concatenate two partial answers into the same bubble.
+                response_message = resumed_response
+                response_message.content = ""
+                response_message.think = None
+                response_message.reasoning_content = None
+                response_message.error = None
+                response_message.done = False
+                response_message.hide = False
+                response_message.tool_events = []
+                response_message.lifecycle_events = []
+                response_message.phase_events = []
+                response_message.reply_to = (
+                    response_message.reply_to
+                    or getattr(user_message, "doc_id", None)
+                    or None
+                )
+                logger.info(
+                    "Resumed turn '%s': reusing the open response message '%s' "
+                    "instead of creating a second one for chat '%s'",
+                    turn_id,
+                    response_message.doc_id,
+                    chat.id,
+                )
+            else:
+                response_message = self._new_response_message(user_message)
             # CHANGED: the response message records the ACTIVE project of the
             # turn — the project the engine is working on after switching its
             # context (`self.settings.project_id`), not just the project the

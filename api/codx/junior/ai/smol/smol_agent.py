@@ -1201,6 +1201,12 @@ class SmolAgent:
         # final_answer_content: the final LLM response after all tool calls.
         thinking_content: str = ""
         final_answer_content: str = ""
+        # Chain of thought of the WHOLE turn (DeepSeek ``reasoning_content``).
+        # With ``tools`` present the provider requires the CoT of every previous
+        # turn to be passed back, so it is returned with the run result and the
+        # chat engine persists it on the response message
+        # (see AgentRunResult.reasoning_content).
+        turn_reasoning_content: str = ""
 
         # Set when LoopGuard stops the run. The loop is then broken gracefully
         # and a tool-usage summary is produced so the work is not lost.
@@ -1257,6 +1263,16 @@ class SmolAgent:
                 system_message=system_message,
                 vision_content=vision_content,
             )
+
+            # Chain of thought of this round: kept apart from `content` (never
+            # shown to the user) and accumulated for the whole turn so it can be
+            # persisted and echoed back on the next request.
+            if reasoning_content:
+                turn_reasoning_content = (
+                    f"{turn_reasoning_content}\n\n{reasoning_content}"
+                    if turn_reasoning_content
+                    else reasoning_content
+                )
 
             # Register the cost of this round (iteration) in cxjcoins and add
             # it to both the iteration total and the chat total.
@@ -1740,6 +1756,7 @@ class SmolAgent:
                 hit_rate=cache_stats.get("hit_rate", 0),
             ),
             loop_limit_reached=bool(loop_limit_error),
+            reasoning_content=turn_reasoning_content,
         )
 
     # ── Runtime context ────────────────────────────────────────────────────────
@@ -1941,24 +1958,34 @@ class SmolAgent:
 
     def _uses_thinking_dialect(self, openai_messages: List[Dict[str, Any]]) -> bool:
         """
-        Tell whether the payload speaks the ``reasoning_content`` dialect.
+        Tell whether the endpoint speaks the ``reasoning_content`` dialect.
 
         The field is a provider extension: strict OpenAI-compatible endpoints
         reject unknown message fields, so it may only be added when the provider
         (or the conversation already carrying the field) uses it.
 
+        The endpoint is inspected too: an instance talking to DeepSeek through a
+        generic provider name (``custom``, or ``openai`` pointed at a DeepSeek
+        gateway/proxy) still follows the thinking-mode contract.
+
+        The payload is deliberately NOT evidence: the CoT of previous turns is
+        persisted and replayed with the history, so a chat that ran against
+        DeepSeek and is later re-run with another model would carry the field
+        into a request whose endpoint rejects unknown message fields (400). The
+        endpoints that cannot be identified are covered by the retry ladder of
+        :meth:`_create_completion` instead.
+
         Args:
-            openai_messages: Conversation about to be sent.
+            openai_messages: Conversation about to be sent (unused: kept so
+                             every caller shares one signature).
 
         Returns:
-            True for a thinking-mode provider or a payload that already echoes a
-            chain of thought.
+            True when provider, model or endpoint is a DeepSeek thinking model.
         """
         provider = str(self.llm_settings.provider or "").lower()
         model = str(self.model or "").lower()
-        if "deepseek" in provider or "deepseek" in model:
-            return True
-        return any("reasoning_content" in message for message in openai_messages)
+        base_url = str(self.base_url or "").lower()
+        return "deepseek" in provider or "deepseek" in model or "deepseek" in base_url
 
     def _prepare_thinking_messages(
         self,
@@ -1984,8 +2011,12 @@ class SmolAgent:
         calls is dropped instead: it can never be part of a valid request
         (``Invalid assistant message: content or tool_calls must be set``).
 
-        Providers that do not use the field, and requests without ``tools``
-        (where the field is ignored), are left untouched.
+        Requests that must NOT carry the field are sanitised, not just skipped:
+        without ``tools`` the provider ignores it, and any other endpoint may
+        REJECT it as an unknown message field. The field is persisted with the
+        history (see ``Message.reasoning_content``), so a chat that ran against
+        DeepSeek and is later re-run with another model would otherwise fail
+        with a 400 — those keys are removed here.
 
         Args:
             openai_messages: Conversation about to be sent (mutated in place).
@@ -1995,9 +2026,10 @@ class SmolAgent:
         Returns:
             Number of assistant messages that received a synthetic empty CoT.
         """
-        if not kwargs.get("tools"):
-            return 0
-        if not self._uses_thinking_dialect(openai_messages):
+        if not kwargs.get("tools") or not self._uses_thinking_dialect(
+            openai_messages
+        ):
+            self._drop_reasoning_content(openai_messages)
             return 0
 
         kept: List[Dict[str, Any]] = []

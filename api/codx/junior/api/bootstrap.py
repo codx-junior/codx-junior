@@ -91,7 +91,7 @@ def api_bootstrap_presets() -> dict:
     """
     List the provider presets **with the models each one defines**.
 
-    This is what the installer prints ("provider deepseek -> deepseek-chat, no
+    This is what the installer prints ("provider deepseek -> deepseek-flash, no
     embeddings") and what a first-run wizard renders as a provider picker. No
     key is ever returned: only the name of the environment variable expected.
     """

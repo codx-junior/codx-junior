@@ -127,6 +127,85 @@ def _draft_response(chat_id: Optional[str], message) -> dict:
     }
 
 
+def _seal_dead_responses(chat, chat_manager, settings) -> int:
+    """
+    Close the response messages of turns that are no longer running.
+
+    A turn creates its assistant message BEFORE the AI call and persists it while
+    it streams. When the process dies (crash, restart, container kill) the turn is
+    gone but its message stays ``done=False``, so the client keeps rendering it as
+    *"Processing request, please wait..."* for ever — one bubble per interrupted
+    attempt. That is how a chat ends up showing four "processing" answers for a
+    single question.
+
+    The durable turn record is the authority:
+
+    * a chat with a LIVE turn is left untouched (its message is streaming),
+    * orchestration-owned chats are left untouched (their worker owns recovery),
+    * every other ``done=False`` response is repaired into a terminal, hidden
+      message.
+
+    Only the turns of this project's chat store are probed, and only when the
+    chat still carries an open response, so opening a finished chat costs one
+    list of messages.
+
+    :param chat: The chat about to be returned to a client.
+    :param chat_manager: Manager that persists the repaired messages.
+    :param settings: Settings of the project that owns the chat.
+    :return: Number of repaired messages.
+    """
+    if chat is None or chat_manager is None:
+        return 0
+    if not any(
+        getattr(message, "role", "") == "assistant"
+        and getattr(message, "done", True) is False
+        for message in (getattr(chat, "messages", None) or [])
+    ):
+        # Fast path: a finished chat needs no turn probe at all.
+        return 0
+    codx_path = getattr(settings, "codx_path", None)
+    if not codx_path:
+        return 0
+    try:
+        from codx.junior.chat.chat_engine import _is_orchestration_owned
+        from codx.junior.chat.turn_store import (
+            get_turn_store,
+            repair_incomplete_messages,
+        )
+
+        if _is_orchestration_owned(chat):
+            return 0
+        store = get_turn_store(codx_path)
+        if store.chat_is_processing(chat.id):
+            logger.debug(
+                "_seal_dead_responses: chat '%s' has a live turn, leaving it alone",
+                chat.id,
+            )
+            return 0
+        repaired = repair_incomplete_messages(
+            chat,
+            chat_manager,
+            note="",
+            error="The turn was interrupted",
+            skip_turn_ids=store.live_turn_ids(),
+        )
+        if repaired:
+            logger.info(
+                "_seal_dead_responses: closed %d orphaned response(s) of chat '%s'",
+                repaired,
+                chat.id,
+            )
+        return repaired
+    except Exception as ex:  # pragma: no cover - a chat read must never fail
+        logger.warning(
+            "_seal_dead_responses: could not close orphaned responses of chat "
+            "'%s': %s",
+            getattr(chat, "id", ""),
+            ex,
+        )
+        return 0
+
+
 def _query_flag(request: Request, name: str) -> bool:
     """
     Read a boolean query-string flag.
@@ -1370,6 +1449,10 @@ def api_list_chats(request: Request):
                     logger.warning("api_list_chats: cannot hydrate DSH chat %s: %s", chat_id, ex)
             # The unsent draft never reaches other clients: it is filtered out
             # here and read only through GET /chats/draft by its composer.
+            # A response whose turn is dead can never answer any more: close it
+            # now, so the chat stops showing one "processing" bubble per
+            # interrupted attempt (see :func:`_seal_dead_responses`).
+            _seal_dead_responses(chat, chat_manager, codx_junior_session.settings)
             chat.messages = _conversation_messages(chat)
             return chat
 

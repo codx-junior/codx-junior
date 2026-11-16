@@ -417,6 +417,40 @@ class ChatTurnStore:
             return True
         return False
 
+    def live_response(self, chat_id: str) -> Optional[ChatTurnRecord]:
+        """
+        Return the turn CURRENTLY producing a response for *chat_id*.
+
+        A chat must have at most ONE response in flight. This is the
+        cross-process probe the chat engine uses before starting a turn: the
+        ``flock`` tells a live owner from a dead one and the heartbeat tells a
+        SLOW turn from a STALLED one.
+
+        A STALLED turn is dead even when its lock is still held (hung AI request,
+        blocked tool, deadlocked thread), so it is NOT returned: it is *sealed*
+        (stopped and its message closed) and the chat is allowed to run a new
+        turn instead of leaving the client stuck on "processing".
+
+        Args:
+            chat_id: Chat to inspect.
+
+        Returns:
+            The live record, or ``None`` when no response is being produced.
+        """
+        if not chat_id:
+            return None
+        for record in self.find_active(chat_id):
+            if self.is_stale(record):
+                continue
+            if self.is_owned(record.turn_id):
+                return record
+            if self.claim(record):
+                # Free lock: orphan/not running. Release the probe.
+                self.release(record.turn_id)
+                continue
+            return record
+        return None
+
     # -- progress / stall detection ---------------------------------------
 
     def touch(self, record: ChatTurnRecord, *, force: bool = False) -> bool:
@@ -907,6 +941,7 @@ def repair_incomplete_messages(
     error: Optional[str] = None,
     hide: bool = True,
     skip_turn_ids: Optional[Any] = None,
+    superseded_turn_ids: Optional[Any] = None,
 ) -> int:
     """
     Turn orphaned ``done=False`` assistant messages into a terminal state.
@@ -924,6 +959,11 @@ def repair_incomplete_messages(
         hide: Hide the message from the prompt/UI history (recommended).
         skip_turn_ids: Turn ids of LIVE turns; their in-flight messages must not
             be touched (e.g. a concurrent turn of the same chat).
+        superseded_turn_ids: Turn ids being SEALED — a stalled turn that is
+            stopped to let a new turn run. Their messages are repaired even when
+            their lock is still held: a stalled turn can never produce an answer,
+            so leaving it open would keep a second "processing" message for the
+            same request.
 
     Returns:
         Number of messages repaired.
@@ -932,6 +972,7 @@ def repair_incomplete_messages(
         return 0
 
     skip = set(skip_turn_ids or ())
+    superseded = set(superseded_turn_ids or ())
     repaired = 0
     for message in list(getattr(chat, "messages", []) or []):
         if getattr(message, "role", "") != "assistant":
@@ -941,7 +982,11 @@ def repair_incomplete_messages(
         message_turn_id = str(
             (getattr(message, "meta_data", None) or {}).get("turn_id") or ""
         )
-        if message_turn_id and message_turn_id in skip:
+        if (
+            message_turn_id
+            and message_turn_id in skip
+            and message_turn_id not in superseded
+        ):
             continue
 
         content = str(getattr(message, "content", "") or "")

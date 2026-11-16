@@ -106,7 +106,13 @@ PROVIDER_PRESETS: Dict[str, dict] = {
     "deepseek": {
         "api_url": "https://api.deepseek.com/v1",
         "api_key_env": "DEEPSEEK_API_KEY",
-        "llm": "deepseek-chat",
+        # The legacy aliases (``deepseek-chat`` / ``deepseek-reasoner``) are no
+        # longer part of the published catalogue: ``deepseek-flash`` and
+        # ``deepseek-v4-pro`` are the two documented ids. Both support thinking
+        # mode, which is ON by default and requires ``reasoning_content`` to be
+        # echoed back whenever ``tools`` are sent (handled by
+        # ``ai/smol/smol_agent.py``).
+        "llm": "deepseek-flash",
         "embeddings": "",
         "embeddings_dim": 0,
         "documentation": "https://platform.deepseek.com/api_keys",

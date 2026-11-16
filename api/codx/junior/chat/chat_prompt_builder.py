@@ -290,10 +290,41 @@ class ChatPromptBuilder:
                 ]
                 if message.role == "user":
                     return HumanMessage(content=content)
-                return AIMessage(content=content)
+                return AIMessage(
+                    content=content,
+                    **ChatPromptBuilder._reasoning_kwargs(message),
+                )
         if message.role == "user":
             return HumanMessage(content=message.content)
-        return AIMessage(content=message.content)
+        return AIMessage(
+            content=message.content,
+            **ChatPromptBuilder._reasoning_kwargs(message),
+        )
+
+    @staticmethod
+    def _reasoning_kwargs(message: Message) -> Dict[str, Any]:
+        """
+        Keep the provider chain of thought attached to an assistant message.
+
+        DeepSeek's thinking mode returns the CoT in ``reasoning_content`` and,
+        for requests carrying the ``tools`` parameter, REQUIRES it back on every
+        previous assistant turn. Dropping it makes the provider reject the WHOLE
+        request with ``400 — The `reasoning_content` in the thinking mode must
+        be passed back to the API``.
+
+        :func:`codx.junior.ai.smol.messages.to_openai_message` already echoes the
+        value found in ``AIMessage.additional_kwargs``; this is the link that
+        puts the CoT of a persisted chat message there. It is only attached when
+        one was stored, so other providers (which reject unknown message fields)
+        never see the key.
+
+        :param message: The DB Message being converted.
+        :return: Extra ``AIMessage`` kwargs (empty when no CoT was stored).
+        """
+        reasoning_content = getattr(message, "reasoning_content", None)
+        if isinstance(reasoning_content, str) and reasoning_content.strip():
+            return {"additional_kwargs": {"reasoning_content": reasoning_content}}
+        return {}
 
     # ------------------------------------------------------------------
     # Multimodal content helpers

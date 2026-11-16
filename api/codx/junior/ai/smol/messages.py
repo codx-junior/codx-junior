@@ -101,6 +101,35 @@ def _skip_thought_signature_extra() -> Dict[str, Any]:
     }
 
 
+def _with_reasoning_content(
+    payload: Dict[str, Any],
+    reasoning_content: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Echo a stored chain of thought on a replayed assistant message.
+
+    DeepSeek's thinking mode returns the CoT in ``reasoning_content`` and, for
+    requests carrying ``tools``, requires it back on every previous assistant
+    turn (see :func:`make_assistant_tool_calls_message`). Rebuilding a history
+    message from ``role`` + ``content`` only — what this module used to do —
+    dropped the field, which forced the agent preflight to fabricate an empty
+    CoT instead of passing the real one back as the provider documents.
+
+    The key is only added when a value is stored: it is a provider extension,
+    and strict OpenAI-compatible endpoints reject unknown message fields.
+
+    Args:
+        payload:           OpenAI message dict being built (mutated in place).
+        reasoning_content: Stored chain of thought (``None``/blank when absent).
+
+    Returns:
+        ``payload``, carrying ``reasoning_content`` when one was stored.
+    """
+    if isinstance(reasoning_content, str) and reasoning_content.strip():
+        payload["reasoning_content"] = reasoning_content
+    return payload
+
+
 def to_openai_message(message: Union[Dict[str, Any], HumanMessage, AIMessage]) -> Dict[str, Any]:
     """
     Convert a LangChain or dict message to OpenAI format.
@@ -128,7 +157,12 @@ def to_openai_message(message: Union[Dict[str, Any], HumanMessage, AIMessage]) -
         return {"role": "user", "content": message.content}
 
     if isinstance(message, AIMessage):
-        return {"role": "assistant", "content": message.content}
+        return _with_reasoning_content(
+            {"role": "assistant", "content": message.content},
+            (getattr(message, "additional_kwargs", None) or {}).get(
+                "reasoning_content"
+            ),
+        )
 
     if isinstance(message, dict):
         if message.get("type") == "image":
@@ -155,17 +189,26 @@ def to_openai_message(message: Union[Dict[str, Any], HumanMessage, AIMessage]) -
         # Safely parse content only if it's a JSON string
         if isinstance(content, str) and content.strip().startswith(("[", "{")):
             try:
-                return {"role": role, "content": json.loads(content)}
+                return _with_reasoning_content(
+                    {"role": role, "content": json.loads(content)},
+                    message.get("reasoning_content"),
+                )
             except json.JSONDecodeError as ex:
                 logger.warning(
                     "to_openai_message: content appears to be JSON but parse failed; "
                     "treating as plain string. Error: %s, Content: %s",
                     ex, content[:100]
                 )
-                return {"role": role, "content": content}
+                return _with_reasoning_content(
+                    {"role": role, "content": content},
+                    message.get("reasoning_content"),
+                )
         else:
             # Plain string or already a list/dict — keep as-is
-            return {"role": role, "content": content}
+            return _with_reasoning_content(
+                {"role": role, "content": content},
+                message.get("reasoning_content"),
+            )
 
     # Fallback for unexpected types
     logger.warning(

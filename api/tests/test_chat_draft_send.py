@@ -59,8 +59,10 @@ def test_conversation_response_strips_the_draft(tmp_path):
 
     payload = conversation_response(chat)
 
-    assert payload is chat
+    assert payload is not chat
     assert payload.messages == []
+    # The stored chat is NOT mutated: the composer still owns its draft.
+    assert [m.content for m in chat.messages] == ["Status?"]
     # A dict (error payload) and None are returned untouched
     assert conversation_response({"error": "boom"}) == {"error": "boom"}
     assert conversation_response(None) is None
@@ -104,5 +106,6 @@ def test_local_echo_and_server_store_share_one_message(tmp_path):
     manager.add_message(chat=manager.find_by_id(chat.id), message=message)
 
     stored = manager.find_by_id(chat.id)
-    assert [m.doc_id for m in stored.messages] == [message.doc_id]
+    # The draft is a separate, unsent row; the conversation has the message once.
+    assert [m.doc_id for m in stored.messages if not m.unsent] == [message.doc_id]
     assert conversation_response(stored).messages[0].content == "Status?"

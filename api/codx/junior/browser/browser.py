@@ -40,6 +40,7 @@ import base64
 import importlib
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -591,6 +592,31 @@ def run_coroutine_sync(coro_factory: Callable[[], Any]) -> Any:
         return executor.submit(lambda: asyncio.run(coro_factory())).result()
 
 
+#: ``await`` outside an identifier/property access (``obj.await`` is valid JS).
+_TOP_LEVEL_AWAIT = re.compile(r"(?<![.\w$])await\b")
+
+#: Statements that are not expressions and must be wrapped even when the
+#: caller wrote them on a single line (e.g. ``const x = 1``).
+_STATEMENT_PREFIXES = (
+    "const ", "let ", "var ", "if ", "for ", "while ", "switch ",
+    "try ", "throw ", "class ", "import ", "export ",
+)
+
+
+def _wrap_script(body: str) -> str:
+    """Wrap JavaScript statements in an arrow function Playwright can call.
+
+    The wrapper is ``async`` when the body contains a top-level ``await``:
+    ``page.evaluate`` awaits the returned promise, so ``await fetch(...)`` in a
+    model-written script now works instead of raising
+    ``SyntaxError: await is only valid in async functions`` (a failure that cost
+    an extra model turn every time it happened).
+    """
+    if _TOP_LEVEL_AWAIT.search(body):
+        return f"async () => {{ {body} }}"
+    return f"() => {{ {body} }}"
+
+
 def normalize_script(script: Optional[str]) -> Optional[str]:
     """
     Normalize a user script into something playwright's ``page.evaluate`` accepts.
@@ -598,6 +624,8 @@ def normalize_script(script: Optional[str]) -> Optional[str]:
     Playwright evaluates strings as an expression (or as a function when the
     string starts with ``function``/``(``). Statements are wrapped into an arrow
     function so both the ``return ...`` and the expression styles work.
+    Scripts with a top-level ``await`` are wrapped in an ``async`` arrow so the
+    natural style (``const r = await fetch(...); return r.status``) is accepted.
 
     Args:
         script: JavaScript provided by the caller.
@@ -610,17 +638,24 @@ def normalize_script(script: Optional[str]) -> Optional[str]:
         '() => { return document.title }'
         >>> normalize_script("() => Reveal.slide(0)")
         '() => Reveal.slide(0)'
+        >>> normalize_script("const r = await fetch('/x'); return r.status")
+        "async () => { const r = await fetch('/x'); return r.status }"
     """
     stripped = (script or "").strip()
     if not stripped:
         return None
     if stripped.startswith("return "):
-        return f"() => {{ {stripped} }}"
+        return _wrap_script(stripped)
     # Arrow functions and function declarations are passed through untouched
     if stripped.startswith(("(", "function", "async", "()")):
         return stripped
-    if "\n" in stripped or ";" in stripped:
-        return f"() => {{ {stripped} }}"
+    if (
+        "\n" in stripped
+        or ";" in stripped
+        or stripped.startswith(_STATEMENT_PREFIXES)
+        or stripped.startswith("await ")
+    ):
+        return _wrap_script(stripped)
     return stripped
 
 

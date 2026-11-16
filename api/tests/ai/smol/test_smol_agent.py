@@ -203,10 +203,10 @@ class TestSmolAgentBasicChat:
                 result = await smol_agent.chat(sample_messages, config=sample_config)
 
         # Assert
-        assert len(result) == 2
-        assert isinstance(result[0], HumanMessage)
-        assert isinstance(result[1], AIMessage)
-        assert result[1].content == "Hello there!"
+        assert len(result.messages) == 2
+        assert isinstance(result.messages[0], HumanMessage)
+        assert isinstance(result.messages[1], AIMessage)
+        assert result.messages[1].content == "Hello there!"
 
     @pytest.mark.asyncio
     async def test_streaming_response_with_empty_chunks(
@@ -241,7 +241,7 @@ class TestSmolAgentBasicChat:
                 result = await smol_agent.chat(sample_messages, config=sample_config)
 
         # Assert
-        assert result[-1].content == "Hi!"
+        assert result.messages[-1].content == "Hi!"
 
     @pytest.mark.asyncio
     async def test_preflight_wallet_check_called(
@@ -597,7 +597,7 @@ class TestSmolAgentBasicChat:
                 result = await smol_agent.chat(messages, config=sample_config)
 
         # Assert
-        assert len(result) == 4  # 3 original + 1 assistant response
+        assert len(result.messages) == 4  # 3 original + 1 assistant response
         
         # Check OpenAI was called with all messages
         call_kwargs = mock_openai_client.chat.completions.create.call_args[1]
@@ -824,12 +824,25 @@ def _tool_round_messages():
     ]
 
 
-def test_continuation_enabled_for_harness_profile(smol_agent):
+def test_continuation_enabled_for_the_agile_harness_profile(smol_agent):
+    # ``codx-junior`` is the AGILE tier (the default). A tool limit is a PACING
+    # signal, not the end of the task: the turn is continued with a smaller
+    # renewed budget instead of being dead-ended.
     assert smol_agent._continuation_enabled(
         config={}, orchestration_info=None, profile_names=["codx-junior"]
     ) is True
     assert smol_agent._continuation_enabled(
         config={}, orchestration_info=None, profile_names=["@codx-junior", "x"]
+    ) is True
+
+
+def test_continuation_enabled_for_the_max_effort_profile(smol_agent):
+    # ``codx-junior-max`` has the heavier budget and continues as well.
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info=None, profile_names=["codx-junior-max"]
+    ) is True
+    assert smol_agent._continuation_enabled(
+        config={}, orchestration_info=None, profile_names=["@codx-junior-max"]
     ) is True
 
 

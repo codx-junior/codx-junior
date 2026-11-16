@@ -51,6 +51,10 @@ ARCHIVE_SUFFIX = ".tar.gz"
 # Bumped whenever the layout of the archive catalogue changes.
 ARCHIVE_VERSION = 1
 LEGACY_FILE = "kanban.json"
+#: Old flat board catalogue that lived next to ``kanban.json``. It is storage,
+#: not a chat: parsing it created a phantom task with a random UUID on every
+#: listing.
+LEGACY_BOARDS_FILE = "boards.json"
 BACKUP_FILE = "kanban.v1.backup.json"
 LOCK_FILE = ".kanban.lock"
 
@@ -113,7 +117,13 @@ def is_store_file(file_path: str) -> bool:
         True when the path belongs to the kanban storage.
     """
     base = os.path.basename(file_path)
-    if base in (INDEX_FILE, LEGACY_FILE, BACKUP_FILE, LOCK_FILE):
+    if base in (
+        INDEX_FILE,
+        LEGACY_FILE,
+        LEGACY_BOARDS_FILE,
+        BACKUP_FILE,
+        LOCK_FILE,
+    ):
         return True
     parts = [
         part for part in os.path.normpath(str(file_path)).split(os.sep)

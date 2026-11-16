@@ -33,6 +33,16 @@ BUILTIN_CONTENT = (
 WORKSPACE_PROFILE = REPO_ROOT / ".codx" / "profiles" / "codx-junior" / "codx-junior.profile"
 SUPERVISOR_CONF = REPO_ROOT / "supervisor.conf"
 
+MAX_PROFILE = (
+    REPO_ROOT / "api" / "codx" / "junior" / "profiles" / "codx-junior-max" / "codx-junior-max.profile"
+)
+MAX_CONTENT = (
+    REPO_ROOT / "api" / "codx" / "junior" / "profiles" / "codx-junior-max" / "codx-junior-max.md"
+)
+WORKSPACE_MAX_PROFILE = (
+    REPO_ROOT / ".codx" / "profiles" / "codx-junior-max" / "codx-junior-max.profile"
+)
+
 
 def test_builtin_profile_exists_and_parses():
     assert BUILTIN_PROFILE.is_file()
@@ -48,8 +58,25 @@ def test_builtin_profile_instructions_exist():
     assert BUILTIN_CONTENT.is_file()
     content = BUILTIN_CONTENT.read_text(encoding="utf-8")
     assert "codx-junior harness" in content
-    assert "orchestrator(action=\"start\")" in content
-    assert "orchestrator(action=\"finish\"" in content
+    # The agile tier closes every answer with the delivery contract.
+    assert "## What happened" in content
+    assert "## Next tasks" in content
+    assert "**Good enough?**" in content
+
+
+def test_builtin_max_profile_links_the_agile_tier():
+    """The heavy tier is a DELTA: it links codx-junior instead of copying it."""
+    assert MAX_PROFILE.is_file()
+    profile = Profile(**json.loads(MAX_PROFILE.read_text(encoding="utf-8")))
+    assert profile.name == "codx-junior-max"
+    assert profile.profiles == ["codx-junior"]
+    assert profile.tools == ["*"]
+
+    assert MAX_CONTENT.is_file()
+    content = MAX_CONTENT.read_text(encoding="utf-8")
+    # Orchestration is the max tier's job (the agile tier delegates it).
+    assert 'orchestrator(action="start")' in content or "orchestrator" in content
+    assert "**Good enough?**" in content
 
 
 def test_workspace_copy_matches_builtin():
@@ -57,6 +84,11 @@ def test_workspace_copy_matches_builtin():
     assert (
         WORKSPACE_PROFILE.read_text(encoding="utf-8")
         == BUILTIN_PROFILE.read_text(encoding="utf-8")
+    )
+    assert WORKSPACE_MAX_PROFILE.is_file()
+    assert (
+        WORKSPACE_MAX_PROFILE.read_text(encoding="utf-8")
+        == MAX_PROFILE.read_text(encoding="utf-8")
     )
 
 

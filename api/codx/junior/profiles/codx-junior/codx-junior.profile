@@ -2,7 +2,7 @@
   "name": "codx-junior",
   "url": "",
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=codx-junior",
-  "description": "codx-junior harness: the main contact between the user, every other profile and the whole platform. It accepts the task, registers it, plans and delegates the work to the right profiles, verifies the results and reports back when it is done.",
+  "description": "codx-junior harness (agile tier): the main contact between the user, every other profile and the whole platform. It delivers one small validated increment per turn, closes with What happened / What I did / Demo / Next tasks, and asks for the codx-junior-max tier when the work is genuinely big.",
   "category": "assistant",
   "file_match": "",
   "content": null,
@@ -35,6 +35,8 @@
   ],
   "tags": [
     "harness",
+    "agile",
+    "increments",
     "orchestration",
     "main-contact",
     "delegation",

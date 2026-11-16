@@ -777,7 +777,7 @@ def _visible_messages(messages: Optional[List[Message]]) -> List[Message]:
 
 def conversation_response(chat: Any) -> Any:
     """
-    Strip the unsent drafts from a chat that is about to be returned.
+    Return a serialisation-ready COPY of *chat* without its unsent drafts.
 
     Every message endpoint answers with the WHOLE chat (``POST/PUT/DELETE
     /chats/message``, ``POST /chats/metadata``) and the client merges that
@@ -786,15 +786,30 @@ def conversation_response(chat: Any) -> Any:
     bubble: the same text appeared twice, once as the promoted draft and once
     as the real message.
 
+    The chat is copied on purpose: stripping the draft MUST NOT mutate the
+    object the caller still owns (the composer draft lives in the same store and
+    a send that keeps the draft would otherwise destroy it as a side effect of
+    building the response).
+
     :param chat: The chat returned by a message endpoint (``None`` and error
         payloads are returned untouched).
-    :return: The same chat with its ``unsent`` messages removed.
+    :return: A copy of the chat with its ``unsent`` messages removed.
     """
     if chat is None or isinstance(chat, dict):
         return chat
-    if getattr(chat, "messages", None):
-        chat.messages = _visible_messages(chat.messages)
-    return chat
+    if not getattr(chat, "messages", None):
+        return chat
+    visible = _visible_messages(chat.messages)
+    # Pydantic models (``Chat``) support a cheap model_copy; the fallback keeps
+    # plain objects (tests, stubs) working without mutating them.
+    try:
+        return chat.model_copy(update={"messages": visible})
+    except AttributeError:
+        from copy import copy
+
+        clone = copy(chat)
+        clone.messages = visible
+        return clone
 
 
 def _find_unsent_message(chat: "Chat") -> Optional[Message]:

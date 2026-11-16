@@ -6,7 +6,8 @@ one lock.  That gives the AI and the human the same guarantees as the browser
 runtime:
 
 * actions never interleave (two chats or a user click cannot race a drag);
-* control hand-off is respected (:meth:`BrowserSession.can_ai_act`);
+* control hand-off is respected and recent human input gets a short quiet-gap wait
+  (:meth:`BrowserSession.ai_may_act_now`);
 * read-only screen reads do not pause the AI;
 * every action is written to the shared activity log with duration and result;
 * the session record (mouse position is not stored, but window size and last
@@ -31,6 +32,12 @@ from codx.junior.computer.backend import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Quiet gap that means the human stopped feeding input (same rule as browser).
+USER_QUIET_SECONDS = 1.5
+
+#: Poll cadence while waiting for the human.
+CONTROL_POLL_SECONDS = 0.15
 
 
 class ComputerControlError(RuntimeError):
@@ -81,10 +88,13 @@ class DesktopRuntime:
         action = normalize_action(action)
         read_only = action in READ_ONLY_ACTIONS
         if not force and not read_only:
-            if not self.session.can_ai_act():
-                if user_wait > 0:
+            if not self.session.ai_may_act_now(quiet_seconds=USER_QUIET_SECONDS):
+                # A real hand-off fails immediately; a human who merely touched
+                # the screen gets a short quiet-gap wait instead of a 10 s
+                # lockout followed by a failed action.
+                if self.session.controller == "ai" and user_wait > 0:
                     await self._wait_for_user(user_wait)
-                if not self.session.can_ai_act():
+                if not self.session.ai_may_act_now(quiet_seconds=USER_QUIET_SECONDS):
                     reason = self.session.handoff_reason or "the user is driving the computer"
                     message = (
                         f"The AI cannot perform '{action}': {reason}. "
@@ -138,12 +148,12 @@ class DesktopRuntime:
             return result
 
     async def _wait_for_user(self, seconds: float) -> None:
-        """Wait until the human has been idle for up to *seconds*."""
+        """Wait until the human has been quiet for a moment (up to *seconds*)."""
         deadline = time.monotonic() + max(0.0, float(seconds))
         while time.monotonic() < deadline:
-            if not self.session.user_is_active():
+            if self.session.ai_may_act_now(quiet_seconds=USER_QUIET_SECONDS):
                 return
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(CONTROL_POLL_SECONDS)
 
     def _apply_result(self, action: str, result: Any) -> None:
         """Update the session record from an action result."""
@@ -176,6 +186,8 @@ class DesktopRuntime:
             "controller": self.session.controller,
             "controller_chat_id": self.session.controller_chat_id,
             "user_active": self.session.user_is_active(),
+            "user_typing": self.session.user_is_typing(USER_QUIET_SECONDS),
+            "ai_may_act": self.session.ai_may_act_now(USER_QUIET_SECONDS),
             "handoff_reason": self.session.handoff_reason,
             "user_active_until": self.session.user_active_until,
             "connected": self.session.status == "running",

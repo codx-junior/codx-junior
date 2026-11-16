@@ -125,6 +125,160 @@ TOOL_LIMIT_RETHINK_TEMPLATE: str = (
     "next once answered.\n"
 )
 
+# ── Effort tiers (agile by default, max only for big work) ────────────────────
+# AGILE (profile ``codx-junior``) is the DEFAULT tier: a small base budget that
+# is a PACING signal, never the end of the task. Reaching the tool limit grants
+# the bounded course correction below (the facts already collected + a smaller
+# renewed budget), so a turn is not dead-ended by its own guardrail.
+# Its TIME policy is different: an agile turn is NEVER killed by the clock.
+# ``AGILE_WALL_CLOCK_SECONDS`` is the first "hurry up" checkpoint, not a
+# deadline, and ``AGILE_TARGET_SECONDS`` is the agile promise (a turn under 20
+# minutes). Past the target the turn keeps running and the response message is
+# MARKED so the client can warn the user (see ``codx.junior.ai.smol.agile``).
+# MAX (profile ``codx-junior-max``) has the bigger budget and the longer
+# continuation. Neither tier may cancel a task: every built-in hard stop was
+# removed because the user must remain the only one who ends a task. A caller
+# can still opt into an enforced clock with
+# ``settings={"stop_on_wall_clock": True}``; nothing enables it by default.
+# Resolution lives in ``codx.junior.ai.smol.effort``.
+AGILE_MAX_ITERATIONS: int = 10
+AGILE_MAX_TOOL_CALLS: int = 5
+AGILE_MAX_TOOL_ROUNDS: int = 12
+# An agile turn is NEVER dead-ended by its budget. Reaching the tool limit
+# grants the same bounded course correction the harness always had (the facts
+# already collected + a smaller renewed budget); the tier stays agile because
+# the base budget and the continuations are smaller than max's. A limit is a
+# pacing signal, not the end of the task.
+AGILE_CONTINUATIONS: int = TOOL_LIMIT_CONTINUATIONS
+# First agility checkpoint of an agile turn (5 min): it only produces a notice,
+# it never stops the turn. Kept as a float and overridable by env.
+AGILE_WALL_CLOCK_SECONDS: float = 300.0
+ENV_AGILE_WALL_CLOCK_SECONDS: str = "CODX_JUNIOR_AGILE_WALL_CLOCK_SECONDS"
+
+# ── Agile time policy (nudges, never a stop) ──────────────────────────────────
+# An agile turn must fit in 20 minutes. The clock is used to STRESS the model,
+# not to kill the work: at every checkpoint the model receives a deterministic
+# notice (fewer tool calls, wrap up, deliver the increment) and the response
+# message metadata is stamped so the client can warn the user. The turn keeps
+# running: only the human decides to stop it.
+AGILE_TARGET_SECONDS: float = 1200.0
+ENV_AGILE_TARGET_SECONDS: str = "CODX_JUNIOR_AGILE_TARGET_SECONDS"
+
+# Fractions of the target at which the model is told to speed up. The target
+# itself is always a checkpoint (the agile promise) and the clock keeps
+# reminding once per target period after it, so a runaway turn is never silent.
+AGILE_NUDGE_FRACTIONS: tuple = (0.25, 0.5, 0.75)
+
+# From this fraction of the target the message metadata is flagged as a WARNING
+# (the client can already offer "stop / split the task" before the promise is
+# broken) and from 1.0 as OVERTIME.
+AGILE_WARNING_FRACTION: float = 0.75
+
+# Metadata key of the agile state on the response message meta_data.
+AGILE_META_KEY: str = "agile"
+AGILE_STATE_OK: str = "ok"
+AGILE_STATE_WARNING: str = "warning"
+AGILE_STATE_OVERTIME: str = "overtime"
+
+# ── Agile mode: prompt + notices ──────────────────────────────────────────────
+# Injected into the system prompt of an agile turn: the model must know it is
+# running in agile mode BEFORE it plans (that is the cheapest way to be fast).
+# ``{target_minutes}`` is filled by ``codx.junior.ai.smol.agile``.
+AGILE_SYSTEM_SECTION: str = (
+    "\n\n### ⏱️ AGILE MODE — this turn must be FAST\n"
+    "\n"
+    "You are the `codx-junior` (AGILE) harness. An agile turn is expected to "
+    "deliver a useful increment in less than {target_minutes} minutes, and the "
+    "clock is measured on YOU: every round and every tool call spends it.\n"
+    "\n"
+    "**How to be agile (apply from the first round):**\n"
+    "1. ONE small increment per turn: the smallest slice the user can look at "
+    "now. Never chain investigations — if the work needs several increments, "
+    "do the first one and list the rest under `## Next tasks`.\n"
+    "2. BATCH your discovery: one `project_locate` / one bulk `project_read_file` "
+    "with several paths / one `snapshot` instead of many calls. Never page "
+    "through a large file: request only the lines you need.\n"
+    "3. State a hypothesis after 3-5 discovery calls and make the smallest "
+    "change that tests it. Investigation without action is the main way a "
+    "turn gets slow.\n"
+    "4. Prefer FAST tools: targeted tests over the full suite, `docker ps` "
+    "over long builds, `project_read_file` over shell commands. A tool that "
+    "waits minutes is almost never the agile choice.\n"
+    "5. VALIDATE what you touched, then close with the four sections "
+    "(What happened / What I did / Demo / Next tasks) and the checkpoint line.\n"
+    "6. Never end a turn with only tool calls: write down what is confirmed, "
+    "what is ruled out and the single next step.\n"
+    "\n"
+    "This turn is NOT stopped by the clock: if it grows long you will be asked "
+    "to wrap up and the user is warned. Wrapping up on time is YOUR job.\n"
+)
+
+# Notice injected (request only, never persisted) into the model conversation at
+# each agility checkpoint reached before the agile promise is broken.
+AGILE_NUDGE_TEMPLATE: str = (
+    "## ⏱️ Time checkpoint — {elapsed} of {target} used ({pct}%)\n"
+    "\n"
+    "This turn has a {target} target and {remaining} left. Your work "
+    "is NOT lost and the task is NOT stopped — but you must SPEED UP now.\n"
+    "\n"
+    "1. Finish the increment you already started instead of opening a new "
+    "investigation.\n"
+    "2. No more discovery calls unless they are strictly required by the change "
+    "you are already making: batch what is left in ONE call.\n"
+    "3. Prefer the fastest validation you can justify (targeted tests for the "
+    "files you touched).\n"
+    "4. In your NEXT message state: what is confirmed, what is ruled out and the "
+    "single next concrete step. If you cannot finish, deliver the partial "
+    "increment with its own summary and list the rest under `## Next tasks`.\n"
+)
+
+# Notice injected at, and after, the agile target (the promise is broken).
+AGILE_OVERTIME_TEMPLATE: str = (
+    "## 🚨 Turn OVER TIME — wrap up NOW\n"
+    "\n"
+    "This turn passed its target by {overdue} ({elapsed} of {target}). "
+    "It is NOT stopped: the user sees a warning and decides whether to stop it, "
+    "so the turn must become useful IMMEDIATELY.\n"
+    "\n"
+    "1. Stop investigating. Spend at most ONE round finishing the increment you "
+    "already have (edit the file, run the smallest check) or zero rounds if it "
+    "is already done.\n"
+    "2. Then answer with the four sections and the checkpoint line, naming under "
+    "`## Next tasks` everything that is still pending.\n"
+    "3. Never leave the turn without a written answer: what is confirmed, what "
+    "is ruled out and the single next step.\n"
+)
+
+# Footnote appended to the answer when an agile turn ENDED past its target. It
+# replaces the old "time budget reached" stop notice: the work is delivered, it
+# was only slower than the agile promise.
+AGILE_OVERTIME_FOOTNOTE: str = (
+    "\n\n> ⏱️ **Time target exceeded** — this turn took {elapsed} against a "
+    "{target} target. It was not stopped: the increment above is the delivery. "
+    "Split the remaining work into a new turn (`## Next tasks`).\n\n"
+)
+
+# Warnings stamped into the response message metadata so the CLIENT can show
+# them and the user can take action. ``{...}`` placeholders are filled by
+# ``AgileClock.metadata``.
+AGILE_WARNING_USER_MESSAGE: str = (
+    "This turn used {pct}% of its {target} target ({elapsed} used, "
+    "{remaining} left). It is still running — stop it or split the task if "
+    "you don't need the result."
+)
+AGILE_OVERTIME_USER_MESSAGE: str = (
+    "This turn exceeded its {target} target by {overdue} and is still "
+    "running. It was NOT stopped: the model has been told to wrap up. Stop it "
+    "or split the task to get an answer sooner."
+)
+
+MAX_MAX_ITERATIONS: int = 24
+MAX_MAX_TOOL_CALLS: int = 6
+MAX_MAX_TOOL_ROUNDS: int = 40
+# ADVISORY target of a max turn (1 h), NOT a deadline: the turn is told to wrap
+# up and the response is marked, but only the user stops it.
+MAX_WALL_CLOCK_SECONDS: float = 3600.0
+
 # ── Tool usage summary (generated only when the tool loop breaks) ─────────────
 # When LoopGuard stops a run, the tool conversation (the results the model saw)
 # would otherwise be discarded. A single lightweight request to the project's

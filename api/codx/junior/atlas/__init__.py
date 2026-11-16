@@ -8,7 +8,7 @@ from .constants import (
 )
 from .indexer import AtlasIndexer, index_project
 from .models import AtlasHealth, AtlasPacket, Evidence
-from .query import ProjectAtlas, atlas_db_path, atlas_ready
+from .query import ProjectAtlas, atlas_db_path, atlas_ready, shared_atlas
 from .related import find_related_project, related_projects
 from .store import AtlasStore
 
@@ -28,4 +28,5 @@ __all__ = [
     "find_related_project",
     "index_project",
     "related_projects",
+    "shared_atlas",
 ]

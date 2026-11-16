@@ -26,12 +26,16 @@ module is the layer that knows **who is asking** and **what the question means**
   ``MAX_EVENT_DURATION_DAYS``, and the ``revision`` grows on every write while
   ``If-Match`` protects it (``revision_mismatch``).
 
-Milestone M0 deliberately stops there: **no recurrence expansion** (a recurring
-event yields exactly one occurrence at its stored start, M3) and **no
-projection** (tasks, meets and orchestration runs join the agenda in M1, which
-is why ``truncated_projects`` is always empty for now). Reminders are not
-scheduled either (M2): :meth:`CalendarService.snooze` validates and answers the
-request without persisting a delivery.
+Two milestones meet here. **M0** stores and filters native events and still
+**does not expand recurrences** (a recurring event yields exactly one
+occurrence at its stored start, M3). **M1** adds the projection: the tasks of
+the current project that carry a work block (``scheduled_start/end``), an
+alarm clock (``wake_at``) or a deadline (``due_date``) are drawn read-only on
+the virtual ``codx-junior`` system calendar, so a task scheduled for after
+hours is visible in the agenda without ever being copied into it. Meets and
+orchestration runs will follow the same path. Reminders are not scheduled
+either (M2): :meth:`CalendarService.snooze` validates and answers the request
+without persisting a delivery.
 
 Error handling
 --------------
@@ -54,6 +58,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
@@ -139,6 +144,38 @@ _DAY_TOKENS = ("tomorrow", "today", "tom")
 #: Keys the preferences document owns. Anything else is preserved verbatim, so
 #: a later milestone can add a key without migrating the file.
 PREFS_KEYS = ("hidden_calendars", "order", "week_start")
+
+# -- system calendar projection (M1) -----------------------------------------
+
+#: Id of the virtual, read-only ``codx-junior`` system calendar (§3.1). It is
+#: materialised by :meth:`CalendarService.system_calendar` and never stored, so
+#: it can be renamed or recoloured only by changing this module.
+SYSTEM_CALENDAR_ID = "cal_codx_junior"
+
+#: Name of the system calendar, as it appears in the sidebar.
+SYSTEM_CALENDAR_NAME = "codx-junior"
+
+#: Colour of the system calendar (brand magenta).
+SYSTEM_CALENDAR_COLOR = "#CC0099"
+
+#: Length of a projected work block when the task declares no end.
+DEFAULT_TASK_BLOCK_MINUTES = 60
+
+#: Task states that are never projected (the work is over).
+CLOSED_TASK_STATUSES = ("done", "rejected")
+
+#: Projection sources this module can produce today.
+PROJECTED_SOURCES = ("task",)
+
+#: How long the projected-task list is reused. Listing the tasks of a project
+#: reads the metadata of EVERY task file (thousands in a long-lived project) and
+#: used to run on every agenda request. A few seconds of staleness on a calendar
+#: chip is harmless; a multi-second request is not.
+PROJECTED_TASKS_TTL_SECONDS = 10.0
+
+#: codx_path -> (loaded_at, tasks). Module level on purpose: the service is built
+#: per request, so an instance field would never be reused.
+_PROJECTED_TASKS_CACHE: Dict[str, Any] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -372,11 +409,264 @@ class CalendarService:
         Returns:
             The visible calendars (possibly empty).
         """
-        return [
+        visible = [
             calendar
             for calendar in self._load_calendars()
             if self.can_view(calendar)
         ]
+        # M1: the virtual system calendar that carries the projected tasks.
+        system = self.system_calendar()
+        if system is not None:
+            visible.append(system)
+        return visible
+
+    # -- system calendar + task projection (M1) ----------------------------
+
+    def system_calendar(self) -> Optional[Calendar]:
+        """
+        Return the virtual, read-only ``codx-junior`` system calendar.
+
+        It is **never stored**: the agenda would otherwise persist a document
+        nobody owns. It exists so a scheduled task has a calendar to be drawn
+        in, with the same shape as the others (colour, read-only flag, scope).
+
+        Returns:
+            The system calendar, or ``None`` for an anonymous viewer (a system
+            calendar is visible to every *authenticated* user, §11.1).
+        """
+        if not self.username:
+            return None
+        return Calendar(
+            id=SYSTEM_CALENDAR_ID,
+            name=SYSTEM_CALENDAR_NAME,
+            color=SYSTEM_CALENDAR_COLOR,
+            description="Scheduled tasks and runs of every project (read-only)",
+            scope="system",
+            owner=None,
+            timezone=self._timezone(),
+            read_only=True,
+            provider="codx",
+            visible=True,
+            order=-1,
+        )
+
+    def _task_manager(self) -> Any:
+        """
+        Build a :class:`~codx.junior.task_manager.TaskManager` for the project.
+
+        The projection is scoped to the project the caller works in (the
+        calendar is global, the tasks are not). Every failure returns ``None``:
+        a projection must never break the agenda.
+        """
+        if self.settings is None:
+            return None
+        try:
+            from codx.junior.task_manager import TaskManager
+
+            return TaskManager(settings=self.settings)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("calendar: cannot build the task manager: %s", ex)
+            return None
+
+    def projected_tasks(self) -> List[Any]:
+        """
+        Return the tasks of the project that must be drawn on the agenda.
+
+        A chat is projected when it is a board task, it is not closed nor
+        archived, and it declares at least one of ``scheduled_start`` /
+        ``wake_at`` / ``due_date``.
+
+        Returns:
+            The matching chats (possibly empty).
+        """
+        cache_key = str(getattr(self.settings, "codx_path", "") or "")
+        now = time.monotonic()
+        cached = _PROJECTED_TASKS_CACHE.get(cache_key)
+        if (
+            cache_key
+            and cached is not None
+            and now - cached[0] < PROJECTED_TASKS_TTL_SECONDS
+        ):
+            return list(cached[1])
+
+        manager = self._task_manager()
+        chat_manager = getattr(manager, "chat_manager", None)
+        if chat_manager is None:
+            return []
+        try:
+            chats = list(chat_manager.list_chats() or [])
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("calendar: cannot list tasks: %s", ex)
+            return []
+
+        projected: List[Any] = []
+        for chat in chats:
+            if getattr(chat, "archived_at", None):
+                continue
+            if str(getattr(chat, "status", "") or "").strip().lower() in CLOSED_TASK_STATUSES:
+                continue
+            if not (getattr(chat, "board", "") or getattr(chat, "board_id", "")):
+                continue
+            if self._task_block(chat)[0] is None:
+                continue
+            projected.append(chat)
+        if cache_key:
+            _PROJECTED_TASKS_CACHE[cache_key] = (now, projected)
+        return list(projected)
+
+    @staticmethod
+    def _task_block(chat: Any) -> tuple:
+        """
+        Return the ``(start, end, all_day)`` work block of a task.
+
+        The precedence is the one of §5.4: an explicit ``scheduled_start/end``
+        wins, then the ``wake_at`` alarm clock (one hour block), then the
+        ``due_date`` as an all-day item. ``start`` is ``None`` when the task
+        declares no schedule at all.
+        """
+        scheduled_start = parse_iso(getattr(chat, "scheduled_start", None))
+        if scheduled_start is not None:
+            all_day = bool(getattr(chat, "all_day", False))
+            scheduled_end = parse_iso(getattr(chat, "scheduled_end", None))
+            if scheduled_end is None or scheduled_end <= scheduled_start:
+                scheduled_end = scheduled_start + (
+                    timedelta(days=1)
+                    if all_day
+                    else timedelta(minutes=DEFAULT_TASK_BLOCK_MINUTES)
+                )
+            return scheduled_start, scheduled_end, all_day
+
+        wake_at = parse_iso(getattr(chat, "wake_at", None))
+        if wake_at is not None:
+            return (
+                wake_at,
+                wake_at + timedelta(minutes=DEFAULT_TASK_BLOCK_MINUTES),
+                False,
+            )
+
+        due = parse_iso(getattr(chat, "due_date", None))
+        if due is not None:
+            day = due.astimezone(timezone.utc).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            return day, day + timedelta(days=1), True
+
+        return None, None, False
+
+    def _task_event(
+        self,
+        chat: Any,
+        timezone_name: Optional[str] = None,
+    ) -> Optional[CalendarEvent]:
+        """
+        Project one task as a (never stored) :class:`CalendarEvent`.
+
+        The event keeps the back-reference to the task (``refs.chat_id``), so
+        the UI opens the task instead of a copy, and it is a member of the
+        system calendar plus any calendar the task is pinned to (R6).
+
+        Args:
+            chat: The task to project.
+            timezone_name: Timezone resolved ONCE for the whole agenda. Passing
+                it avoids one calendars.json read per projected task (the
+                timezone resolution walks the stored calendars).
+        """
+        start, end, all_day = self._task_block(chat)
+        if start is None:
+            return None
+
+        chat_id = str(getattr(chat, "id", "") or "").strip()
+        calendar_ids = [SYSTEM_CALENDAR_ID]
+        for calendar_id in _as_dict_list(getattr(chat, "calendar_ids", None)):
+            clean = str(calendar_id or "").strip()
+            if clean and clean not in calendar_ids:
+                calendar_ids.append(clean)
+
+        title = str(getattr(chat, "name", "") or "").strip() or "Task"
+        alarm = parse_iso(getattr(chat, "wake_at", None)) is not None
+        return CalendarEvent(
+            id=f"task_{chat_id}" if chat_id else f"task_{abs(hash(title))}",
+            calendar_ids=calendar_ids,
+            project_id=getattr(chat, "project_id", None) or self.project_id,
+            title=f"\u23f0 {title}" if alarm else title,
+            description=str(getattr(chat, "description", "") or ""),
+            location="",
+            start=to_utc_iso(start),
+            end=to_utc_iso(end),
+            all_day=all_day,
+            timezone=timezone_name or self._timezone(),
+            source="task",
+            refs={
+                "chat_id": chat_id,
+                "board": getattr(chat, "board", None),
+                "column": getattr(chat, "column", None),
+                "status": getattr(chat, "status", None),
+                "wake_at": getattr(chat, "wake_at", None),
+                "due_date": getattr(chat, "due_date", None),
+                "profiles": list(getattr(chat, "profiles", None) or []),
+            },
+            created_by=None,
+        )
+
+    def _task_occurrences(
+        self,
+        *,
+        start_dt: datetime,
+        end_dt: datetime,
+        sources: Iterable[str],
+        needle: str,
+        projects: Optional[Iterable[str]],
+        selected: Iterable[str],
+        hidden: Iterable[str],
+        include_hidden: bool,
+    ) -> List[Occurrence]:
+        """
+        Project the scheduled tasks of the project into occurrences (M1).
+
+        The same filters as the stored events are applied (sources, calendars,
+        hidden calendars, projects, free text) plus the range overlap, and the
+        result is always ``read_only``: a projected item is moved by editing the
+        task, never by dragging the chip.
+        """
+        if not any(source in PROJECTED_SOURCES for source in sources or []):
+            if sources:
+                return []
+        selected_ids = _dedupe(selected)
+        hidden_ids = set(hidden or [])
+        by_id = {calendar.id: calendar for calendar in self.visible_calendars()}
+        # Resolve the projection timezone ONCE: doing it per task would read the
+        # calendar store once per projected item.
+        timezone_name = self._timezone()
+
+        occurrences: List[Occurrence] = []
+        for chat in self.projected_tasks():
+            event = self._task_event(chat, timezone_name=timezone_name)
+            if event is None:
+                continue
+            memberships = [cid for cid in event.calendar_ids if cid in by_id]
+            if selected_ids:
+                memberships = [cid for cid in memberships if cid in selected_ids]
+            if not memberships:
+                continue
+            if not include_hidden and all(cid in hidden_ids for cid in memberships):
+                continue
+            if not self.matches_projects(event.project_id, projects):
+                continue
+            if needle:
+                haystack = " ".join(
+                    [event.title or "", event.description or ""]
+                ).lower()
+                if needle not in haystack:
+                    continue
+            event_start = event.start_datetime()
+            event_end = event.end_datetime() or event_start
+            if event_start is None or event_end is None:
+                continue
+            if event_end <= start_dt or event_start >= end_dt:
+                continue
+            occurrence = self._occurrence(event, memberships)
+            occurrences.append(occurrence.model_copy(update={"read_only": True}))
+        return occurrences
 
     # -- per-user visibility (prefs) --------------------------------------
 
@@ -479,8 +769,13 @@ class CalendarService:
         )
         if preferred:
             return str(preferred)
-        for calendar in self.visible_calendars():
-            if calendar.timezone:
+        # Read the *stored* calendars, not ``visible_calendars()``: the latter
+        # appends the virtual system calendar, which asks ``_timezone()`` for
+        # its own timezone and would recurse forever.
+        for calendar in self._load_calendars():
+            if calendar.id == SYSTEM_CALENDAR_ID:
+                continue
+            if calendar.timezone and self.can_view(calendar):
                 return calendar.timezone
         return DEFAULT_TIMEZONE
 
@@ -1052,6 +1347,21 @@ class CalendarService:
                 if needle not in haystack:
                     continue
             occurrences.append(self._occurrence(event, memberships))
+
+        # M1 projection: the scheduled tasks of the project join the agenda as
+        # read-only items of the system calendar, never as stored copies.
+        occurrences.extend(
+            self._task_occurrences(
+                start_dt=start_dt,
+                end_dt=end_dt,
+                sources=sources,
+                needle=needle,
+                projects=query.projects,
+                selected=selected,
+                hidden=hidden,
+                include_hidden=query.include_hidden,
+            )
+        )
 
         occurrences.sort(key=lambda item: (item.start or "", item.title or ""))
 

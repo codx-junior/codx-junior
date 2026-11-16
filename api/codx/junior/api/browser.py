@@ -72,7 +72,7 @@ READ_ONLY_ACTIONS = {"text", "read", "links", "snapshot", "screenshot"}
 # Helpers
 # ============================================================================
 
-def get_session_context(request: Request) -> CODXJuniorSession:
+async def get_session_context(request: Request) -> CODXJuniorSession:
     """Dependency: get the current session context from request state."""
     session = getattr(request.state, 'codx_junior_session', None)
     if not session:

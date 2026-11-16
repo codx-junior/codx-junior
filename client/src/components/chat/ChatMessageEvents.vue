@@ -704,7 +704,22 @@ export default {
         }
       }
 
-      // 3. Waiting: the whole point of recording phases.
+      // 3. Agile target: the turn is NEVER stopped by the clock, so the user is
+      // the one who decides whether to stop it or split the task. The warning
+      // text is rendered by the server (meta_data.agile.warning).
+      const agile = message?.meta_data?.agile
+      if (agile?.warning) {
+        const overtime = agile.state === 'overtime'
+        const tier = agile.mode === 'max' ? 'max' : 'agile'
+        return {
+          class: overtime ? 'bg-error/10 text-error' : 'bg-warning/10 text-warning',
+          icon: 'fa-solid fa-hourglass-half',
+          title: overtime ? `${tier} target exceeded` : `${tier} target close`,
+          detail: agile.warning
+        }
+      }
+
+      // 4. Waiting: the whole point of recording phases.
       const phase = this.openPhase
       if (phase) {
         const started = this.parseTime(phase.started_at)

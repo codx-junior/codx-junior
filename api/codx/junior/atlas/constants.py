@@ -40,6 +40,10 @@ PROJECT_READ_TOOL_NAMES: tuple[str, ...] = (
 DEFAULT_MAX_FILES = 5000
 #: How long a freshness check is reused within one process.
 DEFAULT_TTL_SECONDS = 5
+#: How long a git-free watermark match (HEAD + .git/index unchanged) is trusted
+#: before a real ``git status`` scan runs again. Between two scans the atlas is
+#: served straight from the index with no subprocess at all.
+DEFAULT_SCAN_SECONDS = 60
 
 
 def atlas_enabled(settings: Any) -> bool:

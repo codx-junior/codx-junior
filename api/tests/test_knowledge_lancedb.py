@@ -14,6 +14,14 @@ import sys
 
 import pytest
 
+# ``lancedb`` is an OPTIONAL dependency: the API imports it lazily and disables
+# knowledge when it is missing (see knowledge_lancedb.py). Skip the suite instead
+# of failing 10 tests on an installation that legitimately does not ship it.
+pytest.importorskip(
+    "lancedb",
+    reason="lancedb is an optional dependency (embedded knowledge backend)",
+)
+
 from langchain_core.documents import Document
 
 from codx.junior.knowledge.knowledge_lancedb import (

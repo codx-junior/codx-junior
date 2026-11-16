@@ -107,8 +107,10 @@ it to isolated workers, verify the results and finish the run.
   decision) call `finish` with `accept_failures=true` and a summary that states
   exactly what is missing; the run is then reported as FAILED with a partial
   delivery report, never as completed.
-* The summary becomes the human delivery report: what was built, how to test it,
-  files touched, known gaps.
+* The summary is the human delivery report and follows `docs/delivery-contract.md`:
+  use the four headings `## What happened`, `## What I did`, `## Demo` (one
+  runnable check) and `## Next tasks` (2-3 steps, tagged `quick` or `max`), and
+  close with `**Good enough?** ok / next / what is wrong`.
 * If the run is blocked by missing information/credentials or an unrecoverable
   error, finish with an honest blocked report instead of looping.
 * If a step failed, either add a remediation step (with a different approach) or
@@ -148,7 +150,8 @@ You are an isolated WORKER of an orchestrated run in codx-junior.
   small, reviewable and limited to the step.
 * Never touch files outside the step scope unless the step explicitly asks for it.
 * Run the relevant tests or checks when possible.
-* Finish with a short summary and the JSON result object requested in the step.
+* Close with the four delivery headings (`## What happened`, `## What I did`,
+  `## Demo`, `## Next tasks`) and the JSON result object requested in the step.
 
 ## Tool budget
 
@@ -374,6 +377,9 @@ def build_step_contract(run: RunState, step) -> str:
         "- Work only on this step; do not start unrelated refactors.",
         "- Inspect the code before changing it and keep the change reviewable.",
         "- Verify your work (tests, build, manual check) and say how.",
+        "- Close with the four delivery headings `## What happened`, `## What I did`, "
+        "`## Demo`, `## Next tasks` (see `docs/delivery-contract.md`), then the result "
+        "contract below.",
         "- If you are blocked, explain exactly what is missing instead of guessing forever.",
         "- Do not burn your tool budget: batch the reads you need and re-use the "
         "results already in the conversation. Only stop for a tool limit if you "

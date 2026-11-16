@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from codx.junior.browser.browser import Browser
@@ -41,8 +43,19 @@ logger = logging.getLogger(__name__)
 #: window keeps the human-event recorder active during long reading sessions.
 DEFAULT_IDLE_SECONDS = 900
 
-#: How long the AI waits for a human who is actively typing before giving up.
-DEFAULT_USER_WAIT_SECONDS = 3
+#: How long the AI waits for a human to pause before giving up.  Waiting is
+#: cheaper than failing: a failed action costs a whole extra model turn (~5 s),
+#: while the AI normally slips in ~1.5 s after the last keystroke.
+DEFAULT_USER_WAIT_SECONDS = 15
+
+#: Quiet gap that means "the human stopped feeding events".  Kept short on
+#: purpose: the 10 s ``user_active_until`` cooldown protects the UI, not the
+#: AI's ability to interleave one action while co-driving.
+USER_QUIET_SECONDS = 1.5
+
+#: Poll cadence while waiting for the human.  Fast enough to feel immediate,
+#: cheap enough to leave a turn parked for seconds.
+CONTROL_POLL_SECONDS = 0.15
 
 #: How long after an AI action a URL change is attributed to the AI.
 AI_NAVIGATION_GRACE_SECONDS = 2.5
@@ -68,7 +81,19 @@ class BrowserRuntime:
         self._watch_task: Optional[asyncio.Task] = None
         self._last_url = (getattr(session, "current_url", None) or "").strip()
         self._recorded_pages: set = set()
+        self._user_event_seq = 0
+        self.user_wait_seconds = self._configured_user_wait_seconds()
         self.loop = None
+
+    @staticmethod
+    def _configured_user_wait_seconds() -> float:
+        """Deadline for waiting on a busy human (env override, 15 s default)."""
+        raw = os.environ.get("CODX_BROWSER_USER_WAIT_SECONDS", "")
+        try:
+            value = float(raw or DEFAULT_USER_WAIT_SECONDS)
+        except (TypeError, ValueError):
+            value = DEFAULT_USER_WAIT_SECONDS
+        return max(1.0, min(value, 120.0))
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -200,24 +225,45 @@ class BrowserRuntime:
         self._refresh_session()
         if read_only:
             return
-        if self.session.can_ai_act():
-            return
         if self.session.controller == "user":
             reason = self.session.handoff_reason or "the user is controlling the page"
             raise BrowserControlError(
                 f"The AI does not have control of this browser: {reason}. "
                 "Wait for the user to give control back."
             )
-        # Recent user input: give the human a short window to finish typing.
-        deadline = time.monotonic() + DEFAULT_USER_WAIT_SECONDS
+        if self.session.controller == "none":
+            raise BrowserControlError(
+                "The browser session is paused (controller='none'). "
+                "Take control back before acting."
+            )
+        if self.session.ai_may_act_now(quiet_seconds=USER_QUIET_SECONDS):
+            return
+        # The human touched the page recently.  In a co-driving session the two
+        # actors alternate, so wait for the page to go quiet for a moment
+        # instead of failing on the first 3 seconds (which burned an extra model
+        # turn and made the session feel stuck).  A real hand-off (controller
+        # 'user') still fails immediately above.
+        deadline = time.monotonic() + self.user_wait_seconds
         while time.monotonic() < deadline:
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(CONTROL_POLL_SECONDS)
             self._refresh_session()
-            if self.session.can_ai_act():
+            if self.session.controller == "user":
+                reason = self.session.handoff_reason or "the user is controlling the page"
+                raise BrowserControlError(
+                    f"The AI does not have control of this browser: {reason}. "
+                    "Wait for the user to give control back."
+                )
+            if self.session.controller == "none":
+                raise BrowserControlError(
+                    "The browser session is paused (controller='none'). "
+                    "Take control back before acting."
+                )
+            if self.session.ai_may_act_now(quiet_seconds=USER_QUIET_SECONDS):
                 return
         raise BrowserControlError(
-            "The user is interacting with the page; the AI paused to avoid typing "
-            "over their input. Call browser_activity to see what changed, then retry."
+            f"The user is still interacting with the page after "
+            f"{self.user_wait_seconds:.0f}s of waiting. Call browser_activity to see "
+            "what changed, then retry — or ask the user to press 'Give back to AI'."
         )
 
     def request_handoff(self, reason: str, chat_id: Optional[str] = None) -> None:
@@ -377,6 +423,93 @@ class BrowserRuntime:
                 "controller": self.session.controller,
             }
 
+    async def wait_for_change(
+        self,
+        timeout_ms: int = 20000,
+        include_activity: bool = True,
+        include_snapshot: bool = True,
+    ) -> Dict[str, Any]:
+        """Block until the human acts or the page navigates, then return state.
+
+        This is the co-driving primitive the tools were missing.  Instead of the
+        model polling with ``browser_activity`` (one LLM turn per poll), it can
+        park a single call: "wait until the user does something, then tell me
+        what happened and where we are".  Read-only, so it also works while the
+        human owns the control lease.
+
+        Args:
+            timeout_ms: Maximum wait (250 ms .. 60 s).  Returns ``changed=False``
+                on timeout instead of raising, so the AI can decide what next.
+            include_activity: Include the activity entries recorded during the
+                wait (the recorder drains every second anyway).
+            include_snapshot: On a real change, append the compact page snapshot
+                so the model can act on the new state without another turn.
+
+        Returns:
+            Dict with ``changed``, ``reason`` (``user``/``navigation``/``timeout``),
+            ``url``, ``title``, ``waited_ms``, ``activity`` and, on a change,
+            ``page`` (compact snapshot).
+        """
+        try:
+            timeout_ms = int(timeout_ms or 20000)
+        except (TypeError, ValueError):
+            timeout_ms = 20000
+        timeout_ms = max(250, min(timeout_ms, 60000))
+        started_seq = self._user_event_seq
+        started_url = (self.session.current_url or "").strip()
+        started_title = (self.session.current_title or "").strip()
+        started_at = time.monotonic()
+        since = datetime.now(timezone.utc).isoformat()
+
+        reason = "timeout"
+        changed = False
+        while True:
+            remaining = timeout_ms / 1000.0 - (time.monotonic() - started_at)
+            if remaining <= 0:
+                break
+            await asyncio.sleep(min(0.2, remaining))
+            try:
+                state = await self.drain()
+            except Exception as ex:
+                logger.debug("wait_for_change drain failed: %s", ex)
+                state = {}
+            url = (state.get("url") or self.session.current_url or "").strip()
+            title = (state.get("title") or self.session.current_title or "").strip()
+            user_event = self._user_event_seq != started_seq
+            navigated = bool(url and url != started_url)
+            retitled = bool(title and title != started_title)
+            if user_event:
+                reason, changed = "user", True
+                break
+            if navigated or retitled:
+                reason, changed = "navigation", True
+                break
+
+        result: Dict[str, Any] = {
+            "changed": changed,
+            "reason": reason,
+            "url": self.session.current_url or started_url,
+            "title": self.session.current_title or started_title,
+            "waited_ms": round((time.monotonic() - started_at) * 1000),
+            "controller": self.session.controller,
+        }
+        if include_activity:
+            try:
+                entries = self.manager.get_activity(self.session.id, limit=60)
+                result["activity"] = [
+                    entry for entry in entries
+                    if (entry.get("ts") or "") >= since
+                ][-20:]
+            except Exception as ex:
+                logger.debug("wait_for_change activity read failed: %s", ex)
+                result["activity"] = []
+        if include_snapshot and changed:
+            try:
+                result["page"] = await self.snapshot()
+            except Exception as ex:
+                logger.debug("wait_for_change snapshot failed: %s", ex)
+        return result
+
     async def snapshot(self) -> Dict[str, Any]:
         """Compact page snapshot (read-only, allowed while the human drives)."""
         return await self.run("get_snapshot", read_only=True)
@@ -399,6 +532,10 @@ class BrowserRuntime:
             "controller": self.session.controller,
             "handoff_reason": self.session.handoff_reason,
             "user_active": self.session.user_is_active(),
+            # The actionable pair for co-driving: ``user_active`` is the UI
+            # cooldown, ``ai_may_act`` is true as soon as the page is quiet.
+            "user_typing": self.session.user_is_typing(USER_QUIET_SECONDS),
+            "ai_may_act": self.session.ai_may_act_now(USER_QUIET_SECONDS),
             "user_active_until": self.session.user_active_until,
             "current_url": self.session.current_url,
             "current_title": self.session.current_title,
@@ -473,6 +610,7 @@ class BrowserRuntime:
                     url = browser.session.current_url or url
                     title = browser.session.current_title or title
                     self.session.mark_user_active(seconds=10)
+                    self._user_event_seq += 1
                     self.manager.log_activity(
                         self.session,
                         actor="user",
@@ -518,6 +656,7 @@ class BrowserRuntime:
             if event.get("x") is not None or event.get("y") is not None:
                 params.update({"x": event.get("x"), "y": event.get("y")})
             self.session.mark_user_active(seconds=10)
+            self._user_event_seq += 1
             self.manager.log_activity(
                 self.session,
                 actor="user",
@@ -535,6 +674,7 @@ class BrowserRuntime:
             and time.monotonic() - self._last_ai_action > AI_NAVIGATION_GRACE_SECONDS
         ):
             self.session.mark_user_active(seconds=10)
+            self._user_event_seq += 1
             self.manager.log_activity(
                 self.session,
                 actor="user",

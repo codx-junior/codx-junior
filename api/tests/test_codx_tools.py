@@ -170,14 +170,17 @@ def test_project_search_never_matches_codx_paths(project, monkeypatch):
 
 
 def test_profile_allowlist_gets_the_read_only_investigation_tools():
-    """A saved profile must not hide grep/glob/changes/search_codx."""
+    """A saved profile must not hide the read-only discovery tools.
+
+    Discovery is atlas-first now: without an atlas-enabled project the minimum
+    surface is the control-plane search and the change inventory (the atlas
+    tools are added by ``apply_atlas_policy`` when the project has an atlas).
+    """
     tools = ChatEngine._ensure_investigation_tools(
         None, ["project_read_file", "project_search"]
     )
 
-    for name in (
-        "project_grep", "project_glob", "project_changes", "search_codx",
-    ):
+    for name in ("project_changes", "search_codx"):
         assert name in tools
 
     # Profiles that cannot read project files are not modified.
@@ -262,4 +265,5 @@ def test_search_codx_no_match_is_explicit(project):
     )
 
     assert "No matches" in response.llm_response
-    assert "project_grep" in response.llm_response
+    # Discovery is atlas-first: the hint points at the atlas locator.
+    assert "project_locate" in response.llm_response

@@ -69,7 +69,21 @@ function control(action) {
       {{ error }}
     </div>
 
-    <div v-if="!run" class="flex flex-col items-center gap-2 py-12 text-base-content/40">
+    <!-- Loading is shown BEFORE the empty state: while the detail of the
+         selected task is in flight `run` is still null, and the empty state
+         made a slow (or stalled) load look like "nothing is selected". -->
+    <div
+      v-if="!run && loading"
+      class="flex flex-col items-center gap-2 py-12 text-base-content/50"
+    >
+      <span class="loading loading-spinner loading-md"></span>
+      <span class="text-sm">Loading the harness task…</span>
+    </div>
+
+    <div
+      v-else-if="!run && !error"
+      class="flex flex-col items-center gap-2 py-12 text-base-content/40"
+    >
       <i class="fa-solid fa-bolt text-4xl"></i>
       <span class="text-sm">Select a harness task on the left to diagnose it.</span>
     </div>

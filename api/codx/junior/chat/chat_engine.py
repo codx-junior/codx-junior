@@ -1883,6 +1883,15 @@ class ChatEngine:
                 response_message.reasoning_content = (
                     run_result.reasoning_content or None
                 )
+                # Agile clock state of the turn (state/elapsed/percent/warning).
+                # It is stamped on the response message so the client can warn
+                # the user when the agile target was exceeded — the turn itself
+                # is NEVER stopped by that clock.
+                if run_result.agile:
+                    response_message.meta_data = {
+                        **(response_message.meta_data or {}),
+                        "agile": run_result.agile,
+                    }
 
         except Exception as ex:
             logger.exception(
@@ -2919,6 +2928,15 @@ class ChatEngine:
             # question and the engine can tell which request a running response
             # belongs to (one live response per chat). See
             # :meth:`_new_response_message`.
+            # The turn id comes from the durable turn record passed by
+            # ``chat_with_project``: a RESUMED turn (recovery worker) reuses the
+            # response message it was already streaming into, while a brand new
+            # turn has no matching open message and gets a fresh one.
+            turn_id = (
+                getattr(turn_record, "turn_id", None)
+                if turn_record is not None
+                else None
+            )
             resumed_response = self._open_response_message(chat, turn_id)
             if resumed_response is not None:
                 # RESUME: the turn was interrupted with its response message

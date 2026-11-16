@@ -41,6 +41,7 @@ class FakeMessage:
         self.hide = hide
         self.improvement = improvement
         self.is_answer = is_answer
+        self.unsent = False
         self.files = files or []
         self.attachments = attachments or []
 

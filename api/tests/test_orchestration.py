@@ -384,8 +384,13 @@ def test_store_lock_path_keeps_the_run_stem(tmp_path):
     run = RunState(name="lock", objective="o")
     run.run_id = "run.with.json.in.the.id"
     store.save(run)
+    # Locks live in the RUNTIME folder (they churn and must never be committed),
+    # but the stem must be the run id verbatim, ".json" included.
     assert store.lock_path(run.run_id).endswith("run.with.json.in.the.id.lock")
-    assert store.lock_path(run.run_id) == store.run_path(run.run_id)[:-5] + ".lock"
+    assert os.path.dirname(store.lock_path(run.run_id)) == store.runtime_dir
+    assert os.path.basename(store.lock_path(run.run_id)) == (
+        os.path.basename(store.run_path(run.run_id))[:-5] + ".lock"
+    )
 
 
 def test_store_worker_heartbeat(tmp_path):
@@ -470,15 +475,19 @@ def test_tick_dispatches_ready_steps_and_persists_results(tmp_path):
 
     asyncio.run(service.tick(run.run_id))
     run = store.load(run.run_id)
+    # One tick drains consecutive READY batches (bounded): after A completes, B
+    # becomes ready and runs in the same tick instead of waiting for the next
+    # worker cycle (ticks are seconds apart).
     assert run.step_by_title("A").status == C.STEP_STATUS_DONE
-    assert run.step_by_title("B").status == C.STEP_STATUS_PENDING
+    assert run.step_by_title("B").status == C.STEP_STATUS_DONE
     assert run.step_by_title("A").result.summary == "did A"
+    assert run.step_by_title("B").result.summary == "did B"
     assert run.step_by_title("A").chat_id.startswith("card-")
 
+    # The following tick hands the completed run to the supervisor for verify.
     asyncio.run(service.tick(run.run_id))
     run = store.load(run.run_id)
-    assert run.step_by_title("B").status == C.STEP_STATUS_DONE
-    assert run.pending_supervisor is True
+    assert executor.supervisor_calls, "the verify supervisor round did not run"
 
 
 def test_independent_steps_run_in_parallel(tmp_path):
@@ -885,6 +894,65 @@ def test_orchestrator_add_step_tool_updates_the_plan(tmp_path):
     ))
     assert "1 step" in added.user_response
     assert '"status": "step_added"' in added.llm_response
+
+
+def test_orchestrator_start_then_plan_in_the_same_turn(tmp_path):
+    """Regression: start + plan in the same turn used to fail.
+
+    ``create_run`` binds ``run_id`` on the chat **in memory** only; the binding
+    reaches the disk when the chat engine saves the chat at the end of the turn.
+    Any tool call that resolves a fresh chat instance in that same turn
+    therefore used to answer "This task is not an orchestration run".
+    """
+    module = _load_orchestration_tools()
+    manager = FakeChatManager()
+    main = FakeChat("main", name="Main")
+    manager.add(main)
+    settings = SimpleNamespace(
+        codx_path=str(tmp_path / ".codx"),
+        project_id="project-1",
+        project_name="test",
+    )
+    session = _ToolSession(manager, main)
+
+    asyncio.run(module.orchestrator(
+        action="start",
+        objective="Do it",
+        budget_cxjcoins=5,
+        settings=settings,
+        session=session,
+    ))
+    run_id = main.run_id
+    assert run_id
+
+    # Next round of the same turn: a chat loaded without the run binding.
+    stale = FakeChat("main", name="Main")
+    manager.add(stale)
+    session._current_chat = stale
+
+    again = asyncio.run(module.orchestrator(
+        action="start",
+        objective="Do it",
+        settings=settings,
+        session=session,
+    ))
+    assert '"status": "exists"' in again.llm_response
+
+    planned = asyncio.run(module.orchestrator(
+        action="plan",
+        steps=[{"title": "A", "objective": "do a"}],
+        settings=settings,
+        session=session,
+    ))
+    assert '"status": "planned"' in planned.llm_response
+    assert stale.run_id == run_id
+
+    status = asyncio.run(module.orchestrator(
+        action="status",
+        settings=settings,
+        session=session,
+    ))
+    assert run_id in status.llm_response
 
 
 # ---------------------------------------------------------------------------

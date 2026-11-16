@@ -83,7 +83,7 @@ export class CodxJuniorConnection {
     this.liveRequests++;
     const request = this.axiosInstance.get(this.prepareUrl(url), { headers: this.headers })
     return this.trackLocalCall('GET', url, request)
-      .then(({ data }) => data)
+      .then((response) => response?.data)
       .finally(() => this.liveRequests--);
   }
 
@@ -104,7 +104,7 @@ export class CodxJuniorConnection {
       responseType: 'blob'
     })
     return this.trackLocalCall('GET', url, request)
-      .then(({ data }) => data)
+      .then((response) => response?.data)
       .finally(() => this.liveRequests--);
   }
 
@@ -113,7 +113,7 @@ export class CodxJuniorConnection {
     this.liveRequests++;
     const request = this.axiosInstance.post(this.prepareUrl(url), data, { headers: this.headers })
     return this.trackLocalCall('POST', url, request)
-      .then(({ data }) => data)
+      .then((response) => response?.data)
       .finally(() => this.liveRequests--);
   }
 
@@ -122,7 +122,7 @@ export class CodxJuniorConnection {
     this.liveRequests++;
     const request = this.axiosInstance.put(this.prepareUrl(url), data, { headers: this.headers })
     return this.trackLocalCall('PUT', url, request)
-          .then(({ data }) => data)
+          .then((response) => response?.data)
           .finally(() => this.liveRequests--);
   }
 

@@ -75,13 +75,27 @@ DEFAULT_MAX_ATTEMPTS = 3
 # The recovery worker compares the turn heartbeat (updated on every streamed
 # chunk and every tool event) against this window, stops the execution and
 # restarts it.
+#
+# The window is generous on purpose: a single tool call (a full test suite, a
+# build, a migration) can legitimately run for many minutes WITHOUT emitting an
+# event, and declaring that turn dead would throw away real work. The heartbeat
+# is refreshed on every streamed chunk and every tool event; 30 minutes of
+# complete silence is a hang, not a slow tool.
 ENV_STALE_SECONDS = "CODX_JUNIOR_CHAT_TURN_STALE_SECONDS"
-DEFAULT_STALE_SECONDS = 600.0
+DEFAULT_STALE_SECONDS = 1800.0
 
 # Minimum seconds between heartbeat writes of the same turn (progress ticks are
 # frequent: one per streamed chunk and per tool event).
 ENV_HEARTBEAT_INTERVAL = "CODX_JUNIOR_CHAT_TURN_HEARTBEAT_INTERVAL"
 DEFAULT_HEARTBEAT_INTERVAL = 10.0
+
+# ADVISORY wall-clock report of a turn. It is a DIAGNOSTIC: nothing stops or
+# restarts a turn because of it. A long task belongs to the user, who is the only
+# one allowed to stop it; the agile/max effort tiers never end a task either.
+# Kept overridable so an operator can make the snapshot flag long turns
+# (``0``, the default, disables the flag entirely).
+ENV_MAX_SECONDS = "CODX_JUNIOR_CHAT_TURN_MAX_SECONDS"
+DEFAULT_MAX_SECONDS = 0.0
 
 # Note appended to an interrupted response message. The message is hidden from
 # the prompt history (it is not a real assistant answer), but keeping the note
@@ -245,6 +259,8 @@ class ChatTurnStore:
         self.heartbeat_interval = _env_float(
             ENV_HEARTBEAT_INTERVAL, DEFAULT_HEARTBEAT_INTERVAL
         )
+        # Wall-clock budget of one turn (0 disables it).
+        self.max_seconds = _env_float(ENV_MAX_SECONDS, DEFAULT_MAX_SECONDS)
         # turn_id -> monotonic timestamp of the last heartbeat write.
         self._heartbeat_ts: Dict[str, float] = {}
 
@@ -366,47 +382,80 @@ class ChatTurnStore:
         with self._locks_lock:
             return turn_id in self._locks
 
-    def live_turn_ids(self) -> List[str]:
+    def live_turn_ids(self, *, include_stale: bool = False) -> List[str]:
         """
-        Return the active turn ids owned by a live process.
+        Return the active turn ids that are genuinely being executed.
 
         A lock that can be taken (and immediately released) belongs to a dead
         process: that turn is an orphan and may be repaired/recovered. A lock
         that is held belongs to a live turn and must not be touched (e.g. a
-        concurrent turn of the same chat).
+        concurrent turn of the same chat) — EXCEPT when the turn stopped making
+        progress: a hung AI request, a blocked tool or a deadlocked thread never
+        release the ``flock``, so the lock alone would report a dead turn as
+        "live for ever" and its response message could never be sealed nor
+        stopped. That is why the heartbeat (:meth:`is_stale`) is part of the
+        verdict.
+
+        Args:
+            include_stale: Also report stalled turns. Diagnostics ("does a
+                process still own this turn?") need them; the callers that
+                repair or stop a response must not see them.
 
         Returns:
-            Turn ids whose lock is currently held somewhere.
+            Turn ids that are alive: lock held somewhere and, by default, still
+            making progress.
         """
         live: List[str] = []
         for record in self.list_active():
-            if self.is_owned(record.turn_id):
-                live.append(record.turn_id)
+            if not self.is_owned(record.turn_id):
+                if self.claim(record):
+                    # Free lock: orphan. Release the probe immediately.
+                    self.release(record.turn_id)
+                    continue
+            if not include_stale and self.is_stale(record):
+                logger.warning(
+                    "ChatTurnStore: turn '%s' of chat '%s' holds its lock but "
+                    "made no progress for %ss (< %ss): it is dead, not live",
+                    record.turn_id,
+                    record.chat_id,
+                    int(self.activity_age(record)),
+                    int(self.stale_seconds),
+                )
                 continue
-            if self.claim(record):
-                # Free lock: orphan. Release the probe immediately.
-                self.release(record.turn_id)
-            else:
-                live.append(record.turn_id)
+            live.append(record.turn_id)
         return live
 
-    def chat_is_processing(self, chat_id: str) -> bool:
+    def chat_is_processing(
+        self,
+        chat_id: str,
+        *,
+        include_stale: bool = True,
+    ) -> bool:
         """
-        Return True when a live turn is running for *chat_id*.
+        Return True when a turn of *chat_id* is owned by a live process.
 
         Unlike :meth:`is_owned`, this is **cross-process**: the background
         worker (orchestration tick) must not inject a supervisor round while
         the API process is running a user turn on the same chat. The flock probe
         sees a lock held by any process.
 
+        ``include_stale`` defaults to True because the scheduler asks "is the
+        chat busy?": a stalled turn is still being stopped and restarted by the
+        recovery worker, and starting a second turn meanwhile would leave two
+        responses on the same chat. Callers that ask "is a response really being
+        produced?" (sealing, cancelling) use :meth:`live_response` instead.
+
         Args:
             chat_id: Chat to check.
+            include_stale: Count a stalled-but-locked turn as busy.
 
         Returns:
             True when an active turn of *chat_id* is owned by a live process.
         """
         if not chat_id:
             return False
+        if not include_stale:
+            return self.live_response(chat_id) is not None
         for record in self.find_active(chat_id):
             if self.is_owned(record.turn_id):
                 return True
@@ -509,6 +558,52 @@ class ChatTurnStore:
             return 0.0
         return max(0.0, time.time() - started)
 
+    def turn_age(self, record: ChatTurnRecord) -> float:
+        """
+        Seconds since *record* was STARTED (0 when no timestamp can be read).
+
+        Unlike :meth:`activity_age` this never resets on progress: it measures
+        the work already spent, which is what the wall-clock budget bounds.
+
+        Args:
+            record: The turn record.
+
+        Returns:
+            Age in seconds.
+        """
+        started = _parse_iso(record.started_at or record.created_at)
+        if not started:
+            return 0.0
+        return max(0.0, time.time() - started)
+
+    def is_expired(
+        self,
+        record: ChatTurnRecord,
+        max_seconds: Optional[float] = None,
+    ) -> bool:
+        """
+        Return True when *record* outlived the ADVISORY wall-clock report.
+
+        This is a diagnostic only: no caller of this module stops, restarts or
+        cancels a turn because of it. A long task is legitimate and the user is
+        the only one who may end it (agile and max never end a task either).
+        The store exposes it so ``/api/chat/turn`` and the logs can show "this
+        turn has been running for a while" without acting on it.
+
+        Args:
+            record: The turn record.
+            max_seconds: Override of :attr:`max_seconds` (0 disables the flag).
+
+        Returns:
+            True when the turn passed the diagnostic threshold.
+        """
+        if record is None or record.status not in ACTIVE_STATUSES:
+            return False
+        limit = float(self.max_seconds if max_seconds is None else max_seconds)
+        if limit <= 0:
+            return False
+        return self.turn_age(record) > limit
+
     def is_stale(
         self,
         record: ChatTurnRecord,
@@ -562,6 +657,9 @@ class ChatTurnStore:
             "stale_seconds": round(float(self.stale_seconds), 1),
             "stalled": self.is_stale(record),
             "alive": alive,
+            "expired": self.is_expired(record),
+            "turn_age": round(self.turn_age(record), 1),
+            "max_seconds": round(float(self.max_seconds), 1),
             "error": record.error,
             "pid": record.pid,
             "host": record.host,

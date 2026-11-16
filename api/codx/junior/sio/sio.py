@@ -37,7 +37,12 @@ MEET_RELAY_TYPES = frozenset({"join-request", "join-approved", "join-rejected"})
 #Socket io (sio) create a Socket.IO server
 sio = socketio.AsyncServer(cors_allowed_origins='*', async_mode='asgi')
 
-SIO_POOL = ThreadPoolExecutor(max_workers=10)
+# Every Socket.IO handler runs in this pool (a chat turn holds its worker for the
+# WHOLE turn, minutes at a time). The old 10-thread pool queued the 11th message
+# behind ten running conversations, which the user experiences as "sending a
+# message does nothing". Keep it overridable for small containers.
+SIO_POOL_SIZE = max(1, int(os.environ.get("CODX_JUNIOR_SIO_POOL_SIZE", "32") or 32))
+SIO_POOL = ThreadPoolExecutor(max_workers=SIO_POOL_SIZE, thread_name_prefix="sio")
 
 # Response events emitted when a long-running file operation (read / diff) finishes.
 # Results are delivered as an event (correlated by request_id) because long
@@ -54,31 +59,59 @@ SUBTASKS_DEPRECATED_MESSAGE = (
 )
 
 def sio_api_endpoint(func):
-    """Decorator to process sio API requests."""
+    """
+    Decorator to process sio API requests OFF the uvicorn event loop.
+
+    Everything a handler needs for a project is expensive and synchronous:
+    resolving the token, reading ``project.json`` and building the
+    ``CODXJuniorSession`` (EventManager + every engine). Doing that in the
+    wrapper blocked the event loop on EVERY socket message — the composer felt
+    laggy because the chat event queued behind that work, and every other HTTP
+    request of the process with it.
+
+    The handler (and the session it needs) now run in ``SIO_POOL``:
+    * an async handler runs its own loop in the worker thread (it performs
+      blocking file/DB work, so it must never run on the ASGI loop),
+    * a sync handler is awaited through ``run_in_executor`` instead of
+      ``submit(...).result``, which blocked the loop for the whole turn.
+    """
     @functools.wraps(func)
     async def wrapper(sid: str, data: dict):
         logger.info(f"SIO REquest {sid} {data}")
-        base_data = SioMessage(**data)
-        channel = SessionChannel(sio=sio, sid=sid)
-        user = get_authenticated_user_from_token(USERS[sid]["user"]["token"])
-        codxjunior_session = CODXJuniorSession(
-                                channel=channel,
-                                user=user,
-                                codx_path=base_data.codx_path) if base_data.codx_path \
-                                  else None # Global requests
+
+        def build_session():
+            """Resolve the user and build the project session (worker thread)."""
+            base_data = SioMessage(**data)
+            channel = SessionChannel(sio=sio, sid=sid)
+            user = get_authenticated_user_from_token(USERS[sid]["user"]["token"])
+            return (
+                CODXJuniorSession(
+                    channel=channel,
+                    user=user,
+                    codx_path=base_data.codx_path,
+                )
+                if base_data.codx_path
+                else None  # Global requests
+            )
+
         try:
-            if not asyncio.iscoroutinefunction(func):
-                return SIO_POOL.submit(func, sid, data, codxjunior_session).result
-            else:
+            if asyncio.iscoroutinefunction(func):
                 def worker():
                     try:
-                        return asyncio.run(func(sid, data, codxjunior_session))
-                    except Exception as ex:
-                        logger.exception(f"Error processing async sio message")
+                        return asyncio.run(func(sid, data, build_session()))
+                    except Exception:
+                        logger.exception("Error processing async sio message")
                     return None
+
                 return SIO_POOL.submit(worker)
-        except Exception as ex:
-            logger.exception(f"Error processing sio message")
+
+            def sync_worker():
+                return func(sid, data, build_session())
+
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(SIO_POOL, sync_worker)
+        except Exception:
+            logger.exception("Error processing sio message")
         return None
     return wrapper
 

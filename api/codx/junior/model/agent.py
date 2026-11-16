@@ -13,7 +13,7 @@ accumulated cost, usage) through untyped dicts such as
 
 Made with ❤️ by codx-junior
 """
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -118,6 +118,17 @@ class AgentRunResult(BaseModel):
     cache: ToolCacheStats = Field(default_factory=ToolCacheStats)
     loop_limit_reached: bool = Field(
         default=False, description="True when LoopGuard stopped the run."
+    )
+    agile: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Agile clock state of the turn (``codx.junior.ai.smol.agile``): "
+            "mode/state/elapsed/percent/warning. The turn is NEVER stopped by "
+            "the clock; ChatEngine stamps it on the response message "
+            "metadata (``meta_data['agile']``) so the client can warn the user "
+            "and the user can stop or split the task. ``None`` for a turn "
+            "without an agile target (max, plain chats)."
+        ),
     )
     reasoning_content: str = Field(
         default="",

@@ -127,14 +127,21 @@ class OrchestrationService:
 
             payload = {key: value for key, value in list(data.items())[:8]}
             payload.setdefault("main_chat_id", getattr(run, "main_chat_id", ""))
+            # ``data`` may already carry ``status``/``run_id``/``run_event`` (the
+            # step payloads do): merge them instead of passing duplicate keyword
+            # arguments, which made ``record_audit`` raise TypeError and the
+            # audit entry silently disappear.
+            payload.setdefault("status", run.status)
+            payload.setdefault(
+                "created_by",
+                getattr(run.config, "created_by", "") if run.config else "",
+            )
+            payload.setdefault("message", message[:500] if message else "")
             record_audit(
                 str(getattr(self.settings, "codx_path", "") or ""),
                 f"run_event",
                 run_event=event_type,
                 run_id=run.run_id,
-                status=run.status,
-                created_by=getattr(run.config, "created_by", "") if run.config else "",
-                message=message[:500] if message else "",
                 **payload,
             )
         except Exception as ex:  # pragma: no cover - audit must never break work
@@ -518,6 +525,24 @@ class OrchestrationService:
         if not chat_id:
             return None
         return self._manager().find_by_id(chat_id)
+
+    def find_by_main_chat(self, chat_id: str) -> Optional[RunState]:
+        """
+        Return the run whose main task is ``chat_id`` (newest run first).
+
+        ``create_run`` binds ``run_id`` on the chat in memory only when it is
+        called from inside a turn (``persist_main=False``): the chat engine
+        saves the chat at the end of the turn. A tool call later in that same
+        turn may therefore resolve a *fresh* chat instance that does not carry
+        ``run_id`` yet, and it must still find its run.
+        """
+        chat_id = str(chat_id or "").strip()
+        if not chat_id:
+            return None
+        for run in self.store.list_runs():
+            if str(run.main_chat_id or "") == chat_id:
+                return run
+        return None
 
     def assert_actor(self, run: RunState, actor_chat_id: Optional[str]) -> None:
         """Public wrapper around the main-task actor guard."""

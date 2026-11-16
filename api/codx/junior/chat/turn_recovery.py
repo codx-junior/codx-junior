@@ -16,7 +16,10 @@ One sweep:
 5. resume the turn through the normal ``ChatEngine`` pipeline (profiles, tools,
    knowledge, streaming, cost — nothing special),
 6. bound the retries (``CODX_JUNIOR_CHAT_TURN_MAX_ATTEMPTS``) and mark the turn
-   failed when the bound is reached, so the client never stays in "processing".
+   failed when the bound is reached, so the client never stays in "processing",
+7. restart a turn that STOPS making progress (stall) — a hung execution, never a
+   slow one. There is deliberately no wall-clock stop: a turn that keeps making
+   progress is doing the work the user asked for, and only the user can end it.
 
 The worker is idempotent and safe to run in both the API and the background
 process: the per-turn ``flock`` guarantees only one process resumes a turn.
@@ -280,6 +283,23 @@ class ChatTurnRecovery:
                 store.finalize(record, "cancelled", error="Stopped by user")
                 self._audit(record, "turn_cancelled", reason="Stopped by user")
             return None
+
+        # NOTE: there is deliberately NO wall-clock stop here. A turn that keeps
+        # making progress is doing work the user asked for; only the user (or a
+        # crashed process, detected by the free ``flock``) can end it. The
+        # agile/max effort tiers are advisory for time as well: they stamp the
+        # response metadata and warn the user, they never cancel the task.
+        # ``store.is_expired`` is a diagnostic only — log it and move on.
+        if store.is_expired(record):
+            logger.warning(
+                "Chat turn recovery: turn '%s' of chat '%s' has been running "
+                "for %ss (advisory threshold %ss) — NOT stopping it; a long "
+                "task is legitimate",
+                record.turn_id,
+                record.chat_id,
+                int(store.turn_age(record)),
+                int(store.max_seconds),
+            )
 
         # A turn that stopped making progress is DEAD even when its flock is
         # still held: a hung AI request, a tool blocked on a socket read or a

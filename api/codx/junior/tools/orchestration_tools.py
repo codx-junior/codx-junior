@@ -292,6 +292,36 @@ def _service(settings: Any, session: Any):
     )
 
 
+def _resolve_run_id(service: Any, chat: Any) -> str:
+    """
+    Return the id of the run this chat belongs to (empty when it has none).
+
+    ``chat.run_id`` is only persisted at the end of the turn, so a tool call
+    executed right after ``action='start'`` may be looking at a chat instance
+    that does not carry the binding yet. In that case the run is resolved by its
+    main task, and the binding is healed on the in-memory chat so the rest of
+    the turn (and the end-of-turn save) sees it.
+    """
+    run_id = str(getattr(chat, "run_id", None) or "").strip()
+    if run_id:
+        return run_id
+    chat_id = str(getattr(chat, "id", None) or "").strip()
+    if not chat_id:
+        return ""
+    try:
+        run = service.find_by_main_chat(chat_id)
+    except Exception:  # pragma: no cover - defensive
+        run = None
+    if run is None:
+        return ""
+    try:
+        chat.run_id = run.run_id
+        chat.run_status = run.status
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return run.run_id
+
+
 def _json(payload: Any) -> str:
     """Serialize a tool payload for the model."""
     try:
@@ -398,8 +428,9 @@ async def orchestrator(
     action = (action or "").strip().lower()
 
     if action == "start":
-        if getattr(chat, "run_id", None):
-            run = service.get(chat.run_id)
+        existing_run_id = _resolve_run_id(service, chat)
+        if existing_run_id:
+            run = service.get(existing_run_id)
             return ToolResponse(
                 user_response=f"ℹ️ This task is already the main task of run `{run.name}`.",
                 llm_response=_json({
@@ -451,7 +482,8 @@ async def orchestrator(
             }),
         )
 
-    if not getattr(chat, "run_id", None):
+    run_id = _resolve_run_id(service, chat)
+    if not run_id:
         if action == "status":
             return ToolResponse(
                 user_response=(
@@ -466,7 +498,6 @@ async def orchestrator(
             "(with an objective and a budget)."
         )
 
-    run_id = chat.run_id
     if action == "status":
         payload = service.status(run_id, include_events=False)
         return ToolResponse(

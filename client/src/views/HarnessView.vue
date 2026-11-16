@@ -110,13 +110,26 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    const [statusData, runsData] = await Promise.all([
+    // Two independent reads: a failing harness status must not throw away the
+    // run list, and a failing run list must not hide the harness health. With
+    // Promise.all a single rejection emptied the whole left pane on every poll.
+    const [statusResult, runsResult] = await Promise.allSettled([
       client.harness.status(),
       client.orchestration.list()
     ])
-    status.value = statusData
-    // `GET /api/orchestration` answers `{ runs: [...] }`.
-    runs.value = Array.isArray(runsData) ? runsData : (runsData?.runs || [])
+    if (statusResult.status === 'fulfilled') {
+      status.value = statusResult.value
+    } else {
+      error.value = `Harness status: ${errorMessage(statusResult.reason)}`
+    }
+    if (runsResult.status === 'fulfilled') {
+      const runsData = runsResult.value
+      // `GET /api/orchestration` answers `{ runs: [...] }`.
+      runs.value = Array.isArray(runsData) ? runsData : (runsData?.runs || [])
+    } else {
+      // Keep the previous list instead of blanking the pane.
+      error.value = errorMessage(runsResult.reason)
+    }
     const requested = await resolveRequestedTarget()
     if (requested?.runId) {
       selectedRunId.value = requested.runId
@@ -192,7 +205,8 @@ async function loadRun(runId) {
   try {
     run.value = await client.orchestration.get(runId)
   } catch (ex) {
-    run.value = null
+    // Keep the last good payload: a transient poll failure must not blank the
+    // diagnosis, which then looks exactly like "no task selected".
     runError.value = errorMessage(ex)
   } finally {
     runLoading.value = false

@@ -933,6 +933,57 @@ class BrowserSession(BaseModel):
             until = until + timedelta(seconds=max(0, int(grace_seconds)))
         return datetime.now(timezone.utc) < until
 
+    def seconds_since_user_event(self) -> Optional[float]:
+        """Seconds since the last captured human input (None when unknown).
+
+        ``last_user_event_at`` is written by the runtime every time it drains
+        the in-page recorder (click, change, submit, keydown, scroll), so this
+        is a live "is the human typing right now?" signal.
+        """
+        if not self.last_user_event_at:
+            return None
+        try:
+            last = datetime.fromisoformat(self.last_user_event_at)
+        except Exception:
+            return None
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return max(0.0, (datetime.now(timezone.utc) - last).total_seconds())
+
+    def user_is_typing(self, quiet_seconds: float = 1.5) -> bool:
+        """True when the last human input is inside the *quiet_seconds* gap.
+
+        ``user_is_active`` is a broad 10 s cooldown meant for the UI ("the human
+        is driving").  The AI needs the narrower question: has the human
+        *stopped* feeding events?  Once the page has been quiet for this short
+        debounce window the AI may safely interleave its action, even though the
+        cooldown is still open.  That is what makes a co-driving turn feel
+        fluent instead of a 10 s lockout.
+        """
+        seconds = self.seconds_since_user_event()
+        if seconds is None:
+            return False
+        return seconds < max(0.0, float(quiet_seconds))
+
+    def ai_may_act_now(self, quiet_seconds: float = 1.5) -> bool:
+        """True when the AI may change the page right now.
+
+        Unlike :meth:`can_ai_act` this ignores the UI cooldown and only asks
+        whether the human is actively producing input (or still owns the
+        control lease).
+        """
+        if self.controller != "ai":
+            return False
+        # ``set_controller('ai')`` clears ``user_active_until``: an explicit
+        # "Give back to AI" must let the AI act at once, even if the human
+        # clicked a moment before.
+        if self.user_active_until and self.last_user_event_at:
+            return not self.user_is_typing(quiet_seconds=quiet_seconds)
+        if self.user_active_until or self.last_user_event_at:
+            # Legacy/partially-updated record: use the conservative window.
+            return not self.user_is_active()
+        return True
+
     def can_ai_act(self, grace_seconds: int = 0) -> bool:
         """True when the AI is allowed to perform a state-changing action."""
         if self.controller == "user":

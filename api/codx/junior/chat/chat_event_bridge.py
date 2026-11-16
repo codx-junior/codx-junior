@@ -289,6 +289,8 @@ class ChatEventBridge:
                 self._on_tool_logs(event)
             elif event.type == AgentEventType.WALLET_CHECK:
                 self._on_wallet_check(event)
+            elif event.type == AgentEventType.AGILE_STATUS:
+                self._on_agile_status(event)
         except (OSError, ValueError, TypeError, RuntimeError) as ex:
             # A broken notification must NEVER kill the AI run.
             logger.exception(
@@ -602,6 +604,26 @@ class ChatEventBridge:
             },
         )
         phase.finished_at = phase.started_at
+        self.publish()
+
+    def _on_agile_status(self, event: AgentEvent) -> None:
+        """
+        Stamp the agile clock state on the response message, live.
+
+        The agile tier NEVER stops a turn at its target: it marks the state
+        (``ok`` -> ``warning`` -> ``overtime``), so the client can show the
+        warning while the turn is still running and let the user decide whether
+        to stop or split the task.
+
+        :param event: The AGILE_STATUS agent event.
+        """
+        metadata = event.payload.get("metadata") or {}
+        if not metadata:
+            return
+        self.response_message.meta_data = {
+            **(self.response_message.meta_data or {}),
+            "agile": metadata,
+        }
         self.publish()
 
     # ── Lifecycle events ───────────────────────────────────────────────────────

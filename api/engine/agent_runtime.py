@@ -67,6 +67,10 @@ class AgentEventType(str, Enum):
     TOOL_ERROR = "tool_error"
     TOOL_LOGS = "tool_logs"
     WALLET_CHECK = "wallet_check"
+    # Agile clock checkpoint: the turn is taking longer than the agile target.
+    # It is NOT a stop signal — the client stamps the state on the response
+    # message metadata and the user decides whether to stop the task.
+    AGILE_STATUS = "agile_status"
 
 
 @dataclass

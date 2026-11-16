@@ -340,6 +340,10 @@ class TestThinkingPayloadPreparation:
         """Strict OpenAI endpoints reject unknown message fields."""
         agent.llm_settings = Mock(provider="openai", model="gpt-4")
         agent.model = "gpt-4"
+        # The endpoint is part of the evidence: an instance built for DeepSeek
+        # that merely changes its provider/model fields is still a DeepSeek
+        # endpoint. A real OpenAI turn has an OpenAI base_url.
+        agent.base_url = "https://api.openai.com/v1"
         messages = [{"role": "assistant", "content": "hello"}]
 
         filled = agent._prepare_thinking_messages(

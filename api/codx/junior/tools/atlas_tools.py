@@ -33,9 +33,9 @@ def _settings(kwargs: Dict[str, Any]) -> Any:
 
 
 def _atlas(settings: Any):
-    from codx.junior.atlas import ProjectAtlas
+    from codx.junior.atlas import shared_atlas
 
-    return ProjectAtlas(settings)
+    return shared_atlas(settings)
 
 
 def _project_root(settings: Any) -> str:
@@ -104,7 +104,7 @@ def _locate_related_projects(
     settings: Any, query: str, project: str, **locate_args
 ) -> ToolResponse:
     """Locate in the atlas of other projects (children and dependencies)."""
-    from codx.junior.atlas import ProjectAtlas, atlas_ready
+    from codx.junior.atlas import atlas_ready, shared_atlas
 
     rows, error = _related_targets(settings, project)
     if error:
@@ -141,7 +141,7 @@ def _locate_related_projects(
             ])
             continue
         try:
-            with ProjectAtlas(target["settings"]) as atlas:
+            with shared_atlas(target["settings"]) as atlas:
                 packet = atlas.locate(query=query, **locate_args)
         except Exception as ex:
             logger.exception("project_locate failed for %s", target["name"])

@@ -268,7 +268,10 @@ def test_git_config_is_unchanged_after_authenticated_calls(repo, monkeypatch):
     after = read_file(config_path)
     assert after == before
     assert "extraheader" not in after
-    assert "credential" not in after.lower()
+    # No credential helper / credential section was written (the fixture's
+    # user.name legitimately contains the word "credential").
+    assert "[credential" not in after.lower()
+    assert "helper" not in after.lower()
     assert PASSWORD not in after
     assert USERNAME not in after
     assert not os.path.exists(os.path.join(repo, ".git", "credentials"))

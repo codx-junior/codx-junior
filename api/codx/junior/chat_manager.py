@@ -937,6 +937,48 @@ class ChatManager:
         self._roll_up_cost_to_root(chat=chat, delta=delta)
         return delta
 
+    def _sync_message_cost_floor(self, chat: Chat) -> float:
+        """
+        Make ``chat.cost`` cover the cost of its messages (monotonic).
+
+        ``add_message`` / ``update_message`` accumulate the cost of a message as
+        they save it, but a caller may also append a message (or restore an
+        older chat) and persist it with :meth:`save_chat`. This floor makes the
+        accumulated cost of the chat never smaller than the sum of the costs of
+        the messages it currently holds, and rolls the missing delta up to the
+        root chat.
+
+        It is IDEMPOTENT: when the cost is already accounted for (the normal
+        path, where ``_accumulate_message_cost`` ran first) ``total <= cost`` and
+        nothing is added, so a message is never counted twice. Deleted messages
+        never reduce the accumulated budget (their cost stays in ``chat.cost``).
+
+        :param chat: The chat about to be persisted.
+        :return: The delta added (0.0 when nothing changed).
+        """
+        messages = getattr(chat, "messages", None) or []
+        if not messages:
+            return 0.0
+        total = 0.0
+        for message in messages:
+            cost = getattr(message, "cost", 0.0) or 0.0
+            if cost > 0:
+                total += cost
+        current = getattr(chat, "cost", 0.0) or 0.0
+        if total <= current:
+            return 0.0
+        delta = total - current
+        chat.cost = total
+        logger.info(
+            "Chat cost floor: chat='%s' messages=%.6f stored=%.6f delta=%.6f",
+            chat.id,
+            total,
+            current,
+            delta,
+        )
+        self._roll_up_cost_to_root(chat=chat, delta=delta)
+        return delta
+
     def _roll_up_cost_to_root(self, chat: Chat, delta: float) -> float:
         """
         Add *delta* to the cost of the root chat of *chat* (the main task).
@@ -1348,6 +1390,10 @@ class ChatManager:
         # Detect and register chat status transitions (performance metrics).
         # Runs before store_chat so the new record is persisted with the chat.
         self._register_status_change(chat=chat, current_chat=current_chat)
+
+        # Never persist a chat whose message costs are not reflected in its
+        # accumulated cost (and in the root chat's budget).
+        self._sync_message_cost_floor(chat)
 
         chat.file_path = self.get_chat_file(chat)
 

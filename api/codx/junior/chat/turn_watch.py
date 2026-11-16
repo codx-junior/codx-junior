@@ -68,8 +68,11 @@ def turn_snapshot(codx_path: str) -> Dict[str, Any]:
 
     store = get_turn_store(codx_path)
     # One probe per turn: `live_turn_ids` claims/releases the free locks, so it
-    # answers "is somebody executing this right now?" for any process.
-    live = set(store.live_turn_ids())
+    # answers "is somebody executing this right now?" for any process. Stalled
+    # turns are INCLUDED on purpose: this snapshot reports the process state
+    # (`alive`) next to the progress verdict (`stalled`), it does not decide
+    # whether a response may be sealed.
+    live = set(store.live_turn_ids(include_stale=True))
     turns = [
         store.describe(record, alive=record.turn_id in live)
         for record in store.list_active()
@@ -77,6 +80,7 @@ def turn_snapshot(codx_path: str) -> Dict[str, Any]:
     return {
         "codx_path": store.codx_path,
         "stale_seconds": round(float(store.stale_seconds), 1),
+        "max_seconds": round(float(store.max_seconds), 1),
         "turns": turns,
     }
 

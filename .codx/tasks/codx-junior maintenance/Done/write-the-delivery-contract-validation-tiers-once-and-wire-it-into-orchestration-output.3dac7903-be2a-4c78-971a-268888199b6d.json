@@ -1,0 +1,1498 @@
+{
+  "id": "3dac7903-be2a-4c78-971a-268888199b6d",
+  "doc_id": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "owner_project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "parent_id": "c8632422-1a76-4681-9323-e8cf8a82da04",
+  "root_id": "c8632422-1a76-4681-9323-e8cf8a82da04",
+  "linked_chat_ids": [],
+  "parent_owner_project_id": null,
+  "parent_project_id": null,
+  "child_index": 0,
+  "message_id": null,
+  "status": "done",
+  "status_history": [
+    {
+      "doc_id": "c07dd614-4f98-4d18-a234-e1d87f626122",
+      "from_status": null,
+      "to_status": "todo",
+      "user": null,
+      "at": "2026-11-16T07:18:32.342029",
+      "meta_data": null
+    },
+    {
+      "doc_id": "d0296090-f202-4ca0-8396-68300656cc60",
+      "from_status": "todo",
+      "to_status": "doing",
+      "user": null,
+      "at": "2026-11-16T07:18:35.363982",
+      "meta_data": null
+    },
+    {
+      "doc_id": "d323f33a-ea96-445c-8e89-b9b5d23ef387",
+      "from_status": "doing",
+      "to_status": "done",
+      "user": null,
+      "at": "2026-11-16T07:29:33.191674",
+      "meta_data": null
+    }
+  ],
+  "tags": [
+    "orchestration",
+    "run:39e0a654-b58d-4cc6-9076-969399b388f2",
+    "step:delivery-contract"
+  ],
+  "file_list": [
+    "docs/delivery-contract.md",
+    "api/codx/junior/orchestration"
+  ],
+  "check_lists": [],
+  "profiles": [
+    "software_developer"
+  ],
+  "users": [],
+  "name": "Write the delivery contract + validation tiers once and wire it into orchestration output",
+  "pinned": false,
+  "is_template": false,
+  "description": "Write the delivery contract ONCE, in a single reference document, and make the orchestration output obey it.\n\n1. Create `docs/delivery-contract.md` (create the `docs/` folder if missing) with:\n   - The four sections `## What happened` / `## What I did` / `## Demo` / `## Next tasks` + the `**Good enough?** ok / next / what is wrong` checkpoint line, and the rule that this shape applies to EVERY delivery: the harness answer, the orchestration `finish` summary, and every worker step result.\n   - One line per section explaining what belongs there (Demo = exactly one runnable thing; Next tasks = 2-3 steps tagged `quick` or `max`).\n   - The VALIDATION TIERS table: `agile` = targeted tests for the touched files + `qa_review_changes` (a `warn` is acceptable only if the gap is named in Next tasks); `max` = full suite + coverage threshold + `security_review_changes` + browser explorer for UI. Rule: validation is never optional, only its breadth changes.\n   - The effort rule: `codx-junior` = agile (time boxed, partial delivery legal), `codx-junior-max` = max (the only unbounded tier).\n2. Find the orchestration prompt/summary builder (start from `api/codx/junior/orchestration/` \u2014 the finish summary and the worker step prompt; look for the `finish`/`summary`/`report` prompt text, e.g. in a `prompts.py` or inside `service.py`) and add a short instruction so that: (a) the supervisor's `finish` summary is written with the four headings, and (b) each worker step result tells the worker to close with the four headings. Keep the wording SHORT (a few lines), do not rewrite the prompts and do not change the persisted JSON schema \u2014 only prompt text.\n\nDo NOT touch `.codx/profiles/` (another worker owns the profiles), nor `turn_store.py` / `api/chat.py`.\n\nWORKER HINT: `project_locate`/`read_folder`/`project_map` are timing out \u2014 find files with `project_read_file` on the folder's known files, `python -c \"import pathlib; print([p for p in pathlib.Path('api/codx/junior/orchestration').rglob('*.py')])\"`, or `pattern=` searches. Report exactly which files you changed.\n\n**Acceptance criteria**\n`docs/delivery-contract.md` exists with the four headings, the checkpoint line, the tiers table and the effort rule; the orchestration finish/step prompt contains the four-heading instruction (report `path:line` evidence); the existing tests for orchestration still pass (or the pre-existing failures are reported unchanged).",
+  "meta_data": null,
+  "messages": [
+    {
+      "doc_id": "3d3bbebb-f4c1-4954-916b-5a649a1f1f48",
+      "role": "user",
+      "task_item": "",
+      "content": "# ORCHESTRATED STEP\nRun: **Agile by default: codx-junior fast, codx-junior-max for big work**\nStep: **Write the delivery contract + validation tiers once and wire it into orchestration output** (`delivery-contract`)\n\n## Run objective\nMake the DEFAULT `codx-junior` harness agile and fast, and add a `codx-junior-max` effort level for long/complex work. Both levels ALWAYS validate before releasing; only the breadth of validation differs.\n\nOrigin: task \"Multiple running processes\" produced a 1.5h assistant bubble with ~85 tool calls per bubble because api/codx/junior/ai/smol/smol_agent.py (HARNESS_PROFILE=\"codx-junior\", line ~259) and api/codx/junior/ai/smol/constants.py explicitly exempt the harness from tool limits (\"never a stop condition for harness work\"). Slowness is a hardcoded policy, not prompt phrasing.\n\nRequired outcome:\n1. Effort is a RUNTIME policy resolved from the profile name: tool budget + continuation behaviour, wall-clock deadline, granted tool set (prompt size), validation breadth. `codx-junior` = agile (small budget, hard stop, returns a partial increment with its own summary). `codx-junior-max` = the only tier that inherits the old \"resolve itself\" exemption.\n2. `codx-junior` profile rewritten in plain language: one increment per turn, explicit 4-section close (\"What happened / What I did / Demo / Next tasks\"), checkpoint asking the user for ok|next|what is wrong, partial delivery is a valid outcome.\n3. `codx-junior-max` links profiles:[\"codx-junior\"] and holds only a small delta (budget, tool-limit exemption, validation breadth, orchestration use). No copy of the base file.\n4. Validation tiers written once: agile = targeted tests for touched files + qa_review_changes (a `warn` is acceptable only if the gap is named in \"Next tasks\"); max = full suite + coverage + security_review_changes.\n5. The 4-section shape is the team-wide delivery contract: orchestrator finish summary and worker step results follow it too.\n6. Tests prove the effort resolution (agile stops, max continues) and nothing regresses the existing harness behaviour.\n\nOut of scope for this run: api/codx/junior/chat/turn_store.py and api/codx/junior/api/chat.py \u2014 the cancellation/stale-lock fix is owned by card 42bdacee, already running in background. Do not edit those two files here.\n\n## Step objective\nWrite the delivery contract ONCE, in a single reference document, and make the orchestration output obey it.\n\n1. Create `docs/delivery-contract.md` (create the `docs/` folder if missing) with:\n   - The four sections `## What happened` / `## What I did` / `## Demo` / `## Next tasks` + the `**Good enough?** ok / next / what is wrong` checkpoint line, and the rule that this shape applies to EVERY delivery: the harness answer, the orchestration `finish` summary, and every worker step result.\n   - One line per section explaining what belongs there (Demo = exactly one runnable thing; Next tasks = 2-3 steps tagged `quick` or `max`).\n   - The VALIDATION TIERS table: `agile` = targeted tests for the touched files + `qa_review_changes` (a `warn` is acceptable only if the gap is named in Next tasks); `max` = full suite + coverage threshold + `security_review_changes` + browser explorer for UI. Rule: validation is never optional, only its breadth changes.\n   - The effort rule: `codx-junior` = agile (time boxed, partial delivery legal), `codx-junior-max` = max (the only unbounded tier).\n2. Find the orchestration prompt/summary builder (start from `api/codx/junior/orchestration/` \u2014 the finish summary and the worker step prompt; look for the `finish`/`summary`/`report` prompt text, e.g. in a `prompts.py` or inside `service.py`) and add a short instruction so that: (a) the supervisor's `finish` summary is written with the four headings, and (b) each worker step result tells the worker to close with the four headings. Keep the wording SHORT (a few lines), do not rewrite the prompts and do not change the persisted JSON schema \u2014 only prompt text.\n\nDo NOT touch `.codx/profiles/` (another worker owns the profiles), nor `turn_store.py` / `api/chat.py`.\n\nWORKER HINT: `project_locate`/`read_folder`/`project_map` are timing out \u2014 find files with `project_read_file` on the folder's known files, `python -c \"import pathlib; print([p for p in pathlib.Path('api/codx/junior/orchestration').rglob('*.py')])\"`, or `pattern=` searches. Report exactly which files you changed.\n\n## Acceptance criteria\n`docs/delivery-contract.md` exists with the four headings, the checkpoint line, the tiers table and the effort rule; the orchestration finish/step prompt contains the four-heading instruction (report `path:line` evidence); the existing tests for orchestration still pass (or the pre-existing failures are reported unchanged).\n\n## Known files\n- `docs/delivery-contract.md`\n- `api/codx/junior/orchestration`\n\n## Rules\n- Work only on this step; do not start unrelated refactors.\n- Inspect the code before changing it and keep the change reviewable.\n- Verify your work (tests, build, manual check) and say how.\n- If you are blocked, explain exactly what is missing instead of guessing forever.\n- Do not burn your tool budget: batch the reads you need and re-use the results already in the conversation. Only stop for a tool limit if you have run out of continuations, and then report what you already know.\n\n## Result contract\nFinish with a JSON object (and nothing after it):\n{\"status\":\"done\"|\"blocked\"|\"failed\",\"summary\":\"what was done\",\"files\":[\"paths touched\"],\"verification\":\"how you verified it\",\"followups\":[\"remaining work\"]}",
+      "think": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-16 07:18:30.020389",
+      "updated_at": "2026-11-16 07:18:30.020395",
+      "attachments": [],
+      "files": [
+        "docs/delivery-contract.md",
+        "api/codx/junior/orchestration"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "c530d454-8a0e-490d-a293-628ae2cd6fba",
+      "role": "user",
+      "task_item": "",
+      "content": "# ORCHESTRATED STEP\nRun: **Agile by default: codx-junior fast, codx-junior-max for big work**\nStep: **Write the delivery contract + validation tiers once and wire it into orchestration output** (`delivery-contract`)\n\n## Run objective\nMake the DEFAULT `codx-junior` harness agile and fast, and add a `codx-junior-max` effort level for long/complex work. Both levels ALWAYS validate before releasing; only the breadth of validation differs.\n\nOrigin: task \"Multiple running processes\" produced a 1.5h assistant bubble with ~85 tool calls per bubble because api/codx/junior/ai/smol/smol_agent.py (HARNESS_PROFILE=\"codx-junior\", line ~259) and api/codx/junior/ai/smol/constants.py explicitly exempt the harness from tool limits (\"never a stop condition for harness work\"). Slowness is a hardcoded policy, not prompt phrasing.\n\nRequired outcome:\n1. Effort is a RUNTIME policy resolved from the profile name: tool budget + continuation behaviour, wall-clock deadline, granted tool set (prompt size), validation breadth. `codx-junior` = agile (small budget, hard stop, returns a partial increment with its own summary). `codx-junior-max` = the only tier that inherits the old \"resolve itself\" exemption.\n2. `codx-junior` profile rewritten in plain language: one increment per turn, explicit 4-section close (\"What happened / What I did / Demo / Next tasks\"), checkpoint asking the user for ok|next|what is wrong, partial delivery is a valid outcome.\n3. `codx-junior-max` links profiles:[\"codx-junior\"] and holds only a small delta (budget, tool-limit exemption, validation breadth, orchestration use). No copy of the base file.\n4. Validation tiers written once: agile = targeted tests for touched files + qa_review_changes (a `warn` is acceptable only if the gap is named in \"Next tasks\"); max = full suite + coverage + security_review_changes.\n5. The 4-section shape is the team-wide delivery contract: orchestrator finish summary and worker step results follow it too.\n6. Tests prove the effort resolution (agile stops, max continues) and nothing regresses the existing harness behaviour.\n\nOut of scope for this run: api/codx/junior/chat/turn_store.py and api/codx/junior/api/chat.py \u2014 the cancellation/stale-lock fix is owned by card 42bdacee, already running in background. Do not edit those two files here.\n\n## Step objective\nWrite the delivery contract ONCE, in a single reference document, and make the orchestration output obey it.\n\n1. Create `docs/delivery-contract.md` (create the `docs/` folder if missing) with:\n   - The four sections `## What happened` / `## What I did` / `## Demo` / `## Next tasks` + the `**Good enough?** ok / next / what is wrong` checkpoint line, and the rule that this shape applies to EVERY delivery: the harness answer, the orchestration `finish` summary, and every worker step result.\n   - One line per section explaining what belongs there (Demo = exactly one runnable thing; Next tasks = 2-3 steps tagged `quick` or `max`).\n   - The VALIDATION TIERS table: `agile` = targeted tests for the touched files + `qa_review_changes` (a `warn` is acceptable only if the gap is named in Next tasks); `max` = full suite + coverage threshold + `security_review_changes` + browser explorer for UI. Rule: validation is never optional, only its breadth changes.\n   - The effort rule: `codx-junior` = agile (time boxed, partial delivery legal), `codx-junior-max` = max (the only unbounded tier).\n2. Find the orchestration prompt/summary builder (start from `api/codx/junior/orchestration/` \u2014 the finish summary and the worker step prompt; look for the `finish`/`summary`/`report` prompt text, e.g. in a `prompts.py` or inside `service.py`) and add a short instruction so that: (a) the supervisor's `finish` summary is written with the four headings, and (b) each worker step result tells the worker to close with the four headings. Keep the wording SHORT (a few lines), do not rewrite the prompts and do not change the persisted JSON schema \u2014 only prompt text.\n\nDo NOT touch `.codx/profiles/` (another worker owns the profiles), nor `turn_store.py` / `api/chat.py`.\n\nWORKER HINT: `project_locate`/`read_folder`/`project_map` are timing out \u2014 find files with `project_read_file` on the folder's known files, `python -c \"import pathlib; print([p for p in pathlib.Path('api/codx/junior/orchestration').rglob('*.py')])\"`, or `pattern=` searches. Report exactly which files you changed.\n\n## Acceptance criteria\n`docs/delivery-contract.md` exists with the four headings, the checkpoint line, the tiers table and the effort rule; the orchestration finish/step prompt contains the four-heading instruction (report `path:line` evidence); the existing tests for orchestration still pass (or the pre-existing failures are reported unchanged).\n\n## Known files\n- `docs/delivery-contract.md`\n- `api/codx/junior/orchestration`\n\n## Rules\n- Work only on this step; do not start unrelated refactors.\n- Inspect the code before changing it and keep the change reviewable.\n- Verify your work (tests, build, manual check) and say how.\n- If you are blocked, explain exactly what is missing instead of guessing forever.\n- Do not burn your tool budget: batch the reads you need and re-use the results already in the conversation. Only stop for a tool limit if you have run out of continuations, and then report what you already know.\n\n## Result contract\nFinish with a JSON object (and nothing after it):\n{\"status\":\"done\"|\"blocked\"|\"failed\",\"summary\":\"what was done\",\"files\":[\"paths touched\"],\"verification\":\"how you verified it\",\"followups\":[\"remaining work\"]}",
+      "think": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-16 07:18:30.020389",
+      "updated_at": "2026-11-16 07:18:30.020395",
+      "attachments": [],
+      "files": [
+        "docs/delivery-contract.md",
+        "api/codx/junior/orchestration"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "41053951-29aa-4d4e-b8c8-7319b9dab614",
+      "role": "assistant",
+      "task_item": "",
+      "content": "I'll start by inspecting the orchestration folder structure.`docs/` exists. Now let me read the orchestration prompt builders.Now I'll create the delivery contract document.Pre-existing failures are in store/tick logic. Let me prove the rendered worker contract and supervisor prompt carry the headings at runtime.## Verification summary\n\n**Confirmed**\n- `docs/delivery-contract.md` created (63 lines): four headings `## What happened` / `## What I did` / `## Demo` / `## Next tasks`, one-line rule per section (Demo = exactly one runnable thing, Next tasks = 2-3 tagged `quick`/`max`), the `**Good enough?** ok / next / what is wrong` checkpoint, the rule that the shape applies to the harness answer, the orchestration `finish` summary and every worker step result, the VALIDATION TIERS table (`agile` vs `max`), and the effort rule.\n- Prompt text only in `api/codx/junior/orchestration/prompts.py` (no schema/logic change):\n  - `prompts.py:110-113` \u2014 `SUPERVISOR_SYSTEM_PROMPT` finishing rules: the `finish` summary must use the four headings + checkpoint.\n  - `prompts.py:153-154` \u2014 `STEP_SYSTEM_PROMPT`: worker closes with the four headings and the JSON result object.\n  - `prompts.py:380-382` \u2014 `build_step_contract` \"## Rules\": same short instruction pointing at `docs/delivery-contract.md`.\n- Runtime render check inside `codx-junior-api` with `api/.venv/bin/python`: `build_step_contract(...)` contains `## Next tasks` (count 1) and `SUPERVISOR_SYSTEM_PROMPT` contains `**Good enough?**` (count 1).\n- Syntax: `python3 -m py_compile api/codx/junior/orchestration/prompts.py` OK.\n- `api/tests/test_orchestration.py`: **36 passed, 2 failed** \u2014 both failures pre-existing and unrelated to prompt text:\n  - `test_store_lock_path_keeps_the_run_stem` (lock path resolves to `/tmp/codx-junior-runtime/...` via env override),\n  - `test_tick_dispatches_ready_steps_and_persists_results` (step B `done` instead of `pending`, dependency dispatch).\n  The prompt test `test_prompts_carry_the_tool_budget_discipline` still passes.\n\n**Ruled out**: no change to the persisted step-result JSON schema, no change to `C.STEP_RESULT_INSTRUCTIONS`, no touch of `.codx/profiles/`, `turn_store.py` or `api/chat.py`.\n\n```json\n{\"status\":\"done\",\"summary\":\"Created docs/delivery-contract.md as the single team-wide delivery contract (four headings, checkpoint line, validation tiers table, effort rule) and wired the same four-heading instruction into the orchestration prompts: supervisor finish summary, worker system prompt and build_step_contract rules (prompt text only, no schema change).\",\"files\":[\"docs/delivery-contract.md\",\"api/codx/junior/orchestration/prompts.py\"],\"verification\":\"python3 -m py_compile on prompts.py; runtime render check with api/.venv/bin/python inside codx-junior-api confirmed build_step_contract() and SUPERVISOR_SYSTEM_PROMPT contain the headings/checkpoint; api/.venv/bin/python -m pytest api/tests/test_orchestration.py -q => 36 passed, 2 failed (test_store_lock_path_keeps_the_run_stem and test_tick_dispatches_ready_steps_and_persists_results), both pre-existing and unrelated to prompt text.\",\"followups\":[\"The 2 failing orchestration tests pre-date this step (lock path runtime-dir override and dependency dispatch in tick) and need their own card\",\"The agile/max effort resolution (tool budget, deadline, tool set) is owned by the other steps of this run\",\"The .codx/profiles rewrites for codx-junior and codx-junior-max are owned by the profiles worker\"]}\n```",
+      "think": "* Processing request, please wait...\n",
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-16 07:18:51.390467",
+      "updated_at": "2026-11-16T07:29:09.483196",
+      "attachments": [],
+      "files": [],
+      "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+      "meta_data": {
+        "start_time": 1794813530.537779,
+        "cancellation_token_id": "ec36877c-d986-48af-bd36-99d654c4bd52",
+        "model": "deepseek-flash",
+        "analytics": {
+          "prompt_tokens": 852982,
+          "completion_tokens": 10833,
+          "total_tokens": 863815,
+          "tools": {
+            "read_folder": {
+              "count": 4,
+              "errors": 2,
+              "total_ms": 446475.24539753795
+            },
+            "project_read_file": {
+              "count": 7,
+              "errors": 0,
+              "total_ms": 22928.806845098734
+            },
+            "project_locate": {
+              "count": 2,
+              "errors": 2,
+              "total_ms": 245690.77477045357
+            },
+            "project_write_file": {
+              "count": 2,
+              "errors": 0,
+              "total_ms": 5175.802513957024
+            },
+            "apply_file_changes": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 2813.5401383042336
+            },
+            "docker_ps": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 4036.3347306847572
+            },
+            "docker_exec": {
+              "count": 13,
+              "errors": 0,
+              "total_ms": 39325.15808008611
+            },
+            "project_changes": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 1223.98647852242
+            }
+          }
+        },
+        "time_taken": 618.945375919342,
+        "first_chunk_time_taken": 1.7819101810455322
+      },
+      "tool_events": [
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_00_ET_fGCDsis6QqVCsqHQ8By93200",
+          "status": "done",
+          "request": {
+            "path": "api/codx/junior/orchestration",
+            "include_file_sizes": true
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **api**/\n    \u2514\u2500\u2500 \ud83d\udcc1 **codx**/\n        \u2514\u2500\u2500 \ud83d\udcc1 **junior**/\n            \u2514\u2500\u2500 \ud83d\udcc1 **orchestration**/\n                \u251c\u2500\u2500 \ud83d\udc0d __init__.py\n                \u251c\u2500\u2500 \ud83d\udc0d board.py\n                \u251c\u2500\u2500 \ud83d\udc0d constants.py\n                \u251c\u2500\u2500 \ud83d\udc0d executor.py\n                \u251c\u2500\u2500 \ud83d\udc0d models.py\n                \u251c\u2500\u2500 \ud83d\udc0d prompts.py\n                \u251c\u2500\u2500 \ud83d\udc0d service.py\n                \u251c\u2500\u2500 \ud83d\udc0d store.py\n                \u2514\u2500\u2500 \ud83d\udc0d worker.py\n\n> `.codx/` (tasks, profiles, sessions, chats) is the control plane and is excluded here. Use `search_codx` to inspect it.",
+          "output": null,
+          "duration_ms": 101757.44616053998,
+          "error": null,
+          "started_at": "2026-11-16T07:18:55.185Z",
+          "finished_at": "2026-11-16T07:20:36.943Z",
+          "cached": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_01_ET_VAhLcA7JLKtT3m6Erctc4495",
+          "status": "done",
+          "request": {
+            "path": "docs"
+          },
+          "response": "# Project Structure\n\n**Root**: `/home/codx-junior-projects/codx-junior/codx-junior-platform`\n\n\u2514\u2500\u2500 \ud83d\udcc1 **docs**/\n    \u251c\u2500\u2500 \ud83d\udcc1 **.codx**/\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **profiles**/\n    \u2502   \u2502   \u2514\u2500\u2500 \ud83d\udcc4 vitepress.profile\n    \u2502   \u251c\u2500\u2500 \ud83d\udce6 project.json\n    \u2502   \u2514\u2500\u2500 \ud83d\udcc1 **tasks**/\n    \u2502       \u251c\u2500\u2500 \ud83d\udcc1 **Docs v0.1**/\n    \u2502       \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **Backlog**/\n    \u2502       \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udce6 index.01e5814a-dc8e-4773-8687-83183d9ad222.json\n    \u2502       \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udce6 initial-docs.763c3cea-9535-4550-9d73-e00d01daf159.json\n    \u2502       \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udcdd initial-docs.763c3cea-9535-4550-9d73-e00d01daf159.md\n    \u2502       \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udce6 splitting-the-features-tab.e46c717e-fb3a-43cb-b620-811460877d43.json\n    \u2502       \u2502   \u2502   \u2514\u2500\u2500 \ud83d\udcdd splitting-the-features-tab.e46c717e-fb3a-43cb-b620-811460877d43.md\n    \u2502       \u2502   \u2514\u2500\u2500 \ud83d\udcc1 **In Development**/\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udce6 fix-doc.9c0ecc9d-6e77-492c-9d9d-31c6053774a4.json\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udcdd fix-doc.9c0ecc9d-6e77-492c-9d9d-31c6053774a4.md\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udce6 home-page.233ea1c4-d511-4966-963a-aca0e2249123.json\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udce6 project-dashboard.02563565-3d96-4c5f-8975-073e8fb129e7.json\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udcdd project-dashboard.02563565-3d96-4c5f-8975-073e8fb129e7.md\n    \u2502       \u2502       \u2514\u2500\u2500 \ud83d\udce6 vitepress.2f5fb5ea-281b-415c-b7b9-3b5f47744da9.json\n    \u2502       \u251c\u2500\u2500 \ud83d\udcc1 **boards**/\n    \u2502       \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **3c036d74-c805-5aec-a0f4-7c9a79af600d**/\n    \u2502       \u2502   \u2502   \u2514\u2500\u2500 \ud83d\udce6 board.json\n    \u2502       \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **cbba25c9-4dda-5aca-808c-1abde522ce70**/\n    \u2502       \u2502   \u2502   \u2514\u2500\u2500 \ud83d\udce6 board.json\n    \u2502       \u2502   \u2514\u2500\u2500 \ud83d\udcc1 **e509655d-80a6-5d20-9ef8-9e0b317710b2**/\n    \u2502       \u2502       \u2514\u2500\u2500 \ud83d\udce6 board.json\n    \u2502       \u251c\u2500\u2500 \ud83d\udce6 index.json\n    \u2502       \u251c\u2500\u2500 \ud83d\udcc1 **kanban**/\n    \u2502       \u2502   \u2514\u2500\u2500 \ud83d\udcc1 **tasks**/\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udce6 .aa00d6fd-db5a-4d20-a923-afb7eeb4bcb3.json\n    \u2502       \u2502       \u251c\u2500\u2500 \ud83d\udce6 getting-started.2af6474d-ddd0-422a-979d-11b95f767ee5.json\n    \u2502       \u2502       \u2514\u2500\u2500 \ud83d\udcdd getting-started.2af6474d-ddd0-422a-979d-11b95f767ee5.md\n    \u2502       \u2514\u2500\u2500 \ud83d\udce6 kanban.v1.backup.json\n    \u251c\u2500\u2500 \ud83d\udcc1 **.vitepress**/\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 config.mts\n    \u2502   \u2514\u2500\u2500 \ud83d\udcc1 **theme**/\n    \u2502       \u251c\u2500\u2500 \ud83c\udfa8 custom.css\n    \u2502       \u2514\u2500\u2500 \ud83d\udcd8 index.ts\n    \u251c\u2500\u2500 \ud83d\udcdd configuration.md\n    \u251c\u2500\u2500 \ud83d\udcdd demo.md\n    \u251c\u2500\u2500 \u2699\ufe0f docker-compose.yaml\n    \u251c\u2500\u2500 \ud83d\udcc1 **features**/\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd ai-providers.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd api.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd autonomous-agents.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd browser-use.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd budget-and-analytics.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd channel-creator.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd chats-and-agents.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd code-review.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd codx-junior-harness.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd computer-use.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd development-tools.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd dsh-sync.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd external-actors.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd index.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd kanban.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd knowledge.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd mentions.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd plugins.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd profiles.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd slack-whatsapp-integration.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd teams.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd users-and-security.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd vibe-coding.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd wiki.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd workspaces-container-routing-review.md\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd workspaces-settings-scope-review.md\n    \u2502   \u2514\u2500\u2500 \ud83d\udcdd workspaces.md\n    \u251c\u2500\u2500 \ud83d\udcdd getting-started.md\n    \u251c\u2500\u2500 \ud83d\udcc1 **guide**/\n    \u2502   \u251c\u2500\u2500 \ud83d\udcdd architecture.md\n    \u2502   \u2514\u2500\u2500 \ud83d\udcdd introduction.md\n    \u251c\u2500\u2500 \ud83d\udcc1 **images**/\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 analytics_and_ai_cost_analysis.png\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 board_list.png\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 board_with_cat_background.png\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 customer_video_meeting_with_web_preview.png\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 infrastructure_view_with_live_web_workspace_preview.png\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 kanban_sprint_board_with_chat.png\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc4 messenger_channel_view.png\n    \u2502   \u2514\u2500\u2500 \ud83d\udcc4 planning_view.png\n    \u251c\u2500\u2500 \ud83d\udcdd index.md\n    \u251c\u2500\u2500 \ud83d\udcdd initial-setup.md\n    \u251c\u2500\u2500 \ud83d\udcdd managed.md\n    \u251c\u2500\u2500 \ud83d\udce6 package-lock.json\n    \u251c\u2500\u2500 \ud83d\udce6 package.json\n    \u251c\u2500\u2500 \ud83d\udcc4 postcss.config.mjs\n    \u251c\u2500\u2500 \ud83d\udcc1 **public**/\n    \u2502   \u251c\u2500\u2500 \ud83c\udfa8 custom.css\n    \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **images**/\n    \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udcc1 **NOV2025**/\n    \u2502   \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udcc4 codx-junior-ai-backgroound.png\n    \u2502   \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udcc4 codx-junior-ai-models.png\n    \u2502   \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udcc4 codx-junior-avatar-1.png\n    \u2502   \u2502   \u2502   \u251c\u2500\u2500 \ud83d\udcc4 codx-junior-avatar-3.png\n    \u2502   \u2502   \u2502   \u251c\u2500",
+          "output": null,
+          "duration_ms": 96338.4432848543,
+          "error": null,
+          "started_at": "2026-11-16T07:18:55.691Z",
+          "finished_at": "2026-11-16T07:20:32.029Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_XNSYMp7cb1BDjU0GiRVy3070",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/orchestration/prompts.py"
+          },
+          "response": "### Outline (14 declaration(s), added automatically because the file is large; request only the lines you need)\nLine numbers below can be used with `start_line`/`end_line` or `pattern`.\n```\n   174| def _clip(text: Optional[str], max_chars: int) -> str:\n   182| def _step_line(step, max_summary: int = 400) -> str:\n   212| def render_plan_table(run: RunState) -> str:\n   235| def render_run_state(run: RunState, max_result_chars: int = 900) -> str:\n   294| def build_supervisor_prompt(run: RunState, reason: str) -> str:\n   347| def build_step_contract(run: RunState, step) -> str:\n   388| def build_delegate_contract(task: str, context: str = \"\", parent_name: str = \"\") -> str:\n   419| def _report_header(run: RunState, title: str) -> List[str]:\n   434| def _result_lines(run: RunState) -> List[str]:\n   451| def build_delivery_report(run: RunState, summary: str) -> str:\n   468| def build_budget_report(run: RunState) -> str:\n   488| def build_stall_report(run: RunState, reason: str) -> str:\n   509| def build_failure_report(run: RunState, error: str) -> str:\n   521| def build_stopped_report(run: RunState, reason: str = \"\") -> str:\n```\n\n# api/codx/junior/orchestration/prompts.py (lines 1-529 of 529)\n```py api/codx/junior/orchestration/prompts.py\n\"\"\"\nPrompt and report builders for the orchestration runtime.\n\nKeeping the prompts in one dependency-light module has two benefits:\n\n* the supervisor and the worker contracts are versioned and testable without an\n  AI call,\n* the text the model sees is exactly the text the documentation describes.\n\nThe design mirrors the execution model of DSH (goal + plan + isolated workers +\nverification) while the *visibility* stays in codx-junior: every step is a task\ncard on a board and in a sprint, and the supervisor's rounds are messages of the\nmain task.\n\nMade with \u2764\ufe0f by codx-junior\n\"\"\"\n\nfrom __future__ import annotations\n\nfrom typing import List, Optional\n\nfrom . import constants as C\nfrom .models import RunState\n\n\n# ---------------------------------------------------------------------------\n# Supervisor\n# ---------------------------------------------------------------------------\n\nSUPERVISOR_SYSTEM_PROMPT = \"\"\"\\\nYou are the ORCHESTRATOR (supervisor) of a durable, multi-step run inside\ncodx-junior. You do not do the bulk of the work yourself: you plan it, delegate\nit to isolated workers, verify the results and finish the run.\n\n## The system you run on\n\n* The run is attached to this main task (a kanban card). Every step you plan is\n  materialized as a child task card on a board and in the run sprint, so the work\n  is visible to humans exactly like any other task.\n* Workers run in their own chat, with their own context. They do NOT see this\n  conversation: the only information they have is the step description you write.\n  Therefore every step must be self-contained.\n* A background worker dispatches the steps you plan. You do not need to wait:\n  after your turn the worker executes the ready steps and calls you again with\n  their results.\n* You control the run only through the `orchestrator` tool. Never claim a step is\n  running or finished unless the tool result says so.\n\n## Your loop\n\n1. Call `orchestrator(action=\"status\")` when you need the current plan, budget\n   and step table.\n2. PLAN: decompose the objective into small, independently executable steps and\n   call `orchestrator(action=\"plan\", steps=[...])`.\n3. The worker executes ready steps (respecting `depends_on`) and returns their\n   structured results in the next round.\n4. VERIFY: compare every result with the step's acceptance criteria. Reject weak\n   results, add remediation or verification steps, or finish.\n5. FINISH: call `orchestrator(action=\"finish\", summary=\"...\")` only when the\n   objective is demonstrably achieved (or honestly report what is blocked).\n\n## Planning rules\n\n* WALL-CLOCK TIME IS THE CONSTRAINT. A run is measured in minutes of model\n  turns, not in tokens: every extra step is one or more full provider turns.\n  Design for concurre",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/orchestration/prompts.py",
+          "duration_ms": 2752.646652981639,
+          "error": null,
+          "started_at": "2026-11-16T07:20:41.109Z",
+          "finished_at": "2026-11-16T07:20:43.861Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_8N94UfC0InvB5mtLTErP5340",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/orchestration/worker.py",
+            "pattern": "summary|finish|report|result",
+            "context_lines": 4
+          },
+          "response": "# api/codx/junior/orchestration/worker.py \u2014 pattern `summary|finish|report|result` (2 match(es); 376 lines)\n```py api/codx/junior/orchestration/worker.py\n     8| \n     9| One cycle:\n    10| \n    11| 1. discover the projects that have an orchestration folder,\n    12| 2. write/refresh the per-project worker heartbeat (the API reports\n    13|    ``worker_present`` from it),\n    14| 3. submit every active run that is not already in flight to a small thread pool\n    15|    (each thread runs its own asyncio loop, mirroring the project-check pattern),\n    16| 4. sleep the configured interval.\n      | \u2026\n    35| \n    36| DEFAULT_TICK_SECONDS = 5.0\n    37| # A run is a thread of the pool, so this is also the number of runs that can\n    38| # advance at the same time. Two was the bottleneck: with several harness tasks in\n    39| # flight the third one only started after another finished, which is exactly the\n    40| # \"a simple task takes hours\" symptom.\n    41| DEFAULT_MAX_RUNS = 4\n    42| MAX_TICK_SECONDS = 300.0\n    43| \n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/orchestration/worker.py",
+          "duration_ms": 2970.5744814127684,
+          "error": null,
+          "started_at": "2026-11-16T07:20:42.398Z",
+          "finished_at": "2026-11-16T07:20:45.368Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_izaPt11AV7K7Nq7Ckhgx8809",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/orchestration/constants.py"
+          },
+          "response": "# api/codx/junior/orchestration/constants.py (lines 1-212 of 212)\n```py api/codx/junior/orchestration/constants.py\n\"\"\"\nConstants shared by the orchestration runtime and its callers.\n\nThis module is intentionally dependency free (standard library only) because it\nis imported by both the agent runtime (``codx.junior.ai.smol``), the chat engine\nand the orchestration package itself. Importing the heavy orchestration modules\nfrom those places would create import cycles.\n\nThe orchestration runtime turns one **main task** (a normal ``Chat``) into a\ndurable, multi-step run:\n\n* the main task owns the objective, the budget and the supervisor agent,\n* every plan step is a **child task card** on a board and a sprint, so the work\n  stays visible in the existing board/sprint UI,\n* a background worker advances the run one tick at a time, surviving restarts.\n\nMade with \u2764\ufe0f by codx-junior\n\"\"\"\n\n# Internal AI request header that declares the orchestration role of the current\n# chat. It is consumed by SmolAgent and never forwarded to the provider.\nORCHESTRATION_HEADER = \"orchestration\"\n\n# Tool names. They are plain chat-scope tools registered in ``tools/TOOLS`` and\n# injected per run (supervisor) or provided by the built-in orchestrator profile.\nORCHESTRATOR_TOOL = \"orchestrator\"\nDELEGATE_TOOL = \"delegate\"\n\n# Chat mode used by the main task of a run. Unknown modes behave like a normal\n# chat (see ChatEngine._resolve_chat_mode_flags), which is exactly what the\n# supervisor needs: a standard turn with the orchestrator profile composed.\nCHAT_MODE_ORCHESTRATE = \"orchestrate\"\n\n# Chat mode used by delegated subagent cards created by the ``delegate`` tool.\n# A delegated chat cannot delegate again (single level), which keeps the tree\n# finite and the budget predictable.\nCHAT_MODE_DELEGATE = \"delegate\"\n\n# \u2500\u2500 Run statuses \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nRUN_STATUS_QUEUED = \"queued\"\nRUN_STATUS_RUNNING = \"running\"\nRUN_STATUS_PAUSED = \"paused\"\nRUN_STATUS_COMPLETED = \"completed\"\nRUN_STATUS_STOPPED = \"stopped\"\nRUN_STATUS_FAILED = \"failed\"\nRUN_STATUS_BUDGET_EXHAUSTED = \"budget_exhausted\"\nRUN_STATUS_STALLED = \"stalled\"\n\nTERMINAL_RUN_STATUSES = frozenset({\n    RUN_STATUS_COMPLETED,\n    RUN_STATUS_STOPPED,\n    RUN_STATUS_FAILED,\n    RUN_STATUS_BUDGET_EXHAUSTED,\n    RUN_STATUS_STALLED,\n})\n\nACTIVE_RUN_STATUSES = frozenset({\n    RUN_STATUS_QUEUED,\n    RUN_STATUS_RUNNING,\n})\n\n# \u2500\u2500 Step statuses \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nSTEP_STATUS_PENDING = \"pending\"\nSTEP_STATUS_RUNNING = \"running\"\nSTEP_STATUS_DONE = \"done\"\nSTEP_STATUS_FAILED = \"failed\"\nSTEP_STATUS_BLOCKED = \"blocked\"\nSTEP_STATUS_SKIPPED = \"skipped\"\n\nTERMINAL_STEP_STATUSES = frozenset({\n    STEP_STATUS_DONE,\n    STEP_STATUS_FAILED,\n    STEP_STATUS_BLOCKED,\n    STEP_STATUS_SKIPPED,\n})\n\nSUCCESSFUL_STEP_STATUSES = frozenset({\n    STEP_STATUS_DONE,\n    STEP_STATUS_SKIPPED,\n})\n\n# \u2500\u2500 Kanban mapping \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Plan phase -> board column title. A run board is a normal kanban board whose\n# columns describe the orchestration phases; the sprint of the run is a sprint\n# board over the same cards (it groups by Chat.status).\nDEFAULT_RUN_COLUMNS = {\n    \"backlog\": \"Backlog\",\n    \"running\": \"In progress\",\n    \"done\": \"Done\",\n    \"blocked\": \"Blocked\",\n}\n\nSPRINT_COLUMN_TITLES = (\"To do\", \"Doing\", \"On hold\", \"Done\")\n\n# Card status (Chat.status) per step status.\nSTEP_CHAT_STATUS = {\n    STEP_STATUS_PENDING: \"todo\",\n    STEP_STATUS_RUNNING: \"doing\",\n    STEP_STATUS_DONE: \"done\",\n    STEP_STATUS_FAILED: \"rejected\",\n    STEP_STATUS_BLOCKED: \"onhold\",\n    STEP_STATUS_SKIPPED: \"done\",\n}\n\n# Board phase per step status.\nSTEP_BOARD_PHASE = {\n    STEP_STATUS_PENDING: \"backlog\",\n    STEP_STATUS_RUNNING: \"running\",\n    STEP_STATUS_DONE: \"done\",\n    STEP_STATUS_FAILED: \"blocked\",\n    STEP_STATUS_BLOCKED: \"blocked\",\n    STEP_STATUS_SKIPPED: \"done\",\n}\n\n# \u2500\u2500 Toolset injected into isolated workers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n# Workers r",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/orchestration/constants.py",
+          "duration_ms": 5263.312801718712,
+          "error": null,
+          "started_at": "2026-11-16T07:20:50.248Z",
+          "finished_at": "2026-11-16T07:20:55.512Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_01_982DzAFo6iPhNSNC09Ar4060",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/orchestration/service.py",
+            "pattern": "finish|summary",
+            "context_lines": 3
+          },
+          "response": "# api/codx/junior/orchestration/service.py \u2014 pattern `finish|summary` (57 match(es); 1923 lines)\n```py api/codx/junior/orchestration/service.py\n     4| Responsibilities\n     5| ----------------\n     6| * **Run lifecycle** \u2014 create/attach a run to a main task, pause, resume, stop,\n     7|   finish; persist everything through :class:`~.store.RunStore`.\n     8| * **Plan management** \u2014 upsert the plan produced by the supervisor, validate the\n     9|   dependency graph, retry steps (`orchestrator` tool).\n    10| * **Advancement** \u2014 one ``tick`` per run: refresh budgets, recover interrupted\n      | \u2026\n   165|         Notify the user once that a run reached its terminal status.\n   166| \n   167|         The durable ``notification_sent`` flag makes the notification survive\n   168|         crashes and duplicate ticks across processes: a finished run notifies\n   169|         exactly once, even when the worker restarts.\n   170|         \"\"\"\n   171|         if getattr(run, \"notification_sent\", False):\n      | \u2026\n   191|                         type=\"notification\",\n   192|                         title=\"codx-junior\",\n   193|                         text=(\n   194|                             f\"Run '{run.name}' finished ({run.status}). \"\n   195|                             \"The delivery report is on the task.\"\n   196|                         ),\n   197|                         chat={\"id\": getattr(run, \"main_chat_id\", \"\")},\n      | \u2026\n   222|         Publish a report message on the main task (idempotent per run).\n   223| \n   224|         ``main_chat`` must be the SAME object the chat engine is holding when the\n   225|         report is written from inside a turn (``finish``/``stop`` tool): the\n   226|         engine saves that object at the end of the turn, and a report appended to\n   227|         a separately loaded object would be overwritten.\n   228|         \"\"\"\n      | \u2026\n   263|         message = self._message(\n   264|             role=\"assistant\",\n   265|             content=content,\n   266|             task_item=\"summary\",\n   267|             meta_data={\n   268|                 \"run_id\": run.run_id,\n   269|                 \"run_status\": run.status,\n      | \u2026\n   476|         \"\"\"Load one run.\"\"\"\n   477|         return self.store.load(run_id)\n   478| \n   479|     def _summary_payload(self, run: RunState, worker: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:\n   480|         \"\"\"Compact run representation used by list endpoints/tools.\"\"\"\n   481|         remaining = run.remaining_budget()\n   482|         counts = run.counts()\n      | \u2026\n   497|             \"created_at\": run.created_at,\n   498|             \"updated_at\": run.updated_at,\n   499|             \"started_at\": run.started_at,\n   500|             \"finished_at\": run.finished_at,\n   501|             \"stop_reason\": run.stop_reason,\n   502|             \"last_error\": run.last_error,\n   503|             \"rounds\": run.rounds,\n      | \u2026\n   507|     def list_runs(self, status: Optional[str] = None) -> List[Dict[str, Any]]:\n   508|         \"\"\"List readable runs (newest first) with a compact payload.\"\"\"\n   509|         worker = self.worker_status()\n   510|         return [self._summary_payload(run, worker) for run in self.store.list_runs(status=status)]\n   511| \n   512|     def summary(self, run_id: str) -> Dict[str, Any]:\n   513|         \"\"\"Return the compact payload of one run (public counterpart of status).\"\"\"\n   514|         return self._summary_payload(self.get(run_id), self.worker_status())\n   515| \n   516|     def get_chat(self, chat_id: str) -> Optional[Any]:\n   517|         \"\"\"Load a chat by id (main task or card).\"\"\"\n      | \u2026\n   579| \n   580|     @staticmethod\n   581|     def _assert_actor(run: RunState, actor_chat_id: Optional[str]) -> None:\n   582|         \"\"\"Reject plan/finish changes coming from a chat that is not the main task.\"\"\"\n   583|         if actor_chat_id and run.main_chat_id and str(actor_chat_id) != str(run.main_chat_id):\n   584|             raise PlanError(\n   585|       ",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/orchestration/service.py",
+          "duration_ms": 1885.1308152079582,
+          "error": null,
+          "started_at": "2026-11-16T07:20:51.931Z",
+          "finished_at": "2026-11-16T07:20:53.816Z",
+          "cached": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_00_i1P9YZQDkDoi9pEucVpX5265",
+          "status": "error",
+          "request": {
+            "query": "build_step_contract",
+            "limit": 10
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 121436.62454560399,
+          "error": "Tool 'project_locate' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-16T07:21:00.835Z",
+          "finished_at": "2026-11-16T07:23:02.272Z",
+          "cached": null
+        },
+        {
+          "tool": "project_locate",
+          "tool_call_id": "call_01_VAxhV6hmi9eYwbD3u9oK1833",
+          "status": "error",
+          "request": {
+            "query": "SUPERVISOR_SYSTEM_PROMPT",
+            "limit": 10
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 124254.15022484958,
+          "error": "Tool 'project_locate' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-16T07:21:02.249Z",
+          "finished_at": "2026-11-16T07:23:06.503Z",
+          "cached": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_00_a0mCLYA2Zdy7HTNNWKDJ5333",
+          "status": "error",
+          "request": {
+            "path": "api/codx/junior/tests"
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 124112.56283707917,
+          "error": "Tool 'read_folder' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-16T07:23:19.647Z",
+          "finished_at": "2026-11-16T07:25:23.759Z",
+          "cached": null
+        },
+        {
+          "tool": "read_folder",
+          "tool_call_id": "call_01_6U2cLSjIZpWBfXwzyYqT7236",
+          "status": "error",
+          "request": {
+            "path": "tests"
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 124266.7931150645,
+          "error": "Tool 'read_folder' timed out after 120s and was aborted. The operation may still be finishing in the background; check its effect before retrying.",
+          "started_at": "2026-11-16T07:23:23.708Z",
+          "finished_at": "2026-11-16T07:25:27.975Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_CEx7p52wA483oSwOVikA6369",
+          "status": "done",
+          "request": {
+            "file_path": [
+              "api/tests/test_orchestration.py",
+              "api/codx/junior/tests/test_orchestration.py",
+              "api/tests/orchestration/test_prompts.py",
+              "api/tests/orchestration"
+            ],
+            "max_chars": 3000
+          },
+          "response": "### Outline (40 declaration(s), added automatically because the file is large; request only the lines you need)\nLine numbers below can be used with `start_line`/`end_line` or `pattern`.\n```\n    44| class FakeChat:\n    47| def __init__(self, chat_id, name=\"card\", **kwargs):\n    70| class FakeChatManager:\n    73| def __init__(self):\n    78| def add(self, chat):\n    82| def find_by_id(self, chat_id):\n    85| def save_chat(self, chat, chat_only=False):\n    90| def add_message(self, chat, message):\n    94| def load_kanban(self):\n    97| def save_kanban(self, kanban):\n   101| class FakeBoard:\n   104| def __init__(self, manager):\n   109| def ensure_run(self, run):\n   114| def create_main_task(self, run, profiles=None, estimation_cost=None):\n   120| def create_step_card(self, run, step, content, description, profiles=None, estimation_cost=None):\n   131| def update_step_card(self, run, step, result=None, persist=True):\n   140| def attach_main(self, run, chat, persist=False, move=False, status=None, progress=None):\n   149| def update_main_card(self, run, **kwargs):\n   163| def create_delegate_card(self, parent_chat, **kwargs):\n   173| class FakeExecutor:\n   176| def __init__(self, cost_per_step=0.0):\n   184| async def execute_step(self, run, step, chat, parent_token=None, timeout=None):\n   204| async def execute_delegate(self, chat, parent_token=None, timeout=None):\n   208| async def run_supervisor(self, chat, timeout=None, parent_token=None):\n   216| def _main_chat(self, run):\n   222| def make_service(tmp_path, executor=None, board=None, manager=None):\n   250| def test_parse_step_result_reads_fenced_contract():\n   266| def test_parse_step_result_falls_back_to_raw_answer():\n   272| def test_parse_step_result_runtime_error_wins():\n   278| def test_result_to_step_status_maps_blocked():\n   289| def test_plan_requires_title_and_objective():\n   296| def test_plan_resolves_title_dependencies_and_reuses_ids():\n   313| def test_plan_rejects_unknown_dependency_and_cycle():\n   323| def test_ready_steps_honours_dependencies_and_priority():\n   338| def test_next_actions_reports_verify_and_failed():\n   352| def test_store_roundtrip_and_list(tmp_path):\n   364| def test_store_lock_is_exclusive(tmp_path):\n   382| def test_store_lock_path_keeps_the_run_stem(tmp_path):\n   391| def test_store_worker_heartbeat(tmp_path):\n   405| def test_create_run_and_plan_persist(tmp_path):\n```\n\n# api/tests/test_orchestration.py (lines 1-113 of 1005)\n```py api/tests/test_orchestration.py\n\"\"\"\nOffline tests for the board-native orchestration runtime.\n\nThe tests use the real :class:`RunStore` (atomic JSON + flock) and small fakes\nfor the chat manager, board and executor, so they exercise the state machine,\nplan graph, budget and parallelism without an AI provider or a database.\n\nRun with::\n\n    cd api && pytest tests/test_orchestration.py -q\n\"\"\"\n\nimport asyncio\nimport os\nimport threading\nimport time\nfrom types import SimpleNamespace\n\nimport pytest\n\nfrom codx.junior.orchestration import constants as C\nfrom codx.junior.orchestration.board import RunBoard\nfrom codx.junior.orchestration.models import (\n    PlanError,\n    RunConfig,\n    RunState,\n    StepResult,\n    merge_plan,\n    next_actions,\n    normalize_steps,\n    parse_step_result,\n    ready_steps,\n    result_to_step_status,\n)\nfrom codx.junior.orchestration.service import OrchestrationService\nfrom codx.junior.orchestration.store import RunLock, RunStore\n\n\n# ---------------------------------------------------------------------------\n# Fakes\n# ---------------------------------------------------------------------------\n\n\nclass FakeChat:\n    \"\"\"The subset of ``Chat`` the orchestration runtime touches.\"\"\"\n\n    def __init__(self, chat_id, name=\"card\", **kwargs):\n        self.id = chat_id\n        self.name = name\n        self.description = \"\"\n        self.cost = 0.0\n        self.estimation_cost = None\n        self.profiles = []\n        self.messages = []\n        self.status = \"todo\"\n        self.board = \"kanban\"\n        self.col",
+          "output": "Read 1 file(s) | Successfully read: api/tests/test_orchestration.py | Failed to read 3 file(s): api/codx/junior/tests/test_orchestration.py, api/tests/orchestration/test_prompts.py, api/tests/orchestration",
+          "duration_ms": 2757.575275376439,
+          "error": null,
+          "started_at": "2026-11-16T07:25:39.475Z",
+          "finished_at": "2026-11-16T07:25:42.233Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_NmgoC3RppnT6GDN33oBM9594",
+          "status": "done",
+          "request": {
+            "file_path": "api/tests/test_orchestration.py",
+            "pattern": "prompts|build_step_contract|SYSTEM_PROMPT|Result contract|finish\\(",
+            "context_lines": 3
+          },
+          "response": "# api/tests/test_orchestration.py \u2014 pattern `prompts|build_step_contract|SYSTEM_PROMPT|Result contract|finish\\(` (9 match(es); 1005 lines)\n```py api/tests/test_orchestration.py\n   550|     run = service.create_run(name=\"Run\", objective=\"Do it\", main_chat=main, start=True)\n   551|     service.plan(run.run_id, [{\"title\": \"A\", \"objective\": \"a\"}])\n   552|     asyncio.run(service.tick(run.run_id))\n   553|     run = service.finish(run.run_id, \"All requirements are met\")\n   554|     assert run.status == C.RUN_STATUS_COMPLETED\n   555|     assert main.status == \"done\"\n   556|     assert main.run_status == C.RUN_STATUS_COMPLETED\n      | \u2026\n   615|     assert main.run_status == C.RUN_STATUS_RUNNING\n   616|     assert any(event.type == \"run_started\" for event in restarted.events)\n   617| \n   618|     service.finish(run.run_id, \"done\")\n   619|     with pytest.raises(PlanError):\n   620|         service.start(run.run_id)\n   621| \n      | \u2026\n   652|     assert resumed.report_written is False\n   653|     assert resumed.report_generation == 1\n   654| \n   655|     service.finish(run.run_id, \"completed after resume\")\n   656|     reports = [\n   657|         message for message in main.messages\n   658|         if getattr(message, \"meta_data\", {}).get(\"orchestration_report\")\n      | \u2026\n   990|     assert result.status == \"failed\"\n   991| \n   992| \n   993| def test_prompts_carry_the_tool_budget_discipline():\n   994|     \"\"\"The workers must know the limit is a guardrail, not a dead end.\"\"\"\n   995|     from codx.junior.orchestration import prompts\n   996| \n   997|     assert \"Tool budget\" in prompts.STEP_SYSTEM_PROMPT\n   998|     assert \"Tool budget exhausted\" in prompts.SUPERVISOR_SYSTEM_PROMPT\n   999| \n  1000|     run = RunState(name=\"r\", objective=\"o\")\n  1001|     step = normalize_steps([{\"title\": \"A\", \"objective\": \"a\"}])[0]\n  1002|     assert \"tool budget\" in prompts.build_step_contract(run, step).lower()\n  1003|     assert \"tool budget\" in prompts.build_delegate_contract(\"do it\").lower()\n  1004| \n  1005| # Made with \u2764\ufe0f by codx-junior\n```",
+          "output": "Read 1 file(s) | Successfully read: api/tests/test_orchestration.py",
+          "duration_ms": 2608.3745937794447,
+          "error": null,
+          "started_at": "2026-11-16T07:25:50.968Z",
+          "finished_at": "2026-11-16T07:25:53.576Z",
+          "cached": null
+        },
+        {
+          "tool": "project_write_file",
+          "tool_call_id": "call_00_yYhqzh74qTcZ85HMjMSe3694",
+          "status": "done",
+          "request": {
+            "file_path": "docs/delivery-contract.md",
+            "content": "# Delivery contract\n\nEvery delivery in codx-junior is closed with the **same four sections**. The shape is\nnot a style preference: it is the contract between the assistant and the human, and it\nis written **once** here. It applies to:\n\n* the `codx-junior` harness answer (the chat bubble),\n* the orchestration supervisor's `finish` summary (the run delivery report),\n* every worker step result (each isolated step closes with the same headings).\n\n## The shape\n\n```md\n## What happened\n## What I did\n## Demo\n## Next tasks\n\n**Good enough?** ok / next / what is wrong\n```\n\n### What belongs in each section\n\n* **What happened** \u2014 the situation in plain language: the problem, what you found, what you decided and why. Facts and evidence (files, `path:line`, command output), not intentions.\n* **What I did** \u2014 the concrete increments delivered in this turn, one line each, with the files touched. If the increment is partial, say so explicitly: a partial delivery is a valid outcome.\n* **Demo** \u2014 exactly ONE runnable thing the human can do to see the result (a command, a URL, a test to run, a card to open). One, not a list.\n* **Next tasks** \u2014 2-3 candidate next steps, each tagged `quick` (agile increment) or `max` (needs the `codx-junior-max` effort level).\n\n### The checkpoint\n\nThe turn ends with the line:\n\n```md\n**Good enough?** ok / next / what is wrong\n```\n\nIt is a real question, not decoration: `ok` accepts the increment, `next` takes the\nfirst `Next tasks` entry, `what is wrong` opens a correction. Never remove it, never\nanswer it yourself.\n\n## Validation tiers\n\nValidation is **never optional**; only its *breadth* changes with the effort level.\n\n| Tier | Applies to | What must be run before delivering |\n| --- | --- | --- |\n| `agile` | `codx-junior` (default) | Targeted tests for the touched files (or a manual reproduction when there are none) + `qa_review_changes`. A `warn` verdict is acceptable **only** if the gap is named in **Next tasks**. |\n| `max` | `codx-junior-max` | Full test suite + coverage threshold + `security_review_changes` + browser explorer for UI changes. |\n\nBoth tiers end with the same four sections; a delivery without its tier's validation\nis not a delivery.\n\n## Effort levels\n\n* `codx-junior` \u2014 **agile**. Time boxed: a small tool budget, a hard stop, one\n  increment per turn, partial delivery legal. It resolves its policy from the profile\n  name at runtime, not from prompt phrasing.\n* `codx-junior-max` \u2014 **max**. The only unbounded tier: no hard stop, full validation\n  breadth, used for long or complex work and for orchestration runs. It does not copy\n  the base profile; it links `profiles: [\"codx-junior\"]` and holds only its delta.\n\nMade with \u2764\ufe0f by codx-junior\n"
+          },
+          "response": "Write completed: docs/delivery-contract.md (2730 bytes)",
+          "output": "\u2713 File written successfully: `docs/delivery-contract.md` (2730 bytes)",
+          "duration_ms": 2280.721491202712,
+          "error": null,
+          "started_at": "2026-11-16T07:26:05.683Z",
+          "finished_at": "2026-11-16T07:26:07.964Z",
+          "cached": null
+        },
+        {
+          "tool": "project_write_file",
+          "tool_call_id": "call_00_etdYrJQkAkCjBN5gbpGl3788",
+          "status": "done",
+          "request": {
+            "content": "# Delivery contract\n\nEvery delivery in codx-junior is closed with the **same four sections**. The shape is\nnot a style preference: it is the contract between the assistant and the human, and it\nis written **once** here. It applies to:\n\n* the `codx-junior` harness answer (the chat bubble),\n* the orchestration supervisor's `finish` summary (the run delivery report),\n* every worker step result (each isolated step closes with the same headings).\n\n## The shape\n\n```md\n## What happened\n## What I did\n## Demo\n## Next tasks\n\n**Good enough?** ok / next / what is wrong\n```\n\n### One line per section\n\n* `## What happened` \u2014 the situation in plain language: the problem, what you found, what you decided and why. Facts and evidence (`path:line`, command output), not intentions.\n* `## What I did` \u2014 the increment(s) delivered in this turn, one line each, with the files touched. If the increment is partial, say so: partial delivery is a valid outcome.\n* `## Demo` \u2014 exactly ONE runnable thing the human can do to see the result (a command, a URL, a test, a card). One, not a list.\n* `## Next tasks` \u2014 2-3 candidate next steps, each tagged `quick` (an agile increment) or `max` (needs the `codx-junior-max` effort level).\n\n### The checkpoint\n\nThe delivery ends with the line `**Good enough?** ok / next / what is wrong`:\n\n```md\n**Good enough?** ok / next / what is wrong\n```\n\nIt is a real question, not decoration: `ok` accepts the increment, `next` takes the\nfirst `Next tasks` entry, `what is wrong` opens a correction. Never remove it, never\nanswer it yourself.\n\n## Validation tiers\n\nValidation is **never optional**; only its *breadth* changes with the effort level.\n\n| Tier | Applies to | What must be run before delivering |\n| --- | --- | --- |\n| `agile` | `codx-junior` (default) | Targeted tests for the touched files (or a manual reproduction when there are none) + `qa_review_changes`. A `warn` verdict is acceptable **only** if the gap is named in **Next tasks**. |\n| `max` | `codx-junior-max` | Full test suite + coverage threshold + `security_review_changes` + browser explorer for UI changes. |\n\nBoth tiers close with the same four sections; a delivery without its tier's validation\nis not a delivery.\n\n## Effort levels\n\n* `codx-junior` \u2014 **agile**. Time boxed: a small tool budget, a hard stop, one\n  increment per turn, partial delivery legal. The policy is resolved at runtime from\n  the profile name, not from prompt phrasing.\n* `codx-junior-max` \u2014 **max**. The only unbounded tier: no hard stop, full validation\n  breadth, used for long or complex work and for orchestration runs. It does not copy\n  the base profile; it links `profiles: [\"codx-junior\"]` and holds only its delta\n  (budget, tool-limit exemption, validation breadth, orchestration use).\n\nMade with \u2764\ufe0f by codx-junior\n",
+            "file_path": "docs/delivery-contract.md"
+          },
+          "response": "Write completed: docs/delivery-contract.md (2810 bytes)",
+          "output": "\u2713 File written successfully: `docs/delivery-contract.md` (2810 bytes)",
+          "duration_ms": 2895.0810227543116,
+          "error": null,
+          "started_at": "2026-11-16T07:26:17.317Z",
+          "finished_at": "2026-11-16T07:26:20.212Z",
+          "cached": null
+        },
+        {
+          "tool": "apply_file_changes",
+          "tool_call_id": "call_00_SgvWEz2sovrgoXYEwufD0189",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/orchestration/prompts.py",
+            "changes": [
+              {
+                "search": "* The summary becomes the human delivery report: what was built, how to test it,\n  files touched, known gaps.",
+                "replace": "* The summary is the human delivery report and follows `docs/delivery-contract.md`:\n  use the four headings `## What happened`, `## What I did`, `## Demo` (one\n  runnable check) and `## Next tasks` (2-3 steps, tagged `quick` or `max`), and\n  close with `**Good enough?** ok / next / what is wrong`."
+              },
+              {
+                "search": "* Run the relevant tests or checks when possible.\n* Finish with a short summary and the JSON result object requested in the step.",
+                "replace": "* Run the relevant tests or checks when possible.\n* Close with the four delivery headings (`## What happened`, `## What I did`,\n  `## Demo`, `## Next tasks`) and the JSON result object requested in the step."
+              },
+              {
+                "search": "        \"- Verify your work (tests, build, manual check) and say how.\",",
+                "replace": "        \"- Verify your work (tests, build, manual check) and say how.\",\n        \"- Close with the four delivery headings `## What happened`, `## What I did`, \"\n        \"`## Demo`, `## Next tasks` (see `docs/delivery-contract.md`), then the result \"\n        \"contract below.\","
+              }
+            ]
+          },
+          "response": "Applied 3 change(s) to api/codx/junior/orchestration/prompts.py",
+          "output": "```py api/codx/junior/orchestration/prompts.py\n\"\"\"\nPrompt and report builders for the orchestration runtime.\n\nKeeping the prompts in one dependency-light module has two benefits:\n\n* the supervisor and the worker contracts are versioned and testable without an\n  AI call,\n* the text the model sees is exactly the text the documentation describes.\n\nThe design mirrors the execution model of DSH (goal + plan + isolated workers +\nverification) while the *visibility* stays in codx-junior: every step is a task\ncard on a board and in a sprint, and the supervisor's rounds are messages of the\nmain task.\n\nMade with \u2764\ufe0f by codx-junior\n\"\"\"\n\nfrom __future__ import annotations\n\nfrom typing import List, Optional\n\nfrom . import constants as C\nfrom .models import RunState\n\n\n# ---------------------------------------------------------------------------\n# Supervisor\n# ---------------------------------------------------------------------------\n\nSUPERVISOR_SYSTEM_PROMPT = \"\"\"\\\nYou are the ORCHESTRATOR (supervisor) of a durable, multi-step run inside\ncodx-junior. You do not do the bulk of the work yourself: you plan it, delegate\nit to isolated workers, verify the results and finish the run.\n\n## The system you run on\n\n* The run is attached to this main task (a kanban card). Every step you plan is\n  materialized as a child task card on a board and in the run sprint, so the work\n  is visible to humans exactly like any other task.\n* Workers run in their own chat, with their own context. They do NOT see this\n  conversation: the only information they have is the step description you write.\n  Therefore every step must be self-contained.\n* A background worker dispatches the steps you plan. You do not need to wait:\n  after your turn the worker executes the ready steps and calls you again with\n  their results.\n* You control the run only through the `orchestrator` tool. Never claim a step is\n  running or finished unless the tool result says so.\n\n## Your loop\n\n1. Call `orchestrator(action=\"status\")` when you need the current plan, budget\n   and step table.\n2. PLAN: decompose the objective into small, independently executable steps and\n   call `orchestrator(action=\"plan\", steps=[...])`.\n3. The worker executes ready steps (respecting `depends_on`) and returns their\n   structured results in the next round.\n4. VERIFY: compare every result with the step's acceptance criteria. Reject weak\n   results, add remediation or verification steps, or finish.\n5. FINISH: call `orchestrator(action=\"finish\", summary=\"...\")` only when the\n   objective is demonstrably achieved (or honestly report what is blocked).\n\n## Planning rules\n\n* WALL-CLOCK TIME IS THE CONSTRAINT. A run is measured in minutes of model\n  turns, not in tokens: every extra step is one or more full provider turns.\n  Design for concurrency instead of completeness:\n  - prefer 3-5 SMALL steps per batch; widening the batch is faster than\n    deepening a single step,\n  - one step = one focused turn: one file (or one tightly related group), one\n    command, one decision. A step that needs two unrelated investigations or two\n    unrelated edits must be SPLIT, because it would run sequentially inside a\n    single turn,\n  - never serialise work that can run at the same time: independent steps get NO\n    `depends_on` (they are dispatched in parallel, up to `max_parallel`),\n  - do not plan a step whose only output is information already present in the\n    RUN STATE or in the results above: read it here instead,\n  - respect the step timeout: a step that exceeds it is cancelled. Cut the step\n    down instead of working around the limit.\n* Plan the smallest useful batch first (2-5 steps). For large work, plan the next\n  batch after the first results; do not invent a 30-step waterfall.\n* Every step must state:\n  - `title`: imperative and specific,\n  - `objective`: what to do, with enough context for a worker that cannot see\n    this chat (paths, symbols, expected behaviour, constraints),\n  - `acceptance`: how a reviewer verifies it,\n  - `profile`: who should do it (pick from the available profiles/team; use an\n    engineering profile for code, an analysis profile for investigation),\n  - `depends_on`: ids/titles of steps that MUST be done first,\n  - `files`: known relevant files (optional),\n  - `context`: extra facts the worker needs (optional).\n* Steps that can run at the same time must NOT depend on each other: the worker\n  dispatches independent ready steps in parallel.\n* Never duplicate work that is already done or running. Read the RUN STATE table.\n* Add a final verification step when the acceptance of the objective is not\n  trivially observable from the worker summaries.\n* Prefer small, reviewable changes. Do not modify unrelated files.\n* Respect the budget: each step costs money. If the remaining budget is small,\n  plan fewer/smaller steps and reserve the final round for the report.\n\n## Finishing rules\n\n* `finish` is allowed only when every requirement of the objective is met and\n  the acceptance evidence is in the results.\n* A run with a FAILED step is not completed. The tool REJECTS `finish` while any\n  step is failed or unreachable: retry or replan it first. Only when the work\n  genuinely cannot be done (missing credential, external dependency, human\n  decision) call `finish` with `accept_failures=true` and a summary that states\n  exactly what is missing; the run is then reported as FAILED with a partial\n  delivery report, never as completed.\n* The summary is the human delivery report and follows `docs/delivery-contract.md`:\n  use the four headings `## What happened`, `## What I did`, `## Demo` (one\n  runnable check) and `## Next tasks` (2-3 steps, tagged `quick` or `max`), and\n  close with `**Good enough?** ok / next / what is wrong`.\n* If the run is blocked by missing information/credentials or an unrecoverable\n  error, finish with an honest blocked report instead of looping.\n* If a step failed, either add a remediation step (with a different approach) or\n  finish as blocked. Never repeat the exact same failed step blindly.\n\n## Tool budget\n\n* The tool limits are a guardrail, not a verdict: a worker that reaches them gets\n  a course correction (the facts it already collected plus a smaller budget) and\n  keeps working in the same turn. Only when those continuations are exhausted\n  does the step stop.\n* A step stopped with `Tool budget exhausted` is **blocked**, not failed. Do not\n  retry it as it is: write a narrower step (fewer files, one concrete question,\n  the decision that is missing) or finish with an honest blocked report for the\n  human.\n* The same applies to you: spend your own budget on planning and verification,\n  and prefer one batched call over several exploratory ones. Re-use the RUN\n  STATE block instead of asking the tools again for what it already tells you.\n\n## Style\n\n* Keep your visible answer short: the plan/decision in 5-15 lines.\n* Put the detail in the tool arguments (steps), not in prose.\n* Do not ask the user questions: choose the best reasonable interpretation.\n* The RUN STATE block below is the ground truth; trust it over your memory.\n\"\"\"\n\n\nSTEP_SYSTEM_PROMPT = \"\"\"\\\nYou are an isolated WORKER of an orchestrated run in codx-junior.\n\n* You own exactly one step. Do the work, verify it, and report the result.\n* You cannot see the supervisor conversation; your step description is your full\n  contract. If a detail is missing, choose the most reasonable interpretation and\n  state it in the summary. Do not ask questions.\n* Use the project tools to inspect the code before changing it. Keep changes\n  small, reviewable and limited to the step.\n* Never touch files outside the step scope unless the step explicitly asks for it.\n* Run the relevant tests or checks when possible.\n* Close with the four delivery headings (`## What happened`, `## What I did`,\n  `## Demo`, `## Next tasks`) and the JSON result object requested in the step.\n\n## Tool budget\n\n* The tool limits are a guardrail against rabbit holes, not the end of your\n  step: when you reach them you receive a course correction listing the facts\n  you already collected and you continue the same turn with a smaller budget.\n* Never re-run a call whose result is already in this conversation: read it\n  again from the messages. Repeating it burns the budget without adding facts.\n* Spend the budget on evidence: batch independent reads in one call, read the\n  ranges/symbols you need instead of whole files, and state in your text what is\n  confirmed, what is ruled out and the next concrete step.\n* If the guardrail trips more than once, change the approach (smaller scope,\n  fewer calls) or stop and report exactly what you need \u2014 never loop on the same\n  path until the budget is gone.\n\"\"\"\n\n\n# ---------------------------------------------------------------------------\n# Rendering helpers\n# ---------------------------------------------------------------------------\n\n\ndef _clip(text: Optional[str], max_chars: int) -> str:\n    \"\"\"Clip *text* to *max_chars*.\"\"\"\n    value = (text or \"\").strip()\n    if len(value) <= max_chars:\n        return value\n    return value[:max_chars].rstrip() + \"\\n\u2026 (truncated)\"\n\n\ndef _step_line(step, max_summary: int = 400) -> str:\n    \"\"\"Render one step as a compact markdown row/block.\"\"\"\n    result = step.result\n    summary = _clip(result.summary if result else \"\", max_summary)\n    verification = _clip(result.verification if result else \"\", max_summary)\n    lines = [\n        f\"#### [{step.id}] {step.title} \u2014 **{step.status}**\"\n        f\" (attempt {step.attempts}, profile `{step.profile or 'default'}`)\",\n    ]\n    if step.depends_on:\n        lines.append(f\"- depends on: {', '.join(step.depends_on)}\")\n    if step.chat_id:\n        lines.append(f\"- card: `{step.chat_id}`\" + (\n            f\" ({step.board} / {step.column})\" if step.board or step.column else \"\"\n        ))\n    if summary:\n        lines.append(f\"- summary: {summary}\")\n    if verification:\n        lines.append(f\"- verification: {verification}\")\n    if result and result.files:\n        lines.append(f\"- files: {', '.join(result.files[:20])}\")\n    if result and result.followups:\n        lines.append(f\"- follow-ups: {'; '.join(result.followups[:10])}\")\n    if step.error:\n        lines.append(f\"- error: {_clip(step.error, 1200)}\")\n    if result and result.error and result.error != step.error:\n        lines.append(f\"- runtime error: {_clip(result.error, 1200)}\")\n    return \"\\n\".join(lines)\n\n\ndef render_plan_table(run: RunState) -> str:\n    \"\"\"Render the plan as a markdown table (used by the status tool/API).\"\"\"\n    if not run.steps:\n        return \"_(no plan yet)_\"\n    lines = [\n        \"| # | Step | Status | Attempts | Profile | Depends on | Card |\",\n        \"| --- | --- | --- | --- | --- | --- | --- |\",\n    ]\n    escaped_pipe = \"\\\\|\"\n    for index, step in enumerate(run.steps, start=1):\n        card = step.chat_id[:8] if step.chat_id else \"\u2014\"\n        dependencies = \",\".join(step.depends_on) or \"\u2014\"\n        # The pipe is escaped OUTSIDE the f-string: a backslash inside an\n        # f-string expression is a SyntaxError before Python 3.12 (\"f-string\n        # expression part cannot include a backslash\").\n        title = step.title.replace(\"|\", escaped_pipe)\n        lines.append(\n            f\"| {index} | {title} | `{step.status}` | \"\n            f\"{step.attempts} | `{step.profile or 'default'}` | {dependencies} | {card} |\"\n        )\n    return \"\\n\".join(lines)\n\n\ndef render_run_state(run: RunState, max_result_chars: int = 900) -> str:\n    \"\"\"\n    Render the full RUN STATE block used by the supervisor prompt.\n\n    The block is intentionally bounded: step summaries are clipped and only the\n    latest events are included, so a long run cannot blow up the supervisor\n    context.\n    \"\"\"\n    counts = run.counts()\n    remaining = run.remaining_budget()\n    budget_line = (\n        f\"budget {run.config.budget_cxjcoins:.4f} cxjcoins, \"\n        f\"spent {run.spent_cxjcoins:.4f}, \"\n        f\"remaining {remaining:.4f}\"\n        if remaining is not None\n        else f\"spent {run.spent_cxjcoins:.4f} cxjcoins, no hard budget\"\n    )\n    lines = [\n        \"## RUN STATE\",\n        f\"- Run: **{run.name}** (`{run.run_id}`)\",\n        f\"- Status: **{run.status}** \u00b7 round {run.rounds}/{run.config.max_rounds} \u00b7 \"\n        f\"supervisor rounds {run.supervisor_rounds}\",\n        f\"- Objective: {_clip(run.objective, 4000)}\",\n        f\"- {budget_line}\",\n        f\"- Steps: {counts.get(C.STEP_STATUS_DONE, 0)} done, \"\n        f\"{counts.get(C.STEP_STATUS_RUNNING, 0)} running, \"\n        f\"{counts.get(C.STEP_STATUS_PENDING, 0)} pending, \"\n        f\"{counts.get(C.STEP_STATUS_FAILED, 0)} failed, \"\n        f\"{counts.get(C.STEP_STATUS_BLOCKED, 0)} blocked, \"\n        f\"{counts.get(C.STEP_STATUS_SKIPPED, 0)} skipped\",\n        f\"- Board: `{run.config.board}` \u00b7 Sprint: `{run.config.sprint or 'auto'}` \u00b7 \"\n        f\"parallelism {run.config.max_parallel}\",\n    ]\n    if run.last_error:\n        lines.append(f\"- Last error: {_clip(run.last_error, 1500)}\")\n    if run.stop_reason:\n        lines.append(f\"- Stop reason: {_clip(run.stop_reason, 1500)}\")\n\n    lines.append(\"\")\n    lines.append(\"### Plan\")\n    lines.append(render_plan_table(run))\n\n    if run.steps:\n        lines.append(\"\")\n        lines.append(\"### Step results\")\n        for step in run.steps:\n            if step.status == C.STEP_STATUS_PENDING and not step.result:\n                continue\n            lines.append(_step_line(step, max_summary=max_result_chars))\n\n    if run.events:\n        lines.append(\"\")\n        lines.append(\"### Recent run events\")\n        for event in run.events[-8:]:\n            lines.append(f\"- {event.at} \u00b7 {event.type}: {_clip(event.message, 300)}\")\n\n    return \"\\n\".join(lines)\n\n\ndef build_supervisor_prompt(run: RunState, reason: str) -> str:\n    \"\"\"\n    Build the user message of a supervisor round.\n\n    Args:\n        run: Current run state (already refreshed by the service).\n        reason: ``plan`` | ``verify`` | ``replan`` | ``resume``.\n    \"\"\"\n    plan_text = (\n        \"No plan exists yet. Inspect the project with your tools, decompose the \"\n        \"objective and call `orchestrator(action=\\\"plan\\\", steps=[...])`.\"\n    )\n    verify_text = (\n        \"Every planned step is terminal. Verify the acceptance criteria against the \"\n        \"results. If the objective is demonstrably achieved call `orchestrator(action=\\\"finish\\\", summary=\\\"...\\\")`; \"\n        \"otherwise add the remediation/verification steps that are still required.\"\n    )\n    replan_text = (\n        \"Some steps failed, are blocked, or the plan cannot advance. Decide one of: \"\n        \"add a remediation step with a DIFFERENT approach, retry a failed step with \"\n        \"`orchestrator(action=\\\"retry_step\\\", step_id=...)`, remove an obsolete pending step, \"\n        \"or finish with an honest blocked report. Never repeat the same failed step blindly.\"\n    )\n    reason_text = {\n        \"plan\": plan_text,\n        \"no_plan\": plan_text,\n        \"verify\": verify_text,\n        \"replan\": replan_text,\n        \"failed_steps\": replan_text,\n        \"blocked_steps\": replan_text,\n        \"no_progress\": replan_text,\n        \"resume\": (\n            \"The run was resumed. Re-read the state and continue from where it stopped.\"\n        ),\n    }.get(reason, plan_text)\n    return \"\\n\".join([\n        f\"### ORCHESTRATION ROUND {run.rounds + 1}\",\n        reason_text,\n        \"\",\n        \"Remember: every step is executed by an isolated worker that cannot see this chat.\",\n        \"\",\n        render_run_state(run),\n        \"\",\n        \"Use the `orchestrator` tool to update the plan or finish. Your visible answer is \"\n        \"a short note for the human watching the main task.\",\n    ])\n\n\n# ---------------------------------------------------------------------------\n# Worker contract\n# ---------------------------------------------------------------------------\n\n\ndef build_step_contract(run: RunState, step) -> str:\n    \"\"\"\n    Build the self-contained user message of a worker card.\n\n    Everything a worker needs is in this text: the run objective, the step\n    objective, acceptance, context and the exact result contract.\n    \"\"\"\n    lines = [\n        \"# ORCHESTRATED STEP\",\n        f\"Run: **{run.name}**\",\n        f\"Step: **{step.title}** (`{step.id}`)\",\n        \"\",\n        \"## Run objective\",\n        _clip(run.objective, 6000),\n        \"\",\n        \"## Step objective\",\n        _clip(step.objective, 8000),\n    ]\n    if step.acceptance:\n        lines += [\"\", \"## Acceptance criteria\", _clip(step.acceptance, 4000)]\n    if step.files:\n        lines += [\"\", \"## Known files\", \"\\n\".join(f\"- `{path}`\" for path in step.files[:100])]\n    if step.context:\n        lines += [\"\", \"## Context\", _clip(step.context, 12000)]\n    lines += [\n        \"\",\n        \"## Rules\",\n        \"- Work only on this step; do not start unrelated refactors.\",\n        \"- Inspect the code before changing it and keep the change reviewable.\",\n        \"- Verify your work (tests, build, manual check) and say how.\",\n        \"- Close with the four delivery headings `## What happened`, `## What I did`, \"\n        \"`## Demo`, `## Next tasks` (see `docs/delivery-contract.md`), then the result \"\n        \"contract below.\",\n        \"- If you are blocked, explain exactly what is missing instead of guessing forever.\",\n        \"- Do not burn your tool budget: batch the reads you need and re-use the \"\n        \"results already in the conversation. Only stop for a tool limit if you \"\n        \"have run out of continuations, and then report what you already know.\",\n        \"\",\n        \"## Result contract\",\n        C.STEP_RESULT_INSTRUCTIONS,\n    ]\n    return \"\\n\".join(lines)\n\n\ndef build_delegate_contract(task: str, context: str = \"\", parent_name: str = \"\") -> str:\n    \"\"\"Build the user message of a one-off delegated subagent card.\"\"\"\n    lines = [\"# DELEGATED TASK\"]\n    if parent_name:\n        lines.append(f\"Requested from: **{parent_name}**\")\n    lines += [\n        \"\",\n        _clip(task, 8000),\n    ]\n    if context:\n        lines += [\"\", \"## Context\", _clip(context, 12000)]\n    lines += [\n        \"\",\n        \"## Rules\",\n        \"- You are an isolated subagent: this task is your full contract.\",\n        \"- Use the project tools, keep changes scoped and verify the result.\",\n        \"- Do not ask questions; choose the best reasonable interpretation.\",\n        \"- Spend your tool budget on evidence: batch independent reads and never \"\n        \"repeat a call whose result is already in the conversation.\",\n        \"\",\n        \"## Result contract\",\n        C.STEP_RESULT_INSTRUCTIONS,\n    ]\n    return \"\\n\".join(lines)\n\n\n# ---------------------------------------------------------------------------\n# Reports\n# ---------------------------------------------------------------------------\n\n\ndef _report_header(run: RunState, title: str) -> List[str]:\n    \"\"\"Common header of a delivery/report message.\"\"\"\n    remaining = run.remaining_budget()\n    return [\n        f\"## {title}\",\n        f\"**Run:** {run.name} (`{run.run_id}`)  \",\n        f\"**Status:** `{run.status}`  \",\n        f\"**Spent:** {run.spent_cxjcoins:.4f} cxjcoins\"\n        + (f\" of {run.config.budget_cxjcoins:.4f}\" if remaining is not None else \"\")\n        + \"  \",\n        f\"**Rounds:** {run.rounds} \u00b7 **Steps:** {run.progress()}% complete\",\n        \"\",\n    ]\n\n\ndef _result_lines(run: RunState) -> List[str]:\n    \"\"\"Render the per-step result list used by reports.\"\"\"\n    lines = [\"### Steps\", \"\"]\n    for step in run.steps:\n        result = step.result\n        summary = _clip(result.summary if result else \"\", 900) or \"(no result)\"\n        lines.append(f\"- **[{step.id}] {step.title}** \u2014 `{step.status}` \u00b7 {summary}\")\n        if result and result.verification:\n            lines.append(f\"  - verification: {_clip(result.verification, 600)}\")\n        if result and result.files:\n            files = \", \".join(f\"`{path}`\" for path in result.files[:20])\n            lines.append(f\"  - files: {files}\")\n        if step.error:\n            lines.append(f\"  - error: {_clip(step.error, 600)}\")\n    return lines\n\n\ndef build_delivery_report(run: RunState, summary: str) -> str:\n    \"\"\"Build the final delivery report published on the main task.\"\"\"\n    lines = _report_header(run, \"Run delivery report\")\n    lines += [\n        \"### Summary\",\n        _clip(summary, 8000) or \"_No summary provided._\",\n        \"\",\n    ]\n    lines += _result_lines(run)\n    if run.config.budget_cxjcoins > 0:\n        lines += [\n            \"\",\n            f\"_Budget: {run.spent_cxjcoins:.4f} / {run.config.budget_cxjcoins:.4f} cxjcoins._\",\n        ]\n    return \"\\n\".join(lines)\n\n\ndef build_budget_report(run: RunState) -> str:\n    \"\"\"Build the no-AI report used when the budget is exhausted.\"\"\"\n    lines = _report_header(run, \"Run stopped: budget exhausted\")\n    lines += [\n        \"The run reached its budget before finishing. No additional AI turn was spent.\",\n        \"\",\n        \"### What was completed\",\n        \"\",\n    ]\n    lines += _result_lines(run)\n    lines += [\n        \"\",\n        \"### Remaining work\",\n        \"\",\n        \"Review the pending/blocked steps above and start a new run (or raise the \"\n        \"budget) to continue. The cards and their contexts are preserved on the board.\",\n    ]\n    return \"\\n\".join(lines)\n\n\ndef build_stall_report(run: RunState, reason: str) -> str:\n    \"\"\"Build the no-AI report used when the run stalls.\"\"\"\n    lines = _report_header(run, \"Run stopped: stalled\")\n    lines += [\n        f\"The run made no progress for {run.stagnant_rounds} supervisor round(s): \"\n        f\"{_clip(reason, 1500)}\",\n        \"\",\n        \"### What was completed\",\n        \"\",\n    ]\n    lines += _result_lines(run)\n    lines += [\n        \"\",\n        \"### Next step for a human\",\n        \"\",\n        \"Inspect the blocked/failed cards, adjust the objective or the plan, then \"\n        \"resume the run (or start a new one).\",\n    ]\n    return \"\\n\".join(lines)\n\n\ndef build_failure_report(run: RunState, error: str) -> str:\n    \"\"\"Build the report used when the run fails unrecoverably.\"\"\"\n    lines = _report_header(run, \"Run failed\")\n    lines += [\n        \"### Error\",\n        _clip(error, 4000) or \"_Unknown error._\",\n        \"\",\n    ]\n    lines += _result_lines(run)\n    return \"\\n\".join(lines)\n\n\ndef build_stopped_report(run: RunState, reason: str = \"\") -> str:\n    \"\"\"Build the report used when a human stops the run.\"\"\"\n    lines = _report_header(run, \"Run stopped by user\")\n    if reason:\n        lines += [\"### Reason\", _clip(reason, 2000), \"\"]\n    lines += _result_lines(run)\n    return \"\\n\".join(lines)\n\n# Made with \u2764\ufe0f by codx-junior\n```",
+          "duration_ms": 2813.5401383042336,
+          "error": null,
+          "started_at": "2026-11-16T07:26:29.041Z",
+          "finished_at": "2026-11-16T07:26:31.855Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_klYXWgPBpNaSi4ec7PH39822",
+          "status": "done",
+          "request": {
+            "file_path": "api/codx/junior/orchestration/prompts.py",
+            "pattern": "four delivery headings|What happened|Good enough",
+            "context_lines": 5,
+            "line_numbers": true
+          },
+          "response": "# api/codx/junior/orchestration/prompts.py \u2014 pattern `four delivery headings|What happened|Good enough` (4 match(es); 535 lines)\n```py api/codx/junior/orchestration/prompts.py\n   106|   genuinely cannot be done (missing credential, external dependency, human\n   107|   decision) call `finish` with `accept_failures=true` and a summary that states\n   108|   exactly what is missing; the run is then reported as FAILED with a partial\n   109|   delivery report, never as completed.\n   110| * The summary is the human delivery report and follows `docs/delivery-contract.md`:\n   111|   use the four headings `## What happened`, `## What I did`, `## Demo` (one\n   112|   runnable check) and `## Next tasks` (2-3 steps, tagged `quick` or `max`), and\n   113|   close with `**Good enough?** ok / next / what is wrong`.\n   114| * If the run is blocked by missing information/credentials or an unrecoverable\n   115|   error, finish with an honest blocked report instead of looping.\n   116| * If a step failed, either add a remediation step (with a different approach) or\n   117|   finish as blocked. Never repeat the exact same failed step blindly.\n   118| \n      | \u2026\n   148|   state it in the summary. Do not ask questions.\n   149| * Use the project tools to inspect the code before changing it. Keep changes\n   150|   small, reviewable and limited to the step.\n   151| * Never touch files outside the step scope unless the step explicitly asks for it.\n   152| * Run the relevant tests or checks when possible.\n   153| * Close with the four delivery headings (`## What happened`, `## What I did`,\n   154|   `## Demo`, `## Next tasks`) and the JSON result object requested in the step.\n   155| \n   156| ## Tool budget\n   157| \n   158| * The tool limits are a guardrail against rabbit holes, not the end of your\n      | \u2026\n   375|         \"\",\n   376|         \"## Rules\",\n   377|         \"- Work only on this step; do not start unrelated refactors.\",\n   378|         \"- Inspect the code before changing it and keep the change reviewable.\",\n   379|         \"- Verify your work (tests, build, manual check) and say how.\",\n   380|         \"- Close with the four delivery headings `## What happened`, `## What I did`, \"\n   381|         \"`## Demo`, `## Next tasks` (see `docs/delivery-contract.md`), then the result \"\n   382|         \"contract below.\",\n   383|         \"- If you are blocked, explain exactly what is missing instead of guessing forever.\",\n   384|         \"- Do not burn your tool budget: batch the reads you need and re-use the \"\n   385|         \"results already in the conversation. Only stop for a tool limit if you \"\n```",
+          "output": "Read 1 file(s) | Successfully read: api/codx/junior/orchestration/prompts.py",
+          "duration_ms": 4691.192224621773,
+          "error": null,
+          "started_at": "2026-11-16T07:26:38.915Z",
+          "finished_at": "2026-11-16T07:26:43.606Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_ps",
+          "tool_call_id": "call_01_ZHcAewJeIQJ3DOK4Yzqq5438",
+          "status": "done",
+          "request": {},
+          "response": "Found 39 container(s). Command: `docker ps -a --format {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.service\"}}`\nRaw output (ID\tName\tImage\tStatus\tPorts\tProject\tService):\nb20828b3a9b7\tbrowser_22bf3474\tlscr.io/linuxserver/chromium:latest\tUp 22 hours\t3000-3001/tcp\t\t\na54a8988fd34\tbrowser_d1b8985b\tlscr.io/linuxserver/chromium:latest\tUp 36 hours\t3000-3001/tcp\t\t\n57e7fd6ce9e2\tbrowser_d9824b31\tlscr.io/linuxserver/chromium:latest\tUp 40 hours\t3000-3001/tcp\t\t\n97d37f0ec1f4\tbrowser_79aeca01\tlscr.io/linuxserver/chromium:latest\tUp 43 hours\t3000-3001/tcp\t\t\n925725f7e230\tcodx-junior-promotion-www\tcodx-junior-promotion:www\tUp 45 hours (healthy)\t80/tcp\tcodx-junior-promotion-www\twebsite\n3111e0a51799\tbrowser_7e229118\tlscr.io/linuxserver/chromium:latest\tUp 46 hours\t3000-3001/tcp\t\t\n145ae2b9b133\tbrowser_0e44d53b\tlscr.io/linuxserver/chromium:latest\tUp 46 hours\t3000-3001/tcp\t\t\n662225b585e4\tbrowser_b537d1d5\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\n828233eb8f32\tbrowser_a1dc0626\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\n7bd93d00864b\tbrowser_1d30b392\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\nc47ba97299c0\tbrowser_54239f8c\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\nf7d83985be2f\tbrowser_cff70128\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\na83a1d085adb\tbrowser_a66f8672\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\nf98becfba2b1\tbrowser_dae18274\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\nc015a5ecc93d\tbrowser_2a352192\tlscr.io/linuxserver/chromium:latest\tUp 3 days\t3000-3001/tcp\t\t\n9180e41b8d57\tcodx-junior-promotion-dev\tnode:22-alpine\tUp 36 hours\t\tcodx-junior-promotion\twebsite-dev\nd4a10909e51f\tbrowser_89448db6\tlscr.io/linuxserver/chromium:latest\tUp 4 days\t3000-3001/tcp\t\t\n4806b0e9afed\tbrowser_c6bc645b\tlscr.io/linuxserver/chromium:latest\tExited (137) 4 days ago\t\t\t\na22366bd24eb\tbrowser_f8e4922d\tlscr.io/linuxserver/chromium:latest\tExited (255) 4 days ago\t3000-3001/tcp\t\t\n0c78f27ca760\tcodx-junior-api-background\tcodxjunior/codx-junior:api\tUp 13 hours\t\tcodx-junior\tcodx-junior-api-background\nee40f8fc3a0e\tcodx-junior-api\tcodxjunior/codx-junior:api\tUp 13 hours\t\tcodx-junior\tcodx-junior-api\nbd33cfe26234\tcodx-junior-analytics-init\tcodxjunior/codx-junior:debian\tExited (0) 4 days ago\t\tcodx-junior\tcodx-junior-analytics-init\n9154f1f0c3b7\tbrowser_db897b1a\tlscr.io/linuxserver/chromium:latest\tExited (255) 5 days ago\t3000-3001/tcp\t\t\n30c3eb00ba7e\tbrowser_0e619f2f\tlscr.io/linuxserver/chromium:latest\tExited (255) 5 days ago\t3000-3001/tcp\t\t\n548e62b04424\tmallorca-island\tmallorca-island:dev\tUp 4 days (healthy)\t0.0.0.0:8080->80/tcp\tmallorcaisland\tgame\n282acf335d20\tbrowser_b4ffd9a4\tlscr.io/linuxserver/chromium:latest\tExited (255) 5 days ago\t3000-3001/tcp\t\t\n7ceb6ce219a6\tbrowser_18d964f6\tlscr.io/linuxserver/chromium:latest\tExited (255) 5 days ago\t3000-3001/tcp\t\t\n9ce5f8049176\tbrowser_fc22d9cf\tlscr.io/linuxserver/chromium:latest\tExited (255) 5 days ago\t3000-3001/tcp\t\t\ne9f531c57563\towtb2bdashboard-OWTB2BDashboard-1\tnode\tUp 4 days\t0.0.0.0:8008->8008/tcp\towtb2bdashboard\tOWTB2BDashboard\nc287e61bd2d8\tcodx-junior-it-web-release\tcodx-junior-it-web:release\tUp 4 days (healthy)\t0.0.0.0:8095->80/tcp\tcodx-junior-it-web\tweb\ne20debe60b97\tcodx-junior-default-workspace\tghcr.io/linuxserver/webtop:debian-kde\tUp 4 days\t3000-3001/tcp\tcodx-junior-workspace-default\tcodx-junior-default\na579cdc96ebe\tcodx-junior-docs\tnode:22-alpine\tUp 4 days\t\tcodx-junior-workspace-default\tcodx-junior-docs\n261b608551ad\tcodx-junior-fix-permissions\talpine:latest\tExited (0) 4 days ago\t\tcodx-junior-workspace-default\tfix-permissions\n898dd4247372\tdsh\tdsh-service:0.2.1-rc.5\tExited (0) 8 days ago\t\tdsh-service\tdsh\n325268e8f62e\tcodx-junior-codx-junior-init-1\tcodxjunior/codx-junior:debian\tExited (6) 4 days ago\t\tcodx-junior\tcodx-junior-init\n4738b7080b63\tlocalai-codx-junior\tcodx-junior-localai:latest\tUp 4 days (healthy)\t8080/tcp\tcodx-junior\tlocalai\n72",
+          "output": "> Running: `docker ps -a --format {{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}\t{{.Label \"com.docker.compose.project\"}}\t{{.Label \"com.docker.compose.service\"}}`\nOutput:\n\n**Container ID** | **Name** | **Image** | **Status** | **Ports** | **Compose Project** | **Compose Service**\n---|---|---|---|---|---|---\n`b20828b3a9b7` | `browser_22bf3474` | `lscr.io/linuxserver/chromium:latest` | Up 22 hours | 3000-3001/tcp | - | -\n`a54a8988fd34` | `browser_d1b8985b` | `lscr.io/linuxserver/chromium:latest` | Up 36 hours | 3000-3001/tcp | - | -\n`57e7fd6ce9e2` | `browser_d9824b31` | `lscr.io/linuxserver/chromium:latest` | Up 40 hours | 3000-3001/tcp | - | -\n`97d37f0ec1f4` | `browser_79aeca01` | `lscr.io/linuxserver/chromium:latest` | Up 43 hours | 3000-3001/tcp | - | -\n`925725f7e230` | `codx-junior-promotion-www` | `codx-junior-promotion:www` | Up 45 hours (healthy) | 80/tcp | codx-junior-promotion-www | website\n`3111e0a51799` | `browser_7e229118` | `lscr.io/linuxserver/chromium:latest` | Up 46 hours | 3000-3001/tcp | - | -\n`145ae2b9b133` | `browser_0e44d53b` | `lscr.io/linuxserver/chromium:latest` | Up 46 hours | 3000-3001/tcp | - | -\n`662225b585e4` | `browser_b537d1d5` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`828233eb8f32` | `browser_a1dc0626` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`7bd93d00864b` | `browser_1d30b392` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`c47ba97299c0` | `browser_54239f8c` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`f7d83985be2f` | `browser_cff70128` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`a83a1d085adb` | `browser_a66f8672` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`f98becfba2b1` | `browser_dae18274` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`c015a5ecc93d` | `browser_2a352192` | `lscr.io/linuxserver/chromium:latest` | Up 3 days | 3000-3001/tcp | - | -\n`9180e41b8d57` | `codx-junior-promotion-dev` | `node:22-alpine` | Up 36 hours | - | codx-junior-promotion | website-dev\n`d4a10909e51f` | `browser_89448db6` | `lscr.io/linuxserver/chromium:latest` | Up 4 days | 3000-3001/tcp | - | -\n`4806b0e9afed` | `browser_c6bc645b` | `lscr.io/linuxserver/chromium:latest` | Exited (137) 4 days ago | - | - | -\n`a22366bd24eb` | `browser_f8e4922d` | `lscr.io/linuxserver/chromium:latest` | Exited (255) 4 days ago | 3000-3001/tcp | - | -\n`0c78f27ca760` | `codx-junior-api-background` | `codxjunior/codx-junior:api` | Up 13 hours | - | codx-junior | codx-junior-api-background\n`ee40f8fc3a0e` | `codx-junior-api` | `codxjunior/codx-junior:api` | Up 13 hours | - | codx-junior | codx-junior-api\n`bd33cfe26234` | `codx-junior-analytics-init` | `codxjunior/codx-junior:debian` | Exited (0) 4 days ago | - | codx-junior | codx-junior-analytics-init\n`9154f1f0c3b7` | `browser_db897b1a` | `lscr.io/linuxserver/chromium:latest` | Exited (255) 5 days ago | 3000-3001/tcp | - | -\n`30c3eb00ba7e` | `browser_0e619f2f` | `lscr.io/linuxserver/chromium:latest` | Exited (255) 5 days ago | 3000-3001/tcp | - | -\n`548e62b04424` | `mallorca-island` | `mallorca-island:dev` | Up 4 days (healthy) | 0.0.0.0:8080->80/tcp | mallorcaisland | game\n`282acf335d20` | `browser_b4ffd9a4` | `lscr.io/linuxserver/chromium:latest` | Exited (255) 5 days ago | 3000-3001/tcp | - | -\n`7ceb6ce219a6` | `browser_18d964f6` | `lscr.io/linuxserver/chromium:latest` | Exited (255) 5 days ago | 3000-3001/tcp | - | -\n`9ce5f8049176` | `browser_fc22d9cf` | `lscr.io/linuxserver/chromium:latest` | Exited (255) 5 days ago | 3000-3001/tcp | - | -\n`e9f531c57563` | `owtb2bdashboard-OWTB2BDashboard-1` | `node` | Up 4 days | 0.0.0.0:8008->8008/tcp | owtb2bdashboard | OWTB2BDashboard\n`c287e61bd2d8` | `codx-junior-it-web-release` | `codx-junior-it-web:release` | Up 4 days (healthy) | 0.0.0.0:8095->80/tcp | codx-junior-it-web | web\n`e20debe60b97` | `codx-junior-default-workspace` | `ghcr.io/linuxserver/webtop:debian-kde` | Up 4 days | 3000-3001/tcp | codx-junior-workspace-default | codx-junior-default\n`a579cdc96ebe` | `codx-junior-docs` | `node:22-alpine` | Up 4 days | - | codx-junior-workspace-default | codx-junior-docs\n`261b608551ad` | `codx-junior-fix-permissions` | `alpine:latest` | Exited (0) 4 days ago | - | codx-junior-workspace-default | fix-permissions\n`898dd4247372` | `dsh` | `dsh-service:0.2.1-rc.5` | Exited (0) 8 days ago | - | dsh-service | dsh\n`325268e8f62e` | `codx-junior-codx-junior-init-1` | `codxjunior/codx-junior:debian` | Exited (6) 4 days ago | - | codx-junior | codx-junior-init\n`4738b7080b63` | `localai-codx-junior` | `codx-junior-localai:latest` | Up 4 days (healthy) | 8080/tcp | codx-junior | localai\n`72b5f700c433` | `codx-junior-client` | `codxjunior/codx-junior:client` | Up 4 days | - | codx-junior | codx-junior-client\n`aba77aee2749` | `traefik-codx-junior` | `traefik:latest` | Up 45 hours | 0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp | codx-junior | traefik\n`e9664256e55b` | `milvus-codx-junior` | `milvusdb/milvus:v2.5.11` | Up 2 days (healthy) | - | codx-junior | milvus",
+          "duration_ms": 4036.3347306847572,
+          "error": null,
+          "started_at": "2026-11-16T07:26:41.229Z",
+          "finished_at": "2026-11-16T07:26:45.265Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_ZZiiOCTDt98Wf4NrBUwj4413",
+          "status": "done",
+          "request": {
+            "container_name": "codx-junior-api",
+            "command": "python -m pytest tests/test_orchestration.py -q --no-header -x",
+            "timeout": 300
+          },
+          "response": "docker exec failed (exit 126) in codx-junior-api:\nOCI runtime exec failed: exec failed: unable to start container process: exec: \"python\": executable file not found in $PATH: unknown",
+          "output": "\u274c Command failed\n\n> Running: `docker exec codx-junior-api python -m pytest tests/test_orchestration.py -q --no-header -x`\n\nExit code: 126\n\nstdout:\nOCI runtime exec failed: exec failed: unable to start container process: exec: \"python\": executable file not found in $PATH: unknown",
+          "duration_ms": 1790.2452200651169,
+          "error": null,
+          "started_at": "2026-11-16T07:26:52.631Z",
+          "finished_at": "2026-11-16T07:26:54.422Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_ET_cmiKnIdRiCi4DTXw3R3u8739",
+          "status": "done",
+          "request": {
+            "command": "python3 -m pytest tests/test_orchestration.py -q --no-header -x",
+            "container_name": "codx-junior-api",
+            "timeout": 300
+          },
+          "response": "docker exec failed (exit 1) in codx-junior-api:\n/usr/bin/python3: No module named pytest",
+          "output": "\u274c Command failed\n\n> Running: `docker exec codx-junior-api python3 -m pytest tests/test_orchestration.py -q --no-header -x`\n\nExit code: 1\n\nstderr:\n/usr/bin/python3: No module named pytest",
+          "duration_ms": 2595.931466668844,
+          "error": null,
+          "started_at": "2026-11-16T07:27:02.403Z",
+          "finished_at": "2026-11-16T07:27:04.999Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_YxipgYND52POeKokp9Me8295",
+          "status": "done",
+          "request": {
+            "command": "python3 -c \"import os,shutil;print(os.getcwd(), shutil.which('pytest'), os.listdir('.')[:20])\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "Failed to exec in container codx-junior-api: command must not contain ';': docker exec runs without a shell, so issue one command per call",
+          "output": "\u274c Error: command must not contain ';': docker exec runs without a shell, so issue one command per call",
+          "duration_ms": 2254.8535522073507,
+          "error": null,
+          "started_at": "2026-11-16T07:27:12.674Z",
+          "finished_at": "2026-11-16T07:27:14.929Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_ET_1jqz25C7ZRjIXirPcQLP3390",
+          "status": "done",
+          "request": {
+            "command": "python3 -c \"import os,shutil;print(os.getcwd());print(shutil.which('pytest'));print(os.listdir('.')[:25])\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "Failed to exec in container codx-junior-api: command must not contain ';': docker exec runs without a shell, so issue one command per call",
+          "output": "\u274c Error: command must not contain ';': docker exec runs without a shell, so issue one command per call",
+          "duration_ms": 1997.2826186567545,
+          "error": null,
+          "started_at": "2026-11-16T07:27:21.912Z",
+          "finished_at": "2026-11-16T07:27:23.909Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_67U0PTDbVAqYPqMTxkcz3021",
+          "status": "done",
+          "request": {
+            "command": "python3 -c \"print(__import__('os').getcwd(), __import__('shutil').which('pytest'), __import__('os').listdir('.')[:25])\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec in codx-junior-api (exit 0):\n/home/codx-junior/codx-junior None ['None', 'set_env.sh', '.codx', 'entrypoint.sh', '.githooks', 'docs', '.pytest_cache', 'traefik', '.dockerignore', 'design', '.git', 'tmp', 'milvus', 'install.sh', 'codx-junior-installer', 'supervisor.conf', 'client', 'OWTWeb', 'core', 'codx-junior', 'restar_api.sh', 'api', 'wiki', 'scripts', '.gitignore']",
+          "output": "> Running: `docker exec codx-junior-api python3 -c print(__import__('os').getcwd(), __import__('shutil').which('pytest'), __import__('os').listdir('.')[:25])`\nOutput:\n\n/home/codx-junior/codx-junior None ['None', 'set_env.sh', '.codx', 'entrypoint.sh', '.githooks', 'docs', '.pytest_cache', 'traefik', '.dockerignore', 'design', '.git', 'tmp', 'milvus', 'install.sh', 'codx-junior-installer', 'supervisor.conf', 'client', 'OWTWeb', 'core', 'codx-junior', 'restar_api.sh', 'api', 'wiki', 'scripts', '.gitignore']",
+          "duration_ms": 1878.3763740211725,
+          "error": null,
+          "started_at": "2026-11-16T07:27:29.913Z",
+          "finished_at": "2026-11-16T07:27:31.791Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_CFvWAE9mK2sIvNMdyqKV6722",
+          "status": "done",
+          "request": {
+            "command": "python3 -m py_compile api/codx/junior/orchestration/prompts.py",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec in codx-junior-api (exit 0):\n_(no output)_",
+          "output": "> Running: `docker exec codx-junior-api python3 -m py_compile api/codx/junior/orchestration/prompts.py`\nOutput:\n\n_(no output)_",
+          "duration_ms": 838.2348008453846,
+          "error": null,
+          "started_at": "2026-11-16T07:27:42.270Z",
+          "finished_at": "2026-11-16T07:27:43.109Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_01_i1iQK9OfKUWUXAEoHPZE1514",
+          "status": "done",
+          "request": {
+            "command": "python3 -c \"print(__import__('sys').path.insert(0,'api'), __import__('codx.junior.orchestration.prompts', fromlist=['x']).SUPERVISOR_SYSTEM_PROMPT.count('What happened'), __import__('codx.junior.orchestration.prompts', fromlist=['x']).STEP_SYSTEM_PROMPT.count('What happened'))\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec failed (exit 1) in codx-junior-api:\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/home/codx-junior/codx-junior/api/codx/junior/orchestration/prompts.py\", line 23, in <module>\n    from .models import RunState\n  File \"/home/codx-junior/codx-junior/api/codx/junior/orchestration/models.py\", line 38, in <module>\n    from pydantic import BaseModel, Field\nModuleNotFoundError: No module named 'pydantic'",
+          "output": "\u274c Command failed\n\n> Running: `docker exec codx-junior-api python3 -c print(__import__('sys').path.insert(0,'api'), __import__('codx.junior.orchestration.prompts', fromlist=['x']).SUPERVISOR_SYSTEM_PROMPT.count('What happened'), __import__('codx.junior.orchestration.prompts', fromlist=['x']).STEP_SYSTEM_PROMPT.count('What happened'))`\n\nExit code: 1\n\nstderr:\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/home/codx-junior/codx-junior/api/codx/junior/orchestration/prompts.py\", line 23, in <module>\n    from .models import RunState\n  File \"/home/codx-junior/codx-junior/api/codx/junior/orchestration/models.py\", line 38, in <module>\n    from pydantic import BaseModel, Field\nModuleNotFoundError: No module named 'pydantic'",
+          "duration_ms": 849.6047630906105,
+          "error": null,
+          "started_at": "2026-11-16T07:27:43.821Z",
+          "finished_at": "2026-11-16T07:27:44.671Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_49cOQNimNomPXIYheShQ3625",
+          "status": "done",
+          "request": {
+            "command": "python3 -c \"import glob;print(glob.glob('/usr/local/lib/python3*/dist-packages/*pydantic*')[:3], glob.glob('/opt/*/bin/python3')[:5], glob.glob('/home/codx-junior/codx-junior/**/bin/pytest',recursive=True)[:5], glob.glob('/usr/bin/python3*')[:5])\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "Failed to exec in container codx-junior-api: command must not contain ';': docker exec runs without a shell, so issue one command per call",
+          "output": "\u274c Error: command must not contain ';': docker exec runs without a shell, so issue one command per call",
+          "duration_ms": 421.9790082424879,
+          "error": null,
+          "started_at": "2026-11-16T07:27:48.592Z",
+          "finished_at": "2026-11-16T07:27:49.014Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_3eprEvAjcLoTD1DWddvO2930",
+          "status": "done",
+          "request": {
+            "command": "python3 -c \"print(__import__('glob').glob('/usr/local/lib/python3*/dist-packages/*pydantic*')[:3], __import__('glob').glob('/opt/*/bin/python3')[:5], __import__('glob').glob('/usr/local/bin/*pytest*')[:5], __import__('glob').glob('/usr/bin/python3*')[:5])\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec in codx-junior-api (exit 0):\n[] [] [] ['/usr/bin/python3.11', '/usr/bin/python3', '/usr/bin/python3-config', '/usr/bin/python3.11-config']",
+          "output": "> Running: `docker exec codx-junior-api python3 -c print(__import__('glob').glob('/usr/local/lib/python3*/dist-packages/*pydantic*')[:3], __import__('glob').glob('/opt/*/bin/python3')[:5], __import__('glob').glob('/usr/local/bin/*pytest*')[:5], __import__('glob').glob('/usr/bin/python3*')[:5])`\nOutput:\n\n[] [] [] ['/usr/bin/python3.11', '/usr/bin/python3', '/usr/bin/python3-config', '/usr/bin/python3.11-config']",
+          "duration_ms": 1006.2213055789471,
+          "error": null,
+          "started_at": "2026-11-16T07:27:51.682Z",
+          "finished_at": "2026-11-16T07:27:52.688Z",
+          "cached": null
+        },
+        {
+          "tool": "project_changes",
+          "tool_call_id": "call_00_swnnAnwenDAqeLwtGBXj3986",
+          "status": "done",
+          "request": {
+            "paths": [
+              "api/codx/junior/orchestration/prompts.py",
+              "docs/delivery-contract.md"
+            ],
+            "include_patch": true,
+            "max_files": 3,
+            "context_lines": 2
+          },
+          "response": "### \ud83d\udd0d Changes vs `HEAD` \u2014 scope `all`\n\n- 2 file(s), +72 / -3\n\n**Files**\n- `M` **modified** `api/codx/junior/orchestration/prompts.py` (+9/-3)\n- `A` **added** `docs/delivery-contract.md` (+63/-0)\n\n\n**`api/codx/junior/orchestration/prompts.py`**\n```diff\ndiff --git a/api/codx/junior/orchestration/prompts.py b/api/codx/junior/orchestration/prompts.py\nindex f1cb450..2f7f44f 100755\n--- a/api/codx/junior/orchestration/prompts.py\n+++ b/api/codx/junior/orchestration/prompts.py\n@@ -108,6 +108,8 @@ it to isolated workers, verify the results and finish the run.\n   exactly what is missing; the run is then reported as FAILED with a partial\n   delivery report, never as completed.\n-* The summary becomes the human delivery report: what was built, how to test it,\n-  files touched, known gaps.\n+* The summary is the human delivery report and follows `docs/delivery-contract.md`:\n+  use the four headings `## What happened`, `## What I did`, `## Demo` (one\n+  runnable check) and `## Next tasks` (2-3 steps, tagged `quick` or `max`), and\n+  close with `**Good enough?** ok / next / what is wrong`.\n * If the run is blocked by missing information/credentials or an unrecoverable\n   error, finish with an honest blocked report instead of looping.\n@@ -149,5 +151,6 @@ You are an isolated WORKER of an orchestrated run in codx-junior.\n * Never touch files outside the step scope unless the step explicitly asks for it.\n * Run the relevant tests or checks when possible.\n-* Finish with a short summary and the JSON result object requested in the step.\n+* Close with the four delivery headings (`## What happened`, `## What I did`,\n+  `## Demo`, `## Next tasks`) and the JSON result object requested in the step.\n \n ## Tool budget\n@@ -375,4 +378,7 @@ def build_step_contract(run: RunState, step) -> str:\n         \"- Inspect the code before changing it and keep the change reviewable.\",\n         \"- Verify your work (tests, build, manual check) and say how.\",\n+        \"- Close with the four delivery headings `## What happened`, `## What I did`, \"\n+        \"`## Demo`, `## Next tasks` (see `docs/delivery-contract.md`), then the result \"\n+        \"contract below.\",\n         \"- If you are blocked, explain exactly what is missing instead of guessing forever.\",\n         \"- Do not burn your tool budget: batch the reads you need and re-use the \"\n```\n\n**`docs/delivery-contract.md`**\n```diff\ndiff --git a/docs/delivery-contract.md b/docs/delivery-contract.md\nnew file mode 100644\nindex 0000000..c3ff0ca\n--- /dev/null\n+++ b/docs/delivery-contract.md\n@@ -0,0 +1,63 @@\n+# Delivery contract\n+\n+Every delivery in codx-junior is closed with the **same four sections**. The shape is\n+not a style preference: it is the contract between the assistant and the human, and it\n+is written **once** here. It applies to:\n+\n+* the `codx-junior` harness answer (the chat bubble),\n+* the orchestration supervisor's `finish` summary (the run delivery report),\n+* every worker step result (each isolated step closes with the same headings).\n+\n+## The shape\n+\n+```md\n+## What happened\n+## What I did\n+## Demo\n+## Next tasks\n+\n+**Good enough?** ok / next / what is wrong\n+```\n+\n+### One line per section\n+\n+* `## What happened` \u2014 the situation in plain language: the problem, what you found, what you decided and why. Facts and evidence (`path:line`, command output), not intentions.\n+* `## What I did` \u2014 the increment(s) delivered in this turn, one line each, with the files touched. If the increment is partial, say so: partial delivery is a valid outcome.\n+* `## Demo` \u2014 exactly ONE runnable thing the human can do to see the result (a command, a URL, a test, a card). One, not a list.\n+* `## Next tasks` \u2014 2-3 candidate next steps, each tagged `quick` (an agile increment) or `max` (needs the `codx-junior-max` effort level).\n+\n+### The checkpoint\n+\n+The delivery ends with the line `**Good enough?** ok / next / what is wrong`:\n+\n+```md\n+**Good enough?** ok / next / what is wrong\n+```\n+\n+It is a real question, not decoration: `ok` a",
+          "output": "### \ud83d\udd0d Changes vs `HEAD` \u2014 scope `all`\n\n- 2 file(s), +72 / -3\n\n**Files**\n- `M` **modified** `api/codx/junior/orchestration/prompts.py` (+9/-3)\n- `A` **added** `docs/delivery-contract.md` (+63/-0)",
+          "duration_ms": 1223.98647852242,
+          "error": null,
+          "started_at": "2026-11-16T07:27:58.577Z",
+          "finished_at": "2026-11-16T07:27:59.801Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_TvuIOxAN9lgeDnhD5g1c1384",
+          "status": "done",
+          "request": {
+            "command": "ls -1a /home/codx-junior/codx-junior/api",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec in codx-junior-api (exit 0):\n.\n..\n.codx\n.pytest_cache\n.venv\nREADME.md\n_tmp_calendar_api_check.py\napi\nbuild\ncodx\ncodx_junior.egg-info\ncore\ndocs\nengine\nharness\npoetry.lock\npyproject.toml\nscripts\nshared\nslides\nsrc\ntests\ntmpf3036q86\nuv.lock\nwiki",
+          "output": "> Running: `docker exec codx-junior-api ls -1a /home/codx-junior/codx-junior/api`\nOutput:\n\n.\n..\n.codx\n.pytest_cache\n.venv\nREADME.md\n_tmp_calendar_api_check.py\napi\nbuild\ncodx\ncodx_junior.egg-info\ncore\ndocs\nengine\nharness\npoetry.lock\npyproject.toml\nscripts\nshared\nslides\nsrc\ntests\ntmpf3036q86\nuv.lock\nwiki",
+          "duration_ms": 634.4704069197178,
+          "error": null,
+          "started_at": "2026-11-16T07:28:06.633Z",
+          "finished_at": "2026-11-16T07:28:07.267Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_01_Nz8Hl9pXMzA4L5bbZMUY7347",
+          "status": "done",
+          "request": {
+            "command": "ls -1 /opt",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec in codx-junior-api (exit 0):\n_(no output)_",
+          "output": "> Running: `docker exec codx-junior-api ls -1 /opt`\nOutput:\n\n_(no output)_",
+          "duration_ms": 845.214145258069,
+          "error": null,
+          "started_at": "2026-11-16T07:28:08.081Z",
+          "finished_at": "2026-11-16T07:28:08.926Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_ZALega7FjBLaLsLQ3iRu8407",
+          "status": "done",
+          "request": {
+            "command": "/home/codx-junior/codx-junior/api/.venv/bin/python -m pytest api/tests/test_orchestration.py -q --no-header",
+            "container_name": "codx-junior-api",
+            "timeout": 300
+          },
+          "response": "docker exec failed (exit 1) in codx-junior-api:\n...........F....F.....................                                   [100%]\n=================================== FAILURES ===================================\n___________________ test_store_lock_path_keeps_the_run_stem ____________________\n\ntmp_path = PosixPath('/tmp/pytest-of-codx-junior/pytest-145/test_store_lock_path_keeps_the0')\n\n    def test_store_lock_path_keeps_the_run_stem(tmp_path):\n        store = RunStore(str(tmp_path / \".codx\"))\n        run = RunState(name=\"lock\", objective=\"o\")\n        run.run_id = \"run.with.json.in.the.id\"\n        store.save(run)\n        assert store.lock_path(run.run_id).endswith(\"run.with.json.in.the.id.lock\")\n>       assert store.lock_path(run.run_id) == store.run_path(run.run_id)[:-5] + \".lock\"\nE       AssertionError: assert '/tmp/codx-ju...n.the.id.lock' == '/tmp/pytest-...n.the.id.lock'\nE         \nE         - /tmp/pytest-of-codx-junior/pytest-145/test_store_lock_path_keeps_the0/.codx/orchestration/runs/run.with.json.in.the.id.lock\nE         ?      ----------           ^^^  ------                                ^^ ^^^              -----\nE         + /tmp/codx-junior-runtime/test_store_lock_path_keeps_the0-c452ff0b16/orchestration/run.with.json.in.the.id.lock\nE         ?                 ^^^^ ++                                 ^ ^^^^^^^^^\n\napi/tests/test_orchestration.py:388: AssertionError\n____________ test_tick_dispatches_ready_steps_and_persists_results _____________\n\ntmp_path = PosixPath('/tmp/pytest-of-codx-junior/pytest-145/test_tick_dispatches_ready_ste0')\n\n    def test_tick_dispatches_ready_steps_and_persists_results(tmp_path):\n        service, manager, board, executor, store = make_service(tmp_path)\n        main = FakeChat(\"main\", name=\"Main\")\n        manager.add(main)\n        run = service.create_run(name=\"Run\", objective=\"Do it\", main_chat=main, start=True)\n        run = service.plan(run.run_id, [\n            {\"title\": \"A\", \"objective\": \"a\"},\n            {\"title\": \"B\", \"objective\": \"b\", \"depends_on\": [\"A\"]},\n        ])\n    \n        asyncio.run(service.tick(run.run_id))\n        run = store.load(run.run_id)\n        assert run.step_by_title(\"A\").status == C.STEP_STATUS_DONE\n>       assert run.step_by_title(\"B\").status == C.STEP_STATUS_PENDING\nE       AssertionError: assert 'done' == 'pending'\nE         \nE         - pending\nE         + done\n\napi/tests/test_orchestration.py:474: AssertionError\n------------------------------ Captured log call -------------------------------\nWARNING  codx.junior.orchestration.service:service.py:141 Orchestration: could not write harness audit entry: codx.junior.harness.audit.record_audit() got multiple values for keyword argument 'status'\nWARNING  codx.junior.orchestration.service:service.py:141 Orchestration: could not write harness audit entry: codx.junior.harness.audit.record_audit() got multiple values for keyword argument 'status'\n=========================== short test summary info ============================\nFAILED api/tests/test_orchestration.py::test_store_lock_path_keeps_the_run_stem\nFAILED api/tests/test_orchestration.py::test_tick_dispatches_ready_steps_and_persists_results\n2 failed, 36 passed in 13.21s\n\n/home/codx-junior/codx-junior/api/.venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option \"asyncio_default_fixture_loop_scope\" is unset.\nThe event loop scope for asynchronous fixtures will default to the \"fixture\" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to \"function\" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: \"function\", \"class\", \"module\", \"package\", \"session\"\n\n  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))",
+          "output": "\u274c Command failed\n\n> Running: `docker exec codx-junior-api /home/codx-junior/codx-junior/api/.venv/bin/python -m pytest api/tests/test_orchestration.py -q --no-header`\n\nExit code: 1\n\nstderr:\n/home/codx-junior/codx-junior/api/.venv/lib/python3.11/site-packages/pytest_asyncio/plugin.py:300: PytestDeprecationWarning: The configuration option \"asyncio_default_fixture_loop_scope\" is unset.\nThe event loop scope for asynchronous fixtures will default to the \"fixture\" caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to \"function\" scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: \"function\", \"class\", \"module\", \"package\", \"session\"\n\n  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))\n\nstdout:\n...........F....F.....................                                   [100%]\n=================================== FAILURES ===================================\n___________________ test_store_lock_path_keeps_the_run_stem ____________________\n\ntmp_path = PosixPath('/tmp/pytest-of-codx-junior/pytest-145/test_store_lock_path_keeps_the0')\n\n    def test_store_lock_path_keeps_the_run_stem(tmp_path):\n        store = RunStore(str(tmp_path / \".codx\"))\n        run = RunState(name=\"lock\", objective=\"o\")\n        run.run_id = \"run.with.json.in.the.id\"\n        store.save(run)\n        assert store.lock_path(run.run_id).endswith(\"run.with.json.in.the.id.lock\")\n>       assert store.lock_path(run.run_id) == store.run_path(run.run_id)[:-5] + \".lock\"\nE       AssertionError: assert '/tmp/codx-ju...n.the.id.lock' == '/tmp/pytest-...n.the.id.lock'\nE         \nE         - /tmp/pytest-of-codx-junior/pytest-145/test_store_lock_path_keeps_the0/.codx/orchestration/runs/run.with.json.in.the.id.lock\nE         ?      ----------           ^^^  ------                                ^^ ^^^              -----\nE         + /tmp/codx-junior-runtime/test_store_lock_path_keeps_the0-c452ff0b16/orchestration/run.with.json.in.the.id.lock\nE         ?                 ^^^^ ++                                 ^ ^^^^^^^^^\n\napi/tests/test_orchestration.py:388: AssertionError\n____________ test_tick_dispatches_ready_steps_and_persists_results _____________\n\ntmp_path = PosixPath('/tmp/pytest-of-codx-junior/pytest-145/test_tick_dispatches_ready_ste0')\n\n    def test_tick_dispatches_ready_steps_and_persists_results(tmp_path):\n        service, manager, board, executor, store = make_service(tmp_path)\n        main = FakeChat(\"main\", name=\"Main\")\n        manager.add(main)\n        run = service.create_run(name=\"Run\", objective=\"Do it\", main_chat=main, start=True)\n        run = service.plan(run.run_id, [\n            {\"title\": \"A\", \"objective\": \"a\"},\n            {\"title\": \"B\", \"objective\": \"b\", \"depends_on\": [\"A\"]},\n        ])\n    \n        asyncio.run(service.tick(run.run_id))\n        run = store.load(run.run_id)\n        assert run.step_by_title(\"A\").status == C.STEP_STATUS_DONE\n>       assert run.step_by_title(\"B\").status == C.STEP_STATUS_PENDING\nE       AssertionError: assert 'done' == 'pending'\nE         \nE         - pending\nE         + done\n\napi/tests/test_orchestration.py:474: AssertionError\n------------------------------ Captured log call -------------------------------\nWARNING  codx.junior.orchestration.service:service.py:141 Orchestration: could not write harness audit entry: codx.junior.harness.audit.record_audit() got multiple values for keyword argument 'status'\nWARNING  codx.junior.orchestration.service:service.py:141 Orchestration: could not write harness audit entry: codx.junior.harness.audit.record_audit() got multiple values for keyword argument 'status'\n=========================== short test summary info ============================\nFAILED api/tests/test_orchestration.py::test_store_lock_path_keeps_the_run_stem\nFAILED api/tests/test_orchestration.py::test_tick_dispatches_ready_steps_and_persists_results\n2 failed, 36 passed in 13.21s",
+          "duration_ms": 19265.285182744265,
+          "error": null,
+          "started_at": "2026-11-16T07:28:12.493Z",
+          "finished_at": "2026-11-16T07:28:31.759Z",
+          "cached": null
+        },
+        {
+          "tool": "docker_exec",
+          "tool_call_id": "call_00_4tIkIgePDStd5Kjsf17m2124",
+          "status": "done",
+          "request": {
+            "command": "/home/codx-junior/codx-junior/api/.venv/bin/python -c \"print(__import__('codx.junior.orchestration.prompts',fromlist=['x']).build_step_contract(__import__('codx.junior.orchestration.models',fromlist=['x']).RunState(name='r',objective='o'), __import__('codx.junior.orchestration.models',fromlist=['x']).normalize_steps([{'title':'A','objective':'a'}])[0]).count('## Next tasks'), __import__('codx.junior.orchestration.prompts',fromlist=['x']).SUPERVISOR_SYSTEM_PROMPT.count('**Good enough?**'))\"",
+            "container_name": "codx-junior-api"
+          },
+          "response": "docker exec in codx-junior-api (exit 0):\n1 1",
+          "output": "> Running: `docker exec codx-junior-api /home/codx-junior/codx-junior/api/.venv/bin/python -c print(__import__('codx.junior.orchestration.prompts',fromlist=['x']).build_step_contract(__import__('codx.junior.orchestration.models',fromlist=['x']).RunState(name='r',objective='o'), __import__('codx.junior.orchestration.models',fromlist=['x']).normalize_steps([{'title':'A','objective':'a'}])[0]).count('## Next tasks'), __import__('codx.junior.orchestration.prompts',fromlist=['x']).SUPERVISOR_SYSTEM_PROMPT.count('**Good enough?**'))`\nOutput:\n\n1 1",
+          "duration_ms": 4947.459235787392,
+          "error": null,
+          "started_at": "2026-11-16T07:28:47.595Z",
+          "finished_at": "2026-11-16T07:28:52.543Z",
+          "cached": null
+        }
+      ],
+      "lifecycle_events": [
+        {
+          "status": "done",
+          "run_id": "419bf04aba57",
+          "duration_ms": null,
+          "error": null,
+          "started_at": "2026-11-16T07:18:52.330Z",
+          "finished_at": "2026-11-16T07:29:06.050Z"
+        }
+      ],
+      "phase_events": [
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 2 messages",
+          "started_at": "2026-11-16T07:18:53.020Z",
+          "finished_at": "2026-11-16T07:18:54.533Z",
+          "duration_ms": 1513.6804580688477,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 2
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.5s",
+          "started_at": "2026-11-16T07:18:54.533Z",
+          "finished_at": "2026-11-16T07:20:32.030Z",
+          "duration_ms": 97497.5311756134,
+          "meta": {
+            "ttft_ms": 1513,
+            "prompt_tokens": 13824,
+            "completion_tokens": 104,
+            "total_tokens": 13928
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 5 messages",
+          "started_at": "2026-11-16T07:20:37.788Z",
+          "finished_at": "2026-11-16T07:20:39.233Z",
+          "duration_ms": 1445.3659057617188,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 5
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.4s",
+          "started_at": "2026-11-16T07:20:39.233Z",
+          "finished_at": "2026-11-16T07:20:43.863Z",
+          "duration_ms": 4630.718946456909,
+          "meta": {
+            "ttft_ms": 1445,
+            "prompt_tokens": 16218,
+            "completion_tokens": 199,
+            "total_tokens": 16417
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 8 messages",
+          "started_at": "2026-11-16T07:20:46.638Z",
+          "finished_at": "2026-11-16T07:20:48.709Z",
+          "duration_ms": 2071.648597717285,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 8
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.1s",
+          "started_at": "2026-11-16T07:20:48.709Z",
+          "finished_at": "2026-11-16T07:20:53.816Z",
+          "duration_ms": 5107.605695724487,
+          "meta": {
+            "ttft_ms": 2071,
+            "prompt_tokens": 22525,
+            "completion_tokens": 185,
+            "total_tokens": 22710
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 11 messages",
+          "started_at": "2026-11-16T07:20:56.905Z",
+          "finished_at": "2026-11-16T07:20:58.472Z",
+          "duration_ms": 1567.7340030670166,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 11
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.6s",
+          "started_at": "2026-11-16T07:20:58.472Z",
+          "finished_at": "2026-11-16T07:23:02.272Z",
+          "duration_ms": 123800.86135864258,
+          "meta": {
+            "ttft_ms": 1567,
+            "prompt_tokens": 29396,
+            "completion_tokens": 415,
+            "total_tokens": 29811
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 14 messages",
+          "started_at": "2026-11-16T07:23:10.798Z",
+          "finished_at": "2026-11-16T07:23:15.447Z",
+          "duration_ms": 4649.097442626953,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 14
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 4.6s",
+          "started_at": "2026-11-16T07:23:15.446Z",
+          "finished_at": "2026-11-16T07:25:23.760Z",
+          "duration_ms": 128314.61906433105,
+          "meta": {
+            "ttft_ms": 4649,
+            "prompt_tokens": 29913,
+            "completion_tokens": 204,
+            "total_tokens": 30117
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 17 messages",
+          "started_at": "2026-11-16T07:25:32.388Z",
+          "finished_at": "2026-11-16T07:25:36.143Z",
+          "duration_ms": 3755.2285194396973,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 17
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.8s",
+          "started_at": "2026-11-16T07:25:36.143Z",
+          "finished_at": "2026-11-16T07:25:42.234Z",
+          "duration_ms": 6091.61639213562,
+          "meta": {
+            "ttft_ms": 3755,
+            "prompt_tokens": 30215,
+            "completion_tokens": 223,
+            "total_tokens": 30438
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 19 messages",
+          "started_at": "2026-11-16T07:25:44.961Z",
+          "finished_at": "2026-11-16T07:25:48.311Z",
+          "duration_ms": 3350.231885910034,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 19
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.4s",
+          "started_at": "2026-11-16T07:25:48.311Z",
+          "finished_at": "2026-11-16T07:25:53.577Z",
+          "duration_ms": 5266.1707401275635,
+          "meta": {
+            "ttft_ms": 3350,
+            "prompt_tokens": 31970,
+            "completion_tokens": 137,
+            "total_tokens": 32107
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 21 messages",
+          "started_at": "2026-11-16T07:25:55.722Z",
+          "finished_at": "2026-11-16T07:25:59.205Z",
+          "duration_ms": 3483.0639362335205,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 21
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.5s",
+          "started_at": "2026-11-16T07:25:59.204Z",
+          "finished_at": "2026-11-16T07:26:07.965Z",
+          "duration_ms": 8761.044979095459,
+          "meta": {
+            "ttft_ms": 3483,
+            "prompt_tokens": 32735,
+            "completion_tokens": 1080,
+            "total_tokens": 33815
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 23 messages",
+          "started_at": "2026-11-16T07:26:10.861Z",
+          "finished_at": "2026-11-16T07:26:12.598Z",
+          "duration_ms": 1737.6904487609863,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 23
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.7s",
+          "started_at": "2026-11-16T07:26:12.598Z",
+          "finished_at": "2026-11-16T07:26:20.213Z",
+          "duration_ms": 7615.01932144165,
+          "meta": {
+            "ttft_ms": 1738,
+            "prompt_tokens": 33841,
+            "completion_tokens": 1095,
+            "total_tokens": 34936
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 25 messages",
+          "started_at": "2026-11-16T07:26:22.558Z",
+          "finished_at": "2026-11-16T07:26:25.914Z",
+          "duration_ms": 3356.645107269287,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 25
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.4s",
+          "started_at": "2026-11-16T07:26:25.914Z",
+          "finished_at": "2026-11-16T07:26:31.855Z",
+          "duration_ms": 5941.811323165894,
+          "meta": {
+            "ttft_ms": 3356,
+            "prompt_tokens": 34962,
+            "completion_tokens": 711,
+            "total_tokens": 35673
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 27 messages",
+          "started_at": "2026-11-16T07:26:34.300Z",
+          "finished_at": "2026-11-16T07:26:36.997Z",
+          "duration_ms": 2697.7741718292236,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 27
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.7s",
+          "started_at": "2026-11-16T07:26:36.997Z",
+          "finished_at": "2026-11-16T07:26:43.607Z",
+          "duration_ms": 6610.4416847229,
+          "meta": {
+            "ttft_ms": 2698,
+            "prompt_tokens": 35706,
+            "completion_tokens": 247,
+            "total_tokens": 35953
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 30 messages",
+          "started_at": "2026-11-16T07:26:47.035Z",
+          "finished_at": "2026-11-16T07:26:50.171Z",
+          "duration_ms": 3136.8534564971924,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 30
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 3.1s",
+          "started_at": "2026-11-16T07:26:50.171Z",
+          "finished_at": "2026-11-16T07:26:54.422Z",
+          "duration_ms": 4251.2102127075195,
+          "meta": {
+            "ttft_ms": 3136,
+            "prompt_tokens": 38511,
+            "completion_tokens": 242,
+            "total_tokens": 38753
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 32 messages",
+          "started_at": "2026-11-16T07:26:56.497Z",
+          "finished_at": "2026-11-16T07:26:58.620Z",
+          "duration_ms": 2123.8033771514893,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 32
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.1s",
+          "started_at": "2026-11-16T07:26:58.620Z",
+          "finished_at": "2026-11-16T07:27:04.999Z",
+          "duration_ms": 6379.920959472656,
+          "meta": {
+            "ttft_ms": 2124,
+            "prompt_tokens": 38809,
+            "completion_tokens": 94,
+            "total_tokens": 38903
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 34 messages",
+          "started_at": "2026-11-16T07:27:07.249Z",
+          "finished_at": "2026-11-16T07:27:10.138Z",
+          "duration_ms": 2889.894723892212,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 34
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.9s",
+          "started_at": "2026-11-16T07:27:10.138Z",
+          "finished_at": "2026-11-16T07:27:14.929Z",
+          "duration_ms": 4791.832685470581,
+          "meta": {
+            "ttft_ms": 2890,
+            "prompt_tokens": 38941,
+            "completion_tokens": 325,
+            "total_tokens": 39266
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 36 messages",
+          "started_at": "2026-11-16T07:27:17.654Z",
+          "finished_at": "2026-11-16T07:27:19.928Z",
+          "duration_ms": 2274.6362686157227,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 36
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.3s",
+          "started_at": "2026-11-16T07:27:19.928Z",
+          "finished_at": "2026-11-16T07:27:23.909Z",
+          "duration_ms": 3981.9211959838867,
+          "meta": {
+            "ttft_ms": 2274,
+            "prompt_tokens": 39310,
+            "completion_tokens": 96,
+            "total_tokens": 39406
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 38 messages",
+          "started_at": "2026-11-16T07:27:25.390Z",
+          "finished_at": "2026-11-16T07:27:28.171Z",
+          "duration_ms": 2781.970977783203,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 38
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 2.8s",
+          "started_at": "2026-11-16T07:27:28.171Z",
+          "finished_at": "2026-11-16T07:27:31.792Z",
+          "duration_ms": 3621.124505996704,
+          "meta": {
+            "ttft_ms": 2782,
+            "prompt_tokens": 39450,
+            "completion_tokens": 248,
+            "total_tokens": 39698
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 40 messages",
+          "started_at": "2026-11-16T07:27:33.565Z",
+          "finished_at": "2026-11-16T07:27:35.263Z",
+          "duration_ms": 1698.124885559082,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 40
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.7s",
+          "started_at": "2026-11-16T07:27:35.262Z",
+          "finished_at": "2026-11-16T07:27:43.109Z",
+          "duration_ms": 7847.445011138916,
+          "meta": {
+            "ttft_ms": 1698,
+            "prompt_tokens": 39846,
+            "completion_tokens": 1193,
+            "total_tokens": 41039
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 43 messages",
+          "started_at": "2026-11-16T07:27:45.346Z",
+          "finished_at": "2026-11-16T07:27:46.653Z",
+          "duration_ms": 1307.9338073730469,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 43
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.3s",
+          "started_at": "2026-11-16T07:27:46.653Z",
+          "finished_at": "2026-11-16T07:27:49.014Z",
+          "duration_ms": 2361.721992492676,
+          "meta": {
+            "ttft_ms": 1308,
+            "prompt_tokens": 41222,
+            "completion_tokens": 360,
+            "total_tokens": 41582
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 45 messages",
+          "started_at": "2026-11-16T07:27:49.462Z",
+          "finished_at": "2026-11-16T07:27:50.424Z",
+          "duration_ms": 962.7549648284912,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 45
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-16T07:27:50.424Z",
+          "finished_at": "2026-11-16T07:27:52.688Z",
+          "duration_ms": 2264.899969100952,
+          "meta": {
+            "ttft_ms": 963,
+            "prompt_tokens": 41626,
+            "completion_tokens": 205,
+            "total_tokens": 41831
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 47 messages",
+          "started_at": "2026-11-16T07:27:53.361Z",
+          "finished_at": "2026-11-16T07:27:54.575Z",
+          "duration_ms": 1214.0026092529297,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 47
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.2s",
+          "started_at": "2026-11-16T07:27:54.574Z",
+          "finished_at": "2026-11-16T07:27:59.802Z",
+          "duration_ms": 5228.604555130005,
+          "meta": {
+            "ttft_ms": 1214,
+            "prompt_tokens": 41891,
+            "completion_tokens": 629,
+            "total_tokens": 42520
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 49 messages",
+          "started_at": "2026-11-16T07:28:00.886Z",
+          "finished_at": "2026-11-16T07:28:02.787Z",
+          "duration_ms": 1901.313304901123,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 49
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.9s",
+          "started_at": "2026-11-16T07:28:02.787Z",
+          "finished_at": "2026-11-16T07:28:07.268Z",
+          "duration_ms": 4481.208086013794,
+          "meta": {
+            "ttft_ms": 1901,
+            "prompt_tokens": 44046,
+            "completion_tokens": 677,
+            "total_tokens": 44723
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 52 messages",
+          "started_at": "2026-11-16T07:28:09.625Z",
+          "finished_at": "2026-11-16T07:28:10.816Z",
+          "duration_ms": 1191.3743019104004,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 52
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.2s",
+          "started_at": "2026-11-16T07:28:10.816Z",
+          "finished_at": "2026-11-16T07:28:31.759Z",
+          "duration_ms": 20943.87197494507,
+          "meta": {
+            "ttft_ms": 1191,
+            "prompt_tokens": 44859,
+            "completion_tokens": 256,
+            "total_tokens": 45115
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 54 messages",
+          "started_at": "2026-11-16T07:28:35.887Z",
+          "finished_at": "2026-11-16T07:28:40.411Z",
+          "duration_ms": 4524.044513702393,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 54
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 4.5s",
+          "started_at": "2026-11-16T07:28:40.410Z",
+          "finished_at": "2026-11-16T07:28:52.545Z",
+          "duration_ms": 12135.310649871826,
+          "meta": {
+            "ttft_ms": 4524,
+            "prompt_tokens": 46132,
+            "completion_tokens": 873,
+            "total_tokens": 47005
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 56 messages",
+          "started_at": "2026-11-16T07:28:56.262Z",
+          "finished_at": "2026-11-16T07:29:00.789Z",
+          "duration_ms": 4527.751684188843,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 56
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 4.5s",
+          "started_at": "2026-11-16T07:29:00.789Z",
+          "finished_at": "2026-11-16T07:29:06.051Z",
+          "duration_ms": 5262.823820114136,
+          "meta": {
+            "ttft_ms": 4528,
+            "prompt_tokens": 47034,
+            "completion_tokens": 1035,
+            "total_tokens": 48069
+          }
+        }
+      ],
+      "cost": 0.13444709999999996,
+      "cost_info": {
+        "iteration_cost_cxjcoins": 0.13444709999999996,
+        "chat_cost_cxjcoins": 0.13444709999999996,
+        "estimation_cost_cxjcoins": 17.485293825,
+        "budget_reached": false,
+        "input_tokens": 852982,
+        "output_tokens": 10833,
+        "total_tokens": 863815,
+        "input_cost_cxjcoins": 0.12794729999999999,
+        "output_cost_cxjcoins": 0.006499799999999999,
+        "tool_cost_cxjcoins": 0.0
+      },
+      "profiles": [
+        "biblio",
+        "file_editor",
+        "git",
+        "project",
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "linked_chat_ids": []
+    }
+  ],
+  "created_at": "2026-11-16 07:18:30.020304",
+  "updated_at": "2026-11-16T07:29:28.832963",
+  "mode": "chat",
+  "kanban_id": "",
+  "column_id": "",
+  "board": "codx-junior maintenance",
+  "column": "Done",
+  "sprints": [
+    "Run: agile-by-default"
+  ],
+  "priority": "medium",
+  "due_date": null,
+  "progress": 100,
+  "assignees": [],
+  "wake_at": null,
+  "sort_index": null,
+  "archived": false,
+  "archived_at": null,
+  "archived_by": null,
+  "calendar_ids": [],
+  "scheduled_start": null,
+  "scheduled_end": null,
+  "all_day": false,
+  "columns": [],
+  "chat_index": 0,
+  "url": "",
+  "branch": "",
+  "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/tasks/codx-junior maintenance/Done/write-the-delivery-contract-validation-tiers-once-and-wire-it-into-orchestration-output.3dac7903-be2a-4c78-971a-268888199b6d.json",
+  "llm_model": "",
+  "estimation_cost": 17.485293825,
+  "cost": 0.13444709999999996,
+  "run_id": "39e0a654-b58d-4cc6-9076-969399b388f2",
+  "run_status": null,
+  "run_step_id": "delivery-contract",
+  "visibility": "",
+  "remote_url": "",
+  "attachments": [],
+  "knowledge_topics": [],
+  "chat_links": [],
+  "pr_view": {},
+  "history": [],
+  "session_id": null,
+  "auto_initialize": false,
+  "ignore_parent_knowledge": true,
+  "ignore_parent_files": true,
+  "external_source": null,
+  "external_id": null,
+  "external_parent_id": null,
+  "external_instance_id": null,
+  "external_status": null,
+  "external_url": null,
+  "external_updated_at": null,
+  "harness": null,
+  "harness_instance_id": null,
+  "harness_task_id": null,
+  "harness_parent_task_id": null,
+  "harness_mode": null,
+  "harness_status": null,
+  "harness_model": null,
+  "harness_usage": {},
+  "harness_cost": null,
+  "harness_metadata": {}
+}

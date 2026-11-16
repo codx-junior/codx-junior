@@ -32,6 +32,12 @@ API.interceptors = {
       $storex.session.setLastError(error)
       console.error("API ERROR:", error)
       $storex.session.onError(error.toString())
+      // MUST reject: returning undefined makes axios treat the failure as
+      // recovered, so the caller receives `undefined` and crashes later with
+      // "Cannot destructure property 'data' of 'undefined'" — the real HTTP
+      // error is then hidden and fallbacks (e.g. the legacy /api/browsers
+      // route in the browsers store) never run.
+      return Promise.reject(error)
     }
   ]
 }

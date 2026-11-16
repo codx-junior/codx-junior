@@ -176,7 +176,13 @@ def _seal_dead_responses(chat, chat_manager, settings) -> int:
         if _is_orchestration_owned(chat):
             return 0
         store = get_turn_store(codx_path)
-        if store.chat_is_processing(chat.id):
+        # A STALLED turn is dead even when its lock is still held (hung AI call,
+        # blocked tool): its message must be closed too, otherwise the user keeps
+        # reading "Processing request, please wait..." for ever. ``live_response``
+        # is the probe that distinguishes a slow-but-working turn from a stalled
+        # one; ``chat_is_processing`` (which counts stalled turns) is for the
+        # scheduler, not for sealing.
+        if store.live_response(chat.id) is not None:
             logger.debug(
                 "_seal_dead_responses: chat '%s' has a live turn, leaving it alone",
                 chat.id,
@@ -276,6 +282,16 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
     its orphaned ``done=False`` response message is repaired so the client
     stops showing "processing".
 
+    Stopping is BEST EFFORT ON EVERY LAYER and it always wins:
+
+    * the in-memory ``CancellationToken`` of a turn running in this process is
+      cancelled (the engine closes its own message),
+    * the durable record is marked cancelled, so the recovery worker never
+      restarts it,
+    * every ``done=False`` response of the chat is closed here, including the
+      one of a turn that is still owned by a live process elsewhere or that
+      stalled with its lock held: nobody else would ever write its final state.
+
     Expected payload (at least one key must be provided):
         {
             "chat_id":  "<chat id to cancel>",
@@ -283,8 +299,9 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
         }
 
     Returns:
-        { "cancelled": true,  "method": "chat_id"|"token_id", "stopped_turns": n }
-        { "cancelled": false, "error": "..." }
+        { "cancelled": true, "method": "chat_id"|"token_id"|"durable_turn"|"noop",
+          "stopped_turns": n, "repaired_messages": n [, "already_stopped": true] }
+        { "cancelled": false, "error": "..." } (only when nothing can be resolved)
     """
     data = data or {}
     chat_id = data.get("chat_id") or request.query_params.get("chat_id")
@@ -317,6 +334,8 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
     # process, queued turn). This is what gives clients a "stop" for a turn
     # that is no longer running in this process.
     stopped_turns = 0
+    repaired = 0
+    chat_found = False
     if chat_id:
         try:
             manager, settings = _resolve_chat_manager(request, data)
@@ -329,17 +348,29 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
                 store = get_turn_store(settings.codx_path)
                 stopped_turns = store.cancel_chat(chat_id)
                 chat = manager.find_by_id(chat_id)
+                chat_found = chat is not None
                 if chat is not None:
-                    repair_incomplete_messages(
+                    # "Stop" must ALWAYS close the response. A live turn of this
+                    # process receives the cancellation token above and closes
+                    # its own message; every other case (the turn runs in
+                    # another process, it stalled with its lock held, or only a
+                    # durable record is left) has NOBODY to write the final
+                    # state, so the message is closed here. Skipping those turns
+                    # — as this used to do — left the bubble streaming while the
+                    # API answered "no in-flight token found".
+                    skip: List[str] = store.live_turn_ids() if cancelled else []
+                    repaired = repair_incomplete_messages(
                         chat,
                         manager,
                         note="",
                         error="The turn was stopped by the user",
-                        skip_turn_ids=store.live_turn_ids(),
+                        skip_turn_ids=skip,
                     )
                 logger.info(
-                    "chat_cancel: stopped %d durable turn(s) for chat '%s'",
+                    "chat_cancel: stopped %d durable turn(s) and closed %d "
+                    "response(s) for chat '%s'",
                     stopped_turns,
+                    repaired,
                     chat_id,
                 )
         except Exception as ex:  # pragma: no cover - defensive
@@ -349,11 +380,24 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
                 ex,
             )
 
-    if cancelled or stopped_turns:
+    if cancelled or stopped_turns or repaired:
         return {
             "cancelled": True,
             "method": method or "durable_turn",
             "stopped_turns": stopped_turns,
+            "repaired_messages": repaired,
+        }
+
+    if chat_found:
+        # Idempotent stop: the chat exists and has nothing left to stop (the
+        # previous call already closed the response). Answering an error here
+        # made the client believe the stop failed and keep the spinner.
+        return {
+            "cancelled": True,
+            "method": "noop",
+            "already_stopped": True,
+            "stopped_turns": 0,
+            "repaired_messages": 0,
         }
 
     logger.warning(
@@ -1161,8 +1205,12 @@ async def api_add_message(request: Request):
     try:
         data = await request.json()
         codx_junior_session = request.state.codx_junior_session
-        chat_manager = codx_junior_session.get_chat_manager()
-        
+        # Building the manager is a (small but synchronous) file-system step:
+        # keep it off the event loop like the reads/writes below.
+        chat_manager = await run_in_threadpool(
+            codx_junior_session.get_chat_manager
+        )
+
         chat_id = data.get("chat_id")
         message_data = data.get("message")
         
@@ -1244,8 +1292,12 @@ async def api_update_message(request: Request):
     try:
         data = await request.json()
         codx_junior_session = request.state.codx_junior_session
-        chat_manager = codx_junior_session.get_chat_manager()
-        
+        # Building the manager is a (small but synchronous) file-system step:
+        # keep it off the event loop like the reads/writes below.
+        chat_manager = await run_in_threadpool(
+            codx_junior_session.get_chat_manager
+        )
+
         chat_id = data.get("chat_id")
         message_data = data.get("message")
         
@@ -1339,8 +1391,12 @@ async def api_update_chat_metadata(request: Request):
     try:
         data = await request.json()
         codx_junior_session = request.state.codx_junior_session
-        chat_manager = codx_junior_session.get_chat_manager()
-        
+        # Building the manager is a (small but synchronous) file-system step:
+        # keep it off the event loop like the reads/writes below.
+        chat_manager = await run_in_threadpool(
+            codx_junior_session.get_chat_manager
+        )
+
         chat_id = data.get("chat_id")
         metadata = data.get("metadata", {})
         

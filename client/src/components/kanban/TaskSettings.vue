@@ -131,6 +131,55 @@ import ProfileSelector from '../profile/ProfileSelector.vue'
               <option v-for="chat in orderedChats" :key="chat.id" :value="chat.id">{{ chat.name }}</option>
             </select>
           </label>
+
+          <!-- Schedule: `wake_at` is the alarm clock of the autonomy worker, not a
+               deadline (that is `due_date`). Setting it moves the task to the
+               after-hours shift and draws it in the calendar. -->
+          <div>
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-[11px] font-medium text-base-content/60">Schedule</span>
+              <span
+                v-if="taskData.wake_at"
+                class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-warning/40 bg-warning/10 text-warning text-[10px] font-medium"
+                :title="wakeAtLabel"
+              >
+                <i class="fa-regular fa-clock text-[9px]" aria-hidden="true"></i>
+                {{ wakeAtLabel }}
+              </span>
+              <div class="grow"></div>
+              <button
+                v-if="taskData.wake_at"
+                type="button"
+                class="btn btn-xs btn-ghost gap-1"
+                title="Remove the schedule"
+                @click="clearWakeAt"
+              >
+                <i class="fa-solid fa-xmark text-[10px]" aria-hidden="true"></i> Clear
+              </button>
+            </div>
+
+            <div class="flex flex-wrap gap-1 mb-2">
+              <button
+                v-for="preset in wakePresetOptions"
+                :key="preset.label"
+                type="button"
+                class="btn btn-xs btn-outline gap-1"
+                :title="preset.hint"
+                @click="applyWakePreset(preset)"
+              >
+                {{ preset.label }}
+              </button>
+            </div>
+
+            <input
+              v-model="wakeAtLocal"
+              type="datetime-local"
+              class="input input-sm input-bordered w-full bg-base-100 focus:border-primary/50 focus:ring-2 focus:ring-primary/40"
+            />
+            <p class="mt-1 text-[10px] text-base-content/40">
+              When the agent picks this task up on its own. Use an after-hours time (e.g. 01:00) so it can change code while nobody is working.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -265,6 +314,12 @@ export default {
     return {
       showProfileSelector: false,
       confirmingDelete: false,
+      // After-hours presets: the hour is fixed, the day is resolved on click.
+      wakePresetOptions: [
+        { label: 'Tonight 01:00', hour: 1, days: 0, hint: 'Next 01:00 (tonight, or tomorrow if it already passed)' },
+        { label: 'Tomorrow 01:00', hour: 1, days: 1, hint: 'Tomorrow at 01:00 local time' },
+        { label: '+2 days 01:00', hour: 1, days: 2, hint: 'In two days at 01:00 local time' }
+      ],
       // Snapshot of the editable fields, to tell the user there is nothing to save
       snapshot: null
     }
@@ -338,6 +393,30 @@ export default {
     profileNames() {
       return this.taskData.profiles || []
     },
+    // `wake_at` is stored as an ISO instant and edited as a local
+    // `datetime-local` string, so both directions are converted here.
+    wakeAtLocal: {
+      get() {
+        const iso = this.taskData.wake_at
+        if (!iso) return ''
+        const date = new Date(iso)
+        if (Number.isNaN(date.getTime())) return ''
+        const pad = value => String(value).padStart(2, '0')
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+      },
+      set(value) {
+        this.taskData.wake_at = value ? this.toIsoInstant(value) : null
+      }
+    },
+    wakeAtLabel() {
+      const iso = this.taskData.wake_at
+      if (!iso) return ''
+      const date = new Date(iso)
+      if (Number.isNaN(date.getTime())) return ''
+      return date.toLocaleString(undefined, {
+        weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+      })
+    },
     shortId() {
       return this.taskData.id ? String(this.taskData.id).slice(0, 8) : ''
     },
@@ -370,6 +449,7 @@ export default {
         column: data.column || '',
         mode: data.mode || '',
         llm_model: data.llm_model || '',
+        wake_at: data.wake_at || '',
         profiles: [...(data.profiles || [])].sort()
       })
     },
@@ -401,6 +481,27 @@ export default {
     },
     removeProfile(profile) {
       this.taskData.profiles = (this.taskData.profiles || []).filter(name => name !== profile)
+    },
+    // Resolve a preset to the next occurrence of its hour, never the past.
+    nextWakeInstant(hour, daysAhead) {
+      const date = new Date()
+      date.setDate(date.getDate() + (daysAhead || 0))
+      date.setHours(hour, 0, 0, 0)
+      if (date.getTime() <= Date.now()) {
+        date.setDate(date.getDate() + 1)
+        date.setHours(hour, 0, 0, 0)
+      }
+      return date.toISOString()
+    },
+    toIsoInstant(value) {
+      const date = value instanceof Date ? value : new Date(value)
+      return Number.isNaN(date.getTime()) ? null : date.toISOString()
+    },
+    applyWakePreset(preset) {
+      this.taskData.wake_at = this.nextWakeInstant(preset.hour, preset.days)
+    },
+    clearWakeAt() {
+      this.taskData.wake_at = null
     }
   }
 }

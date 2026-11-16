@@ -34,6 +34,7 @@ from codx.junior.runtime import WIKI_SETTINGS_FILE, runtime_file
 from .constants import (
     ATLAS_INDEX_VERSION,
     DEFAULT_MAX_FILES,
+    DEFAULT_SCAN_SECONDS,
     DEFAULT_TTL_SECONDS,
 )
 from .store import AtlasStore
@@ -130,6 +131,7 @@ class AtlasIndexer:
         project_name: str = "",
         max_files: int = DEFAULT_MAX_FILES,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        scan_seconds: int = DEFAULT_SCAN_SECONDS,
         exclude_paths: Sequence[str] = (),
         ignore_patterns: Any = (),
         codx_path: str = "",
@@ -154,6 +156,11 @@ class AtlasIndexer:
         self._ignore_source = ignore_patterns
         self._ignore_cache: Optional[Tuple[str, ...]] = None
         self.ttl_seconds = max(0, int(ttl_seconds or 0))
+        # How long a git-free watermark match is trusted. Untracked files do not
+        # touch HEAD/.git/index, so the proof expires and a real scan runs.
+        self.scan_seconds = max(
+            0, int(scan_seconds if scan_seconds is not None else DEFAULT_SCAN_SECONDS)
+        )
         self._calls_seen = 0
         self._pending_calls: List[Dict[str, Any]] = []
         self._pending_edges: List[Dict[str, Any]] = []
@@ -185,6 +192,17 @@ class AtlasIndexer:
                 return store
 
             checked_at = float(store.get_meta("checked_at") or 0)
+            # Fast path: HEAD and the git index have not moved since the last
+            # verified build, so the tree is unchanged and no git subprocess
+            # (rev-parse / status / ls-files) is needed at all.
+            watermark = self._watermark()
+            if (
+                watermark
+                and watermark == str(store.get_meta("watermark") or "")
+                and time.time() - checked_at < self.scan_seconds
+            ):
+                return store
+
             if not force and time.time() - checked_at < self.ttl_seconds:
                 return store
             store.set_meta("checked_at", time.time())
@@ -216,7 +234,7 @@ class AtlasIndexer:
                 self._prune_missing(store, current)
                 store.set_meta("dirty", False)
                 store.set_meta("changed_files", 0)
-                store.conn.commit()
+                self._mark_checked(store)
             return store
         except Exception:
             store.close()
@@ -306,6 +324,13 @@ class AtlasIndexer:
         store.set_meta("truncated", self.truncated)
         store.set_meta("warnings", self.warnings[-20:])
         store.set_meta("project", self.project_name)
+        store.set_meta("watermark", self._watermark())
+        store.conn.commit()
+
+    def _mark_checked(self, store: AtlasStore) -> None:
+        """Record that the index matched the working tree at this watermark."""
+        store.set_meta("checked_at", time.time())
+        store.set_meta("watermark", self._watermark())
         store.conn.commit()
 
     # ── file discovery ──────────────────────────────────────────────────────
@@ -1059,6 +1084,43 @@ class AtlasIndexer:
                 changed.append(rel_path)
         changed.extend(path for path in known if path not in current)
         return changed
+
+    def _watermark(self) -> str:
+        """
+        Cheap freshness token: HEAD + git index identity, no subprocess.
+
+        Returns an empty string when the root is not a git checkout; callers
+        then fall back to the TTL plus the git/mtime comparison.
+        """
+        git_dir = os.path.join(self.root, ".git")
+        if os.path.isfile(git_dir):
+            # Worktree or submodule: ``.git`` is a pointer file.
+            try:
+                with open(git_dir, "r", encoding="utf-8", errors="replace") as handle:
+                    pointer = handle.read().strip()
+            except OSError:
+                return ""
+            if not pointer.lower().startswith("gitdir:"):
+                return ""
+            git_dir = os.path.abspath(
+                os.path.join(self.root, pointer.split(":", 1)[1].strip())
+            )
+        if not os.path.isdir(git_dir):
+            return ""
+        parts: List[str] = []
+        for name in ("HEAD", "index"):
+            try:
+                stat = os.stat(os.path.join(git_dir, name))
+            except OSError:
+                parts.append(f"{name}=-")
+                continue
+            parts.append(f"{name}={stat.st_mtime_ns}:{stat.st_size}")
+        return "|".join(parts)
+
+    def bind_ignore_source(self, source: Any) -> None:
+        """Point the indexer at a reloadable ignore-patterns source."""
+        self._ignore_source = source
+        self._ignore_cache = None
 
     def _git_head(self) -> str:
         output = _run_git(self.root, "rev-parse", "HEAD")

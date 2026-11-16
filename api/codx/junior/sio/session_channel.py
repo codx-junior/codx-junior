@@ -20,26 +20,58 @@ class IOEvent(BaseModel):
 
 EVENT_QUEUE: List[IOEvent] = []
 
+# Emits must run on ONE long-lived loop owned by the dispatcher thread. Creating
+# a new loop per event (``asyncio.run`` in the loop body) tore down and rebuilt
+# an event loop for every streamed chunk, which is pure overhead and can leave
+# the Socket.IO server attached to a closed loop.
+_EMIT_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _emit_loop() -> asyncio.AbstractEventLoop:
+    """Return the dispatcher thread's event loop, creating it once."""
+    global _EMIT_LOOP
+    if _EMIT_LOOP is None or _EMIT_LOOP.is_closed():
+        _EMIT_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_EMIT_LOOP)
+    return _EMIT_LOOP
+
+
 def process_event_queue():
     from codx.junior.sio.sio import sio
     from codx.junior.sio.sio_background import sio_client
-                    
+
     while True:
-        if EVENT_QUEUE:
-            try:
-                event: IOEvent = EVENT_QUEUE.pop(0)
-                    
-                if CODX_JUNIOR_API_BACKGROUND:
-                    resend_event = { "event": event.event, "data": event.data }
-                    logger.info(f"Sending event bacground: {resend_event}")
-                    sio_client.emit("background-event", resend_event)
-                else:
-                    asyncio.run(sio.emit(event.event, event.data))
-            except Exception as e:
-                logger.error(f"Error processing event: {e}")
+        # Drain the whole queue per wake-up: streaming produces bursts of events
+        # and one ``asyncio.run`` per event was the slow path.
+        batch: List[IOEvent] = []
+        while EVENT_QUEUE:
+            batch.append(EVENT_QUEUE.pop(0))
+        if batch:
+            for event in batch:
+                try:
+                    if CODX_JUNIOR_API_BACKGROUND:
+                        resend_event = {"event": event.event, "data": event.data}
+                        logger.info(f"Sending event bacground: {resend_event}")
+                        sio_client.emit("background-event", resend_event)
+                    else:
+                        _emit_loop().run_until_complete(
+                            sio.emit(event.event, event.data)
+                        )
+                except Exception as e:
+                    logger.error(f"Error processing event: {e}")
         else:
-            time.sleep(0.2)
-Thread(target=process_event_queue).start()
+            # 50 ms instead of 200 ms: the previous poll added up to 200 ms of
+            # latency to every streamed chunk the user waits for.
+            time.sleep(0.05)
+
+
+# daemon=True is REQUIRED: a non-daemon thread keeps the interpreter (and every
+# test run / container stop) alive forever, because this loop never returns.
+Thread(
+    target=process_event_queue,
+    name="SessionChannelEvents",
+    daemon=True,
+).start()
 
 class SessionChannel:
     def __init__(self, sio, sid=None):

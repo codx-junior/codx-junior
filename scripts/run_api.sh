@@ -47,6 +47,11 @@ fi
 
 if [ "$DEBUG" == "" ]; then
   echo "Running PROD api"
+  # ONE worker by default: Socket.IO keeps the connected sessions (and the
+  # in-memory CancellationTokens of the running turns) inside the process, so
+  # with several workers a client reconnects/re-emits against another worker and
+  # its chat looks stuck. Scale explicitly with WEB_CONCURRENCY only when a
+  # shared Socket.IO message queue is configured.
   uvicorn codx.junior.main:app --workers ${WEB_CONCURRENCY:-1} --host 0.0.0.0 --port $API_PORT
 elif [ "$CODX_JUNIOR_API_RELOAD" == "1" ] || [ "$CODX_JUNIOR_API_RELOAD" == "true" ]; then
   # Opt-in source reload for development ONLY. Never enable it when the AI

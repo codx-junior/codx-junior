@@ -29,7 +29,7 @@ from types import SimpleNamespace
 # ``codx.junior.engine``, which ``codx.junior.context`` needs to be resolved
 # before the chat engine is imported (importing the chat engine on its own hits
 # that circular import).
-from codx.junior.api.chat import _seal_dead_responses
+from codx.junior.api.chat import _seal_dead_responses, chat_cancel
 from codx.junior.chat.chat_engine import ChatEngine
 from codx.junior.chat.turn_store import get_turn_store, repair_incomplete_messages
 
@@ -70,12 +70,25 @@ def _age_heartbeat(store, record, seconds=3600):
     store.save(record)
 
 
-def _manager(store_path):
-    """Minimal ChatManager surface used by the repair path."""
+def _manager(store_path, chat=None):
+    """Minimal ChatManager surface used by the repair and cancel paths."""
     return SimpleNamespace(
         settings=SimpleNamespace(codx_path=store_path),
+        find_by_id=lambda chat_id: chat,
         update_message=lambda chat, message: None,
         save_chat=lambda chat: None,
+    )
+
+
+def _request(store_path, manager):
+    """Minimal FastAPI request surface used by ``chat_cancel``."""
+    session = SimpleNamespace(
+        get_chat_manager=lambda: manager,
+        settings=SimpleNamespace(codx_path=store_path),
+    )
+    return SimpleNamespace(
+        state=SimpleNamespace(codx_junior_session=session),
+        query_params={},
     )
 
 def test_a_chat_without_turns_can_start_a_response(tmp_path):
@@ -231,3 +244,98 @@ def test_reading_a_finished_chat_never_probes_the_turn_store(tmp_path):
         _seal_dead_responses(chat, _manager(str(tmp_path)), SimpleNamespace(codx_path=str(tmp_path)))
         == 0
     )
+
+
+def test_a_stalled_turn_holding_its_lock_is_not_live(tmp_path):
+    """The lock says "a process owns it", the heartbeat says "it is dead"."""
+    store = get_turn_store(str(tmp_path))
+    record = store.begin(chat=_chat())
+    store.mark_running(record)
+    try:
+        assert store.live_turn_ids() == [record.turn_id]
+
+        # A hung AI request or a blocked tool keeps the lock while nothing
+        # progresses: the turn must no longer be reported as live.
+        _age_heartbeat(store, record)
+
+        assert store.is_owned(record.turn_id) is True
+        assert store.live_turn_ids() == []
+        # Diagnostics still see the owner, and the record is kept so recovery
+        # can stop/restart it.
+        assert store.live_turn_ids(include_stale=True) == [record.turn_id]
+        assert [item.turn_id for item in store.find_active("chat-1")] == [
+            record.turn_id
+        ]
+    finally:
+        store.finalize(record, "cancelled", error="test cleanup")
+
+
+def test_reading_a_chat_closes_the_response_of_a_stalled_turn(tmp_path):
+    codx_path = str(tmp_path)
+    store = get_turn_store(codx_path)
+    record = store.begin(chat=_chat())
+    store.mark_running(record)
+    _age_heartbeat(store, record)
+
+    chat = _chat(messages=[_open_response(turn_id=record.turn_id)])
+
+    try:
+        repaired = _seal_dead_responses(
+            chat, _manager(codx_path), SimpleNamespace(codx_path=codx_path)
+        )
+        assert repaired == 1
+        assert chat.messages[0].done is True
+        assert chat.messages[0].hide is True
+    finally:
+        store.finalize(record, "cancelled", error="test cleanup")
+
+
+def test_stopping_a_chat_closes_a_stalled_response_whose_lock_is_held(tmp_path):
+    """Stop must win: nobody else would ever close that bubble."""
+    codx_path = str(tmp_path)
+    store = get_turn_store(codx_path)
+    record = store.begin(chat=_chat())
+    store.mark_running(record)
+    _age_heartbeat(store, record)
+
+    chat = _chat(messages=[_open_response(turn_id=record.turn_id)])
+    manager = _manager(codx_path, chat)
+
+    try:
+        result = chat_cancel(_request(codx_path, manager), {"chat_id": "chat-1"})
+
+        assert result["cancelled"] is True
+        assert result["repaired_messages"] == 1
+        assert chat.messages[0].done is True
+        assert chat.messages[0].hide is True
+        assert chat.messages[0].error == "The turn was stopped by the user"
+        # A recovery sweep must never resume the turn the user stopped.
+        assert store.cancel_requested(record.turn_id) is True
+    finally:
+        store.finalize(record, "cancelled", error="test cleanup")
+
+
+def test_stopping_a_chat_twice_is_idempotent(tmp_path):
+    codx_path = str(tmp_path)
+    store = get_turn_store(codx_path)
+    record = store.begin(chat=_chat())
+    store.mark_running(record)
+    _age_heartbeat(store, record)
+
+    chat = _chat(messages=[_open_response(turn_id=record.turn_id)])
+    manager = _manager(codx_path, chat)
+    request = _request(codx_path, manager)
+
+    first = chat_cancel(request, {"chat_id": "chat-1"})
+    assert first["cancelled"] is True
+    assert first["repaired_messages"] == 1
+
+    store.finalize(record, "cancelled", error="test cleanup")
+
+    second = chat_cancel(request, {"chat_id": "chat-1"})
+
+    # Nothing left to stop: still a success, with no work done.
+    assert second["cancelled"] is True
+    assert second["repaired_messages"] == 0
+    assert second["stopped_turns"] == 0
+    assert chat.messages[0].done is True

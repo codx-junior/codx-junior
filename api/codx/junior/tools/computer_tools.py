@@ -507,7 +507,10 @@ async def computer_action(
                 params["steps"], params["variables"], force=False
             )
         else:
-            result = await runtime.run(action, force=False, user_wait=3, **params)
+            # 3 s was shorter than a normal typing pause: the AI failed the
+            # action and burned another model turn.  The runtime returns as
+            # soon as the human is quiet, so a generous cap is cheap.
+            result = await runtime.run(action, force=False, user_wait=15, **params)
         session = getattr(runtime, "session", None) or session
     except ComputerControlError as ex:
         return ToolResponse(

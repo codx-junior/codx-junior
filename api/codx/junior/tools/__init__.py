@@ -70,6 +70,10 @@ from .project_structure import (
 from .codx_tools import search_codx, SEARCH_CODX_TOOL_JSON
 from .code_writer import code_writer
 from .create_task_tool import create_task, CREATE_TASK_TOOL_JSON
+from .schedule_task_tool import (
+    schedule_task,
+    SCHEDULE_TASK_TOOL_JSON,
+)
 from .process_task_tool import process_task, PROCESS_TASK_TOOL_JSON
 from .orchestration_tools import (
     orchestrator,
@@ -332,6 +336,7 @@ __all__ = [
     "search_codx",
     "code_writer",
     "create_task",
+    "schedule_task",
     "process_task",
     "orchestrator",
     "delegate",
@@ -770,6 +775,12 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
         "tags": ["task-management", "creation", "workflow"],
         "tool_call": create_task
+    },
+    {
+        "tool_json": SCHEDULE_TASK_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
+        "tags": ["task-management", "schedule", "wake_at", "after-hours", "workflow"],
+        "tool_call": schedule_task
     },
     {
         "tool_json": PROCESS_TASK_TOOL_JSON,

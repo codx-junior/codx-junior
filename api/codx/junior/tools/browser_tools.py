@@ -279,7 +279,7 @@ async def browse_action(
     value: str = None,
     script: str = None,
     key: str = None,
-    timeout: int = 5000,
+    timeout: int = None,
     index: int = None,
     x: int = 0,
     y: int = 0,
@@ -310,8 +310,12 @@ async def browse_action(
         selector: CSS selector (element actions).
         value: Text to fill or option to select.
         script: JavaScript to run (for ``execute``; use ``return ...``).
+            Top-level ``await`` is supported.
         key: Keyboard key for ``press``.
-        timeout: Timeout in milliseconds for waits.
+        timeout: Timeout in milliseconds for waits.  For ``wait`` without a
+            target it is how long to watch for the human/page to change
+            (default 20000, max 60000); the call returns as soon as anything
+            happens, so it is one call instead of polling ``browser_activity``.
         index: Tab index for ``switch_tab`` / ``close_tab``.
         x: Horizontal scroll offset.
         y: Vertical scroll offset.
@@ -429,17 +433,28 @@ async def browse_action(
             data = f"page refreshed\ntitle: {title}"
 
         elif action == "wait":
+            # Waits never change the page, so they are allowed while the human
+            # owns the lease: that is exactly when the AI needs to wait.
             if text:
-                await runtime.run("wait_for_text", str(text), timeout=timeout or 5000)
+                await runtime.run(
+                    "wait_for_text", str(text), timeout=timeout or 5000, read_only=True
+                )
                 data = f"text appeared: {text!r}"
             elif selector:
-                await runtime.run("wait_for_selector", selector, timeout=timeout or 5000)
+                await runtime.run(
+                    "wait_for_selector", selector, timeout=timeout or 5000, read_only=True
+                )
                 data = f"element appeared: {selector}"
             elif url:
-                await runtime.run("wait_for_url", url, timeout=timeout or 5000)
+                await runtime.run(
+                    "wait_for_url", url, timeout=timeout or 5000, read_only=True
+                )
                 data = f"url matched: {url}"
             else:
-                raise ValueError("wait needs text, selector or url")
+                # Co-driving: park one call until the human acts or the page
+                # navigates, instead of polling browser_activity once per turn.
+                result = await runtime.wait_for_change(timeout or 20000)
+                data = _format_wait(result)
 
         elif action == "press":
             if not selector or not key:
@@ -542,6 +557,23 @@ async def browse_action(
             duration_ms=(time.monotonic() - started_at) * 1000,
         )
         if control_error:
+            if getattr(session, "controller", "ai") == "ai":
+                # Not a hand-off: the human is actively typing/clicking and the
+                # quiet-gap wait expired.  Give the model the one call that
+                # actually helps instead of a blind retry.
+                return ToolResponse(
+                    user_response=(
+                        f"⏸ The user is still interacting with the page: {ex}\n\n"
+                        f"[Open the live browser]({session.vnc_url or ''}) to see it."
+                    ),
+                    llm_response=(
+                        f"The action '{action}' was not executed because the human is "
+                        f"still interacting with the shared browser: {ex}\n"
+                        "Call browse_action(action='wait') to park one call until they "
+                        "pause, or browser_activity(actor='user') to see what they did. "
+                        "Do not retry the same action immediately."
+                    ),
+                )
             return ToolResponse(
                 user_response=(
                     f"⏸ Paused: {ex}\n\n"
@@ -558,6 +590,45 @@ async def browse_action(
             user_response=f"❌ `{action}` failed: {ex}",
             llm_response=f"Action '{action}' on session {session.id} failed: {ex}",
         )
+
+
+def _format_wait(result: Dict[str, Any]) -> str:
+    """Render a co-driving wait result (change + activity) compactly."""
+    if not isinstance(result, dict):
+        return str(result)
+    if result.get("changed"):
+        head = (
+            f"page changed ({result.get('reason')}) after "
+            f"{result.get('waited_ms')} ms"
+        )
+    else:
+        head = f"no change within {result.get('waited_ms')} ms"
+    lines = [
+        head,
+        f"url: {result.get('url') or ''}",
+        f"title: {result.get('title') or ''}",
+        f"controller: {result.get('controller') or '?'}",
+    ]
+    for entry in result.get("activity") or []:
+        target = (entry.get("params") or {}).get("target") or {}
+        detail = ""
+        if isinstance(target, dict):
+            detail = target.get("text") or target.get("selector") or target.get("name") or ""
+        if detail:
+            detail = f" · {str(detail)[:80]}"
+        lines.append(
+            f"- {entry.get('actor') or '?'}: {entry.get('action') or '?'}"
+            f"{detail} ({entry.get('ts')})"
+        )
+    page = result.get("page")
+    if isinstance(page, dict):
+        compact = dict(page)
+        compact["interactive"] = (compact.get("interactive") or [])[:40]
+        compact["text"] = (compact.get("text") or "")[:2000]
+        lines.append(
+            "page: " + json.dumps(compact, ensure_ascii=False, default=str)[:6000]
+        )
+    return "\n".join(lines)[:12000]
 
 
 def _format_snapshot(snapshot: Dict[str, Any]) -> str:
@@ -882,6 +953,16 @@ async def browser_status(
             llm_response=f"Browser status unavailable: {ex}",
         )
     text = "\n".join(f"{key}: {value}" for key, value in state.items())
+    if state.get("ai_may_act"):
+        text += (
+            "\nnote: the page is quiet — you may act now. A recent click or "
+            "keystroke is not a hand-off; only controller='user' is."
+        )
+    elif state.get("controller") == "ai":
+        text += (
+            "\nnote: the user is typing. Do not fail or retry blindly: "
+            "browse_action(action='wait') parks one call until they pause."
+        )
     return ToolResponse(
         user_response=f"ℹ️ Browser status for session {session.id[:8]}:\n```\n{text}\n```",
         llm_response=f"Browser status for session {session.id}:\n{text}",
@@ -1046,7 +1127,8 @@ BROWSE_ACTION_TOOL_JSON = {
             "interactive element refs (click/fill by ref) and the main text, much cheaper "
             "than full HTML. Use action='batch' for several steps in one call. "
             "Actions: navigate (url), click/fill (ref or selector or text), execute (script), "
-            "text, links, snapshot, back, forward, refresh, wait (text/selector/url), "
+            "text, links, snapshot, back, forward, refresh, wait (text/selector/url, or "
+            "no target to wait for the human/page to change), "
             "press, select, hover, scroll, tabs, new_tab, switch_tab, close_tab, batch."
         ),
         "parameters": {
@@ -1085,10 +1167,20 @@ BROWSE_ACTION_TOOL_JSON = {
                 "value": {"type": "string", "description": "Text to fill or option to select."},
                 "script": {
                     "type": "string",
-                    "description": "JavaScript to run (execute); use 'return ...' to get a value.",
+                    "description": (
+                        "JavaScript to run (execute); use 'return ...' to get a value. "
+                        "Top-level await is supported."
+                    ),
                 },
                 "key": {"type": "string", "description": "Keyboard key for press (e.g. Enter)."},
-                "timeout": {"type": "integer", "description": "Wait timeout in milliseconds."},
+                "timeout": {
+                    "type": "integer",
+                    "description": (
+                        "Wait timeout in milliseconds (max 60000). For wait with no "
+                        "target it defaults to 20000: one call parks until the human "
+                        "acts or the page navigates."
+                    ),
+                },
                 "index": {
                     "type": "integer",
                     "description": "Tab index for switch_tab/close_tab (0-based, as listed by tabs).",

@@ -49,6 +49,7 @@ from codx.junior.calendar.service import (
     ERROR_READ_ONLY_CALENDAR,
     ERROR_REVISION_MISMATCH,
     ERROR_UNKNOWN_CALENDAR,
+    SYSTEM_CALENDAR_ID,
     CalendarError,
     CalendarService,
 )
@@ -236,7 +237,12 @@ def test_calendar_visibility_matches_the_fixture(store, case):
     service = CalendarService(store=store, viewer=case["viewer"])
 
     visible = [calendar.id for calendar in service.visible_calendars()]
-    assert set(visible) == set(case["sees"])
+    expected = set(case["sees"])
+    # M1: the read-only system calendar is visible to every AUTHENTICATED
+    # viewer and carries the projected tasks/runs (it is never stored).
+    if service.username:
+        expected.add(SYSTEM_CALENDAR_ID)
+    assert set(visible) == expected
 
     for calendar_id in case.get("must_not_see") or []:
         assert calendar_id not in visible

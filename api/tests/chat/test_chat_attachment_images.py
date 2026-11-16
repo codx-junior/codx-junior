@@ -172,6 +172,7 @@ def test_mobile_screenshot_ends_up_as_one_image_part():
         attachments=[attachment("IMG_0003.HEIC", "image/heic", image_bytes("PNG"))],
         hide=False,
         improvement=False,
+        unsent=False,
         doc_id="message-1",
     )
     chat = SimpleNamespace(

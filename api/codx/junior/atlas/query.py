@@ -23,13 +23,14 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from collections import deque
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from codx.junior.runtime import runtime_file
 
-from .constants import ATLAS_DB_FILENAME, ATLAS_DIRNAME
+from .constants import ATLAS_DB_FILENAME, ATLAS_DIRNAME, DEFAULT_SCAN_SECONDS
 from .indexer import AtlasIndexer
 from .models import AtlasHealth, AtlasPacket, Evidence
 from .related import child_paths
@@ -108,6 +109,41 @@ def _normalise_path(path: str) -> str:
     return os.path.normpath(path).replace(os.sep, "/")
 
 
+#: One atlas per (thread, project). The SQLite connection is not shared between
+#: threads, while the pool threads are long lived and keep their atlas warm:
+#: settings resolution, the indexer and its caches survive the tool calls.
+_ATLAS_LOCAL = threading.local()
+
+
+def _atlas_key(settings: Any) -> str:
+    root = os.path.abspath(getattr(settings, "abs_project_path", "") or ".")
+    codx_path = getattr(settings, "codx_path", None) or os.path.join(root, ".codx")
+    return f"{root}|{os.path.abspath(codx_path)}"
+
+
+def shared_atlas(settings: Any) -> "ProjectAtlas":
+    """
+    Return the project atlas of the current thread, creating it once.
+
+    Every tool call used to build a new :class:`ProjectAtlas`, which resolved the
+    related projects, the ignore patterns and the database path again and then
+    threw the object away. The instance is now reused per thread and only
+    rebound to the (reloadable) settings.
+    """
+    registry: Dict[str, Any] = getattr(_ATLAS_LOCAL, "instances", None)
+    if registry is None:
+        registry = {}
+        _ATLAS_LOCAL.instances = registry
+    key = _atlas_key(settings)
+    atlas = registry.get(key)
+    if atlas is None:
+        atlas = ProjectAtlas(settings)
+        registry[key] = atlas
+    else:
+        atlas.bind(settings)
+    return atlas
+
+
 class ProjectAtlas:
     """Atlas facade bound to one project's settings."""
 
@@ -126,6 +162,10 @@ class ProjectAtlas:
             project_name=getattr(settings, "project_name", "") or os.path.basename(self.root),
             max_files=int(getattr(settings, "project_atlas_max_files", 5000) or 5000),
             ttl_seconds=int(getattr(settings, "project_atlas_ttl_seconds", 5) or 5),
+            scan_seconds=int(
+                getattr(settings, "project_atlas_scan_seconds", 0)
+                or DEFAULT_SCAN_SECONDS
+            ),
             # Child projects have their own atlas; index only this project.
             exclude_paths=child_paths(settings, self.root),
             # Honor the project's own definition of "project content" (the
@@ -142,6 +182,16 @@ class ProjectAtlas:
         self._in_degree_cache: Dict[str, int] = {}
         self._degrees_loaded = False
         self._error: Optional[str] = None
+
+    def bind(self, settings: Any) -> None:
+        """Rebind a long-lived atlas to reloaded project settings."""
+        if settings is self.settings:
+            return
+        self.settings = settings
+        source = getattr(settings, "get_ignore_patterns", None)
+        self.indexer.bind_ignore_source(
+            (lambda: settings.get_ignore_patterns()) if callable(source) else None
+        )
 
     # ── lifecycle ───────────────────────────────────────────────────────────
 

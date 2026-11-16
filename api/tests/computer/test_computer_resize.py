@@ -156,8 +156,11 @@ def test_client_confirms_set_desktop_size():
         "height": 900,
         "screens": 1,
     }
+    # The fake server CONFIRMS the request but applies its own 10x5 layout: the
+    # client must report the real size and that the REQUESTED size is not in use.
     assert (info["width"], info["height"]) == (10, 5)
-    assert info["applied"] is True
+    assert info["requested_width"] == 1600
+    assert info["applied"] is False
     assert info["supported"] is True
     assert client.supports_extended_desktop_size is True
     assert client.screens[0]["id"] == 1

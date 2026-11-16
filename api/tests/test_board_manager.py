@@ -16,6 +16,17 @@ from types import SimpleNamespace
 
 import pytest
 
+# The board manager review pipeline tested here (``actions.BoardContext``, the
+# JSON ``{summary, actions}`` contract and its applier) was REMOVED when the
+# board declaration was merged into the autonomy runtime
+# (``board_manager.service`` -> ``ActorService``). The module no longer exists,
+# so this file cannot even be collected; it is kept only as a reference of the
+# old contract and must be rewritten against the autonomy service.
+pytest.skip(
+    "obsolete: the board manager pipeline was merged into the autonomy runtime",
+    allow_module_level=True,
+)
+
 from codx.junior.board_manager import constants as C
 from codx.junior.board_manager.actions import BoardContext
 from codx.junior.board_manager.models import (

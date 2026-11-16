@@ -141,6 +141,13 @@ from codx.junior.ai.smol.constants import (
     DEFAULT_TOOL_PARALLELISM,
     MAX_TOOL_PARALLELISM,
 )
+from codx.junior.ai.smol.agile import (
+    AgileClock,
+    AgileNudge,
+    agile_clock_for,
+    agile_system_section,
+)
+from codx.junior.ai.smol.effort import EffortPolicy, effort_for
 from codx.junior.ai.smol.loop_guard import LoopGuard, ToolLoopError
 from codx.junior.ai.smol.parallel import (
     describe_batches,
@@ -253,13 +260,23 @@ PROFILE_LEARNING_TOOL: str = "profile_learning"
 # provider) and drives the profile tool injection.
 PROFILES_HEADER: str = "profiles"
 
-# The harness profile: a chat handled by it is a harness task, expected to
-# resolve itself. Together with the orchestration roles (worker/supervisor) it
-# enables the tool-limit CONTINUATION (see TOOL_LIMIT_CONTINUATIONS).
+# Legacy harness profile name, kept for backwards compatibility only. The
+# tool-limit decision no longer compares profile names: it comes from the effort
+# policy (``codx.junior.ai.smol.effort``), where ``codx-junior`` is agile and
+# ``codx-junior-max`` is the heavier tier. Both grant a bounded course
+# correction at a limit: no effort tier may dead-end a task.
 HARNESS_PROFILE: str = "codx-junior"
 
 # Config key a caller can use to force the tool-limit policy (True/False).
 CONTINUE_ON_TOOL_LIMIT_KEY: str = "continue_on_tool_limit"
+
+# Notice appended to the answer when the effort tier's wall-clock deadline stops
+# the turn. The partial increment gathered so far is still delivered.
+WALL_CLOCK_EXCEEDED_MSG: str = (
+    "\n\n> \u23f1\ufe0f **Time budget reached** \u2014 the `{tier}` effort tier bounds a "
+    "turn to {seconds:.0f}s. The partial increment gathered so far is delivered "
+    "above; continue with the next turn.\n\n"
+)
 
 # Sentinel returned to the model when a tool produces no output.
 # An empty or None tool message causes the model to re-issue the same call.
@@ -903,21 +920,26 @@ class SmolAgent:
         config: Dict[str, Any],
         orchestration_info: Optional[Dict[str, Any]],
         profile_names: List[str],
+        policy: Optional[EffortPolicy] = None,
     ) -> bool:
         """
         Decide whether a tool limit CONTINUES the turn instead of stopping it.
 
-        The tool limits are a guardrail against rabbit holes, not a stop
-        condition for harness work: an orchestrated run (its supervisor, a step
-        worker or a delegated subagent) and a chat handled by the harness
-        profile are expected to resolve themselves, so they get a course
-        correction instead of a dead end. A plain chat keeps the previous
-        behaviour (stop and summarise the tool usage).
+        The decision belongs to the EFFORT POLICY
+        (:func:`codx.junior.ai.smol.effort.effort_for`), not to the profile
+        names: the agile tier (``codx-junior``, the default), the MAX tier and
+        an orchestrated turn all continue after a tool limit with a bounded
+        course correction, so a limit never dead-ends a task. A plain chat and
+        an explicit ``continue_on_tool_limit=False`` stop at the limit and
+        deliver the partial increment. The config key
+        ``continue_on_tool_limit`` stays the highest priority override.
 
         Args:
             config:             Chat configuration dict.
             orchestration_info: Parsed ``orchestration`` header (or None).
             profile_names:      Profiles taking part in the turn.
+            policy:             Already resolved effort policy; resolved here
+                                when omitted.
 
         Returns:
             True when the turn must be continued after a tool limit.
@@ -925,12 +947,149 @@ class SmolAgent:
         explicit = config.get(CONTINUE_ON_TOOL_LIMIT_KEY)
         if explicit is not None:
             return bool(explicit)
-        if orchestration_info:
-            return True
-        return any(
-            str(name or "").strip().lower().lstrip("@") == HARNESS_PROFILE
-            for name in (profile_names or [])
+        if policy is None:
+            policy = effort_for(profile_names, orchestration_info)
+        return policy.continue_on_tool_limit
+
+    @staticmethod
+    def _wall_clock_stop(
+        deadline: Optional[float],
+        policy: EffortPolicy,
+    ) -> Optional[str]:
+        """
+        Return the stop notice when the turn's wall-clock deadline is reached.
+
+        The effort tier bounds how long a single turn may run. Reaching the
+        deadline BREAKS the round loop (it never raises): the text and the tool
+        facts already produced are still delivered, so the turn ends with a
+        partial increment instead of an error.
+
+        Args:
+            deadline: Monotonic deadline (``None`` when the tier has none).
+            policy:   Policy that produced the deadline (for the log/notice).
+
+        Returns:
+            The notice to append to the answer, or ``None`` when there is time
+            left.
+        """
+        if deadline is None or time.monotonic() < deadline:
+            return None
+        logger.warning(
+            "SmolAgent: wall-clock deadline reached after %.0fs (tier=%s); "
+            "delivering the partial increment",
+            policy.wall_clock_seconds,
+            policy.name,
         )
+        return WALL_CLOCK_EXCEEDED_MSG.format(
+            tier=policy.name,
+            seconds=policy.wall_clock_seconds,
+        )
+
+    def _time_pressure(
+        self,
+        *,
+        deadline: Optional[float],
+        policy: EffortPolicy,
+        clock: Optional[AgileClock],
+        queue: List[str],
+        openai_messages: List[Dict[str, Any]],
+        run_context: AgentRunContext,
+        stage: str,
+        inject: bool,
+    ) -> Optional[str]:
+        """
+        Apply the TIME policy of the turn before continuing a round.
+
+        Two behaviours behind one decision:
+
+        * an ENFORCING tier (opt-in through ``stop_on_wall_clock``) returns the
+          stop notice once its deadline is gone — the loop breaks, the turn is
+          never raised;
+        * an ADVISORY tier (agile and max by default) NEVER stops: it only asks
+          the model to speed up and publishes ``AGILE_STATUS`` so the response
+          metadata can be marked and the client can warn the user.
+
+        Args:
+            deadline:    Monotonic deadline (None when no clock is enforced).
+            policy:      Resolved effort policy of the turn.
+            clock:       Agile clock of the turn (None when not advisory).
+            queue:       Pending agile notices of the turn.
+            openai_messages: Conversation of THIS request (not persisted).
+            run_context: Run context used to publish ``AGILE_STATUS``.
+            stage:       Where the check happens (``round`` / ``tools``).
+            inject:      True when it is safe to append a ``user`` message to
+                         ``openai_messages`` (only right before a model
+                         request: appending between an assistant tool_calls
+                         message and its tool results would corrupt the
+                         payload).
+
+        Returns:
+            The stop notice when the tier enforces the clock, otherwise None.
+        """
+        if policy.enforces_wall_clock:
+            return self._wall_clock_stop(deadline, policy)
+        self._agile_pressure(
+            clock=clock,
+            queue=queue,
+            openai_messages=openai_messages if inject else None,
+            run_context=run_context,
+            stage=stage,
+        )
+        return None
+
+    def _agile_pressure(
+        self,
+        *,
+        clock: Optional[AgileClock],
+        queue: List[str],
+        openai_messages: Optional[List[Dict[str, Any]]] = None,
+        run_context: Optional[AgentRunContext] = None,
+        stage: str = "round",
+    ) -> Optional[AgileNudge]:
+        """
+        Collect the agile checkpoint reached and stress the model (never stop).
+
+        The notice is always QUEUED for the model. When ``openai_messages`` is
+        given — the safe point of the loop, right before a model request — the
+        pending notices are injected as ``user`` messages of this request only:
+        they are never persisted in the chat and never streamed to the user,
+        who is warned through the response message metadata instead.
+
+        Args:
+            clock:           Agile clock of the turn.
+            queue:           Pending notices, flushed at the next safe point.
+            openai_messages: Conversation to inject the notices into, or None.
+            run_context:     Run context to publish ``AGILE_STATUS`` with.
+            stage:           Where the checkpoint fired (``round`` / ``tools``).
+
+        Returns:
+            The :class:`AgileNudge` produced now, or ``None``.
+        """
+        nudge: Optional[AgileNudge] = (
+            clock.next_nudge() if clock is not None else None
+        )
+        if nudge is not None:
+            queue.append(nudge.model_notice)
+            logger.warning(
+                "SmolAgent: agile checkpoint '%s' at %.0fs of %.0fs (stage=%s) "
+                "— the turn is NOT stopped, asking the model to wrap up",
+                nudge.level,
+                nudge.elapsed_seconds,
+                nudge.target_seconds,
+                stage,
+            )
+            if run_context is not None:
+                run_context.emit(
+                    AgentEventType.AGILE_STATUS,
+                    stage=stage,
+                    level=nudge.level,
+                    metadata=nudge.metadata,
+                )
+        if openai_messages is not None and queue:
+            for notice in queue:
+                openai_messages.append({"role": "user", "content": notice})
+            queue.clear()
+        return nudge
 
     def _build_tool_limit_rethink(
         self,
@@ -1140,34 +1299,107 @@ class SmolAgent:
             profile_names=profile_names,
             orchestration_info=orchestration_info,
         )
-        # Build system message dynamically on each chat (fresh global instructions)
+        # ── Effort policy: the ONLY source of the turn budget ────────────────
+        # Resolved from the profile names (codx.junior.ai.smol.effort):
+        # ``codx-junior`` is agile (small base budget + ADVISORY clock) and
+        # ``codx-junior-max`` (or an orchestrated turn) has the heavier budget.
+        # Neither tier can dead-end a task: a reached limit grants the bounded
+        # course correction below. The config key ``continue_on_tool_limit``
+        # remains the highest priority override.
+        effort_policy: EffortPolicy = effort_for(
+            profile_names,
+            orchestration_info,
+            explicit=(
+                None
+                if config.get(CONTINUE_ON_TOOL_LIMIT_KEY) is None
+                else bool(config.get(CONTINUE_ON_TOOL_LIMIT_KEY))
+            ),
+        )
+        logger.info(
+            "SmolAgent: effort tier=%s max_iterations=%d max_tool_calls=%d "
+            "continuations=%d wall_clock_s=%.0f validation=%s",
+            effort_policy.name,
+            effort_policy.max_iterations,
+            effort_policy.max_tool_calls,
+            effort_policy.continuations,
+            effort_policy.wall_clock_seconds,
+            effort_policy.validation,
+        )
+
+        # ── Agile clock: pressure the model, never kill the turn ─────────────
+        # The agile tier promises an increment in ``AGILE_TARGET_SECONDS`` (20
+        # minutes). Its clock is ADVISORY: every checkpoint injects a
+        # deterministic "hurry up" notice into the model conversation and
+        # publishes ``AGILE_STATUS`` so the response metadata can be marked and
+        # the client can warn the user. The turn is NEVER broken by the clock —
+        # only the human stops it. MAX has the same advisory behaviour with a
+        # longer target; a caller may opt into an ENFORCED clock through the
+        # effort policy (nothing enables it by default).
+        agile_clock: Optional[AgileClock] = agile_clock_for(
+            effort_policy, started_at=time.monotonic()
+        )
+        # Final agile state stamped on the response message (None when the tier
+        # has no advisory target).
+        agile_metadata: Optional[Dict[str, Any]] = None
+        # Agile notices waiting for the next SAFE injection point (right before
+        # a model request). They are never persisted in the chat.
+        agile_notices: List[str] = []
+        if agile_clock is not None:
+            logger.info(
+                "SmolAgent: advisory clock active (mode=%s target=%.0fs, "
+                "checkpoints=%s)",
+                agile_clock.mode,
+                agile_clock.target_seconds,
+                agile_clock.checkpoints,
+            )
+
+        # Build system message dynamically on each chat (fresh global
+        # instructions). An agile turn is TOLD it is on the clock: the tier is a
+        # runtime policy, but a model that does not know it is being timed does
+        # not hurry up.
         system_message = self._build_system_message()
+        # Only the agile tier gets the AGILE MODE prompt section: the max tier
+        # has its own profile instructions and a much longer target.
+        if agile_clock is not None and effort_policy.name == "agile":
+            system_message += agile_system_section(agile_clock.target_seconds)
         openai_messages = to_openai_messages(messages, system=system_message)
 
-        # Initialize LoopGuard with resolved limits from AISettings.
-        # Priority: Model > Provider > Fallback.
+        # Initialize LoopGuard from the effort policy, falling back to the
+        # model/provider settings only when the policy leaves a value unset.
         # These limits are enforced on every tool round to prevent runaway
         # execution or breadth violations.
+        # NOTE: the policy also carries ``max_tool_rounds``; LoopGuard has no
+        # equivalent parameter yet (follow-up, not invented here).
         loop_guard = LoopGuard(
-            max_iterations=self.llm_settings.max_iterations,
-            max_tool_calls=self.llm_settings.max_tool_calls,
+            max_iterations=effort_policy.max_iterations
+            or self.llm_settings.max_iterations,
+            max_tool_calls=effort_policy.max_tool_calls
+            or self.llm_settings.max_tool_calls,
         )
 
         # Initialize tool cache for this conversation.
         # Cached results bypass LoopGuard checks and don't count towards limits.
         tool_cache = ToolCache()
 
-        # ── Tool-limit continuation (harness tasks) ───────────────
+        # ── Tool-limit continuation (decided by the effort policy) ────────────
         # The tool limits are a GUARDRAIL against rabbit holes, not a stop
-        # condition for harness work: a worker/supervisor turn that runs out of
+        # condition for MAX work: a ``codx-junior-max`` turn that runs out of
         # tool budget is CONTINUED in the same turn (the facts it already
         # collected + a smaller budget) so the run resolves itself instead of
-        # dying. Plain chats, and harness turns whose continuations are
-        # exhausted, stop as before.
+        # dying. Agile (``codx-junior``, the default) has ``continuations=0`` and
+        # plain chats keep the old behaviour: they stop at the limit and deliver
+        # the partial increment.
         continue_on_tool_limit: bool = self._continuation_enabled(
             config=config,
             orchestration_info=orchestration_info,
             profile_names=profile_names,
+            policy=effort_policy,
+        )
+        # Course corrections granted by the tier. Both agile and MAX grant them:
+        # a tool limit must never dead-end a task. Only a plain chat (or an
+        # explicit ``continue_on_tool_limit=False``) stops at the limit.
+        tool_limit_continuations_max: int = max(
+            0, int(effort_policy.continuations or 0)
         )
         tool_limit_continuations: int = 0
         tool_limit_note: str = ""
@@ -1190,6 +1422,16 @@ class SmolAgent:
         tool_cost_by_name: Dict[str, float] = {}
 
         request_start = time.monotonic()
+
+        # Wall-clock deadline ENFORCED by the effort tier (opt-in only: no
+        # built-in tier enables it). When it is set the round loop breaks
+        # instead of raising, so the partial increment survives. The normal
+        # path is the ADVISORY clock handled above.
+        wall_clock_deadline: Optional[float] = (
+            request_start + effort_policy.wall_clock_seconds
+            if effort_policy.enforces_wall_clock
+            else None
+        )
 
         # Track whether any tools were used in this conversation.
         tools_were_used: bool = False
@@ -1216,6 +1458,9 @@ class SmolAgent:
         # gracefully (before executing more tools) and a notice is appended.
         cost_limit_error: Optional[str] = None
 
+        # Set when the effort tier's wall-clock deadline stops the turn. The
+        # loop is then broken (never raised) so the partial increment survives.
+        wall_clock_limit_error: Optional[str] = None
         # Initialised before the loop so they are always defined for the
         # post-loop analytics call, even when the very first budget check stops
         # the run before any completion is performed.
@@ -1228,6 +1473,25 @@ class SmolAgent:
         # Iterative tool loop: keep streaming completions until the model
         # produces a final answer (no more tool_calls finish reason).
         while True:
+            # Time pressure first: an ENFORCING tier (max) must not start
+            # another round once its deadline is gone (breaking instead of
+            # raising keeps the partial increment deliverable), while an
+            # ADVISORY tier (agile) only nudges the model and never stops.
+            wall_clock_limit_error = self._time_pressure(
+                deadline=wall_clock_deadline,
+                policy=effort_policy,
+                clock=agile_clock,
+                queue=agile_notices,
+                openai_messages=openai_messages,
+                run_context=run_context,
+                stage="round",
+                # Safe point: the next message of the request is a model turn,
+                # never an assistant tool_calls waiting for its results.
+                inject=True,
+            )
+            if wall_clock_limit_error:
+                break
+
             # Stop BEFORE spending more when the chat already reached its
             # estimated cost (covers the case where a previous round pushed the
             # chat over budget).
@@ -1318,6 +1582,25 @@ class SmolAgent:
                 )
                 break
 
+            # Time pressure BEFORE executing the round's tools: starting a long
+            # tool once the deadline is gone would break it again. The facts
+            # already collected are delivered instead.
+            wall_clock_limit_error = self._time_pressure(
+                deadline=wall_clock_deadline,
+                policy=effort_policy,
+                clock=agile_clock,
+                queue=agile_notices,
+                openai_messages=openai_messages,
+                run_context=run_context,
+                stage="tools",
+                # Queue only: the assistant tool_calls message of this round is
+                # appended right after, so the notice is flushed at the next
+                # round where a `user` message is legal.
+                inject=False,
+            )
+            if wall_clock_limit_error:
+                break
+
             # Tool calls detected: mark that tools were used and accumulate LLM
             # text in thinking_content (this is preprocessing/reasoning).
             tools_were_used = True
@@ -1364,15 +1647,15 @@ class SmolAgent:
                     # Limits reached: do NOT let the exception abort the run
                     # (that would discard every tool result gathered so far).
                     #
-                    # A harness turn is CONTINUED instead of stopped: the tool
-                    # limit is a guardrail against rabbit holes, not the end of
-                    # the task. The model receives the facts it already
+                    # A MAX effort turn is CONTINUED instead of stopped: the
+                    # tool limit is a guardrail against rabbit holes, not the end
+                    # of the task. The model receives the facts it already
                     # collected plus a "rethink the path" instruction, and the
                     # guard is renewed with a smaller budget so it can finish
                     # the work without repeating a single call.
                     if (
                         continue_on_tool_limit
-                        and tool_limit_continuations < TOOL_LIMIT_CONTINUATIONS
+                        and tool_limit_continuations < tool_limit_continuations_max
                     ):
                         tool_limit_continuations += 1
                         rethink = self._build_tool_limit_rethink(
@@ -1384,8 +1667,14 @@ class SmolAgent:
                         # reasoning and is never persisted in the chat history.
                         openai_messages.append({"role": "user", "content": rethink})
                         loop_guard.renew(
-                            max_iterations=TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS,
-                            max_tool_calls=TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
+                            max_iterations=(
+                                effort_policy.continuation_max_iterations
+                                or TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS
+                            ),
+                            max_tool_calls=(
+                                effort_policy.continuation_max_calls
+                                or TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS
+                            ),
                         )
                         # Surface the course correction on the card/turn. Tool
                         # logs render collapsed, so the chat stays clean.
@@ -1401,7 +1690,7 @@ class SmolAgent:
                             loop_guard.rounds,
                             str(ex),
                             tool_limit_continuations,
-                            TOOL_LIMIT_CONTINUATIONS,
+                            tool_limit_continuations_max,
                         )
                         continue
 
@@ -1657,6 +1946,18 @@ class SmolAgent:
                 len(cost_limit_error),
             )
 
+        # When the effort tier's wall-clock deadline stopped the turn, say it so
+        # the user knows the increment is partial (a valid outcome for agile).
+        if wall_clock_limit_error:
+            thinking_content += wall_clock_limit_error
+            send_callback(wall_clock_limit_error, True)
+            logger.info(
+                "SmolAgent: appended wall-clock deadline notice (%d chars) "
+                "after the %s tier time budget was reached",
+                len(wall_clock_limit_error),
+                effort_policy.name,
+            )
+
         # A harness turn that used its whole tool budget (the round budget plus
         # every continuation) says it explicitly: the facts it collected are in
         # the summary above, but a HUMAN DECISION is required to continue. The
@@ -1669,6 +1970,22 @@ class SmolAgent:
                 "SmolAgent: harness turn exhausted its tool budget (%d "
                 "continuation(s)); reporting that a human decision is required",
                 tool_limit_continuations,
+            )
+
+        # Freeze the agile clock and publish its FINAL state. The turn was never
+        # stopped by it: the metadata is what lets the client warn the user that
+        # the agile target was exceeded, and the user remains the one who
+        # decides to stop or split the task.
+        if agile_clock is not None:
+            agile_clock.finish()
+            agile_metadata = agile_clock.metadata()
+            logger.info(
+                "SmolAgent: agile turn finished in %.0fs (target %.0fs, "
+                "state=%s, nudges=%d)",
+                agile_metadata.get("elapsed_seconds", 0.0),
+                agile_metadata.get("target_seconds", 0.0),
+                agile_metadata.get("state", "ok"),
+                agile_metadata.get("nudges", 0),
             )
 
         # thinking_content (the model's own reasoning text) is streamed live via
@@ -1697,6 +2014,20 @@ class SmolAgent:
         # friends): it is machine syntax, not an answer, and the reader must
         # never see it.
         combined_content = strip_tool_call_markup(combined_content)
+
+        # An agile turn that ended PAST its target says it, but as information:
+        # the increment above is the delivery and nothing was stopped. This is
+        # the footnote of the agile contract, not a failure notice.
+        if agile_clock is not None:
+            agile_footnote = agile_clock.overtime_footnote()
+            if agile_footnote:
+                combined_content += agile_footnote
+                send_callback(agile_footnote, True)
+                logger.info(
+                    "SmolAgent: appended the agile overtime footnote "
+                    "(turn ended past its %.0fs target)",
+                    agile_clock.target_seconds,
+                )
 
         logger.info(
             "SmolAgent: final answer message assembled with %d characters "
@@ -1756,6 +2087,7 @@ class SmolAgent:
                 hit_rate=cache_stats.get("hit_rate", 0),
             ),
             loop_limit_reached=bool(loop_limit_error),
+            agile=agile_metadata,
             reasoning_content=turn_reasoning_content,
         )
 

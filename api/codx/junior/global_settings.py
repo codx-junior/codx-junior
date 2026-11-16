@@ -304,31 +304,27 @@ def _resolve_model_price(model: AIModel, provider: AIProvider):
     return provider.input_k_tokens_cxjcoins, provider.output_k_tokens_cxjcoins
 
 
-def _resolve_tool_limits(model: AIModel, provider: AIProvider) -> tuple:
+def _resolve_tool_timeout(model: AIModel, provider: AIProvider) -> Optional[float]:
     """
-    Resolve tool-call, iteration and timeout limits with priority Model > Provider > None.
+    Resolve the per-tool execution timeout with priority Model > Provider > None.
 
-    Priority:
-    1. Model-level max_tool_calls/max_iterations/tool_timeout_seconds (if set)
-    2. Provider-level max_tool_calls/max_iterations/tool_timeout_seconds (if set)
-    3. None (no limit configured)
+    Tool-call/iteration budgets are NOT model settings anymore: they are agent
+    effort policy and live on the profile's ``effort`` block (see
+    ``codx.junior.ai.smol.effort``). Only the timeout remains a model/provider
+    runtime property.
 
     Args:
         model: The AIModel.
         provider: The AIProvider.
 
     Returns:
-        Tuple of (max_tool_calls, max_iterations, tool_timeout_seconds) - each
-        one is an int/float or None when not configured.
+        The configured timeout in seconds, or None when neither level defines it.
     """
-    max_tool_calls = model.max_tool_calls if model.max_tool_calls is not None else provider.max_tool_calls
-    max_iterations = model.max_iterations if model.max_iterations is not None else provider.max_iterations
-    tool_timeout_seconds = (
+    return (
         model.tool_timeout_seconds
         if model.tool_timeout_seconds is not None
         else provider.tool_timeout_seconds
     )
-    return max_tool_calls, max_iterations, tool_timeout_seconds
 
 
 def get_model_settings(llm_model: str, global_settings: Optional[GlobalSettings] = None) -> AISettings:
@@ -337,9 +333,9 @@ def get_model_settings(llm_model: str, global_settings: Optional[GlobalSettings]
 
     Resolves pricing and tool limits with the following priority:
     - Pricing: Model > Provider price_list > Provider default > None
-    - Tool calls: Model > Provider > None
-    - Iterations: Model > Provider > None
     - Tool timeout: Model > Provider > None (runtime default applies)
+    - Tool/iteration budgets: NOT resolved here; they belong to the effort
+      policy (profile ``effort`` block > tier constants).
 
     Args:
         llm_model: Model name or ai_model identifier.
@@ -358,12 +354,38 @@ def get_model_settings(llm_model: str, global_settings: Optional[GlobalSettings]
 
     provider = get_provider_settings(model.ai_provider, global_settings=resolved_settings)
     input_price, output_price = _resolve_model_price(model, provider)
-    max_tool_calls, max_iterations, tool_timeout_seconds = _resolve_tool_limits(
-        model, provider
+    tool_timeout_seconds = _resolve_tool_timeout(model, provider)
+
+    # Reasoning controls: model > provider > environment > provider default
+    # (None). Keeping the fallback empty preserves the previous behaviour for
+    # every deployment that does not opt in; DeepSeek users can set
+    # ``reasoning_effort="low"`` for a noticeably shorter first token.
+    def _first_non_empty(*values) -> Optional[str]:
+        for value in values:
+            text = str(value or "").strip().lower()
+            if text:
+                return text
+        return None
+
+    reasoning_effort = _first_non_empty(
+        getattr(model.settings, "reasoning_effort", None),
+        provider.reasoning_effort,
+        os.environ.get("CODX_JUNIOR_REASONING_EFFORT"),
+    )
+    thinking = _first_non_empty(
+        getattr(model.settings, "thinking", None),
+        provider.thinking,
+        os.environ.get("CODX_JUNIOR_THINKING"),
     )
 
+    model_settings = dict(model.settings.__dict__)
+    # The resolved values below take precedence; passing the model dict AND the
+    # keyword would be a duplicate keyword argument.
+    model_settings.pop("reasoning_effort", None)
+    model_settings.pop("thinking", None)
+
     return AISettings(
-        **model.settings.__dict__,
+        **model_settings,
         provider=provider.name,
         provider_type=provider.provider,
         api_url=provider.api_url,
@@ -375,9 +397,9 @@ def get_model_settings(llm_model: str, global_settings: Optional[GlobalSettings]
         input_k_tokens_cxjcoins=input_price,
         output_k_tokens_cxjcoins=output_price,
         url=model.url,
-        max_tool_calls=max_tool_calls,
-        max_iterations=max_iterations,
         tool_timeout_seconds=tool_timeout_seconds,
+        reasoning_effort=reasoning_effort,
+        thinking=thinking,
     )
 
 

@@ -22,20 +22,26 @@ class AIProvider(BaseModel):
         description="List of model prices fetched from the provider's pricing page.",
         default=[]
     )
-    # Priority: Model > Provider > Fallback
-    max_tool_calls: Optional[int] = Field(
-        default=None,
-        description="Maximum number of tool calls allowed per request at provider level."
-    )
-    max_iterations: Optional[int] = Field(
-        default=None,
-        description="Maximum number of iterative tool loops allowed per request at provider level."
-    )
     tool_timeout_seconds: Optional[float] = Field(
         default=None,
         description=(
             "Maximum seconds a single tool execution may run at provider level "
             "before it is aborted and reported to the model as a tool error."
+        )
+    )
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider-level reasoning effort (off/low/high/max). "
+            "Model-level takes precedence. 'off' disables thinking on "
+            "providers that support it (DeepSeek)."
+        )
+    )
+    thinking: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider-level thinking mode (enabled/disabled). "
+            "Model-level takes precedence."
         )
     )
 
@@ -51,6 +57,21 @@ class AILLMModelSettings(BaseModel):
     temperature: Optional[float] = Field(default=1, description="Model temperature")
     context_length: Optional[int] = Field(default=0)
     merge_messages: Optional[bool] = Field(description="Flat conversation into a single message before sending to model", default=False)
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description=(
+            "Reasoning effort for thinking models: off/low/high/max. "
+            "Delegated to the provider; 'off' disables DeepSeek thinking. "
+            "When unset the provider default is used."
+        )
+    )
+    thinking: Optional[str] = Field(
+        default=None,
+        description=(
+            "Explicit thinking mode: enabled/disabled (DeepSeek). "
+            "When unset the provider default is used."
+        )
+    )
     
 class AIEmbeddingModelSettings(BaseModel):
     vector_size: Optional[int] = Field(default=1536, description="Model vector size")
@@ -73,15 +94,6 @@ class AIModel(BaseModel):
     prompt_template: Optional[str] = Field(description="Model info", default="{ MESSAGE }")
     tags: List[str] = Field(description="Model tags", default=[])
     model_file: Optional[str] = Field(description="Custom Modelfile", default=None)
-    # Priority: Model > Provider > Fallback
-    max_tool_calls: Optional[int] = Field(
-        default=None,
-        description="Maximum number of tool calls allowed per request at model level (overrides provider)."
-    )
-    max_iterations: Optional[int] = Field(
-        default=None,
-        description="Maximum number of iterative tool loops allowed per request at model level (overrides provider)."
-    )
     tool_timeout_seconds: Optional[float] = Field(
         default=None,
         description=(
@@ -113,14 +125,6 @@ class AISettings(BaseModel):
         description="Resolved cost in cxjcoins per 1K tokens (model-level takes precedence over provider-level).",
         default=None
     )
-    max_tool_calls: Optional[int] = Field(
-        default=None,
-        description="Resolved maximum number of tool calls per request (model-level takes precedence over provider-level)."
-    )
-    max_iterations: Optional[int] = Field(
-        default=None,
-        description="Resolved maximum number of iterative tool loops per request (model-level takes precedence over provider-level)."
-    )
     tool_timeout_seconds: Optional[float] = Field(
         default=None,
         description=(
@@ -138,6 +142,17 @@ class AISettings(BaseModel):
             "CODX_JUNIOR_TOOL_PARALLELISM/default value is used; ``1`` disables "
             "tool parallelism."
         )
+    )
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description=(
+            "Resolved reasoning effort (model > provider > environment). "
+            "'off' disables thinking on providers that support it."
+        )
+    )
+    thinking: Optional[str] = Field(
+        default=None,
+        description="Resolved explicit thinking mode (enabled/disabled)."
     )
 
 

@@ -49,5 +49,16 @@
     "model_name": null,
     "description": null
   },
-  "project_id": ""
+  "project_id": "",
+  "effort": {
+    "max_iterations": 10,
+    "max_tool_calls": 5,
+    "continuations": 2,
+    "continuation_max_iterations": 6,
+    "continuation_max_calls": 3,
+    "wall_clock_seconds": 300,
+    "target_seconds": 1200,
+    "stop_on_wall_clock": false,
+    "validation": "targeted+qa_review_changes"
+  }
 }

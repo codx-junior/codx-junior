@@ -138,20 +138,13 @@
             </div>
           </div>
         </div>
-        <!-- Tool Limits -->
-        <div class="grid grid-cols-2 gap-3 pt-2 border-t border-base-100">
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-xs"><i class="fa-solid fa-toolbox mr-1 text-secondary"></i>Max Tool Calls</span>
-            </label>
-            <input class="input input-bordered input-sm" type="number" v-model.number="provider.max_tool_calls" placeholder="Leave empty for default" step="1" />
-          </div>
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-xs"><i class="fa-solid fa-repeat mr-1 text-secondary"></i>Max Iterations</span>
-            </label>
-            <input class="input input-bordered input-sm" type="number" v-model.number="provider.max_iterations" placeholder="Leave empty for default" step="1" />
-          </div>
+        <!-- Chat effort is a profile property, not a provider property -->
+        <div class="flex items-start gap-2 pt-2 border-t border-base-100 text-xs text-base-content/60">
+          <i class="fa-solid fa-circle-info mt-0.5 text-info"></i>
+          <span>
+            Chat rounds and tool-call limits are set per profile. Pick a profile in chat or edit its
+            <code class="bg-base-300 px-1 rounded">effort</code> block to change them.
+          </span>
         </div>
       </div>
     </div>

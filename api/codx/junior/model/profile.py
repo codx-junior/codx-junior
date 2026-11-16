@@ -52,6 +52,70 @@ class ProfileApiSettings(BaseModel):
     description: Optional[str] = Field(description="Model's description", default=None)
 
 
+class ProfileEffortSettings(BaseModel):
+    """Agent effort budget carried by a profile.
+
+    The effort tier is selected by the active profile names (``codx-junior`` →
+    agile, ``codx-junior-max`` → max) and these fields override the tier
+    defaults. They are AGENT policy (model rounds, tool breadth, continuations,
+    wall clock, validation), not model capabilities: that is why they live on
+    the profile and not on ``AIProvider``/``AIModel``.
+
+    Every field is optional; an unset field keeps the value of the resolved
+    tier (which falls back to the constants in
+    ``codx.junior.ai.smol.constants``).
+    """
+
+    max_iterations: Optional[int] = Field(
+        default=None,
+        description="Model rounds allowed in the turn (fallback: tier default).",
+    )
+    max_tool_calls: Optional[int] = Field(
+        default=None,
+        description="Tool calls allowed per model round (fallback: tier default).",
+    )
+    max_tool_rounds: Optional[int] = Field(
+        default=None,
+        description="Reserved for LoopGuard sequential rounds.",
+    )
+    continue_on_tool_limit: Optional[bool] = Field(
+        default=None,
+        description="Grant a course correction when the tool budget is reached.",
+    )
+    continuations: Optional[int] = Field(
+        default=None,
+        description="Course corrections granted after a tool-limit stop.",
+    )
+    continuation_max_iterations: Optional[int] = Field(
+        default=None,
+        description="Rounds granted by each course correction.",
+    )
+    continuation_max_calls: Optional[int] = Field(
+        default=None,
+        description="Tool calls per round granted by each course correction.",
+    )
+    wall_clock_seconds: Optional[float] = Field(
+        default=None,
+        description="Wall-clock target/deadline (see stop_on_wall_clock).",
+    )
+    target_seconds: Optional[float] = Field(
+        default=None,
+        description="Advisory target; the turn is never stopped by it.",
+    )
+    stop_on_wall_clock: Optional[bool] = Field(
+        default=None,
+        description="When true, wall_clock_seconds is ENFORCED (opt-in).",
+    )
+    validation: Optional[str] = Field(
+        default=None,
+        description="Validation breadth expected before delivery.",
+    )
+    tool_allowlist: Optional[List[str]] = Field(
+        default=None,
+        description="Granted tools; None means every enabled tool.",
+    )
+
+
 class Profile(BaseModel):
     name: str = Field(default="")
     url: str = Field(default="")
@@ -77,6 +141,14 @@ class Profile(BaseModel):
     user: Optional[CodxUser] = Field(default=CodxUser())
     tools: Optional[List[str]] = Field(default=[])
     tags: Optional[List[str]] = Field(default=[])
+    effort: Optional[ProfileEffortSettings] = Field(
+        default=None,
+        description=(
+            "Agent effort budget for turns where this profile is active. "
+            "Overrides the tier defaults from codx.junior.ai.smol.effort "
+            "(max_iterations, max_tool_calls, continuations, wall clock...)."
+        ),
+    )
     api_settings: Optional[ProfileApiSettings] = Field(description="Indicates if the profile is accessible through the LLM API", default=ProfileApiSettings())
     guardrails: ProfileGuardrailSettings = Field(
         description="Guardrail policy applied when this profile is active",

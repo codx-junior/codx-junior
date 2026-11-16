@@ -19,9 +19,12 @@ messages and audit files, so a detector must never re-leak what it detected.
 Made with ❤️ by codx-junior
 """
 
+import hashlib
 import math
+import os
 import re
-from collections import Counter
+import threading
+from collections import Counter, OrderedDict
 from typing import Iterable, List, Optional, Tuple
 
 from codx.junior.security.ciso.models import (
@@ -182,6 +185,87 @@ _SECRET_FILE_PATTERNS: List[re.Pattern] = [
 # Redaction marker kept short so it survives excerpt truncation.
 REDACTED_MARKER = "[REDACTED]"
 
+# -----------------------------------------------------------------------------
+# Inline binary payloads (data URLs)
+# -----------------------------------------------------------------------------
+# Chat tool outputs embed screenshots as ``![screenshot](data:image/png;base64,…)``.
+# A chat with a handful of screenshots is several megabytes of base64, and
+# running the detector over it is pure cost: base64 is a binary body, not text,
+# so it cannot carry a *usable* credential (the same reason the file gates skip
+# binaries). Worse, the regexes backtrack over the long random runs, which made
+# a single chat save take ~27 s (measured) and blocked the whole chat turn.
+#
+# Only the surrounding text is scanned; the binary segment is copied verbatim.
+_DATA_URL_PATTERN = re.compile(
+    r"data:(?:image|audio|video|application|font|model)"
+    r"/[A-Za-z0-9.+-]+"
+    r"(?:;[A-Za-z0-9.+-]+=[A-Za-z0-9.+-]+)*"
+    r";base64,[A-Za-z0-9+/=\r\n]+",
+    re.IGNORECASE,
+)
+
+# -----------------------------------------------------------------------------
+# Redaction cache
+# -----------------------------------------------------------------------------
+# ``store_chat`` sanitises the WHOLE chat on every streamed chunk / tool event.
+# Without a cache, the same immutable history (tool outputs, file reads, logs)
+# is re-scanned on every save. The cache keeps the redacted result of a string
+# keyed by its digest, so a save only pays for the new/changed strings.
+#
+# Only the default policy is cached: a custom policy can change the result, and
+# mixing policies in one cache would leak a relaxed result into a strict save.
+# Small strings are not cached (the lookup is more expensive than the scan).
+_REDACT_CACHE_MIN_CHARS = 256
+_REDACT_CACHE_MAX_CHARS = int(
+    os.environ.get("CODX_JUNIOR_CISO_REDACT_CACHE_CHARS", str(64 * 1024 * 1024))
+)
+_REDACT_CACHE_LOCK = threading.Lock()
+# digest -> (redacted_text, replacements, cost_in_chars)
+_REDACT_CACHE: "OrderedDict[bytes, Tuple[str, int, int]]" = OrderedDict()
+_REDACT_CACHE_CHARS = 0
+
+
+def clear_redaction_cache() -> None:
+    """Drop every cached redaction (tests / policy reloads)."""
+    global _REDACT_CACHE_CHARS
+    with _REDACT_CACHE_LOCK:
+        _REDACT_CACHE.clear()
+        _REDACT_CACHE_CHARS = 0
+
+
+def redaction_cache_stats() -> Tuple[int, int]:
+    """Return ``(entries, cached_chars)`` for diagnostics/tests."""
+    with _REDACT_CACHE_LOCK:
+        return len(_REDACT_CACHE), _REDACT_CACHE_CHARS
+
+
+def _cache_lookup(key: bytes) -> Optional[Tuple[str, int]]:
+    """Return a cached ``(redacted, replacements)`` and mark it recently used."""
+    with _REDACT_CACHE_LOCK:
+        entry = _REDACT_CACHE.get(key)
+        if entry is None:
+            return None
+        _REDACT_CACHE.move_to_end(key)
+        return entry[0], entry[1]
+
+
+def _cache_store(key: bytes, cost: int, value: Tuple[str, int]) -> None:
+    """Store one redaction under a bounded total-size budget."""
+    global _REDACT_CACHE_CHARS
+    if cost > _REDACT_CACHE_MAX_CHARS:
+        return
+    with _REDACT_CACHE_LOCK:
+        previous = _REDACT_CACHE.pop(key, None)
+        if previous is not None:
+            _REDACT_CACHE_CHARS -= previous[2]
+        _REDACT_CACHE[key] = (value[0], value[1], cost)
+        _REDACT_CACHE_CHARS += cost
+        while _REDACT_CACHE_CHARS > _REDACT_CACHE_MAX_CHARS and _REDACT_CACHE:
+            _, evicted = _REDACT_CACHE.popitem(last=False)
+            _REDACT_CACHE_CHARS -= evicted[2]
+        if _REDACT_CACHE_CHARS < 0:  # defensive: never report a negative size
+            _REDACT_CACHE_CHARS = 0
+
 
 def shannon_entropy(value: str) -> float:
     """Return the Shannon entropy (bits per character) of *value*.
@@ -331,6 +415,11 @@ def _excerpt(text: str, start: int, end: int, max_chars: int) -> str:
 def redact_text(text: str, policy: Optional[CisoPolicy] = None) -> Tuple[str, int]:
     """Neutralise every detected secret inside *text*.
 
+    Inline ``data:<mime>;base64,…`` bodies are copied verbatim and only the
+    surrounding text is scanned (see :data:`_DATA_URL_PATTERN`). Results for
+    the default policy are cached by digest, because ``store_chat`` re-sanitises
+    the whole chat on every streamed chunk / tool event.
+
     Args:
         text: Payload to sanitise.
         policy: Optional policy (size and excerpt limits).
@@ -343,7 +432,68 @@ def redact_text(text: str, policy: Optional[CisoPolicy] = None) -> Tuple[str, in
         >>> redact_text('password = "s3cr3t-value-1234"')[0]
         'password = "s3cr…'
     """
-    policy = policy or CisoPolicy()
+    payload = text or ""
+    if not payload:
+        return "", 0
+
+    # Base64 data URLs are binary bodies: scan only the text around them.
+    # Cache only the default policy (a custom policy can change the result),
+    # and skip the cache for tiny strings where the digest is not worth it.
+    has_data_url = bool(_DATA_URL_PATTERN.search(payload))
+    cacheable = (
+        not has_data_url
+        and policy is None
+        and len(payload) >= _REDACT_CACHE_MIN_CHARS
+    )
+    key: Optional[bytes] = None
+    if cacheable:
+        # SHA-256: the cache returns a redaction result, so a collision must
+        # stay cryptographically out of reach (BLAKE2 128-bit would also do,
+        # but the extra bytes are cheaper than debating the margin).
+        key = hashlib.sha256(
+            payload.encode("utf-8", errors="replace")
+        ).digest()
+        cached = _cache_lookup(key)
+        if cached is not None:
+            return cached
+
+    redacted, replacements = _redact_text_segments(payload, policy)
+    if cacheable and key is not None:
+        _cache_store(key, len(payload) + len(redacted), (redacted, replacements))
+    return redacted, replacements
+
+
+def _redact_text_segments(text: str, policy: Optional[CisoPolicy]) -> Tuple[str, int]:
+    """Redact text while copying inline binary (base64 data URL) bodies verbatim."""
+    if not _DATA_URL_PATTERN.search(text):
+        return _redact_text_scan(text, policy)
+
+    pieces: List[str] = []
+    replacements = 0
+    last = 0
+    for match in _DATA_URL_PATTERN.finditer(text):
+        chunk = text[last:match.start()]
+        if chunk:
+            redacted, found = _redact_text_scan(chunk, policy)
+            pieces.append(redacted)
+            replacements += found
+        pieces.append(match.group(0))
+        last = match.end()
+    tail = text[last:]
+    if tail:
+        redacted, found = _redact_text_scan(tail, policy)
+        pieces.append(redacted)
+        replacements += found
+    return "".join(pieces), replacements
+
+
+def _redact_text_scan(text: str, policy: Optional[CisoPolicy]) -> Tuple[str, int]:
+    """Run every detector over *text* (the original, non-cached implementation).
+
+    Redaction rules are policy-independent (the policy decides what to BLOCK,
+    not what to hide), so no ``CisoPolicy`` is materialised here: constructing
+    one per string cost ~1 s on a real chat payload.
+    """
     result = text or ""
     replacements = 0
 

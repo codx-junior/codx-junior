@@ -16,9 +16,17 @@ tool-call message (:func:`make_assistant_tool_calls_message`).
 """
 import json
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langchain.messages import AIMessage, HumanMessage
+
+from codx.junior.ai.smol.constants import (
+    DEFAULT_TOOL_RESULT_MODEL_HEAD_CHARS,
+    DEFAULT_TOOL_RESULT_MODEL_MAX_CHARS,
+    DEFAULT_TOOL_RESULT_MODEL_TAIL_CHARS,
+    TOOL_RESULT_PRUNE_MARKER,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -510,6 +518,62 @@ def make_assistant_tool_calls_message(
     return message
 
 
+def _env_chars(name: str, default: int) -> int:
+    """Read a non-negative character budget from the environment."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("tool-result pruning: invalid %s=%r, using %d", name, raw, default)
+        return default
+    return value if value >= 0 else default
+
+
+def prune_tool_result_for_model(content: str) -> str:
+    """
+    Bound one tool result to the head + marker + tail budget.
+
+    Tool output is replayed on every later round of the same turn. An
+    unbounded ``project_read_file``/container-log/browser result therefore
+    makes the provider re-prefill the same tens of thousands of tokens on
+    EVERY round (the Harness prunes tool results for exactly this reason).
+
+    The persisted tool event keeps the full output (the UI renders it); only
+    the model-facing copy is pruned. Small results are returned unchanged.
+
+    Args:
+        content: Tool result text sent to the model.
+
+    Returns:
+        The original text, or ``head + marker + tail`` when over budget.
+    """
+    if not isinstance(content, str):
+        return content
+
+    max_chars = _env_chars(
+        "CODX_JUNIOR_TOOL_RESULT_MAX_CHARS", DEFAULT_TOOL_RESULT_MODEL_MAX_CHARS
+    )
+    if max_chars <= 0 or len(content) <= max_chars:
+        return content
+
+    head_chars = _env_chars(
+        "CODX_JUNIOR_TOOL_RESULT_HEAD_CHARS", DEFAULT_TOOL_RESULT_MODEL_HEAD_CHARS
+    )
+    tail_chars = _env_chars(
+        "CODX_JUNIOR_TOOL_RESULT_TAIL_CHARS", DEFAULT_TOOL_RESULT_MODEL_TAIL_CHARS
+    )
+    # The emitted text must fit the budget, or the next round pays for the
+    # marker on top of the configured limit.
+    budget = max(1, max_chars - len(TOOL_RESULT_PRUNE_MARKER))
+    if head_chars + tail_chars > budget:
+        head_chars = min(head_chars, budget)
+        tail_chars = min(tail_chars, budget - head_chars)
+    tail = content[-tail_chars:] if tail_chars else ""
+    return f"{content[:head_chars]}{TOOL_RESULT_PRUNE_MARKER}{tail}"
+
+
 def make_tool_message(tool_call_id: str, content: str) -> Dict[str, Any]:
     """
     Create a tool result message.
@@ -524,5 +588,5 @@ def make_tool_message(tool_call_id: str, content: str) -> Dict[str, Any]:
     return {
         "role": "tool",
         "tool_call_id": tool_call_id,
-        "content": content,
+        "content": prune_tool_result_for_model(content),
     }

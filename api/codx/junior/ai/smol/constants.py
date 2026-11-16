@@ -4,6 +4,35 @@ Constants for SmolAgent tool calling and streaming.
 Made with ❤️ by codx-junior
 """
 
+# ── LLM transport limits ──────────────────────────────────────────────────────
+# The OpenAI client used by SmolAgent talks to a remote provider. Without an
+# explicit timeout the SDK default is ten minutes, and a half-open connection
+# (or a provider that stops sending chunks) kept a turn alive forever. The read
+# timeout is an IDLE timeout: DeepSeek can think for a long time before the
+# first token, but it must not stay silent for this long.
+ENV_LLM_CONNECT_TIMEOUT_SECONDS: str = "CODX_JUNIOR_LLM_CONNECT_TIMEOUT_SECONDS"
+ENV_LLM_READ_TIMEOUT_SECONDS: str = "CODX_JUNIOR_LLM_READ_TIMEOUT_SECONDS"
+ENV_LLM_WRITE_TIMEOUT_SECONDS: str = "CODX_JUNIOR_LLM_WRITE_TIMEOUT_SECONDS"
+ENV_LLM_POOL_TIMEOUT_SECONDS: str = "CODX_JUNIOR_LLM_POOL_TIMEOUT_SECONDS"
+ENV_LLM_MAX_RETRIES: str = "CODX_JUNIOR_LLM_MAX_RETRIES"
+DEFAULT_LLM_CONNECT_TIMEOUT_SECONDS: float = 15.0
+DEFAULT_LLM_READ_TIMEOUT_SECONDS: float = 300.0
+DEFAULT_LLM_WRITE_TIMEOUT_SECONDS: float = 60.0
+DEFAULT_LLM_POOL_TIMEOUT_SECONDS: float = 30.0
+DEFAULT_LLM_MAX_RETRIES: int = 1
+
+# ── Tool results sent to the model ───────────────────────────────────────────
+# Tool output is replayed on every following model round. A single unbounded
+# file/dump/log result therefore made every round re-prefill tens of thousands
+# of tokens. Mirrors the Harness tool-result pruner: text over the threshold is
+# replaced by its head + a marker + its tail, so the model keeps the beginning
+# and the end (where errors and summaries usually are) without paying for the
+# middle. The persisted tool event keeps the full output for the UI.
+DEFAULT_TOOL_RESULT_MODEL_MAX_CHARS: int = 8192
+DEFAULT_TOOL_RESULT_MODEL_HEAD_CHARS: int = 4096
+DEFAULT_TOOL_RESULT_MODEL_TAIL_CHARS: int = 1024
+TOOL_RESULT_PRUNE_MARKER: str = "\n\n[... tool result middle pruned ...]\n\n"
+
 # Fallback maximum number of iterative tool rounds
 # (when not configured in model/provider settings)
 DEFAULT_MAX_ITERATIONS: int = 10
@@ -296,8 +325,10 @@ TOOL_ANALYSIS_RESULT_MAX_CHARS: int = 2000
 # Maximum characters of the user request embedded in the summary prompt.
 TOOL_ANALYSIS_TASK_MAX_CHARS: int = 3000
 
-# Maximum tokens requested for the generated summary.
-TOOL_ANALYSIS_MAX_TOKENS: int = 800
+# Maximum tokens requested for the generated summary. 800 tokens cut the
+# "Suggested next step" of a normal multi-tool run mid-sentence; 1200 keeps the
+# complete findings + next step without making the summary a second long turn.
+TOOL_ANALYSIS_MAX_TOKENS: int = 1200
 
 # Heading that delimits the summary block appended to the assistant answer.
 TOOL_ANALYSIS_HEADING: str = "### 🧰 Tool usage summary"

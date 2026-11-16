@@ -155,15 +155,25 @@ class AgentRunContext:
         """Call anywhere it's safe to abort. Raises AgentCancelled."""
         self.token.raise_if_cancelled()
 
+    def guard_chunk(self, chunk) -> None:
+        """Check cancellation for ONE streamed chunk and emit progress.
+
+        Adapted for the async stream path: the blocking read happens in a
+        worker thread (``asyncio.to_thread``), so the loop can call this on the
+        event loop as soon as the chunk arrives. Keeping the logic here means
+        the sync (:meth:`guard_stream`) and async paths throttle identically.
+        """
+        self.checkpoint()
+        now = time.time()
+        if now - self._last_chunk_emit >= self._chunk_emit_every:
+            self._last_chunk_emit = now
+            self.emit(AgentEventType.LLM_CHUNK, preview=str(chunk)[:120])
+
     def guard_stream(self, chunks: Iterable) -> Iterator:
         """Wrap an LLM stream: checks cancellation on EVERY chunk and emits
         throttled chunk events so the UI shows live progress."""
         for chunk in chunks:
-            self.checkpoint()
-            now = time.time()
-            if now - self._last_chunk_emit >= self._chunk_emit_every:
-                self._last_chunk_emit = now
-                self.emit(AgentEventType.LLM_CHUNK, preview=str(chunk)[:120])
+            self.guard_chunk(chunk)
             yield chunk
 
     # -- tool instrumentation ---------------------------------------------- #

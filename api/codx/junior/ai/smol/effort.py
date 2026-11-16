@@ -85,8 +85,13 @@ class EffortPolicy:
 
     Attributes:
         name:                      Resolved tier: ``agile``, ``max`` or ``default``.
-        max_iterations:            Model rounds allowed in the turn.
-        max_tool_calls:            Tool calls allowed per round batch.
+        max_iterations:            FALLBACK model rounds for the turn, used
+                                   only when neither the model nor the provider
+                                   defines ``max_iterations`` (model > provider >
+                                   this value).
+        max_tool_calls:            FALLBACK tool calls per round batch, used
+                                   only when neither the model nor the provider
+                                   defines ``max_tool_calls``.
         max_tool_rounds:           LoopGuard sequential tool rounds.
         continue_on_tool_limit:    Whether reaching a limit grants a course
                                    correction instead of ending the turn.

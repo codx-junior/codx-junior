@@ -107,6 +107,7 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Set
 from asyncio import Future
 
+import httpx
 from openai import OpenAI
 from langchain.messages import AIMessage, HumanMessage
 
@@ -140,6 +141,16 @@ from codx.junior.ai.smol.constants import (
     ENV_TOOL_PARALLELISM,
     DEFAULT_TOOL_PARALLELISM,
     MAX_TOOL_PARALLELISM,
+    ENV_LLM_CONNECT_TIMEOUT_SECONDS,
+    ENV_LLM_READ_TIMEOUT_SECONDS,
+    ENV_LLM_WRITE_TIMEOUT_SECONDS,
+    ENV_LLM_POOL_TIMEOUT_SECONDS,
+    ENV_LLM_MAX_RETRIES,
+    DEFAULT_LLM_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_LLM_READ_TIMEOUT_SECONDS,
+    DEFAULT_LLM_WRITE_TIMEOUT_SECONDS,
+    DEFAULT_LLM_POOL_TIMEOUT_SECONDS,
+    DEFAULT_LLM_MAX_RETRIES,
 )
 from codx.junior.ai.smol.agile import (
     AgileClock,
@@ -260,6 +271,10 @@ PROFILE_LEARNING_TOOL: str = "profile_learning"
 # provider) and drives the profile tool injection.
 PROFILES_HEADER: str = "profiles"
 
+# Internal header carrying the effort budget resolved from the active profiles
+# (JSON object). Consumed here and stripped before the provider request.
+EFFORT_HEADER: str = "effort"
+
 # Legacy harness profile name, kept for backwards compatibility only. The
 # tool-limit decision no longer compares profile names: it comes from the effort
 # policy (``codx.junior.ai.smol.effort``), where ``codx-junior`` is agile and
@@ -375,6 +390,32 @@ def _iso_utc(epoch_seconds: float) -> str:
     return datetime.utcfromtimestamp(epoch_seconds).strftime(
         "%Y-%m-%dT%H:%M:%S.%f"
     )[:-3] + "Z"
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a positive float from the environment (fallback on unset/invalid)."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("SmolAgent: invalid %s=%r, using %.1f", name, raw, default)
+        return default
+    return value if value > 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a non-negative int from the environment (fallback on unset/invalid)."""
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("SmolAgent: invalid %s=%r, using %d", name, raw, default)
+        return default
+    return value if value >= 0 else default
 
 
 def _get_analytics() -> Analytics:
@@ -661,18 +702,52 @@ class SmolAgent:
         # so the rejected payload is never re-sent round after round.
         self._thinking_disabled: bool = False
 
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        # Transport limits: the SDK default (10 minutes, 2 retries) turns a
+        # half-open connection into a turn that looks stuck forever. The READ
+        # timeout is an idle timeout, not a cap on total thinking: DeepSeek may
+        # spend a long time before the first token, but it must not stay silent.
+        self.llm_timeout = httpx.Timeout(
+            connect=_env_float(
+                ENV_LLM_CONNECT_TIMEOUT_SECONDS,
+                DEFAULT_LLM_CONNECT_TIMEOUT_SECONDS,
+            ),
+            read=_env_float(
+                ENV_LLM_READ_TIMEOUT_SECONDS,
+                DEFAULT_LLM_READ_TIMEOUT_SECONDS,
+            ),
+            write=_env_float(
+                ENV_LLM_WRITE_TIMEOUT_SECONDS,
+                DEFAULT_LLM_WRITE_TIMEOUT_SECONDS,
+            ),
+            pool=_env_float(
+                ENV_LLM_POOL_TIMEOUT_SECONDS,
+                DEFAULT_LLM_POOL_TIMEOUT_SECONDS,
+            ),
+        )
+        self.llm_max_retries: int = _env_int(
+            ENV_LLM_MAX_RETRIES, DEFAULT_LLM_MAX_RETRIES
+        )
+        self.client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.llm_timeout,
+            max_retries=self.llm_max_retries,
+        )
         logger.info(
             "SmolAgent created. USER: %s, MODEL: %s, URL: %s, "
-            "MAX_TOOL_CALLS: %s, MAX_ITERATIONS: %s, TOOL_TIMEOUT: %ss, "
-            "TOOL_PARALLELISM: %d",
+            "TOOL_TIMEOUT: %ss, TOOL_PARALLELISM: %d, "
+            "LLM_TIMEOUT: connect=%.0fs read=%.0fs write=%.0fs pool=%.0fs "
+            "retries=%d (effort limits come from the active profiles)",
             user.username if user else "NONE",
             self.model,
             self.base_url,
-            self.llm_settings.max_tool_calls,
-            self.llm_settings.max_iterations,
             self.tool_timeout_seconds,
             self.tool_parallelism,
+            self.llm_timeout.connect,
+            self.llm_timeout.read,
+            self.llm_timeout.write,
+            self.llm_timeout.pool,
+            self.llm_max_retries,
         )
 
     def _build_system_message(self) -> str:
@@ -762,7 +837,11 @@ class SmolAgent:
         Returns:
             Headers safe to forward to the provider.
         """
-        internal = {PROFILES_HEADER, ORCHESTRATION.ORCHESTRATION_HEADER}
+        internal = {
+            PROFILES_HEADER,
+            EFFORT_HEADER,
+            ORCHESTRATION.ORCHESTRATION_HEADER,
+        }
         return {
             key: value
             for key, value in (headers or {}).items()
@@ -875,6 +954,42 @@ class SmolAgent:
         else:
             info["tools"] = []
         return info
+
+    @staticmethod
+    def _resolve_effort_settings(
+        config: Dict[str, Any],
+        headers: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """
+        Return the effort overrides declared by the active profiles.
+
+        The chat engine resolves the ``effort`` block of the profiles taking
+        part in the turn and sends it in the internal ``effort`` header (JSON).
+        ``config["effort"]`` is also accepted for callers that build the agent
+        directly. The values are applied on top of the tier defaults
+        (``codx.junior.ai.smol.effort._apply_overrides``).
+
+        Args:
+            config:  Chat configuration dict.
+            headers: Request headers.
+
+        Returns:
+            A plain dict of effort overrides (empty when none is configured).
+        """
+        raw = config.get("effort")
+        if raw is None:
+            raw = headers.get(EFFORT_HEADER)
+
+        if isinstance(raw, dict):
+            return dict(raw)
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(str(raw))
+        except (ValueError, TypeError):
+            logger.warning("SmolAgent: invalid effort header: %r", raw)
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
 
     def _orchestration_tools_for_run(
         self,
@@ -1202,6 +1317,25 @@ class SmolAgent:
             raise CancelledError(CANCELLED_MESSAGE)
         return result
 
+    def _resolve_loop_limits(self, policy: EffortPolicy) -> Tuple[int, int]:
+        """
+        Return the loop budget of the resolved effort policy.
+
+        Effort is the ONLY source of the round/tool budget: the active profile
+        (``codx-junior``/``codx-junior-max`` or a project profile with an
+        ``effort`` block) supplies the values, and the tier constants are the
+        fallback. Model/provider settings no longer carry agent budgets, so
+        there is no second precedence ladder to reason about.
+
+        Args:
+            policy: Effort policy of the turn (already overridden by the
+                    active profile's ``effort`` block).
+
+        Returns:
+            ``(max_iterations, max_tool_calls)`` for the LoopGuard.
+        """
+        return policy.max_iterations, policy.max_tool_calls
+
     # ── Chat loop ──────────────────────────────────────────────────────────────
 
     async def _run_chat_loop(
@@ -1300,12 +1434,15 @@ class SmolAgent:
             orchestration_info=orchestration_info,
         )
         # ── Effort policy: the ONLY source of the turn budget ────────────────
-        # Resolved from the profile names (codx.junior.ai.smol.effort):
-        # ``codx-junior`` is agile (small base budget + ADVISORY clock) and
-        # ``codx-junior-max`` (or an orchestrated turn) has the heavier budget.
-        # Neither tier can dead-end a task: a reached limit grants the bounded
-        # course correction below. The config key ``continue_on_tool_limit``
-        # remains the highest priority override.
+        # The tier comes from the profile names (codx.junior.ai.smol.effort):
+        # ``codx-junior`` is agile (ADVISORY clock) and ``codx-junior-max`` has
+        # the heavier defaults. The active profiles may carry an ``effort``
+        # block (sent by the chat engine in the internal header) that overrides
+        # those defaults, so a project can tune the budget without touching
+        # model/provider settings. Neither tier can dead-end a task: a reached
+        # limit grants the bounded course correction below. The config key
+        # ``continue_on_tool_limit`` remains the highest priority override.
+        effort_settings = self._resolve_effort_settings(config, headers)
         effort_policy: EffortPolicy = effort_for(
             profile_names,
             orchestration_info,
@@ -1314,16 +1451,19 @@ class SmolAgent:
                 if config.get(CONTINUE_ON_TOOL_LIMIT_KEY) is None
                 else bool(config.get(CONTINUE_ON_TOOL_LIMIT_KEY))
             ),
+            settings=effort_settings,
         )
         logger.info(
             "SmolAgent: effort tier=%s max_iterations=%d max_tool_calls=%d "
-            "continuations=%d wall_clock_s=%.0f validation=%s",
+            "continuations=%d wall_clock_s=%.0f validation=%s "
+            "profile_overrides=%s",
             effort_policy.name,
             effort_policy.max_iterations,
             effort_policy.max_tool_calls,
             effort_policy.continuations,
             effort_policy.wall_clock_seconds,
             effort_policy.validation,
+            sorted(effort_settings) if effort_settings else "none",
         )
 
         # ── Agile clock: pressure the model, never kill the turn ─────────────
@@ -1364,17 +1504,26 @@ class SmolAgent:
             system_message += agile_system_section(agile_clock.target_seconds)
         openai_messages = to_openai_messages(messages, system=system_message)
 
-        # Initialize LoopGuard from the effort policy, falling back to the
-        # model/provider settings only when the policy leaves a value unset.
-        # These limits are enforced on every tool round to prevent runaway
-        # execution or breadth violations.
+        # Initialize LoopGuard from the EFFORT POLICY. The active profile's
+        # ``effort`` block (codx-junior / codx-junior-max or a project profile)
+        # already overrode the tier defaults; model/provider no longer carry an
+        # agent budget. These limits are enforced on every tool round to prevent
+        # runaway execution or breadth violations.
         # NOTE: the policy also carries ``max_tool_rounds``; LoopGuard has no
         # equivalent parameter yet (follow-up, not invented here).
+        loop_max_iterations, loop_max_tool_calls = self._resolve_loop_limits(
+            effort_policy
+        )
+        logger.info(
+            "SmolAgent: loop limits max_iterations=%s max_tool_calls=%s "
+            "(tier=%s)",
+            loop_max_iterations,
+            loop_max_tool_calls,
+            effort_policy.name,
+        )
         loop_guard = LoopGuard(
-            max_iterations=effort_policy.max_iterations
-            or self.llm_settings.max_iterations,
-            max_tool_calls=effort_policy.max_tool_calls
-            or self.llm_settings.max_tool_calls,
+            max_iterations=loop_max_iterations,
+            max_tool_calls=loop_max_tool_calls,
         )
 
         # Initialize tool cache for this conversation.
@@ -1917,6 +2066,16 @@ class SmolAgent:
         # iteration can continue without re-executing the same tools, and gives
         # the user visibility into what was learned before the run stopped.
         if loop_limit_error:
+            # Say WHY the turn stopped. The RAG summary describes what was
+            # learned, but without this notice the user only sees a summary and
+            # cannot tell that a budget (not an error) ended the turn.
+            limit_notice = self._build_loop_limit_notice(
+                loop_error=loop_limit_error,
+                policy=effort_policy,
+                max_iterations=loop_max_iterations,
+            )
+            thinking_content += limit_notice
+            send_callback(limit_notice, True)
             summary_block = self._summarize_tool_usage(
                 openai_messages=openai_messages,
                 loop_error=loop_limit_error,
@@ -2553,6 +2712,47 @@ class SmolAgent:
                     self._thinking_payload_summary(openai_messages),
                 )
 
+    @staticmethod
+    def _guard_stream_chunk(run_context: AgentRunContext, chunk: Any) -> None:
+        """Run cancellation + progress throttling for one async chunk.
+
+        ``guard_chunk`` exists on the real :class:`AgentRunContext`; test
+        doubles may only expose ``checkpoint``/``emit``, so fall back to a
+        checkpoint (which is what the sync wrapper always did).
+        """
+        guard = getattr(run_context, "guard_chunk", None)
+        if callable(guard):
+            guard(chunk)
+        else:
+            run_context.checkpoint()
+
+    @staticmethod
+    async def _iterate_response_stream(stream: Any):
+        """Yield provider chunks without blocking the event loop.
+
+        ``OpenAI`` is synchronous: ``next(iterator)`` performs the network read
+        and can wait a long time (DeepSeek thinking mode was measured at ~27 s
+        before the first token). Running each read in the default executor
+        keeps the loop free between chunks while preserving the stream order.
+
+        Async streams (``AsyncOpenAI`` or a test double) are passed through.
+        """
+        if hasattr(stream, "__aiter__"):
+            async for chunk in stream:
+                yield chunk
+            return
+
+        iterator = iter(stream)
+        sentinel = object()
+        while True:
+            # ``next(iterator, sentinel)`` never raises StopIteration in a
+            # thread, which keeps PEP 479 (RuntimeError inside a generator) out
+            # of the async path.
+            chunk = await asyncio.to_thread(next, iterator, sentinel)
+            if chunk is sentinel:
+                return
+            yield chunk
+
     async def _stream_completion(
         self,
         kwargs: Dict[str, Any],
@@ -2687,13 +2887,21 @@ class SmolAgent:
         first_chunk_at: Optional[float] = None
         chunk_count = 0
         try:
-            response_stream = self._create_completion(
+            # ``OpenAI`` is a SYNC client: creating the request and reading the
+            # first chunk block the calling event loop. Run the blocking call in
+            # a worker thread so socket.io events, cancellation and every other
+            # request keep flowing while the provider is contacted.
+            response_stream = await asyncio.to_thread(
+                self._create_completion,
                 kwargs=kwargs,
                 openai_messages=openai_messages,
                 headers=headers,
                 request_id=request_id,
                 chat_id=chat_id,
             )
+            # Future-proof: an async client (AsyncOpenAI) returns a coroutine.
+            if inspect.isawaitable(response_stream):
+                response_stream = await response_stream
             request_headers_ms = (time.monotonic() - request_started) * 1000
         except Exception as ex:
             # VERBOSE AI ERROR LOGGING (request phase): without this a failed
@@ -2722,7 +2930,13 @@ class SmolAgent:
         usage_info: Any = None
 
         try:
-            for chunk in run_context.guard_stream(response_stream):
+            # The chunks are read one by one in a worker thread. A single
+            # ``for chunk in stream`` would block this event loop for the whole
+            # response (27 s of thinking were measured for one DeepSeek round),
+            # delaying every socket event, cancellation and other request that
+            # shares the loop.
+            async for chunk in self._iterate_response_stream(response_stream):
+                self._guard_stream_chunk(run_context, chunk)
                 chunk_count += 1
                 if first_chunk_at is None:
                     first_chunk_at = time.monotonic()
@@ -3884,6 +4098,60 @@ class SmolAgent:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _build_loop_limit_notice(
+        loop_error: str,
+        policy: EffortPolicy,
+        max_iterations: Optional[int] = None,
+    ) -> str:
+        """
+        Explain a graceful LoopGuard stop and how to get a bigger budget.
+
+        The tool-usage summary alone looks like a normal closing section; the
+        user cannot tell that the turn was cut by the round limit nor how to
+        continue with more effort. The notice names the limit and the profile
+        that changes it.
+
+        Args:
+            loop_error:    Message produced by :class:`LoopGuard`.
+            policy:        Effort policy that was applied to the turn.
+            max_iterations: Effective round limit (profile effort or tier).
+
+        Returns:
+            Markdown block to append to the assistant answer.
+        """
+        tier = getattr(policy, "name", "default")
+        rounds = max_iterations or getattr(policy, "max_iterations", None)
+        rounds_text = f"{rounds} model rounds" if rounds else "a limited number of model rounds"
+        if tier == "default":
+            hint = (
+                f"This task ran as a **plain chat** ({rounds_text}, no "
+                "continuation). Add the `codx-junior` profile for the agile "
+                "tier, or `codx-junior-max` for the max tier, to the task's "
+                "profiles — or mention `@codx-junior-max` in your message. "
+                "The round limit comes from the profile's `effort` block; "
+                "raise `effort.max_iterations` there if it is not enough."
+            )
+        elif tier == "agile":
+            hint = (
+                "The configured round budget and the agile continuations are "
+                "exhausted. Add `codx-junior-max` to the task (or mention "
+                "`@codx-junior-max`) for the max tier, or raise the "
+                "profile's `effort.max_iterations`."
+            )
+        else:
+            hint = (
+                "The configured round budget and the max-tier continuations "
+                "are exhausted. Split the task, raise the profile's "
+                "`effort.max_iterations`, or ask me to continue in a follow-up "
+                "turn."
+            )
+        return (
+            "\n\n---\n\n"
+            f"> ⏸ **Turn paused by the effort budget** — {loop_error}\n>\n"
+            f"> {hint}\n"
+        )
+
     def _summarize_tool_usage(
         self,
         openai_messages: List[Dict[str, Any]],
@@ -4283,6 +4551,67 @@ class SmolAgent:
 
     # ── Request building helpers ───────────────────────────────────────────────
 
+    def _apply_reasoning_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Translate the configured reasoning controls into provider request fields.
+
+        The Harness exposes a per-model reasoning effort (``off``/``low``/
+        ``high``/``max``) and an explicit thinking switch. codx-junior ignored
+        both, so every DeepSeek round ran with the provider's default thinking
+        policy and the user could not trade latency for depth.
+
+        DeepSeek's OpenAI-compatible endpoint takes the switch in ``extra_body``
+        (``thinking: {type: disabled}``) and the effort as ``reasoning_effort``.
+        For other OpenAI-compatible reasoning models only ``reasoning_effort``
+        is sent; the DeepSeek-specific ``thinking`` field is never forwarded.
+
+        Args:
+            kwargs: Request kwargs being built (mutated and returned).
+
+        Returns:
+            The same dict with the reasoning fields applied.
+        """
+        effort = str(
+            getattr(self.llm_settings, "reasoning_effort", "") or ""
+        ).strip().lower()
+        thinking = str(
+            getattr(self.llm_settings, "thinking", "") or ""
+        ).strip().lower()
+
+        if not effort and not thinking:
+            return kwargs
+
+        if thinking in ("disabled", "off", "false", "0"):
+            effort = "off"
+        elif thinking in ("enabled", "on", "true", "1") and effort in ("", "auto"):
+            effort = ""
+
+        deepseek = self._uses_thinking_dialect([])
+        if effort and deepseek and effort not in {"off", "low", "high", "max"}:
+            logger.warning(
+                "SmolAgent: invalid reasoning_effort %r for DeepSeek; "
+                "expected off/low/high/max (ignored)",
+                effort,
+            )
+            effort = ""
+
+        if deepseek:
+            extra_body = dict(kwargs.get("extra_body") or {})
+            if effort == "off":
+                extra_body["thinking"] = {"type": "disabled"}
+                kwargs.pop("reasoning_effort", None)
+            else:
+                extra_body["thinking"] = {"type": "enabled"}
+                if effort:
+                    kwargs["reasoning_effort"] = effort
+            kwargs["extra_body"] = extra_body
+        elif effort and effort != "off":
+            # OpenAI-style providers understand reasoning_effort; ``off`` is
+            # expressed by simply not sending the field.
+            kwargs["reasoning_effort"] = effort
+
+        return kwargs
+
     def _build_request_kwargs(
         self,
         selected_tools: List[str],
@@ -4322,6 +4651,7 @@ class SmolAgent:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        self._apply_reasoning_kwargs(kwargs)
 
         # A plain completion never receives tool schemas: there is no tool
         # loop for it, so a tool call would be unexecutable.

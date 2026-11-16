@@ -94,6 +94,10 @@ REQUIRED_INVESTIGATION_TOOLS = (
 # provider) and is what makes the agent inject the profile knowledge tools.
 PROFILES_HEADER = "profiles"
 
+# Internal AI request header carrying the resolved effort budget of the active
+# profiles (JSON). Consumed by SmolAgent and stripped before the provider.
+EFFORT_HEADER = "effort"
+
 # Auxiliary-summary bounds.
 #
 # ``_generate_chat_description`` runs an extra LLM call after EVERY chat turn.
@@ -804,7 +808,8 @@ class ChatEngine:
         is_vibe: bool,
         query_mentions: QueryMentions,
         chat_tools: List[str],
-        chat_profile_names: List[str]
+        chat_profile_names: List[str],
+        chat_effort: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
         """
         Build the HTTP-style headers forwarded to the AI provider.
@@ -828,6 +833,7 @@ class ChatEngine:
         :param query_mentions: Resolved mentions (profile names go into the tags).
         :param chat_tools: Tool names available to the model.
         :param chat_profile_names: Profiles taking part in the turn.
+        :param chat_effort: Effort budget resolved from the active profiles.
         :return: Header dict for the AI request.
         """
         tags = [f"{chat.mode}"] + [p.name for p in query_mentions.profiles]
@@ -858,6 +864,13 @@ class ChatEngine:
         }
         if chat_profile_names:
             headers[PROFILES_HEADER] = ",".join(chat_profile_names)
+        if chat_effort:
+            headers[EFFORT_HEADER] = json.dumps(chat_effort)
+            logger.info(
+                "Declaring effort budget for chat '%s': %s",
+                chat.id,
+                chat_effort,
+            )
         if orchestration_role:
             orchestration_info = {
                 "run_id": getattr(chat, "run_id", None) or "",
@@ -879,6 +892,48 @@ class ChatEngine:
     # -------------------------------------------------------------------------
     # Helper: resolve profiles, model and tools
     # -------------------------------------------------------------------------
+    @staticmethod
+    def _resolve_effort_budget(profiles: List[Any]) -> Dict[str, Any]:
+        """
+        Merge the ``effort`` block of the active profiles into one budget.
+
+        Profiles are the effort selectors: ``codx-junior`` (agile) and
+        ``codx-junior-max`` (max) ship an ``effort`` block, and a project can
+        tune it without touching the model/provider settings. When several
+        profiles carry an ``effort`` block the one with the biggest round
+        budget wins (``codx-junior-max`` links ``codx-junior``, so both are
+        active in a max turn).
+
+        Args:
+            profiles: Active :class:`Profile` objects of the turn.
+
+        Returns:
+            A plain dict of effort overrides (empty when none is configured).
+        """
+        entries: List[Dict[str, Any]] = []
+        for profile in profiles or []:
+            effort = getattr(profile, "effort", None)
+            if effort is None:
+                continue
+            try:
+                data = effort.model_dump(exclude_none=True)
+            except AttributeError:
+                data = dict(effort) if isinstance(effort, dict) else {}
+            if data:
+                entries.append(data)
+        if not entries:
+            return {}
+        entries.sort(
+            key=lambda item: (
+                item.get("max_iterations") or 0,
+                item.get("max_tool_calls") or 0,
+            )
+        )
+        merged: Dict[str, Any] = {}
+        for data in entries:
+            merged.update(data)
+        return merged
+
     def _resolve_profiles_and_model(
         self,
         chat: Chat,
@@ -930,7 +985,7 @@ class ChatEngine:
         :param chat_files: List of files attached to the chat.
         :param is_refine: Whether we are in task/refine mode.
         :return: Dict with keys: chat_profiles_system_content, chat_profile_names,
-                 chat_team_names, chat_model, chat_tools, is_refine.
+                 chat_team_names, chat_model, chat_tools, chat_effort, is_refine.
         """
         # Resolve nested/linked profiles: each profile may reference other
         # profiles by name through its ``profiles`` property. Expand recursively
@@ -942,10 +997,12 @@ class ChatEngine:
         chat_team_names: List[str] = []
         chat_model: Optional[str] = chat.llm_model
         chat_tools: List[str] = []
+        chat_effort: Dict[str, Any] = {}
 
         if all_profiles:
             # Sort profiles by name for consistent ordering
             sorted_profiles = sorted(all_profiles, key=lambda p: p.name)
+            chat_effort = self._resolve_effort_budget(sorted_profiles)
             
             profile_blocks = []
             for profile in sorted_profiles:
@@ -1022,6 +1079,7 @@ class ChatEngine:
             "chat_team_names": chat_team_names,
             "chat_model": chat_model,
             "chat_tools": chat_tools,
+            "chat_effort": chat_effort,
             "is_refine": is_refine,
         }
 
@@ -1789,6 +1847,7 @@ class ChatEngine:
                     key: value for key, value in ai_headers.items()
                     if key.lower() not in (
                         PROFILES_HEADER,
+                        EFFORT_HEADER,
                         ORCHESTRATION.ORCHESTRATION_HEADER,
                     )
                 }
@@ -3167,6 +3226,7 @@ class ChatEngine:
             chat_team_names: List[str] = profile_result["chat_team_names"]
             chat_model: Optional[str] = profile_result["chat_model"]
             chat_tools: List[str] = profile_result["chat_tools"]
+            chat_effort: Dict[str, Any] = profile_result.get("chat_effort") or {}
             is_refine = profile_result["is_refine"]
 
             if chat_profile_names:
@@ -3420,6 +3480,7 @@ class ChatEngine:
                 query_mentions=query_mentions,
                 chat_tools=chat_tools,
                 chat_profile_names=chat_profile_names,
+                chat_effort=chat_effort,
             )
             if chat_profile_names:
                 logger.info(

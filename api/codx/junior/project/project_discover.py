@@ -31,8 +31,13 @@ _SCAN_RUNNING = False
 _ALL_PROJECTS_UPDATED_AT: Optional[datetime] = None
 
 # How long a discovery snapshot is trusted before a background refresh is due.
+# A full scan can take tens of seconds on a slow bind mount (88 s measured) and
+# it competes with the chat/tool traffic for the same disk. New projects created
+# through the API are inserted into the snapshot directly
+# (``update_project_snapshot``), so a longer TTL only delays the discovery of a
+# project created by ANOTHER process.
 DISCOVERY_TTL_SECONDS = int(
-    os.environ.get("CODX_JUNIOR_PROJECT_DISCOVERY_TTL_SECONDS", "120")
+    os.environ.get("CODX_JUNIOR_PROJECT_DISCOVERY_TTL_SECONDS", "600")
 )
 # Upper bound a cold-start caller waits for the first snapshot.
 DISCOVERY_WAIT_SECONDS = float(

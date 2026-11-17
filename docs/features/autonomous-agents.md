@@ -65,8 +65,7 @@ versioned with everything else the profile carries and it is reviewed like any o
 | `max_agenda` / `max_tasks` | How many due tasks the shift must handle / how many board tasks are given as context. |
 | `include_done` | Whether closed tasks are also included as context. |
 | `instructions` | Standing orders: the mandate of the actor, appended to the profile instructions. |
-| `wake_at` | Next planned shift (ISO instant or an expression such as `+2d`). Empty derives it from the cadence. |
-| `notify` | Comment the shift report on the desk board. |
+| `notify` | Emit live "shift finished" events for the UI (the report always stays on the shift card). |
 | `schedule` | Weekly availability window (see [Quiet hours](#quiet-hours-a-weekly-schedule)). |
 
 The same declaration can be written from a chat:
@@ -86,8 +85,9 @@ A **shift** is one bounded unit of autonomous work:
 3. with `session: "until_done"` it keeps turning while work remains, until the agenda is empty,
    the per-shift budget, the daily budget or the clock runs out;
 4. it writes the report on the shift card and moves it to `Done`;
-5. it consumes the `wake_at` of the tasks it handled (a task the actor rescheduled for later
-   during the shift keeps its new wake), and records the cost.
+5. it consumes the `wake_at` only of the tasks it **closed** (a task the actor rescheduled for
+   later keeps its new wake; an open task stays due and is retried next shift), and records the
+   cost.
 
 The desk board is created on first wake with four columns:
 
@@ -98,8 +98,10 @@ The desk board is created on first wake with four columns:
 | `Working` | The card of the shift in progress. |
 | `Done` | Finished shifts and tasks. |
 
-If the process dies mid-shift the card stays in `Working`; after `STALE_SHIFT_SECONDS` (15
-minutes) the next shift may run, so a crash never blocks an actor forever.
+If the process dies mid-shift the card stays in `Working`; the next shift (after the shift runtime
+plus a grace period) moves the abandoned card to `Done` with an error note before starting, so a
+crash never blocks an actor forever. A failed first turn or a timeout also closes its card with
+the error instead of leaving it in `Working`.
 
 ## Scheduling: `wake_at`
 
@@ -119,6 +121,10 @@ clears it.
 This is the mechanism behind "an actor decides by itself what to do next": the prompt requires
 every follow-up to be written as a task with `wake_at`, because an unscheduled follow-up is a
 lost follow-up.
+
+A wake is consumed only when the actor **closes** the task (or clears its `wake_at`). A task that
+is still open keeps its due wake and is delivered again on the next shift: a failed turn, a dry
+run or a shift that runs out of budget never loses work.
 
 ## Quiet hours: a weekly schedule
 
@@ -154,12 +160,14 @@ turns a shift may take. Everything else — worker, lock, state, ledger, schedul
 
 A board that still carries the legacy `board.manager` block keeps working: it is translated into
 an actor on load (`BoardManagerConfig.to_actor_config`), with the reviewed board as its subject
-and its own desk board for the reports.
+and its own desk board for the reports. Board managers now carry their own hard budgets
+(`budget_cxjcoins` / `daily_budget_cxjcoins`, defaults **2 / 10**) so a legacy automation is not
+an unbounded spender either.
 
 ## Generate a team from a need
 
 Writing five profiles by hand to get a team is the wrong entry point. **Team View → Generate**
-(and the company assistant) accept a sentence:
+and **Company home → Autonomous team** accept a sentence:
 
 > I need someone to take care of the maintenance tickets, only during office hours.
 
@@ -173,18 +181,28 @@ Two steps, so nothing is written blindly:
 Existing profiles are **never modified** by the generator: a role whose profile already exists is
 reused as-is, and its actor block stays exactly the way you configured it.
 
+Generated actors start with a safe money envelope: **2 cxjcoins per shift** and **10 per day**
+(the API accepts `budget_cxjcoins` / `daily_budget_cxjcoins` overrides). Pass a `company_id` to
+`generate/suggest`/`apply` and the same profiles are also added to a `CompanyTeam`, so the team
+can own company missions instead of living only in the project workspace. Existing company teams
+are extended, never overwritten: human members and their roles are preserved.
+
 ## Guardrails
 
 * **Dry run first.** `mode: "dry_run"` gives you the reports without a single write.
 * **Budget per shift and per day.** `budget_cxjcoins` caps one shift, `daily_budget_cxjcoins` caps
-  the day across shifts (the day is UTC). The project budget still applies.
+  the day across shifts (the day is UTC). The budget is checked **before every turn**, the
+  remaining daily amount is passed to the agent as the chat cap, and an exhausted day does not
+  start a turn at all; the actor wakes after the UTC day resets. The project budget still applies.
 * **Time.** `max_runtime_minutes` stops a shift that runs away; `max_turns` bounds an
   `until_done` session.
 * **One shift at a time.** Every actor takes a `flock` derived from its name, so two workers (API
   and background process, or a restart overlap) never run the same actor at once. This matters
   because an actor has write access to the repository.
-* **Policy.** `board_only` restricts an actor to boards and tasks — a structural guarantee, not a
-  post-hoc filter.
+* **Policy.** `board_only` keeps `project_manager`, `create_task` and `schedule_task` (plus the
+  read-only profile knowledge lookup); the tool list is filtered in `ChatEngine` after the profile
+  grants are collected, so a linked `codx-junior` profile cannot hand it the shell, git, file or
+  browser tools.
 * **Environment switches.** `CODX_JUNIOR_ACTORS=0` disables the feature,
   `CODX_JUNIOR_ACTORS_WORKER=0` keeps the API but stops the background worker,
   `CODX_JUNIOR_ACTORS_SCHEDULE=false` ignores every availability window,
@@ -197,7 +215,7 @@ The router is mounted under `/api/actors` (`/api/autonomy` is kept as a hidden a
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /actors/status` | Every actor: configuration, state, schedule, due flag, next wake, daily spend. |
+| `GET /actors/status` | Every declared actor, **including paused ones**: configuration, state, schedule, due flag, next wake, daily spend. |
 | `GET /actors` | Only the actors. |
 | `GET /actors/boards` | Boards that can be watched (title, id, columns). |
 | `PUT /actors/{profile}` | Partial update of the actor block (upsert; the rest of the profile is untouched). |
@@ -206,9 +224,15 @@ The router is mounted under `/api/actors` (`/api/autonomy` is kept as a hidden a
 | `POST /actors/{profile}/schedule?when=+2d` | Set the next planned shift. |
 | `POST /actors/{profile}/run` | Run one shift now (blocking, for tests and debugging). |
 
+The company shell reads `GET /api/companies/{company_id}/actors`, a read-only projection of the
+actors of every project linked to the company (project name, schedule, budget, daily spend,
+paused state). It never starts a shift.
+
 The API process never runs a shift inline: it reads state and writes the "take a shift" intent.
 The background worker (started with the other background services) finds the actors that are due
-and runs their shifts, a few at a time.
+and runs their shifts, a few at a time. Worker heartbeats and per-actor locks live in the
+installation **runtime folder** (`CODX_JUNIOR_RUNTIME_PATH`), which must be shared between the
+API and background containers; the default setup points it into the shared projects mount.
 
 Connected clients receive live updates on the `codx-junior-actors` channel (`started`, `finished`,
 `error`, `wake`, `scheduled`, `skipped`).
@@ -217,6 +241,18 @@ Connected clients receive live updates on the `codx-junior-actors` channel (`sta
 
 Every shift produces exactly one card, so the history of an actor is readable on its board: what
 it saw, what it did, what it cost and why it stopped (`single`, `done`, `turns`, `budget`,
-`daily_budget`, `runtime`, `schedule`). The per-actor state (`.codx/actors/state.json`) keeps the
+`daily_budget`, `runtime`, `schedule`). The per-actor state (`.codx/autonomy/state.json`) keeps the
 same ledger in machine-readable form — shifts, last status, last stop reason, total cost, daily
 cost — which is the raw material for scoring and rewarding the actors later on.
+
+## Tests
+
+The runtime has an offline suite that does not need an AI provider:
+
+```bash
+cd api && pytest tests/test_autonomy.py -q
+```
+
+It covers the hard budget gate, the shift/day ledger, failed-card closure, agenda durability,
+paused-actor visibility, future manual wakes, finish-based cadence, board-only tool filtering,
+schedule fail-closed behavior, stale-card recovery and the generated-team/company defaults.

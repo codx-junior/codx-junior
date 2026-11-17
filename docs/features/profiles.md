@@ -14,7 +14,7 @@ Profiles are reusable instructions that tell the AI how to behave. They encode y
 | Content | The instructions, in Markdown. |
 | Linked profiles | Other profiles to include. |
 | Model | The LLM the profile uses. |
-| Tools | The [agent tools](/features/chats-and-agents#agent-tools) it may call. |
+| Tools | The [agent tools](/features/chats-and-agents#agent-tools) and [MCP connections](/features/mcp-connections) it may call. |
 | Use knowledge | Whether the profile searches the project's knowledge. |
 | Chat mode | Changes how the conversation works, for example writing a document instead of chatting. |
 | API settings | Expose the profile as a model through the [OpenAI-compatible API](/features/api). |

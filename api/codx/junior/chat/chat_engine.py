@@ -253,7 +253,8 @@ class ChatEngine:
         self,
         settings: CODXJuniorSettings,
         event_manager,
-        user: CodxUser = None
+        user: CodxUser = None,
+        tool_allowlist: Optional[Set[str]] = None,
     ) -> None:
         """
         Initialize the ChatEngine with project settings, event manager, and optional user.
@@ -261,9 +262,15 @@ class ChatEngine:
         :param settings: The current project's settings.
         :param event_manager: Event manager for emitting chat/search events.
         :param user: Optional authenticated user for the session.
+        :param tool_allowlist: Optional structural restriction applied after the
+            profile tool grants are collected. ``None`` means "use the profile
+            grants"; an empty set means "no tools". Used by board-only actors.
         """
         self.settings = settings
         self.event_manager = event_manager
+        self.tool_allowlist = (
+            set(tool_allowlist) if tool_allowlist is not None else None
+        )
         self.knowledge = Knowledge(settings=settings)
         self.chat_knowledge = ChatKnowledge(
             settings=settings,
@@ -706,6 +713,28 @@ class ChatEngine:
             lines.append(f"| `{profile.name}` | {description} |")
         return "\n".join(lines)
 
+    @staticmethod
+    def _apply_tool_allowlist(
+        chat_tools: List[str], allowlist: Optional[Set[str]]
+    ) -> List[str]:
+        """
+        Apply a structural tool allowlist to the collected profile grants.
+
+        ``None`` means "no extra restriction"; an empty set means "no tools".
+        Kept as a small pure helper so the policy is testable without building a
+        full ChatEngine (and without an AI provider).
+        """
+        if allowlist is None:
+            return list(chat_tools or [])
+        exact = {name for name in allowlist if not str(name).endswith("*")}
+        prefixes = {
+            str(name)[:-1] for name in allowlist if str(name).endswith("*")
+        }
+        return [
+            tool for tool in (chat_tools or [])
+            if tool in exact or any(str(tool).startswith(prefix) for prefix in prefixes)
+        ]
+
     # -------------------------------------------------------------------------
     # Helper: strip profile-managed tools inherited from the definition (ADDED)
     # -------------------------------------------------------------------------
@@ -1052,6 +1081,23 @@ class ChatEngine:
             chat_tools = self._ensure_investigation_tools(
                 chat_tools, settings=self.settings
             )
+            if self.tool_allowlist is not None:
+                # Structural policy (e.g. a board-only actor): the profile grant
+                # is an allowlist, and this is a second, narrower allowlist
+                # applied after every automatic add-on. A linked profile can no
+                # longer hand the shell/git/file tools to a board manager.
+                rejected = [
+                    tool for tool in chat_tools if tool not in self.tool_allowlist
+                ]
+                chat_tools = self._apply_tool_allowlist(
+                    chat_tools, self.tool_allowlist
+                )
+                if rejected:
+                    logger.info(
+                        "ChatEngine: tool policy removed %s (allowed: %s)",
+                        rejected,
+                        sorted(self.tool_allowlist),
+                    )
 
             if not chat_model:
                 profile_models = [p for p in sorted_profiles if p.llm_model]

@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -129,6 +130,13 @@ class ActorWorker:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._pool: Optional[ThreadPoolExecutor] = None
+        # Discovered projects that declare actors. Scanning every project's
+        # profiles and board catalogue on every 30s tick is prohibitive on an
+        # installation with hundreds of projects; keep the eligible list for a
+        # few ticks. A newly enabled actor is picked up within the TTL.
+        self._eligible: List[Any] = []
+        self._eligible_at = 0.0
+        self._eligible_ttl = max(60.0, float(self.tick_seconds) * 4)
 
     # -- lifecycle --------------------------------------------------------
 
@@ -144,6 +152,12 @@ class ActorWorker:
             target=self._loop, name="ActorWorker", daemon=True
         )
         self._thread.start()
+        try:
+            from .store import write_global_worker_heartbeat
+
+            write_global_worker_heartbeat({"state": "starting"})
+        except Exception:  # pragma: no cover - heartbeat is best effort
+            pass
         logger.info(
             "Actor worker started (tick=%ss, max_actors=%d, schedule=%s)",
             self.tick_seconds, self.max_actors, schedule_enforced(),
@@ -180,21 +194,44 @@ class ActorWorker:
         """Loop body: run one pass, wait, repeat."""
         while not self._stopped():
             try:
+                from .store import write_global_worker_heartbeat
+
+                write_global_worker_heartbeat({"state": "scanning"})
+            except Exception:  # pragma: no cover - heartbeat is best effort
+                pass
+            try:
                 self.run_once()
             except Exception as ex:  # pragma: no cover - never kill the loop
                 logger.exception("Actor tick failed: %s", ex)
+            try:
+                from .store import write_global_worker_heartbeat
+
+                write_global_worker_heartbeat({"state": "idle"})
+            except Exception:  # pragma: no cover - heartbeat is best effort
+                pass
             self._stop.wait(self.tick_seconds)
 
     def run_once(self) -> List[Dict[str, Any]]:
         """Run one pass over every project that declares actors."""
         from codx.junior.project.project_discover import find_all_projects
 
-        try:
-            projects = list(find_all_projects().values())
-        except Exception as ex:  # pragma: no cover - defensive
-            logger.exception("Actor worker could not discover projects: %s", ex)
-            return []
-        eligible = [project for project in projects if _project_has_actors(project)]
+        now = time.monotonic()
+        if now - self._eligible_at >= self._eligible_ttl:
+            try:
+                projects = list(find_all_projects().values())
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.exception("Actor worker could not discover projects: %s", ex)
+                return []
+            self._eligible = [
+                project for project in projects if _project_has_actors(project)
+            ]
+            self._eligible_at = now
+            logger.info(
+                "Actor worker: %d/%d project(s) declare actors",
+                len(self._eligible),
+                len(projects),
+            )
+        eligible = list(self._eligible)
         if not eligible:
             return []
 

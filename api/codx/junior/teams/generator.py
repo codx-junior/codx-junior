@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 #: Profile names are folder names and @mentions: keep them boring.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
+#: Safe defaults for a generated autonomous teammate. A generated team must not
+#: be an unbounded spender: two cxjcoins per shift and ten per day keeps a
+#: six-turn ``until_done`` shift inside a predictable envelope. The caller can
+#: override either value.
+DEFAULT_ACTOR_BUDGET_CXJCOINS = 2.0
+DEFAULT_ACTOR_DAILY_BUDGET_CXJCOINS = 10.0
+
 
 def _valid_name(name: str) -> bool:
     """Return True when *name* can be used as a profile name (and a folder)."""
@@ -84,6 +91,8 @@ def _actor_block(
     autonomous: bool,
     board: str,
     schedule: Optional[Dict[str, Any]],
+    budget_cxjcoins: float = DEFAULT_ACTOR_BUDGET_CXJCOINS,
+    daily_budget_cxjcoins: float = DEFAULT_ACTOR_DAILY_BUDGET_CXJCOINS,
 ) -> Dict[str, Any]:
     """
     Return the ``actor`` block of a generated profile.
@@ -109,7 +118,8 @@ def _actor_block(
         board=desk,
         boards=watched,
         interval_minutes=24 * 60,
-        daily_budget_cxjcoins=0.0,
+        budget_cxjcoins=max(0.0, float(budget_cxjcoins or 0.0)),
+        daily_budget_cxjcoins=max(0.0, float(daily_budget_cxjcoins or 0.0)),
         instructions=(
             f"You own the \"{role.get('title')}\" responsibility of this team. "
             "Work until the job is done or the daily budget is over, and "
@@ -126,6 +136,9 @@ def suggest(
     autonomous: bool = False,
     board: str = "",
     schedule: Optional[Dict[str, Any]] = None,
+    budget_cxjcoins: float = DEFAULT_ACTOR_BUDGET_CXJCOINS,
+    daily_budget_cxjcoins: float = DEFAULT_ACTOR_DAILY_BUDGET_CXJCOINS,
+    company_id: str = "",
 ) -> Dict[str, Any]:
     """
     Turn a plain-language need into a team proposal.
@@ -158,11 +171,19 @@ def suggest(
     for index, role in enumerate(roles):
         role["order"] = index
         role["actor"] = _actor_block(
-            role, autonomous=autonomous, board=board, schedule=schedule
+            role,
+            autonomous=autonomous,
+            board=board,
+            schedule=schedule,
+            budget_cxjcoins=budget_cxjcoins,
+            daily_budget_cxjcoins=daily_budget_cxjcoins,
         )
     suggestion["autonomous"] = bool(autonomous)
     suggestion["board"] = board
     suggestion["schedule"] = schedule or {}
+    suggestion["budget_cxjcoins"] = float(budget_cxjcoins or 0.0)
+    suggestion["daily_budget_cxjcoins"] = float(daily_budget_cxjcoins or 0.0)
+    suggestion["company_id"] = str(company_id or "").strip()
     suggestion["members"] = [
         {
             "profile": role.get("profile_name"),
@@ -225,11 +246,95 @@ def _charter(
     return "\n".join(lines)
 
 
+def _sync_company_team(
+    *,
+    company_id: str,
+    team_name: str,
+    need: str,
+    members: List[Dict[str, Any]],
+    project_id: str,
+    errors: List[str],
+) -> Dict[str, Any]:
+    """
+    Create (or extend) the company-level team for a generated project team.
+
+    The project ``Team`` is what the workspace uses; the company
+    ``CompanyTeam`` is what the company shell, missions and approvals use. A
+    generated autonomous team must exist in both or it cannot participate in
+    the company. Existing company teams are never overwritten: generated
+    profile members are upserted and any human roster is preserved.
+    """
+    if not company_id or not members:
+        return {}
+    try:
+        from codx.junior.company.manager import CompanyManager
+
+        manager = CompanyManager()
+        company = manager.get_company(company_id)
+        roster = [
+            {
+                "kind": "profile",
+                "name": member["profile"],
+                "role": member.get("role") or "member",
+                "responsibility": member.get("responsibility") or "",
+                "order": member.get("order") or index,
+            }
+            for index, member in enumerate(members)
+            if member.get("profile")
+        ]
+        existing = next(
+            (
+                team for team in company.teams
+                if str(team.name or "").strip().lower() == team_name.lower()
+            ),
+            None,
+        )
+        if existing is not None:
+            manager.add_team_members(
+                company.id, existing.id, roster, actor="team-generator"
+            )
+            return {"created": False, "team_id": existing.id, "team_name": existing.name}
+        payload = {
+            "name": team_name,
+            "description": (
+                f"Autonomous team generated for: {need or 'an expressed need'}"
+            )[:400],
+            "purpose": str(need or "")[:400],
+            "lead_kind": "profile",
+            "lead_name": members[0]["profile"],
+            "members": roster,
+            "project_ids": (
+                [project_id] if project_id and company.project(project_id) else []
+            ),
+            "autonomy": "supervised",
+            "tags": ["generated", "autonomous"],
+        }
+        manager.add_team(company.id, payload, actor="team-generator")
+        refreshed = manager.get_company(company.id)
+        created_team = next(
+            (
+                team for team in refreshed.teams
+                if str(team.name or "").strip().lower() == team_name.lower()
+            ),
+            None,
+        )
+        return {
+            "created": True,
+            "team_id": created_team.id if created_team else "",
+            "team_name": team_name,
+        }
+    except Exception as ex:  # pragma: no cover - company shell is optional
+        logger.exception("team generator: cannot sync company team: %s", ex)
+        errors.append(f"company team: {ex}")
+        return {}
+
+
 def apply(
     settings: Any,
     suggestion: Dict[str, Any],
     *,
     team_name: str = "",
+    company_id: str = "",
 ) -> Dict[str, Any]:
     """
     Write the profiles and the team of *suggestion*.
@@ -256,6 +361,7 @@ def apply(
     project_name = str(getattr(settings, "project_name", "") or "")
     project_id = str(getattr(settings, "project_id", "") or "")
     stack = suggestion.get("stack") or {}
+    company_id = str(company_id or suggestion.get("company_id") or "").strip()
 
     # The suggestion may come back from the client between two requests, so the
     # names are validated here again before anything is written to disk.
@@ -332,11 +438,20 @@ def apply(
         return {"team": {}, "created_profiles": created,
                 "reused_profiles": reused, "errors": errors}
     if team_manager.read_team(resolved_name) is not None:
+        company_team = _sync_company_team(
+            company_id=company_id,
+            team_name=resolved_name,
+            need=str(suggestion.get("need") or ""),
+            members=members,
+            project_id=project_id,
+            errors=errors,
+        )
         return {
             "team": {},
             "created_profiles": created,
             "reused_profiles": reused,
             "errors": errors,
+            "company_team": company_team,
             "note": f"the team '{resolved_name}' already exists and was not modified",
         }
 
@@ -361,11 +476,20 @@ def apply(
         return {"team": {}, "created_profiles": created,
                 "reused_profiles": reused, "errors": errors}
 
+    company_team = _sync_company_team(
+        company_id=company_id,
+        team_name=resolved_name,
+        need=str(suggestion.get("need") or ""),
+        members=members,
+        project_id=project_id,
+        errors=errors,
+    )
     return {
         "team": team_manager.resolve_team(saved),
         "created_profiles": created,
         "reused_profiles": reused,
         "errors": errors,
+        "company_team": company_team,
     }
 
 # Made with ❤️ by codx-junior

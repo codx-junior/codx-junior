@@ -43,7 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import constants as C
@@ -153,16 +153,70 @@ class ActorService:
         """Return the injected runner or the real agent turn."""
         return self._runner or self._run_agent_turn
 
+    def _event_manager(self) -> Any:
+        """
+        Return the event manager used by the shift runtime.
+
+        The background worker and the API build ``ActorService`` without a
+        request session, so ``event_manager`` used to be ``None`` and the first
+        ``ChatEngine`` event raised ``AttributeError: 'NoneType' object has no
+        attribute 'chat_event'``. Every real turn failed before reaching the
+        model. Build the same project-scoped manager the API middleware uses
+        when none was injected.
+        """
+        if self.event_manager is None:
+            try:
+                from codx.junior.events.event_manager import EventManager
+
+                self.event_manager = EventManager(
+                    codx_path=str(getattr(self.settings, "codx_path", "") or "")
+                )
+            except Exception as ex:  # pragma: no cover - notification is optional
+                logger.warning("actors: cannot build the event manager: %s", ex)
+        return self.event_manager
+
+    def tool_allowlist(
+        self, config: ActorConfig, profile: Any = None
+    ) -> Optional[set]:
+        """
+        Return the tools a shift may use (``None`` means the profile grant).
+
+        ``board_only`` used to be a paragraph in the system prompt, which is not
+        a guarantee: a linked ``codx-junior`` profile still handed the model the
+        shell, git and file tools. The allowlist is applied by ``ChatEngine``
+        after it collects the profile tools, so the restriction is structural.
+
+        A board-only actor may still use the integration tools explicitly
+        granted to its profile (``mcp_*``). That is what lets a support agent
+        work the board and call the CRM/helpdesk without ever receiving the
+        shell or repository tools.
+        """
+        if config.policy != C.POLICY_BOARD:
+            return None
+        allowed = set(C.BOARD_ONLY_TOOLS)
+        for tool in getattr(profile, "tools", None) or []:
+            name = str(tool or "").strip()
+            if name.startswith("mcp_"):
+                allowed.add(name)
+        return allowed
+
     # -- catalogue --------------------------------------------------------
 
-    def actors(self) -> Dict[str, Tuple[Any, ActorConfig]]:
+    def actors(
+        self, include_disabled: bool = False
+    ) -> Dict[str, Tuple[Any, ActorConfig]]:
         """
         Return the actors declared on a profile of the project.
 
+        Args:
+            include_disabled: Include profiles whose actor block is paused. The
+                status/UI uses it; the worker and the resolver only want actors
+                that may actually take a shift.
+
         Returns:
-            ``{profile_name: (Profile, ActorConfig)}`` for every profile whose
-            ``actor`` block is enabled. A profile that cannot be read is skipped
-            (the catalogue is never a single point of failure).
+            ``{profile_name: (Profile, ActorConfig)}`` for every declared actor.
+            A profile that cannot be read is skipped (the catalogue is never a
+            single point of failure).
         """
         actors: Dict[str, Tuple[Any, ActorConfig]] = {}
         try:
@@ -172,7 +226,8 @@ class ActorService:
             return actors
         for profile in profiles:
             config = ActorConfig.from_profile(profile)
-            if not config.enabled:
+            declared = ActorConfig.declared(profile)
+            if not config.enabled and not (include_disabled and declared):
                 continue
             name = str(getattr(profile, "name", "") or "").strip()
             if not name:
@@ -344,6 +399,9 @@ class ActorService:
         status = str(getattr(chat, "status", "") or "").strip().lower()
         if status in C.CLOSED_STATUSES:
             return True
+        column = str(getattr(chat, "column", "") or "").strip().lower()
+        if column in C.CLOSED_STATUSES:
+            return True
         return bool(getattr(chat, "done", False))
 
     @staticmethod
@@ -383,6 +441,48 @@ class ActorService:
 
         return schedule_enforced()
 
+    def budget_cap(
+        self,
+        config: ActorConfig,
+        daily_spent: float,
+    ) -> Optional[float]:
+        """
+        Return the effective cap of one shift, or ``None`` when uncapped.
+
+        The daily budget is a *hard* limit: when less than the shift budget is
+        left today, the remaining day amount becomes the cap. ``0`` means "no
+        cap" for either budget, matching the configuration semantics.
+        """
+        caps: List[float] = []
+        if config.budget_cxjcoins > 0:
+            caps.append(float(config.budget_cxjcoins))
+        if config.daily_budget_cxjcoins > 0:
+            caps.append(
+                max(0.0, float(config.daily_budget_cxjcoins) - max(0.0, float(daily_spent or 0.0)))
+            )
+        return min(caps) if caps else None
+
+    def next_daily_wake(
+        self,
+        config: ActorConfig,
+        now: Optional[datetime] = None,
+    ) -> str:
+        """
+        Return the first shift instant after the UTC daily ledger resets.
+
+        When the daily budget is exhausted the actor must not retry on its
+        normal cadence: it would be skipped every few minutes and keep rewriting
+        state. The next eligible instant is the next UTC midnight (adjusted by
+        the availability window when one is configured).
+        """
+        moment = now or utcnow()
+        tomorrow = (moment.astimezone(timezone.utc) + timedelta(days=1)).date()
+        candidate = datetime(
+            tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=timezone.utc
+        )
+        opening = self.next_opening(config, candidate)
+        return opening.isoformat() if opening is not None else ""
+
     def next_wake_at(
         self,
         config: ActorConfig,
@@ -392,19 +492,30 @@ class ActorService:
         """
         Return the next planned wake of the actor (empty when disabled).
 
-        The value already accounts for the weekly schedule: an actor that is
-        outside its window reports the next opening instead of the cadence.
+        The cadence is measured from the **finish** of the previous shift, not
+        its start: a shift that runs longer than ``interval_minutes`` used to be
+        due again immediately, producing back-to-back shifts. The value also
+        accounts for the weekly schedule: an actor that is outside its window
+        reports the next opening instead of the cadence.
         """
         if not config.enabled or state.running:
             return ""
         moment = now or utcnow()
+        if (
+            config.daily_budget_cxjcoins > 0
+            and state.day_spent(moment.date().isoformat()) >= config.daily_budget_cxjcoins
+        ):
+            return self.next_daily_wake(config, moment)
         planned = parse_iso(state.wake_at)
         if planned is None:
-            last = parse_iso(state.last_shift_at)
-            planned = (
-                last + timedelta(minutes=config.interval_minutes)
-                if last is not None else moment
-            )
+            last = parse_iso(state.last_finished_at) or parse_iso(state.last_shift_at)
+            if last is None:
+                # First wake only: an actor declaration may carry an initial
+                # instant. Once the actor has shifted, the runtime state owns
+                # the schedule.
+                planned = parse_iso(config.wake_at) or moment
+            else:
+                planned = last + timedelta(minutes=config.interval_minutes)
         if planned < moment:
             planned = moment
         opening = self.next_opening(config, planned)
@@ -426,8 +537,22 @@ class ActorService:
         if not config.enabled:
             return False
         moment = now or utcnow()
+        if (
+            config.daily_budget_cxjcoins > 0
+            and state.day_spent(moment.date().isoformat()) >= config.daily_budget_cxjcoins
+        ):
+            # A hard budget is not bypassed by a manual wake: the shift would be
+            # rejected by _execute anyway, so report it as not due and let the
+            # next UTC day (or the next schedule opening) pick it up.
+            return False
         if state.wake_requested:
-            return True
+            # A manual wake with a future ``when`` is a scheduled manual wake:
+            # honour the instant instead of running immediately. Without a
+            # wake instant it means "now".
+            requested = parse_iso(state.wake_at)
+            if requested is None or requested <= moment:
+                return True
+            return False
         # A shift can run for minutes; a "running" state is only abandoned when
         # it is far older than the runtime limit.
         if state.running:
@@ -440,9 +565,12 @@ class ActorService:
         if not self.is_within_schedule(config, moment):
             return False
         planned = parse_iso(state.wake_at)
+        if planned is None and not state.last_shift_at:
+            # First wake only, from the declaration.
+            planned = parse_iso(config.wake_at)
         if planned is not None:
             return planned <= moment
-        last = parse_iso(state.last_shift_at)
+        last = parse_iso(state.last_finished_at) or parse_iso(state.last_shift_at)
         if last is None:
             return True
         return moment >= last + timedelta(minutes=config.interval_minutes)
@@ -453,7 +581,7 @@ class ActorService:
         """Return the configuration + runtime state of every actor."""
         stored = self.store.load().get("agents") or {}
         entries: List[Dict[str, Any]] = []
-        for name, (profile, config) in self.actors().items():
+        for name, (profile, config) in self.actors(include_disabled=True).items():
             try:
                 state = ActorState(**(stored.get(name) or {}))
             except (TypeError, ValueError):
@@ -609,15 +737,36 @@ class ActorService:
             report = await self._execute(
                 name=name, profile=profile, config=config, trigger=trigger, state=state
             )
-            state = self.store.get_state(name)
-            state.mark_finished(report)
-            fallback = self.next_wake_at(config, state)
-            if not state.wake_at:
-                state.wake_at = fallback
-            self.store.put_state(name, state)
-            self._emit(name, "finished", report.report or report.error,
-                       board=config.desk_board, status=report.status,
-                       cost=report.cost_cxjcoins)
+            def _finalize(current: ActorState) -> ActorState:
+                """Apply the report atomically (a Wake during the shift wins)."""
+                # A user pressing Wake while the shift was running must not be
+                # lost: mark_finished clears the flag, so capture it first.
+                pending_wake = bool(current.wake_requested)
+                pending_wake_at = str(current.wake_at or "")
+                current.mark_finished(report)
+                if report.stop_reason == C.STOP_DAILY_BUDGET:
+                    # Hard budget wins over a pending manual wake; retry after
+                    # the UTC day resets (or the next schedule opening).
+                    current.wake_requested = False
+                    daily_wake = self.next_daily_wake(config)
+                    existing = parse_iso(current.wake_at)
+                    proposed = parse_iso(daily_wake)
+                    if proposed is not None and (
+                        existing is None or existing < proposed
+                    ):
+                        current.wake_at = daily_wake
+                elif pending_wake:
+                    current.wake_requested = True
+                    current.wake_at = pending_wake_at
+                elif not current.wake_at:
+                    current.wake_at = self.next_wake_at(config, current)
+                return current
+
+            state = self.store.mutate_state(name, _finalize)
+            if config.notify:
+                self._emit(name, "finished", report.report or report.error,
+                           board=config.desk_board, status=report.status,
+                           cost=report.cost_cxjcoins)
             logger.info(
                 "actors: shift of '%s' finished status=%s stop=%s cost=%.6f turns=%d",
                 name, report.status, report.stop_reason, report.cost_cxjcoins,
@@ -674,9 +823,28 @@ class ActorService:
         shift_chat: Any = None
         stop_reason = ""
         dry_run = config.mode == C.MODE_DRY_RUN
+        daily_spent = state.day_spent()
+
+        # Hard daily gate: an exhausted day must not pay for even one turn.
+        if config.daily_budget_cxjcoins > 0 and daily_spent >= config.daily_budget_cxjcoins:
+            report.status = C.STATE_BUDGET
+            report.stop_reason = C.STOP_DAILY_BUDGET
+            report.error = (
+                f"The daily budget is exhausted: {daily_spent:.4f} / "
+                f"{config.daily_budget_cxjcoins:.4f} cxjcoins"
+            )
+            report.duration_seconds = time.monotonic() - started
+            return report
+
+        budget_cap = self.budget_cap(config, daily_spent)
+        allowed_tools = self.tool_allowlist(config, profile)
 
         try:
-            self.ensure_boards(config)
+            if not dry_run:
+                self.ensure_boards(config)
+                self._close_stale_shift_cards(
+                    name, desk, config.max_runtime_minutes * 60 + 300
+                )
             tasks = self.collect_tasks(boards, config)
             agenda = [
                 task for task in tasks
@@ -720,7 +888,6 @@ class ActorService:
                 config.max_turns
                 if config.session == C.SESSION_UNTIL_DONE else 1
             )
-            daily_spent = state.day_spent()
             remaining = [
                 task for task in self.collect_tasks(boards, config)
                 if not task.get("done")
@@ -734,20 +901,20 @@ class ActorService:
                     )
                     break
                 elapsed = time.monotonic() - started
-                if report.turns and elapsed >= config.max_runtime_minutes * 60:
+                if elapsed >= config.max_runtime_minutes * 60:
                     stop_reason = C.STOP_RUNTIME
                     break
-                if report.turns and config.budget_cxjcoins \
+                if config.budget_cxjcoins > 0 \
                         and total_cost >= config.budget_cxjcoins:
                     stop_reason = C.STOP_BUDGET
                     break
-                if report.turns and config.daily_budget_cxjcoins \
+                if config.daily_budget_cxjcoins > 0 \
                         and (daily_spent + total_cost) >= config.daily_budget_cxjcoins:
                     stop_reason = C.STOP_DAILY_BUDGET
                     break
 
                 timeout_seconds = max(
-                    60,
+                    30,
                     int(config.max_runtime_minutes * 60 - elapsed),
                 )
                 if report.turns == 0:
@@ -768,17 +935,34 @@ class ActorService:
                     content, cost, shift_chat = await self._active_turn(
                         name=name, board=desk, system=system, prompt=turn_prompt,
                         agenda=agenda, timeout_seconds=timeout_seconds,
+                        tool_allowlist=allowed_tools, budget_cap=budget_cap,
                     )
                 else:
                     content, cost = await self._continue_turn(
                         chat=shift_chat, system=system, prompt=turn_prompt,
                         timeout_seconds=timeout_seconds,
+                        tool_allowlist=allowed_tools,
                     )
 
                 report.turns += 1
                 total_cost += max(0.0, float(cost or 0.0))
                 if content:
                     contents.append(content)
+
+                # A dry run is always one pass and writes nothing.
+                if dry_run:
+                    stop_reason = C.STOP_SINGLE
+                    break
+                # Budget exhaustion wins over the session shape: report it as
+                # the stop reason even when the session would have ended here.
+                if config.budget_cxjcoins > 0 \
+                        and total_cost >= config.budget_cxjcoins:
+                    stop_reason = C.STOP_BUDGET
+                    break
+                if config.daily_budget_cxjcoins > 0 \
+                        and (daily_spent + total_cost) >= config.daily_budget_cxjcoins:
+                    stop_reason = C.STOP_DAILY_BUDGET
+                    break
                 if config.session != C.SESSION_UNTIL_DONE:
                     stop_reason = C.STOP_SINGLE
                     break
@@ -796,7 +980,10 @@ class ActorService:
             report.report = _clip(content, 20000)
             report.cost_cxjcoins = total_cost
             report.stop_reason = stop_reason
-            report.status = C.STATE_OK if contents else C.STATE_NO_WORK
+            if stop_reason in (C.STOP_BUDGET, C.STOP_DAILY_BUDGET):
+                report.status = C.STATE_BUDGET
+            else:
+                report.status = C.STATE_OK if contents else C.STATE_NO_WORK
         except asyncio.TimeoutError:
             report.status = C.STATE_ERROR
             report.stop_reason = C.STOP_RUNTIME
@@ -808,16 +995,18 @@ class ActorService:
             logger.exception("actors: shift of '%s' failed: %s", name, ex)
             report.status = C.STATE_ERROR
             report.error = str(ex)
-        finally:
-            # The wake is always consumed: a due task that keeps waking the actor
-            # forever is worse than a wake lost to an error, and the actor may
-            # have rescheduled it during the shift (that wake is preserved by
-            # _consume_agenda).
+
+        # Only a shift that actually ran and did not fail may settle its agenda.
+        # A dry run never writes; an error must keep the due tasks for the next
+        # attempt; tasks left due (not closed/rescheduled) stay due so the work
+        # is retried instead of silently disappearing.
+        if not dry_run and report.status != C.STATE_ERROR and report.turns > 0:
             self._consume_agenda(agenda)
 
         report.duration_seconds = time.monotonic() - started
         if shift_chat is not None:
-            self._close_shift_card(shift_chat)
+            error = report.error if report.status == C.STATE_ERROR else ""
+            self._close_shift_card(shift_chat, error=error)
         return report
 
     async def _active_turn(
@@ -829,15 +1018,26 @@ class ActorService:
         prompt: str,
         agenda: List[Dict[str, Any]],
         timeout_seconds: int,
+        tool_allowlist: Optional[set] = None,
+        budget_cap: Optional[float] = None,
     ) -> Tuple[str, float, Any]:
         """Create the shift card and run the first agent turn on it."""
         chat = self._create_shift_card(
-            name=name, board=board, prompt=prompt, agenda=agenda
+            name=name, board=board, prompt=prompt, agenda=agenda,
+            budget_cap=budget_cap,
         )
-        runner = self._runner_for()
-        await asyncio.wait_for(
-            runner(chat=chat, system=system), timeout=timeout_seconds
-        )
+        try:
+            runner = self._runner_for()
+            await asyncio.wait_for(
+                runner(chat=chat, system=system, tool_allowlist=tool_allowlist),
+                timeout=timeout_seconds,
+            )
+        except BaseException as ex:
+            # The card exists before the turn starts. If the turn is cancelled,
+            # times out or raises, the caller never receives ``chat``, so this is
+            # the only place that can move the card out of ``Working``.
+            self._close_shift_card(chat, error=str(ex) or ex.__class__.__name__)
+            raise
         content, cost = self._read_turn(chat)
         return content, cost, chat
 
@@ -848,13 +1048,15 @@ class ActorService:
         system: str,
         prompt: str,
         timeout_seconds: int,
+        tool_allowlist: Optional[set] = None,
     ) -> Tuple[str, float]:
         """Run another turn of the same shift on the same card."""
         cost_before = self._chat_cost(chat)
         self._manager().add_message(chat=chat, message=self._user_message(prompt))
         runner = self._runner_for()
         await asyncio.wait_for(
-            runner(chat=chat, system=system), timeout=timeout_seconds
+            runner(chat=chat, system=system, tool_allowlist=tool_allowlist),
+            timeout=timeout_seconds,
         )
         content, _cost = self._read_turn(chat)
         return content, max(0.0, self._chat_cost(chat) - cost_before)
@@ -870,16 +1072,13 @@ class ActorService:
         timeout_seconds: int,
     ) -> Tuple[str, float, Any]:
         """
-        Read-only shift: no tools, no card changes, just the report.
+        Read-only shift: no tools, no card, no writes, just the report.
 
-        A dry run is the honest way to preview an actor: the model cannot touch
-        anything because it is called directly instead of through the agent loop
-        (which is what exposes the tools).
+        A dry run is the honest way to preview an actor: the model is called
+        directly (not through the agent loop, which is what exposes the tools)
+        and no card is created or consumed. The caller gets ``None`` as the chat
+        instead of a shift card.
         """
-        chat = self._create_shift_card(
-            name=name, board=board, prompt=prompt, agenda=agenda,
-            description="Dry run: read-only preview of the shift.",
-        )
         from codx.junior.ai.ai import AI
 
         ai = AI(settings=self.settings, user=self.user, system=system)
@@ -890,20 +1089,29 @@ class ActorService:
         cost = float(
             getattr(getattr(result, "cost", None), "iteration_cost_cxjcoins", 0) or 0
         )
-        return content, cost, chat
+        return content, cost, None
 
-    async def _run_agent_turn(self, *, chat: Any, system: Optional[str] = None) -> Any:
+    async def _run_agent_turn(
+        self,
+        *,
+        chat: Any,
+        system: Optional[str] = None,
+        tool_allowlist: Optional[set] = None,
+    ) -> Any:
         """
         Default runner: one full agent turn (tools included) on the shift card.
 
         The import is local so the service can be imported without the AI stack.
+        The event manager is built lazily: without it every turn failed before
+        the first model call when the background worker ran the shift.
         """
         from codx.junior.chat.chat_engine import ChatEngine
 
         engine = ChatEngine(
             settings=self.settings,
-            event_manager=self.event_manager,
+            event_manager=self._event_manager(),
             user=self.user,
+            tool_allowlist=tool_allowlist,
         )
         await engine.chat_with_project(chat=chat, system=system)
         return chat
@@ -924,6 +1132,7 @@ class ActorService:
         prompt: str,
         agenda: List[Dict[str, Any]],
         description: str = "",
+        budget_cap: Optional[float] = None,
     ) -> Any:
         """Create the card of the shift on the desk board."""
         from codx.junior.task_manager import TaskManager
@@ -942,6 +1151,14 @@ class ActorService:
             priority="high" if agenda else "medium",
             profiles=[name],
             tags=["actor", "shift"],
+            # The chat budget is a hard stop inside the agent loop; the shift
+            # loop also checks it between turns. Passing it here is what keeps a
+            # single runaway turn from overspending the actor budget.
+            estimation_cost=(
+                float(budget_cap)
+                if budget_cap is not None and float(budget_cap) > 0
+                else None
+            ),
         )
         try:
             task.meta_data = {**(getattr(task, "meta_data", None) or {}), "actor": {
@@ -949,18 +1166,83 @@ class ActorService:
                 "board": board,
                 "agenda": [item["id"] for item in agenda],
                 "started_at": utcnow_iso(),
+                "budget_cap": budget_cap,
             }}
             self._manager().save_chat(chat=task)
         except Exception as ex:  # pragma: no cover - metadata is best effort
             logger.debug("actors: cannot stamp shift metadata: %s", ex)
         return task
 
-    def _close_shift_card(self, chat: Any) -> None:
-        """Move the shift card to Done so the board keeps a readable history."""
+    def _close_stale_shift_cards(
+        self, actor: str, board: str, max_age_seconds: Optional[int] = None
+    ) -> None:
+        """
+        Move abandoned shift cards out of ``Working`` before starting a new one.
+
+        A crash or a failed first turn before this release could leave cards in
+        ``Working`` forever. The actor lock guarantees no other shift of this
+        actor is live here, and the timestamp threshold protects a card from a
+        worker that is still finishing after a restart overlap. The threshold is
+        at least the maximum runtime of a shift plus a grace period, so a long
+        but healthy shift is never closed as stale.
+        """
+        if not board:
+            return
+        age = max(
+            C.STALE_SHIFT_SECONDS,
+            int(max_age_seconds or 0),
+        )
+        cutoff = utcnow() - timedelta(seconds=age)
         try:
-            chat.status = "done"
+            chats = self._manager().list_chats() or []
+        except Exception as ex:  # pragma: no cover - board cleanup is best effort
+            logger.debug("actors: cannot scan stale shift cards: %s", ex)
+            return
+        for chat in chats:
+            try:
+                if str(getattr(chat, "board", "") or "") != board:
+                    continue
+                if str(getattr(chat, "column", "") or "") != C.SHIFT_COLUMN:
+                    continue
+                tags = {str(tag) for tag in (getattr(chat, "tags", []) or [])}
+                if "shift" not in tags:
+                    continue
+                meta = getattr(chat, "meta_data", None) or {}
+                actor_meta = meta.get("actor") if isinstance(meta, dict) else {}
+                if isinstance(actor_meta, dict) and actor_meta.get("actor") not in ("", None, actor):
+                    continue
+                updated = parse_iso(
+                    getattr(chat, "updated_at", "") or getattr(chat, "created_at", "")
+                )
+                if updated is None or updated > cutoff:
+                    continue
+                self._close_shift_card(
+                    chat, error="Recovered an abandoned shift card from Working."
+                )
+                logger.info(
+                    "actors: recovered stale shift card '%s' of '%s'",
+                    getattr(chat, "id", ""),
+                    actor,
+                )
+            except Exception as ex:  # pragma: no cover - one bad card is not fatal
+                logger.debug("actors: cannot recover stale shift card: %s", ex)
+
+    def _close_shift_card(self, chat: Any, error: str = "") -> None:
+        """
+        Move the shift card out of ``Working`` so the board keeps a readable history.
+
+        A failed first turn must still close its card: leaving it in ``Working``
+        made the desk board look like the actor was permanently busy and hid the
+        real error. The error is appended to the description so it survives even
+        when no report was produced.
+        """
+        try:
+            chat.status = "error" if error else "done"
             chat.column = C.SHIFT_DONE_COLUMN
-            chat.progress = 100
+            chat.progress = 0 if error else 100
+            if error:
+                note = f"\n\n**Shift failed:** {_clip(error, 2000)}"
+                chat.description = f"{getattr(chat, 'description', '') or ''}{note}"[:8000]
             self._manager().save_chat(chat=chat)
         except Exception as ex:  # pragma: no cover - defensive
             logger.warning("actors: cannot close shift card: %s", ex)
@@ -984,11 +1266,15 @@ class ActorService:
 
     def _consume_agenda(self, agenda: List[Dict[str, Any]]) -> None:
         """
-        Clear the ``wake_at`` of the delivered tasks.
+        Settle the ``wake_at`` of the delivered tasks without losing work.
 
-        The actor may have rescheduled itself (its own ``wake_at``) or created
-        new scheduled tasks during the shift; only the tasks that were *due* are
-        consumed here, so a follow-up the actor wrote during the shift survives.
+        A task is consumed only when it is **closed**: the actor finished it.
+        A task that is still open keeps its due wake and is delivered again on
+        the next shift (the actor is expected to close it or schedule a new
+        follow-up). A task the actor rescheduled to the future keeps that new
+        wake. This replaces the old "always clear every agenda item" behavior,
+        which silently dropped work whenever the shift failed, ran out of budget
+        or was a dry run.
         """
         for item in agenda or []:
             chat_id = str(item.get("id") or item.get("chat_id") or "")
@@ -1002,12 +1288,16 @@ class ActorService:
             if chat is None:
                 continue
             current = str(getattr(chat, "wake_at", "") or "")
-            if current and not is_due(current):
-                # The actor scheduled it for later: respect that.
+            if not current or not is_due(current):
+                # Already cleared by the actor, or rescheduled for later.
+                continue
+            if not self._is_closed(chat):
+                # Still open: keep the wake so the next shift can finish it.
                 continue
             try:
                 chat.wake_at = ""
                 self._manager().save_chat(chat=chat)
+                logger.info("actors: consumed wake of closed task '%s'", chat_id)
             except Exception as ex:  # pragma: no cover - defensive
                 logger.warning("actors: cannot consume wake of '%s': %s", chat_id, ex)
 
@@ -1040,9 +1330,10 @@ class ActorService:
 
     def _emit(self, actor: str, event: str, message: str = "", **data: Any) -> None:
         """Notify connected clients (best effort)."""
-        if self.event_manager is None:
+        manager = self._event_manager()
+        if manager is None:
             return
-        emit = getattr(self.event_manager, "autonomy_event", None)
+        emit = getattr(manager, "autonomy_event", None)
         if not callable(emit):
             return
         try:

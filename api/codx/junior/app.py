@@ -589,8 +589,37 @@ def api_list_profile(request: Request):
 
 @app.get("/api/profiles/tools")
 def api_list_profile_tools(request: Request):
+    """
+    Return every tool a profile can grant.
+
+    The static registry is merged with the project's discovered MCP tools
+    (``mcp_<server>_<tool>``) so the profile editor can grant a CRM/helpdesk
+    capability exactly like a built-in tool. Callables are stripped because the
+    client only needs the schema, scope and tags.
+    """
     from codx.junior.tools import TOOLS
-    return TOOLS
+
+    entries = [
+        {key: value for key, value in tool.items() if key != "tool_call"}
+        for tool in TOOLS
+    ]
+    try:
+        session = getattr(request.state, "codx_junior_session", None)
+        settings = getattr(session, "settings", None)
+        if settings is not None:
+            from codx.junior.mcp.registry import McpRegistry
+
+            entries.extend(
+                {
+                    "tool_json": entry["tool_json"],
+                    "settings": entry["settings"],
+                    "tags": entry["tags"],
+                }
+                for entry in McpRegistry.tool_entries(settings)
+            )
+    except Exception as ex:  # a broken MCP server must not break the profile UI
+        logger.warning("Cannot list project MCP tools: %s", ex)
+    return entries
 
 @app.post("/api/profiles")
 async def api_create_profile(profile: Profile, request: Request):

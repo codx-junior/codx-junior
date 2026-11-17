@@ -184,11 +184,45 @@ class OAuthProvider(BaseModel):
     token_url: str = Field(default="")
 
 class MCPServer(BaseModel):
-    """Model representing a Model Context Protocol (MCP) server configuration."""
+    """Model representing a Model Context Protocol (MCP) server configuration.
+
+    A project registers the servers it can use; the agent discovers their tools
+    at runtime and exposes them to profiles as ``mcp_<server>_<tool>``. The API
+    key is sent as a Bearer token; ``headers`` covers servers that need a
+    different scheme (for example an ``X-Api-Key`` header). Keep credentials in
+    the MCP server / secret store rather than in a profile document.
+    """
     name: str = Field(description="Name of the MCP server")
     url: str = Field(description="URL/endpoint of the MCP server")
     api_key: Optional[str] = Field(default="", description="API key for authentication")
     active: bool = Field(default=True, description="Whether the MCP server is active")
+    transport: str = Field(
+        default="http",
+        description="Transport: http (streamable HTTP), sse or stdio",
+    )
+    tool_allowlist: List[str] = Field(
+        default_factory=list,
+        description=(
+            "MCP tool names exposed to profiles (empty = every tool). Names are "
+            "the server's native names, not the namespaced mcp_* names."
+        ),
+    )
+    headers: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Extra HTTP headers for the MCP endpoint (non-secret values only)",
+    )
+    timeout_seconds: float = Field(
+        default=30.0, description="Maximum time for one MCP request"
+    )
+    protocol_version: str = Field(
+        default="2025-03-26", description="MCP protocol version to negotiate"
+    )
+    command: str = Field(
+        default="", description="Command for the optional stdio transport"
+    )
+    args: List[str] = Field(
+        default_factory=list, description="Arguments for the optional stdio transport"
+    )
 
 # Define the PluginArgument model
 class PluginArgument(BaseModel):

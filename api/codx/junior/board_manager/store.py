@@ -247,9 +247,18 @@ class BoardManagerStore:
         """Return True when a background worker heartbeat is recent enough."""
         data = self._read_json(self.worker_path) or {}
         at = self._parse_iso(data.get("at"))
-        if at is None:
+        if at is not None:
+            age = (datetime.now(tz=timezone.utc) - at).total_seconds()
+            if 0 <= age <= max(1, int(ttl_seconds)):
+                return True
+        # Board managers are executed by the actor worker now. Its global
+        # heartbeat covers the startup/scan window, before the per-project file
+        # is written.
+        try:
+            from codx.junior.autonomy.store import global_worker_present
+
+            return global_worker_present(ttl_seconds)
+        except Exception:  # pragma: no cover - optional dependency
             return False
-        age = (datetime.now(tz=timezone.utc) - at).total_seconds()
-        return 0 <= age <= max(1, int(ttl_seconds))
 
 # Made with ❤️ by codx-junior

@@ -81,6 +81,19 @@ class TeamSuggestionRequest(BaseModel):
             "{enabled, timezone, windows: [{days, start, end}]}."
         ),
     )
+    budget_cxjcoins: float = Field(
+        default=2.0, ge=0.0, description="Budget of one generated actor shift."
+    )
+    daily_budget_cxjcoins: float = Field(
+        default=10.0, ge=0.0, description="Daily budget of one generated actor."
+    )
+    company_id: str = Field(
+        default="",
+        description=(
+            "Optional company id. When set, the generated profiles are also "
+            "added to a CompanyTeam so the team can run missions."
+        ),
+    )
 
 
 class TeamGenerationRequest(BaseModel):
@@ -91,6 +104,10 @@ class TeamGenerationRequest(BaseModel):
     )
     team_name: Optional[str] = Field(
         default=None, description="Override of the generated team name."
+    )
+    company_id: str = Field(
+        default="",
+        description="Optional company id to sync the generated profiles into.",
     )
 
 
@@ -174,6 +191,9 @@ def suggest_team(payload: TeamSuggestionRequest, request: Request) -> Dict[str, 
         autonomous=bool(payload.autonomous),
         board=str(payload.board or "").strip(),
         schedule=payload.schedule,
+        budget_cxjcoins=payload.budget_cxjcoins,
+        daily_budget_cxjcoins=payload.daily_budget_cxjcoins,
+        company_id=payload.company_id,
     )
     logger.info("suggest_team: %d role(s) for %r", len(suggestion.get("roles") or []), need)
     return suggestion
@@ -202,7 +222,10 @@ def generate_team(payload: TeamGenerationRequest, request: Request) -> Dict[str,
     from codx.junior.teams import generator
 
     result = generator.apply(
-        manager.settings, payload.suggestion, team_name=payload.team_name or ""
+        manager.settings,
+        payload.suggestion,
+        team_name=payload.team_name or "",
+        company_id=payload.company_id or "",
     )
     if result.get("errors") and not result.get("team") and not result.get("created_profiles"):
         raise HTTPException(status_code=400, detail="; ".join(result["errors"]))

@@ -33,4 +33,7 @@ The installer includes **LocalAI** for running models on your own hardware, reac
 
 ## MCP servers
 
-Projects can register **MCP servers** (name, URL, API key and an active flag) in their settings.
+Projects can register **MCP servers** (name, URL, API key, transport, tool allowlist and an
+active flag) in their settings. The runtime discovers their tools, namespaces them as
+`mcp_<server>_<tool>` and exposes them only to profiles that grant them. See
+[MCP connections](/features/mcp-connections) for the installation and profile-grant workflow.

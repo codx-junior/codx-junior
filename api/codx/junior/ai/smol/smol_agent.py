@@ -670,7 +670,10 @@ class SmolAgent:
                       tool calling would only produce unusable output.
         """
         self.harness: bool = harness
-        self.tools: List[Dict[str, Any]] = TOOLS
+        # Copy the registry: MCP tools are project-scoped and are appended to
+        # this instance. Mutating the module-level TOOLS would leak one
+        # project's CRM tools into every other project in the process.
+        self.tools: List[Dict[str, Any]] = list(TOOLS)
 
         self.settings = settings
         self.llm_settings = settings.get_llm_settings(llm_model=llm_model)
@@ -900,6 +903,46 @@ class SmolAgent:
         if self._can_manage_profile_knowledge():
             tools.append(PROFILE_LEARNING_TOOL)
         return tools
+
+    def _load_mcp_tools(self, selected_tools: Set[str]) -> List[str]:
+        """
+        Load the project MCP tools granted to this turn.
+
+        MCP discovery is project-scoped and cached by :class:`McpRegistry`. The
+        method is called only when the selected grant contains an ``mcp_``
+        entry, so projects without MCP servers never pay for a network call.
+        The loaded entries are appended to ``self.tools``; ``SmolAgent`` then
+        exposes them to the model and finds them in ``_execute_tool`` exactly
+        like a built-in tool.
+
+        Args:
+            selected_tools: Model-facing tool names selected by the profiles.
+
+        Returns:
+            The names of the MCP tools actually loaded (empty on failure).
+        """
+        if not any(
+            str(name).startswith("mcp_") for name in (selected_tools or set())
+        ):
+            return []
+        try:
+            from codx.junior.mcp.registry import McpRegistry
+
+            existing = {
+                tool["tool_json"]["function"]["name"] for tool in self.tools
+            }
+            entries = McpRegistry.tool_entries(self.settings, allowed=selected_tools)
+            loaded: List[str] = []
+            for entry in entries:
+                name = entry["tool_json"]["function"]["name"]
+                if name not in existing:
+                    self.tools.append(entry)
+                    existing.add(name)
+                loaded.append(name)
+            return loaded
+        except Exception as ex:  # pragma: no cover - a broken server is not fatal
+            logger.warning("SmolAgent: cannot load MCP tools: %s", ex)
+            return []
 
     # ── Orchestration tools (decided by the agent, per run) ───────────────────
 
@@ -4680,6 +4723,14 @@ class SmolAgent:
                 profile_tools,
                 profile_names,
             )
+
+        # MCP tools are project-scoped and named mcp_<server>_<tool>. They are
+        # only loaded when a profile explicitly grants one (or mcp_<server>_*),
+        # so a project can register a CRM without every profile seeing it.
+        mcp_tool_names = self._load_mcp_tools(selected_tool_set)
+        if mcp_tool_names:
+            selected_tool_set.update(mcp_tool_names)
+            logger.info("SmolAgent: injecting MCP tools %s", mcp_tool_names)
 
         orchestration_tools = self._orchestration_tools_for_run(orchestration_info)
         if orchestration_tools:

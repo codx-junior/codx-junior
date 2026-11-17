@@ -249,6 +249,10 @@ export default {
       const next = days.includes(day)
         ? days.filter(item => item !== day)
         : WEEKDAYS.map(item => item.id).filter(id => id === day || days.includes(id))
+      // An empty `days` list means "every day" in the backend. Deselecting the
+      // last day would silently turn a Mon-only window into a 24/7 one, so keep
+      // at least one explicit day selected.
+      if (!next.length) return
       window.days = next
       this.emitUpdate()
     }

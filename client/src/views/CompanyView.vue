@@ -7,6 +7,7 @@ import { $storex } from '@/store'
 import CompanySimpleHome from '@/components/company/CompanySimpleHome.vue'
 import CompanyAssistant from '@/components/company/CompanyAssistant.vue'
 import CompanyChatPanel from '@/components/company/CompanyChatPanel.vue'
+import GenerateTeamDialog from '@/components/teams/GenerateTeamDialog.vue'
 import { COMPANY_TEMPLATES } from '@/components/company/companyMeta'
 
 /**
@@ -36,6 +37,8 @@ const references = ref({ projects: [], users: [], profiles: [], templates: [] })
 const createOpen = ref(false)
 const createAdvanced = ref(false)
 const chatsOpen = ref(false)
+const generateOpen = ref(false)
+const companyActors = ref({ actors: [], counts: {} })
 
 const isMobile = computed(() => $storex.ui.isMobile)
 
@@ -125,10 +128,26 @@ async function loadReferences() {
   }
 }
 
+async function loadCompanyActors(companyId) {
+  if (!companyId) {
+    companyActors.value = { actors: [], counts: {} }
+    return
+  }
+  try {
+    companyActors.value = await api.actors(companyId)
+  } catch (error) {
+    // The company shell must keep working even when one project's actor state
+    // cannot be read; the panel simply shows no autonomous teammates.
+    console.warn('[CompanyView] cannot load company actors', error)
+    companyActors.value = { actors: [], counts: {} }
+  }
+}
+
 async function refreshSnapshot() {
   if (!activeId.value) return
   try {
     snapshot.value = await api.snapshot(activeId.value)
+    await loadCompanyActors(activeId.value)
   } catch (error) {
     notifyError(error)
   }
@@ -142,6 +161,7 @@ async function selectCompany(companyId, { skipList = false } = {}) {
   try {
     if (!skipList) companies.value = await api.list()
     snapshot.value = await api.snapshot(companyId)
+    await loadCompanyActors(companyId)
   } catch (error) {
     notifyError(error)
   } finally {
@@ -365,7 +385,10 @@ async function submitCreate() {
           :busy="busy"
           :can-manage="canManage"
           :can-admin="canAdmin"
+          :actors="companyActors.actors"
+          :actor-counts="companyActors.counts"
           @assistant="askAssistant"
+          @generate="generateOpen = true"
         />
       </main>
     </div>
@@ -456,6 +479,14 @@ async function submitCreate() {
       </div>
       <div class="modal-backdrop" @click="createOpen = false"></div>
     </div>
+
+    <GenerateTeamDialog
+      v-if="generateOpen && company"
+      :company-id="activeId"
+      :project="$storex.projects.activeProject"
+      @created="refreshSnapshot"
+      @close="generateOpen = false"
+    />
 
     <CompanyChatPanel
       v-if="chatsOpen && company"

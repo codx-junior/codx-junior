@@ -201,10 +201,15 @@ class ScheduleWindow(BaseModel):
                 days.append(day)
         start = _parse_hhmm(self.start)
         end = _parse_hhmm(self.end)
+        if start is None or end is None:
+            # An invalid "HH:MM" must fail closed, not turn 09:00 into 00:00
+            # (which made a typo silently widen the working day). A zero-length
+            # window is never open.
+            return ScheduleWindow(days=[], start="00:00", end="00:00")
         return ScheduleWindow(
             days=[day for day in C.WEEKDAYS if day in days],
-            start=_format_hhmm(start if start is not None else 0),
-            end=_format_hhmm(end if end is not None else 24 * 60 - 1),
+            start=_format_hhmm(start),
+            end=_format_hhmm(end),
         )
 
     def open_at(self, day: str, minutes: int) -> bool:
@@ -214,6 +219,9 @@ class ScheduleWindow(BaseModel):
         end = _parse_hhmm(window.end)
         if end is None:
             end = 24 * 60
+        if start == end:
+            # Invalid/empty window: fail closed (see normalized()).
+            return False
         days = window.days or list(C.WEEKDAYS)
         if start < end:
             return day in days and start <= minutes < end
@@ -358,8 +366,11 @@ class ActorConfig(BaseModel):
         max_tasks: How many board tasks are included as context.
         include_done: Whether closed tasks are also included as context.
         instructions: Standing orders written by the user (the actor's mandate).
-        wake_at: Next planned wake (ISO). Empty means "derive from the cadence".
-        notify: Report the shift on the actor board.
+        wake_at: Optional **first** wake (ISO or expression). It is used only
+            before the actor's first shift; runtime state and ``POST /schedule``
+            own the schedule afterwards.
+        notify: Emit live "shift finished" events (the report always stays on
+            the shift card).
         schedule: Weekly availability windows.
     """
 
@@ -486,6 +497,26 @@ class ActorConfig(BaseModel):
     def from_store_value(cls, value: Any) -> "ActorConfig":
         """Build a configuration from a plain mapping (API payloads, tests)."""
         return cls(**value).normalized() if isinstance(value, dict) else cls()
+
+    @classmethod
+    def declared(cls, profile: Any) -> bool:
+        """
+        Return True when *profile* carries an actor declaration at all.
+
+        ``enabled=False`` is a valid, managed state (paused), so the catalogue
+        must be able to list it. A profile with no ``actor``/``autonomy`` block
+        is *not* a paused actor and must never appear in the panel.
+        """
+        if isinstance(profile, dict):
+            raw = profile.get(C.ACTOR_CONFIG_KEY) or profile.get(C.LEGACY_CONFIG_KEY)
+        else:
+            raw = (
+                getattr(profile, C.ACTOR_CONFIG_KEY, None)
+                or getattr(profile, C.LEGACY_CONFIG_KEY, None)
+            )
+        if isinstance(raw, BaseModel):
+            raw = raw.model_dump()
+        return isinstance(raw, dict) and bool(raw)
 
     def to_profile_value(self) -> Dict[str, Any]:
         """Return the JSON value stored inside the profile document."""

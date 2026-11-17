@@ -2785,6 +2785,61 @@ class CompanyManager:
             "due": company.autonomy.is_due(self._now()),
         }
 
+    def actor_snapshot(self, company_id: str) -> Dict[str, Any]:
+        """
+        Return the autonomous actors of the projects linked to a company.
+
+        The actor runtime is project-scoped (profiles, boards, budgets and state
+        live in the project), while the company is the top-level organization.
+        This read-only projection lets the company shell see the same actors,
+        including paused ones, with their project, schedule and today's spend.
+        It never starts a shift and never imports the AI stack.
+        """
+        company = self.get_company(company_id)
+        actors: List[Dict[str, Any]] = []
+        unavailable: List[str] = []
+        for project in company.projects:
+            settings = self._project_settings_provider(project.project_id)
+            if settings is None:
+                unavailable.append(project.project_id)
+                continue
+            try:
+                from codx.junior.autonomy.service import ActorService
+
+                status = ActorService(settings=settings).status()
+            except Exception as ex:  # pragma: no cover - one project is not fatal
+                logger.warning(
+                    "Company actors: cannot read project '%s': %s",
+                    project.project_id,
+                    ex,
+                )
+                unavailable.append(project.project_id)
+                continue
+            for entry in status.get("actors") or []:
+                actors.append(
+                    {
+                        **entry,
+                        "project_id": project.project_id,
+                        "project_name": project.name or project.project_id,
+                    }
+                )
+        return {
+            "company_id": company.id,
+            "actors": actors,
+            "counts": {
+                "total": len(actors),
+                "enabled": len(
+                    [
+                        entry for entry in actors
+                        if (entry.get("config") or {}).get("enabled")
+                    ]
+                ),
+                "projects": len(company.projects),
+                "unavailable_projects": len(unavailable),
+            },
+            "unavailable_projects": unavailable,
+        }
+
     def company_members(self, company: Company) -> List[Dict[str, Any]]:
         """
         Return the human roster of a company.

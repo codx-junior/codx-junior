@@ -14,10 +14,12 @@ const props = defineProps({
   snapshot: { type: Object, default: null },
   canManage: { type: Boolean, default: false },
   canAdmin: { type: Boolean, default: false },
-  busy: { type: Boolean, default: false }
+  busy: { type: Boolean, default: false },
+  actors: { type: Array, default: () => [] },
+  actorCounts: { type: Object, default: () => ({}) }
 })
 
-const emit = defineEmits(['assistant'])
+const emit = defineEmits(['assistant', 'generate'])
 
 const company = computed(() => props.snapshot?.company || {})
 const counts = computed(() => props.snapshot?.counts || {})
@@ -25,6 +27,9 @@ const members = computed(() => props.snapshot?.members || [])
 const teams = computed(() => props.snapshot?.teams || [])
 const projects = computed(() => props.snapshot?.projects || [])
 const missions = computed(() => props.snapshot?.missions || [])
+const autonomousActors = computed(() =>
+  (props.actors || []).filter(actor => actor?.config?.enabled)
+)
 const journal = computed(() => (props.snapshot?.journal || []).slice(-4).reverse())
 const budget = computed(() => props.snapshot?.budget || {})
 const budgetProgress = computed(() => {
@@ -118,6 +123,13 @@ function projectName(project) {
               <i class="fa-solid fa-wand-magic-sparkles text-primary text-[10px]"></i>
               {{ need }}
             </button>
+            <button type="button"
+                    class="btn btn-xs btn-primary gap-1 normal-case"
+                    title="Generate autonomous profiles and sync them into a company team"
+                    @click="emit('generate')">
+              <i class="fa-solid fa-robot text-[10px]"></i>
+              Autonomous team
+            </button>
           </div>
         </div>
       </div>
@@ -192,6 +204,35 @@ function projectName(project) {
         </div>
         <div class="text-[11px] uppercase tracking-wide text-base-content/45">Open missions</div>
       </button>
+    </section>
+
+    <!-- Autonomous teammates, including paused ones -->
+    <section v-if="actors.length" class="rounded-2xl border border-base-content/10 bg-base-100 p-3.5">
+      <div class="flex items-center gap-2">
+        <span class="w-8 h-8 rounded-lg grid place-items-center bg-primary/15 text-primary">
+          <i class="fa-solid fa-robot"></i>
+        </span>
+        <div class="min-w-0 flex-1">
+          <div class="text-xs font-bold">Autonomous teammates</div>
+          <div class="text-[10px] text-base-content/50">
+            {{ autonomousActors.length }} on duty · {{ actors.length }} configured across the company projects
+          </div>
+        </div>
+        <span class="badge badge-xs badge-ghost">{{ actorCounts.projects || 0 }} project(s)</span>
+      </div>
+      <div class="flex flex-wrap gap-1.5 mt-2">
+        <span v-for="actor in actors.slice(0, 8)" :key="`${actor.project_id}:${actor.actor}`"
+              class="badge badge-sm gap-1"
+              :class="actor.config?.enabled ? 'badge-success badge-outline' : 'badge-ghost'"
+              :title="`${actor.project_name} · ${actor.schedule?.description || 'always available'}`">
+          <i class="fa-solid" :class="actor.config?.enabled ? 'fa-play' : 'fa-pause'"></i>
+          {{ actor.actor }}
+        </span>
+        <span v-if="actors.length > 8" class="badge badge-sm badge-ghost">+{{ actors.length - 8 }}</span>
+      </div>
+      <p class="text-[10px] text-base-content/40 mt-2">
+        Schedules and budgets are enforced by each project's actor worker. Open the project Team view to edit them.
+      </p>
     </section>
 
     <!-- Budget (only when a limit exists or money has been spent) -->

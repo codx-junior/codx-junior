@@ -66,21 +66,38 @@ export const teamsModule = (API) => ({
    * The backend maps the sentence onto known roles (reusing the profiles that
    * already exist) and returns the `actor` block every new profile would get,
    * so an autonomous team can be previewed with its availability window.
-   * @param {{ need: string, autonomous?: boolean, board?: string, schedule?: Object }} payload
+   * @param {{ need: string, autonomous?: boolean, board?: string, schedule?: Object,
+   *           budget_cxjcoins?: number, daily_budget_cxjcoins?: number, company_id?: string }} payload
    * @returns {Promise<{ mode: string, team_name: string, roles: Object[], members: Object[], summary: string }>}
    */
-  suggestGeneration({ need, autonomous = false, board = '', schedule = null } = {}) {
-    return API.post('/api/teams/generate/suggest', { need, autonomous, board, schedule })
+  suggestGeneration({
+    need,
+    autonomous = false,
+    board = '',
+    schedule = null,
+    budget_cxjcoins = 2,
+    daily_budget_cxjcoins = 10,
+    company_id = ''
+  } = {}) {
+    return API.post('/api/teams/generate/suggest', {
+      need,
+      autonomous,
+      board,
+      schedule,
+      budget_cxjcoins,
+      daily_budget_cxjcoins,
+      company_id
+    })
   },
 
   /**
    * Materialize a proposal: creates the missing profiles and the team (with its
    * charter). Existing profiles are never modified.
-   * @param {{ suggestion: Object, team_name?: string }} payload
-   * @returns {Promise<{ team: Object, created_profiles: string[], reused_profiles: string[], errors: string[] }>}
+   * @param {{ suggestion: Object, team_name?: string, company_id?: string }} payload
+   * @returns {Promise<{ team: Object, company_team: Object, created_profiles: string[], reused_profiles: string[], errors: string[] }>}
    */
-  applyGeneration({ suggestion, team_name = '' } = {}) {
-    return API.post('/api/teams/generate/apply', { suggestion, team_name })
+  applyGeneration({ suggestion, team_name = '', company_id = '' } = {}) {
+    return API.post('/api/teams/generate/apply', { suggestion, team_name, company_id })
   },
 
   // ── Membership ─────────────────────────────────────────────────────────────

@@ -228,6 +228,7 @@ class BoardManagerService:
                 "config": config.model_dump(),
                 "state": state.public(),
                 "actor": actor.model_dump(),
+                "daily_spent": state.day_spent(),
                 "due": self.is_due(config, state),
                 "next_run_at": self._next_run_at(config, state),
             })
@@ -243,6 +244,8 @@ class BoardManagerService:
                 "interval_minutes": C.DEFAULT_INTERVAL_MINUTES,
                 "max_actions": C.DEFAULT_MAX_ACTIONS,
                 "max_tasks": C.DEFAULT_MAX_TASKS,
+                "budget_cxjcoins": C.DEFAULT_BUDGET_CXJCOINS,
+                "daily_budget_cxjcoins": C.DEFAULT_DAILY_BUDGET_CXJCOINS,
             },
         }
 
@@ -353,11 +356,29 @@ class BoardManagerService:
 
             started = time.monotonic()
             try:
+                # The actor runtime enforces the daily budget from the state it
+                # receives. Seed it with the board manager's persisted ledger so
+                # two reviews in the same UTC day share the same cap.
+                from codx.junior.autonomy.models import ActorState
+
+                current = self.store.get_state(key)
+                actor_state = ActorState(
+                    actor=config.profile or title,
+                    day=current.day,
+                    day_cost=current.day_cost,
+                    total_cost=current.total_cost,
+                    shifts=current.runs,
+                    last_shift_at=current.last_run_at,
+                    last_finished_at=current.last_finished_at,
+                    last_summary=current.last_summary,
+                    last_status=current.last_status,
+                )
                 report = await self._actors().run_actor(
                     actor=config.profile or title,
                     profile=profile,
                     config=actor,
                     trigger="board",
+                    state=actor_state,
                 )
                 state = self.store.get_state(key)
                 state.mark_finished(
@@ -416,6 +437,7 @@ class BoardManagerService:
             "config": config.model_dump(),
             "state": state.public(),
             "actor": config.to_actor_config(title).model_dump(),
+            "daily_spent": state.day_spent(),
             "due": self.is_due(config, state),
             "next_run_at": self._next_run_at(config, state),
             "worker_present": self.store.worker_present(),

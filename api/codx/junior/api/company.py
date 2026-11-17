@@ -611,6 +611,15 @@ def api_company_snapshot(
     )
 
 
+@router.get("/companies/{company_id}/actors")
+def api_company_actors(
+    company_id: str,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Return the autonomous actors of the company's linked projects."""
+    return _run(lambda: _manager().actor_snapshot(company_id))
+
+
 @router.get("/companies/{company_id}/journal")
 def api_company_journal(
     company_id: str,

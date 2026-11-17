@@ -10,6 +10,7 @@ import { orchestrationModule } from './modules/orchestration'
 import { teamsModule } from './modules/teams'
 import { actorsModule } from './modules/actors'
 import { companiesModule } from './modules/companies'
+import { mcpModule } from './modules/mcp'
 import { workspacesModule } from './modules/workspaces'
 import { browsersModule } from './modules/browsers'
 import { computersModule } from './modules/computers'
@@ -824,6 +825,17 @@ const initializeAPI = ({ project, user } = {}) => {
         API._companiesModule = companiesModule(API)
       }
       return API._companiesModule
+    },
+
+    /**
+     * MCP connections: project-scoped tool servers (CRM, helpdesk, billing...).
+     * See api/modules/mcp.js and codx/junior/api/mcp.py.
+     */
+    get mcp() {
+      if (!API._mcpModule) {
+        API._mcpModule = mcpModule(API)
+      }
+      return API._mcpModule
     },
 
     /**

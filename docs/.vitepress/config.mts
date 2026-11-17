@@ -56,6 +56,7 @@ export default defineConfig({
             { text: 'Wiki', link: '/features/wiki' },
             { text: 'Git and code review', link: '/features/code-review' },
             { text: 'AI providers and models', link: '/features/ai-providers' },
+            { text: 'MCP connections', link: '/features/mcp-connections' },
             { text: 'Budget and analytics', link: '/features/budget-and-analytics' },
             { text: 'Users and security', link: '/features/users-and-security' },
             { text: 'Development tools', link: '/features/development-tools' },

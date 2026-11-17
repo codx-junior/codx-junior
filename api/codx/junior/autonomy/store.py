@@ -36,6 +36,7 @@ try:  # POSIX only; the container always has it.
 except ImportError:  # pragma: no cover - non POSIX fallback
     fcntl = None
 
+from codx.junior.globals import RUNTIME_FOLDER
 from codx.junior.runtime import runtime_dir
 
 from . import constants as C
@@ -44,6 +45,34 @@ from .models import AutonomyState, utcnow_iso
 logger = logging.getLogger(__name__)
 
 STATE_VERSION = 1
+
+#: Worker heartbeat shared by every project. The per-project ``worker.json`` is
+#: only written once a project with actors has been inspected; on an
+#: installation with hundreds of projects that can be minutes after startup.
+#: The global heartbeat is written at the start of every worker tick so the UI
+#: can tell "worker starting / scanning" from "worker dead".
+GLOBAL_WORKER_FILE = "actors-worker.json"
+GLOBAL_WORKER_PATH = os.path.join(RUNTIME_FOLDER, GLOBAL_WORKER_FILE)
+
+
+def write_global_worker_heartbeat(payload: Optional[Dict[str, Any]] = None) -> None:
+    """Publish the process-wide actor-worker heartbeat (best effort)."""
+    data = {"pid": os.getpid(), "at": utcnow_iso(), **(payload or {})}
+    try:
+        os.makedirs(os.path.dirname(GLOBAL_WORKER_PATH), exist_ok=True)
+        AutonomyStore._write_json(GLOBAL_WORKER_PATH, data)
+    except OSError as ex:  # pragma: no cover - read-only filesystem
+        logger.debug("autonomy: cannot write global worker heartbeat: %s", ex)
+
+
+def global_worker_present(ttl_seconds: int = C.WORKER_TTL_SECONDS) -> bool:
+    """Return True when the process-wide actor worker heartbeat is fresh."""
+    data = AutonomyStore._read_json(GLOBAL_WORKER_PATH) or {}
+    at = AutonomyStore._parse_iso(data.get("at"))
+    if at is None:
+        return False
+    age = (datetime.now(tz=timezone.utc) - at).total_seconds()
+    return 0 <= age <= max(1, int(ttl_seconds))
 
 
 def _agent_lock_name(agent: str) -> str:
@@ -215,6 +244,9 @@ class AutonomyStore:
         def _set(state: AutonomyState) -> AutonomyState:
             state.agent = str(agent)
             state.wake_at = str(wake_at or "")
+            # Scheduling an explicit instant supersedes a pending "wake now"
+            # request; otherwise is_due would keep firing immediately.
+            state.wake_requested = False
             return state
 
         return self.mutate_state(agent, _set)
@@ -228,6 +260,7 @@ class AutonomyStore:
             self._write_json(self.worker_path, data)
         except OSError as ex:  # pragma: no cover - read-only filesystem
             logger.debug("autonomy: cannot write worker heartbeat: %s", ex)
+        write_global_worker_heartbeat(payload)
 
     @staticmethod
     def _parse_iso(value: Any) -> Optional[datetime]:
@@ -240,13 +273,24 @@ class AutonomyStore:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
 
-    def worker_present(self, ttl_seconds: int = C.WORKER_TTL_SECONDS) -> bool:
-        """Return True when a background worker heartbeat is recent enough."""
-        data = self._read_json(self.worker_path) or {}
-        at = self._parse_iso(data.get("at"))
+    @classmethod
+    def _heartbeat_fresh(cls, path: str, ttl_seconds: int) -> bool:
+        """Return True when the heartbeat file at *path* is recent enough."""
+        data = cls._read_json(path) or {}
+        at = cls._parse_iso(data.get("at"))
         if at is None:
             return False
         age = (datetime.now(tz=timezone.utc) - at).total_seconds()
         return 0 <= age <= max(1, int(ttl_seconds))
+
+    def worker_present(self, ttl_seconds: int = C.WORKER_TTL_SECONDS) -> bool:
+        """Return True when a background worker heartbeat is recent enough.
+
+        The project heartbeat is checked first; the global one covers the
+        startup/scan window before the worker has reached a project with actors.
+        """
+        return self._heartbeat_fresh(
+            self.worker_path, ttl_seconds
+        ) or global_worker_present(ttl_seconds)
 
 # Made with ❤️ by codx-junior

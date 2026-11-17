@@ -74,6 +74,15 @@ def _as_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(number, maximum))
 
 
+def _as_float(value: Any, default: float) -> float:
+    """Convert *value* to a non-negative float with a safe fallback."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(0.0, number)
+
+
 # ---------------------------------------------------------------------------
 # Configuration (stored on the board document)
 # ---------------------------------------------------------------------------
@@ -99,6 +108,8 @@ class BoardManagerConfig(BaseModel):
         instructions: Extra, board-specific policy written by the user.
         max_tasks: How many tasks the prompt includes.
         announce: Whether the review also leaves a short comment on the board.
+        budget_cxjcoins: Hard cap for one review (0 = no shift cap).
+        daily_budget_cxjcoins: Hard cap for one UTC day across reviews.
     """
 
     enabled: bool = False
@@ -110,6 +121,8 @@ class BoardManagerConfig(BaseModel):
     instructions: str = ""
     max_tasks: int = C.DEFAULT_MAX_TASKS
     announce: bool = True
+    budget_cxjcoins: float = C.DEFAULT_BUDGET_CXJCOINS
+    daily_budget_cxjcoins: float = C.DEFAULT_DAILY_BUDGET_CXJCOINS
 
     def normalized(self) -> "BoardManagerConfig":
         """Return a clamped copy (never mutate the input)."""
@@ -139,6 +152,12 @@ class BoardManagerConfig(BaseModel):
         data["enabled"] = bool(data.get("enabled"))
         data["include_done"] = bool(data.get("include_done"))
         data["announce"] = bool(data.get("announce", True))
+        data["budget_cxjcoins"] = _as_float(
+            data.get("budget_cxjcoins"), C.DEFAULT_BUDGET_CXJCOINS
+        )
+        data["daily_budget_cxjcoins"] = _as_float(
+            data.get("daily_budget_cxjcoins"), C.DEFAULT_DAILY_BUDGET_CXJCOINS
+        )
         return BoardManagerConfig(**data)
 
     @classmethod
@@ -165,6 +184,16 @@ class BoardManagerConfig(BaseModel):
             instructions=raw.get("instructions") or "",
             max_tasks=raw.get("max_tasks") or C.DEFAULT_MAX_TASKS,
             announce=bool(raw.get("announce", True)),
+            budget_cxjcoins=(
+                raw["budget_cxjcoins"]
+                if raw.get("budget_cxjcoins") is not None
+                else C.DEFAULT_BUDGET_CXJCOINS
+            ),
+            daily_budget_cxjcoins=(
+                raw["daily_budget_cxjcoins"]
+                if raw.get("daily_budget_cxjcoins") is not None
+                else C.DEFAULT_DAILY_BUDGET_CXJCOINS
+            ),
         ).normalized()
 
     def to_board_value(self, fallback_profile: str = "") -> Dict[str, Any]:
@@ -217,6 +246,8 @@ class BoardManagerConfig(BaseModel):
             max_tasks=config.max_tasks,
             include_done=config.include_done,
             max_agenda=config.max_actions,
+            budget_cxjcoins=config.budget_cxjcoins,
+            daily_budget_cxjcoins=config.daily_budget_cxjcoins,
             notify=config.announce,
             instructions="\n\n".join(instructions),
         ).normalized()
@@ -242,6 +273,8 @@ class ManagerState(BaseModel):
     last_report: str = Field(default="")
     last_cost: float = Field(default=0.0)
     total_cost: float = Field(default=0.0)
+    day: str = Field(default="", description="UTC day of day_cost (YYYY-MM-DD)")
+    day_cost: float = Field(default=0.0)
     runs: int = Field(default=0)
     duration_ms: float = Field(default=0.0)
     last_profile: str = Field(default="")
@@ -285,9 +318,19 @@ class ManagerState(BaseModel):
         self.last_error = _clip(error, 4000)
         self.last_cost = max(0.0, float(cost or 0.0))
         self.total_cost = float(self.total_cost or 0.0) + self.last_cost
+        day = (self.last_run_at or utcnow_iso())[:10]
+        if self.day != day:
+            self.day = day
+            self.day_cost = 0.0
+        self.day_cost = float(self.day_cost or 0.0) + self.last_cost
         self.duration_ms = max(0.0, float(duration_ms or 0.0))
         self.runs = int(self.runs or 0) + 1
         self.last_turns = max(0, int(turns or 0))
+
+    def day_spent(self, today: Optional[str] = None) -> float:
+        """Return the cost already spent today (UTC)."""
+        key = today or utcnow_iso()[:10]
+        return float(self.day_cost or 0.0) if self.day == key else 0.0
 
     def public(self) -> Dict[str, Any]:
         """Return the API/UI shape of the state."""

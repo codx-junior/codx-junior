@@ -83,6 +83,11 @@ export const companiesModule = (API) => ({
     )
   },
 
+  /** Autonomous actors of the company's linked projects (read-only). */
+  actors(companyId) {
+    return API.get(`${BASE}/${encodeURIComponent(companyId)}/actors`)
+  },
+
   /** Audit journal (newest last). */
   journal(companyId, { limit = 100 } = {}) {
     return API.get(

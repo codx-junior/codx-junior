@@ -61,15 +61,16 @@ SHIFT_SYSTEM_PROMPT = """You are **{actor}**, an autonomous {role} on duty.
 ## How you work
 - Start from your agenda (the tasks that are due) and from the state of your
   boards. Both are given below.
-- You have the full tool set: read and change the repository, run commands, use
-  the browser, create and schedule tasks, comment and move cards, write
-  knowledge.
+- {tools}
 - **Initiative is expected.** If you see something that must be done, do it. If
   it is too big for this shift, create a task for it on one of your boards
   instead of leaving it in your head.
 - **Never lose a follow-up.** Anything you must check later becomes a task with
   `wake_at` set (e.g. `wake_at="+2d"`). You are woken only by tasks whose
   `wake_at` is due, so an unscheduled follow-up is a lost follow-up.
+- **Close what you finish.** A task that stays open keeps its wake and is
+  delivered again next shift; close it (or clear its `wake_at`) when the work
+  is really done.
 - Prefer evidence over opinion: read the file, run the command, check the logs.
   Never report something as done without proof.
 {policy}
@@ -208,6 +209,15 @@ def build_shift_system(
         desk=board or "_not set_",
         boards=_boards_line(watched),
         schedule=schedule or "always available (no schedule)",
+        tools=(
+            "You only have the board and task tools: create, move, comment, "
+            "assign, close and schedule tasks. You cannot read or write the "
+            "repository, run commands or use the browser."
+            if policy == C.POLICY_BOARD else
+            "You have the full tool set: read and change the repository, run "
+            "commands, use the browser, create and schedule tasks, comment and "
+            "move cards, write knowledge."
+        ),
         policy="\n" + POLICY_BOARD_ONLY if policy == C.POLICY_BOARD else "",
         budget=_budget_line(budget),
         daily_budget=_budget_line(daily_budget),

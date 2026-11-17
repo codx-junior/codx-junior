@@ -47,6 +47,7 @@ context and stay in budget. This section documents every feature in detail.
 
 | Feature | Summary |
 | --- | --- |
+| [MCP connections](/features/mcp-connections) | Project-scoped business tools (CRM, helpdesk, billing, custom APIs) discovered and granted to profiles. |
 | [Plugins](/features/plugins) | Python plugins that extend the UI and the API. |
 | [API](/features/api) | The REST API, Socket.IO events and the OpenAI-compatible endpoint. |
 

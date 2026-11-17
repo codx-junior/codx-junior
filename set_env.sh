@@ -79,3 +79,16 @@ export LC_ALL=en_US.UTF-8
 
 # vllm
 export VLLM_TARGET_DEVICE=CPU
+# Runtime folder shared by every container of the installation.
+# The API and the background worker run in separate containers; if each kept
+# locks/heartbeats in its own /tmp, the two processes would not see each other's
+# actor/orchestration locks and the UI would report "worker offline". Prefer a
+# folder inside the shared projects mount; fall back to the platform temp when
+# no shared mount exists (single-process development).
+if [ -z "${CODX_JUNIOR_RUNTIME_PATH:-}" ]; then
+  _codx_runtime_base="${CODX_JUNIOR_PROJECTS_PATH:-/home/codx-junior-projects}"
+  if [ -d "${_codx_runtime_base}" ] && mkdir -p "${_codx_runtime_base}/.codx-junior-runtime" 2>/dev/null; then
+    export CODX_JUNIOR_RUNTIME_PATH="${_codx_runtime_base}/.codx-junior-runtime"
+  fi
+  unset _codx_runtime_base
+fi

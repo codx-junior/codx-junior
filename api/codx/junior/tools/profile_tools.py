@@ -411,19 +411,29 @@ def _format_profiles_summary(
     return "\n".join(lines)
 
 
-def _available_tool_names() -> List[str]:
+def _available_tool_names(settings: Any = None) -> List[str]:
     """
     Return the names of every tool registered in the runtime.
 
     Imported lazily: ``codx.junior.tools`` imports this module, so a top-level
-    import would be circular.
+    import would be circular. When *settings* is provided, the tools discovered
+    from the project's active MCP servers are included. Discovery is best-effort
+    and cached by the MCP registry; a down server never breaks profile editing.
 
     Returns:
         Sorted list of tool names.
     """
     from codx.junior.tools import TOOLS
 
-    return sorted(tool["tool_json"]["function"]["name"] for tool in TOOLS)
+    names = {tool["tool_json"]["function"]["name"] for tool in TOOLS}
+    if settings is not None:
+        try:
+            from codx.junior.mcp.registry import McpRegistry
+
+            names.update(McpRegistry.tool_names(settings))
+        except Exception as ex:  # pragma: no cover - optional integration
+            logger.debug("profile tools: MCP discovery unavailable: %s", ex)
+    return sorted(names)
 
 
 def _notify(settings: CODXJuniorSettings, message: str) -> None:
@@ -535,12 +545,18 @@ def _validate_file_match(file_match: str) -> List[str]:
     return []
 
 
-def _validate_tools(tools: List[str]) -> None:
+def _validate_tools(tools: List[str], settings: Any = None) -> None:
     """
     Validate the tool names granted to the profile.
 
+    MCP tools are project-scoped and dynamic, so an explicit ``mcp_*`` grant is
+    accepted when the project has at least one active MCP server even if the
+    server is temporarily down. The runtime still resolves the concrete names
+    against the discovered tools before the model sees them.
+
     Args:
         tools: Tool names as declared in the tool registry.
+        settings: Optional project settings (enables MCP validation).
 
     Raises:
         ValueError: If any tool name is unknown.
@@ -550,14 +566,24 @@ def _validate_tools(tools: List[str]) -> None:
     """
     from codx.junior.tools import ALL_TOOLS_MARKER
 
-    unknown = [
-        tool for tool in tools
-        if tool not in _available_tool_names() and tool != ALL_TOOLS_MARKER
-    ]
+    available = _available_tool_names(settings)
+    has_mcp = bool(
+        settings is not None
+        and getattr(settings, "get_active_mcp_servers", None)
+        and settings.get_active_mcp_servers()
+    )
+
+    def known(tool: str) -> bool:
+        if tool == ALL_TOOLS_MARKER or tool in available:
+            return True
+        return bool(has_mcp and tool.startswith("mcp_"))
+
+    unknown = [tool for tool in tools if not known(tool)]
     if unknown:
         raise ValueError(
             f"Unknown tool(s) {unknown}. Available tools: "
-            f"{', '.join(_available_tool_names())}"
+            f"{', '.join(available)}"
+            + (" (plus project MCP tools: mcp_*)" if has_mcp else "")
         )
 
 
@@ -993,7 +1019,7 @@ def _action_create(
     profiles = list(profiles or [])
     tools = list(tools or [])
     _validate_linked_profiles(manager, profiles)
-    _validate_tools(tools)
+    _validate_tools(tools, manager.settings)
     if not description:
         warnings.append(
             "description is empty: the profile card and the @mention picker will "
@@ -1121,7 +1147,7 @@ def _action_update(
         _validate_linked_profiles(manager, list(profiles))
         overrides["profiles"] = list(profiles)
     if tools is not None:
-        _validate_tools(list(tools))
+        _validate_tools(list(tools), manager.settings)
         overrides["tools"] = list(tools)
     if tags is not None:
         overrides["tags"] = list(tags)

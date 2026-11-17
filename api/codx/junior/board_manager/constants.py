@@ -36,6 +36,12 @@ MAX_TASKS_LIMIT = 200
 #: One review cannot run forever (seconds).
 DEFAULT_TIMEOUT_SECONDS = 300
 
+#: Safe money defaults for a board manager. A board review is now executed by
+#: the actor runtime, so the same hard budget gates apply; 2/10 keeps an
+#: unattended ProjectManager from becoming an unbounded spender.
+DEFAULT_BUDGET_CXJCOINS = 2.0
+DEFAULT_DAILY_BUDGET_CXJCOINS = 10.0
+
 #: A "running" state older than this is considered crashed/abandoned and no
 #: longer blocks the schedule (the AI timeout is shorter).
 STALE_RUN_SECONDS = DEFAULT_TIMEOUT_SECONDS + 120

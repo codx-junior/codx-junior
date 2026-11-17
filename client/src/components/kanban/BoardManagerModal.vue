@@ -102,6 +102,32 @@ import ChatProfileSelector from '@/components/chat/ChatProfileSelector.vue'
               Open, recently updated tasks are included first.
             </span>
           </label>
+
+          <label class="flex flex-col gap-1">
+            <span class="text-[10px] uppercase tracking-wider text-base-content/40">Budget per review</span>
+            <input
+              v-model.number="config.budget_cxjcoins"
+              type="number"
+              min="0"
+              step="0.5"
+              class="input input-sm input-bordered"
+            />
+            <span class="text-[10px] text-base-content/40">0 = no per-review cap.</span>
+          </label>
+
+          <label class="flex flex-col gap-1">
+            <span class="text-[10px] uppercase tracking-wider text-base-content/40">Daily budget</span>
+            <input
+              v-model.number="config.daily_budget_cxjcoins"
+              type="number"
+              min="0"
+              step="0.5"
+              class="input input-sm input-bordered"
+            />
+            <span class="text-[10px] text-base-content/40">
+              Hard stop across reviews (UTC day). 0 = no cap.
+            </span>
+          </label>
         </div>
 
         <label class="flex items-center gap-2 text-xs text-base-content/60 cursor-pointer">
@@ -137,7 +163,7 @@ import ChatProfileSelector from '@/components/chat/ChatProfileSelector.vue'
           <span v-else class="text-[10px] text-base-content/35 ml-auto">background worker online</span>
         </div>
 
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
           <div class="flex flex-col">
             <span class="text-base-content/40">Last run</span>
             <span class="font-medium">{{ state.last_finished_at ? when(state.last_finished_at) : 'Never' }}</span>
@@ -151,7 +177,11 @@ import ChatProfileSelector from '@/components/chat/ChatProfileSelector.vue'
             <span class="font-medium tabular-nums">{{ state.runs || 0 }}</span>
           </div>
           <div class="flex flex-col">
-            <span class="text-base-content/40">Cost</span>
+            <span class="text-base-content/40">Today</span>
+            <span class="font-medium tabular-nums">{{ formatCost(dailySpent) }} cxj</span>
+          </div>
+          <div class="flex flex-col">
+            <span class="text-base-content/40">Total cost</span>
             <span class="font-medium tabular-nums">{{ formatCost(state.total_cost) }} cxj</span>
           </div>
         </div>
@@ -231,7 +261,9 @@ const DEFAULT_CONFIG = () => ({
   max_actions: 5,
   max_tasks: 80,
   include_done: false,
-  instructions: ''
+  instructions: '',
+  budget_cxjcoins: 2,
+  daily_budget_cxjcoins: 10
 })
 
 const DEFAULT_STATE = () => ({
@@ -261,6 +293,7 @@ export default {
       config: { ...DEFAULT_CONFIG(), ...(this.board?.manager || {}) },
       state: DEFAULT_STATE(),
       nextRunAt: '',
+      dailySpent: 0,
       workerPresent: true,
       loading: false,
       saving: false,
@@ -322,7 +355,9 @@ export default {
           profile,
           interval_minutes: Math.max(5, Math.min(10080, Number(this.config.interval_minutes) || 60)),
           max_actions: Math.max(1, Math.min(20, Number(this.config.max_actions) || 5)),
-          max_tasks: Math.max(1, Math.min(200, Number(this.config.max_tasks) || 80))
+          max_tasks: Math.max(1, Math.min(200, Number(this.config.max_tasks) || 80)),
+          budget_cxjcoins: Math.max(0, Number(this.config.budget_cxjcoins) || 0),
+          daily_budget_cxjcoins: Math.max(0, Number(this.config.daily_budget_cxjcoins) || 0)
         }
       })
     },
@@ -337,6 +372,7 @@ export default {
         if (!entry) return
         this.workerPresent = response.worker_present
         this.nextRunAt = entry.next_run_at || ''
+        this.dailySpent = Number(entry.daily_spent || 0)
         this.state = { ...DEFAULT_STATE(), ...(entry.state || {}) }
         if (!this.configInitialized && entry.config) {
           this.config = { ...DEFAULT_CONFIG(), ...entry.config }

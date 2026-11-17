@@ -96,6 +96,19 @@ POLICY_BOARD = "board_only"
 POLICIES = (POLICY_FULL, POLICY_BOARD)
 DEFAULT_POLICY = POLICY_FULL
 
+#: Tools a ``board_only`` shift may use.
+#:
+#: The list is enforced by ``ChatEngine`` *after* it collects the profile
+#: grants, not by the prompt: a board manager that links the ``codx-junior``
+#: profile must never inherit the shell, git, browser or file tools. Keep this
+#: list to task/board tools only; anything that can write the repository or run
+#: a command is deliberately absent.
+BOARD_ONLY_TOOLS = (
+    "project_manager",
+    "create_task",
+    "schedule_task",
+)
+
 #: Session shape: one turn, or turns until the work is done.
 SESSION_SINGLE = "single"
 SESSION_UNTIL_DONE = "until_done"

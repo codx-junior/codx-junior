@@ -157,6 +157,9 @@
           <i class="fa-solid fa-circle-check mr-1"></i>
           Team <b>{{ result.team?.name }}</b> created — {{ (result.created_profiles || []).length }} profile(s) created,
           {{ (result.reused_profiles || []).length }} reused.
+          <span v-if="result.company_team && result.company_team.team_id" class="block text-success">
+            Company team synced: <b>{{ result.company_team.team_name }}</b>
+          </span>
           <span v-if="result.errors && result.errors.length" class="text-warning block">
             {{ result.errors.join('; ') }}
           </span>
@@ -214,6 +217,12 @@ const WEEKDAYS = [
 
 export default {
   name: 'GenerateTeamDialog',
+  props: {
+    /** Optional company id: also syncs the team into the company shell. */
+    companyId: { type: String, default: '' },
+    /** Project used for the teams/boards APIs (defaults to the active one). */
+    project: { type: Object, default: null }
+  },
   emits: ['close', 'created'],
   data() {
     return {
@@ -243,13 +252,13 @@ export default {
   computed: {
     /** Teams API of the active project (nothing is hardcoded). */
     teamsApi() {
-      return this.$project?.$api?.teams
+      return this.project?.$api?.teams || this.$project?.$api?.teams
     }
   },
   methods: {
     async loadBoards() {
       try {
-        const api = this.$project?.$api?.actors
+        const api = this.project?.$api?.actors || this.$project?.$api?.actors
         this.boards = api ? await api.boards() : []
       } catch (e) {
         console.warn('[GenerateTeamDialog] cannot load boards', e)
@@ -258,9 +267,13 @@ export default {
     },
     toggleDay(day) {
       const days = this.window.days
-      this.window.days = days.includes(day)
+      const next = days.includes(day)
         ? days.filter(item => item !== day)
         : WEEKDAYS.map(item => item.id).filter(item => item === day || days.includes(item))
+      // Empty means "every day" in the backend; never let a deselect turn an
+      // office-hours window into 24/7.
+      if (!next.length) return
+      this.window.days = next
     },
     schedulePayload() {
       if (!this.autonomous || !this.schedule.enabled) return null
@@ -296,7 +309,8 @@ export default {
           need: this.need.trim(),
           autonomous: this.autonomous,
           board: this.board,
-          schedule: this.schedulePayload()
+          schedule: this.schedulePayload(),
+          company_id: this.companyId
         })
       } catch (e) {
         console.error('[GenerateTeamDialog] suggest failed', e)
@@ -312,7 +326,8 @@ export default {
       this.error = ''
       try {
         this.result = await this.teamsApi.applyGeneration({
-          suggestion: this.suggestion
+          suggestion: this.suggestion,
+          company_id: this.companyId
         })
         this.$ui.addNotification({
           text: `Team “${this.result.team?.name || this.suggestion.team_name}” created`,

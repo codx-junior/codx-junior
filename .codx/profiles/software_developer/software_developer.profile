@@ -7,7 +7,7 @@
   "file_match": "",
   "content": null,
   "parsed_content": null,
-  "path": "/home/codx-junior-projects/codx-junior/.codx/profiles/software_developer/software_developer.profile",
+  "path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/profiles/software_developer/software_developer.profile",
   "profiles": [
     "biblio",
     "git",
@@ -55,6 +55,7 @@
     "project_structure",
     "generate_tasks_tool",
     "create_task",
+    "project_manager",
     "get_file_last_version",
     "project_grep",
     "project_glob",
@@ -62,6 +63,7 @@
     "search_codx"
   ],
   "tags": [],
+  "effort": null,
   "api_settings": {
     "active": false,
     "model_name": null,
@@ -78,6 +80,46 @@
     "use_llm_classifier": false
   },
   "chat_mode": null,
+  "actor": {
+    "enabled": true,
+    "role": "coworker",
+    "policy": "full",
+    "session": "until_done",
+    "board": "Agent: software_developer",
+    "boards": [
+      "IT team"
+    ],
+    "interval_minutes": 120,
+    "mode": "active",
+    "budget_cxjcoins": 0.0,
+    "daily_budget_cxjcoins": 0.0,
+    "max_runtime_minutes": 45,
+    "max_turns": 6,
+    "max_agenda": 3,
+    "max_tasks": 40,
+    "include_done": false,
+    "instructions": "Take the first card in \"To Do\" on the \"IT team\" board, move it to Doing, work one increment only, add a comment with the changed files and the validation evidence (test command + result), then move it to Review. Never close your own card and never widen the scope of the card.",
+    "wake_at": "",
+    "notify": true,
+    "schedule": {
+      "enabled": true,
+      "timezone": "Europe/Madrid",
+      "windows": [
+        {
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "start": "09:00",
+          "end": "19:00"
+        }
+      ]
+    }
+  },
+  "autonomy": null,
   "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
   "chat_id": "82074be7-909e-4ba5-9ade-594a122d21e8"
 }

@@ -173,6 +173,18 @@ from .docker_tools import (
     DOCKER_COMPOSE_SERVICE_TOOL_JSON,
     DOCKER_EXEC_TOOL_JSON,
 )
+from .dockerhub_tools import (
+    dockerhub_whoami,
+    dockerhub_publish,
+    dockerhub_tags,
+    dockerhub_repositories,
+    dockerhub_delete_tag,
+    DOCKERHUB_WHOAMI_TOOL_JSON,
+    DOCKERHUB_PUBLISH_TOOL_JSON,
+    DOCKERHUB_TAGS_TOOL_JSON,
+    DOCKERHUB_REPOSITORIES_TOOL_JSON,
+    DOCKERHUB_DELETE_TAG_TOOL_JSON,
+)
 from .traefik_tools import traefik, TRAEFIK_TOOL_JSON
 from .duckduckgo_search import duckduckgo_search, DUCKDUCKGO_SEARCH_TOOL_JSON
 from .browser_tools import (
@@ -1885,6 +1897,38 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
         "tags": ["qa", "quality", "policy", "configuration"],
         "tool_call": qa_policy
+    },
+    {
+        "tool_json": DOCKERHUB_WHOAMI_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["dockerhub", "docker", "registry", "auth", "devops"],
+        "tool_call": dockerhub_whoami
+    },
+    {
+        "tool_json": DOCKERHUB_PUBLISH_TOOL_JSON,
+        "settings": ToolSettings(
+            project_settings=True, dual_response=True, scope="chat", cache=False, timeout_seconds=1800
+        ).dict(),
+        "tags": ["dockerhub", "docker", "registry", "publish", "release", "devops"],
+        "tool_call": dockerhub_publish
+    },
+    {
+        "tool_json": DOCKERHUB_TAGS_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["dockerhub", "docker", "registry", "tags"],
+        "tool_call": dockerhub_tags
+    },
+    {
+        "tool_json": DOCKERHUB_REPOSITORIES_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["dockerhub", "docker", "registry", "repositories"],
+        "tool_call": dockerhub_repositories
+    },
+    {
+        "tool_json": DOCKERHUB_DELETE_TAG_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["dockerhub", "docker", "registry", "delete", "devops"],
+        "tool_call": dockerhub_delete_tag
     },
 ]
 

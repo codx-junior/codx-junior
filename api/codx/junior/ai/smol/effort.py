@@ -347,18 +347,45 @@ def default_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy
     return _apply_overrides(policy, settings)
 
 
+def _tier_policy(
+    name: str,
+    settings: Optional[Mapping[str, Any]],
+) -> EffortPolicy:
+    """
+    Return the policy of one base tier by name.
+
+    Args:
+        name:     ``agile``, ``max`` or ``default``.
+        settings: Optional overrides passed to the tier factory.
+
+    Returns:
+        The tier policy; an unknown name resolves to the plain-chat default.
+    """
+    if name == MAX_NAME:
+        return max_policy(settings)
+    if name == AGILE_NAME:
+        return agile_policy(settings)
+    return default_policy(settings)
+
+
 def _resolve_base_policy(
     profile_names: Union[None, str, Sequence[str]],
     orchestration_info: Optional[Mapping[str, Any]],
     settings: Optional[Mapping[str, Any]],
+    effort_name: Optional[str] = None,
 ) -> EffortPolicy:
     """
-    Resolve the tier from the profile names, without applying ``explicit``.
+    Resolve the tier without applying ``explicit``.
 
-    Orchestration (worker/supervisor) keeps its previous behaviour and maps to
-    the MAX policy; otherwise MAX wins over AGILE and a plain chat gets the
-    default policy.
+    Precedence: an effort ASSOCIATED with the turn (``effort_name``, the name of
+    an effort definition edited in Global Settings) wins, then orchestration
+    (worker/supervisor keeps its previous behaviour and maps to MAX), then the
+    profile names (MAX over AGILE) and finally the plain-chat default policy.
     """
+    tier = (effort_name or "").strip().lower()
+    if tier in (AGILE_NAME, MAX_NAME, DEFAULT_NAME):
+        return _tier_policy(tier, settings)
+
     names = _normalize_names(profile_names)
     if orchestration_info:
         return max_policy(settings)
@@ -374,6 +401,8 @@ def effort_for(
     orchestration_info: Optional[Mapping[str, Any]] = None,
     explicit: Optional[bool] = None,
     settings: Optional[Mapping[str, Any]] = None,
+    effort_name: Optional[str] = None,
+    effort_values: Optional[Mapping[str, Any]] = None,
 ) -> EffortPolicy:
     """
     Resolve the effort policy of a turn.
@@ -388,12 +417,25 @@ def effort_for(
                             forces ``continue_on_tool_limit``; forcing it on
                             also grants the continuation budget of the MAX tier
                             when the base tier had none.
-        settings:           Optional overrides passed to the tier factories.
+        settings:           Optional overrides passed to the tier factories
+                            (the profile's own effort overrides).
+        effort_name:        Name of the effort the profile is linked to. Its base
+                            tier replaces the one inferred from the profile names.
+        effort_values:      Values of that effort. They are applied first and
+                            ``settings`` wins on conflict, so a profile-level
+                            override always beats the definition.
 
     Returns:
         The :class:`EffortPolicy` to apply to the turn.
     """
-    policy = _resolve_base_policy(profile_names, orchestration_info, settings)
+    overrides: Dict[str, Any] = dict(effort_values or {})
+    overrides.update(settings or {})
+    policy = _resolve_base_policy(
+        profile_names,
+        orchestration_info,
+        overrides or None,
+        effort_name=effort_name,
+    )
     if explicit is None:
         return policy
     if not explicit:

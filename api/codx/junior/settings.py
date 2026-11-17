@@ -921,6 +921,11 @@ class CODXJuniorSettings(BaseModel):
         Returns ``None`` when the name points to no codx-junior project. A
         project is recognized by its `.codx/project.json` file, so an arbitrary
         folder or a library name never turns into a "project".
+
+        The name is resolved on disk first (a folder next to the project, a
+        folder inside it or an absolute path). When nothing matches, the
+        project catalogue is queried, so a dependency linked from the settings
+        page and living outside this tree still resolves.
         """
         for candidate in self._dependency_candidate_paths(name):
             project_file = os.path.join(candidate, ".codx", "project.json")
@@ -933,7 +938,30 @@ class CODXJuniorSettings(BaseModel):
                     "Project '%s': dependency '%s' could not be loaded: %s",
                     self.project_name, name, ex,
                 )
-        return None
+        return self._catalogue_dependency_project(name)
+
+    def _catalogue_dependency_project(
+        self, name: str
+    ) -> Optional["CODXJuniorSettings"]:
+        """
+        Resolve a dependency name through the project catalogue.
+
+        Imported lazily: ``project_discover`` imports this module, so a
+        module-level import would create a cycle. Any failure (catalogue not
+        available, scan error) simply means "not found".
+        """
+        if not (name or "").strip():
+            return None
+        try:
+            from .project.project_discover import find_project_by_name
+
+            return find_project_by_name(name)
+        except Exception as ex:  # pragma: no cover - never break a lookup
+            logger.debug(
+                "Project '%s': catalogue lookup for dependency '%s' failed: %s",
+                self.project_name, name, ex,
+            )
+            return None
 
     def get_dependency_projects(self) -> List["CODXJuniorSettings"]:
         """

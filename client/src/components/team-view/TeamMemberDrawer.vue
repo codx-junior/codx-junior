@@ -4,7 +4,15 @@ import Document from '@/components/document/Document.vue'
 import ContentEditorModal from './ContentEditorModal.vue'
 import ToolDetailsModal from './ToolDetailsModal.vue'
 import ProfileKnowledgeEditor from '@/components/profiles/ProfileKnowledgeEditor.vue'
-import { ROLE_META, roleMeta, avatarUrl, EMPTY_GUARDRAILS } from './config'
+import {
+  ROLE_META,
+  roleMeta,
+  avatarUrl,
+  EMPTY_GUARDRAILS,
+  effortTier,
+  AGILE_PROFILE,
+  MAX_PROFILE
+} from './config'
 </script>
 
 <template>
@@ -378,6 +386,57 @@ import { ROLE_META, roleMeta, avatarUrl, EMPTY_GUARDRAILS } from './config'
           </p>
         </div>
 
+        <!-- Effort (one link: the definition lives in Global Settings → Efforts) -->
+        <div v-else-if="tab === 'effort'" class="flex flex-col gap-4">
+          <div class="alert py-2 text-[11px] gap-2 bg-base-200 border-base-content/10">
+            <i class="fa-solid fa-gauge-high text-secondary"></i>
+            <span>
+              Effort is how much work a turn may do: budget, course corrections,
+              clock and validation. Pick the effort this member works with — its
+              values are defined once in Global Settings → Efforts.
+            </span>
+          </div>
+
+          <div>
+            <label class="label-text text-xs font-semibold block mb-1">Effort</label>
+            <select
+              class="select select-sm select-bordered w-full"
+              :value="draft.effort_name ?? member.effort_name ?? ''"
+              @change="selectEffort($event.target.value)"
+            >
+              <option value="">Inherit from the profiles of the turn</option>
+              <option v-for="effort in efforts" :key="effort.name" :value="effort.name">
+                {{ effort.name }}{{ effort.builtin ? '' : ' *' }}
+              </option>
+            </select>
+          </div>
+
+          <div
+            v-if="findEffort()"
+            class="p-3 rounded-lg bg-base-200 border border-base-content/10"
+          >
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold">{{ findEffort().name }}</span>
+              <span class="badge badge-sm badge-ghost">{{ findEffort().tier }}</span>
+              <span
+                v-if="findEffort().builtin"
+                class="text-[10px] text-base-content/40 ml-auto"
+              >built-in</span>
+            </div>
+            <p class="text-[11px] text-base-content/50 mt-1">
+              {{ findEffort().description || 'No description.' }}
+            </p>
+          </div>
+          <p v-else class="text-[11px] text-base-content/50">
+            No effort linked: the turn follows the profiles in play
+            ({{ effortTierMeta.label }} — {{ effortTierMeta.hint }}).
+          </p>
+
+          <p v-if="!efforts.length" class="text-[11px] text-warning">
+            No effort definition found. Create one in Global Settings → Efforts.
+          </p>
+        </div>
+
         <!-- Advanced -->
         <div v-else class="flex flex-col gap-4">
           <div class="alert py-2 text-[11px] gap-2 bg-base-200 border-base-content/10">
@@ -509,11 +568,19 @@ export default {
       // Skill (tool) whose details are open in the details modal.
       detailsTool: null,
       roleMetaMap: ROLE_META,
+      // Effort tiers come from the profile names (codx-junior / codx-junior-max).
+      agileProfile: AGILE_PROFILE,
+      maxProfile: MAX_PROFILE,
+      // Effort definitions the member can be linked to (Global Settings owns
+      // the values; here only name + description are shown).
+      efforts: [],
+      effortFields: [],
       tabs: [
         { id: 'about', label: 'About', icon: 'fa-solid fa-user' },
         { id: 'persona', label: 'Persona', icon: 'fa-solid fa-wand-magic-sparkles' },
         { id: 'knowledge', label: 'Knowledge', icon: 'fa-solid fa-brain' },
         { id: 'capabilities', label: 'Capabilities', icon: 'fa-solid fa-wrench' },
+        { id: 'effort', label: 'Effort', icon: 'fa-solid fa-gauge-high' },
         { id: 'guardrails', label: 'Guardrails', icon: 'fa-solid fa-shield-halved' },
         { id: 'advanced', label: 'Advanced', icon: 'fa-solid fa-key' }
       ]
@@ -593,6 +660,31 @@ export default {
     linkedProfiles() {
       return this.draft.profiles || []
     },
+    // Effort tier resolved exactly like the backend `effort_for`: the member and
+    // the profiles it is linked to take part in the turn.
+    effortTierMeta() {
+      return effortTier([this.draft.name, ...(this.draft.profiles || [])])
+    },
+    hasEffortTierProfile() {
+      return this.effortTierMeta.id !== 'default'
+    },
+    // Editable overrides grouped for the form (Budget, Clock, Validation...).
+    effortGroups() {
+      const groups = []
+      ;(this.effortFields || []).forEach(field => {
+        let group = groups.find(item => item.name === field.group)
+        if (!group) {
+          group = { name: field.group, fields: [] }
+          groups.push(group)
+        }
+        group.fields.push(field)
+      })
+      return groups
+    },
+    // How many overrides the member carries (empty form = inherits the tier).
+    effortOverridesCount() {
+      return Object.keys(this.cleanedEffort(this.draft.effort || {})).length
+    },
     apiNamePlaceholder() {
       const projectName = this.$project?.project_name || 'project'
       return `default: ${projectName}/${this.draft.name || ''}`
@@ -608,6 +700,7 @@ export default {
   },
   mounted() {
     window.addEventListener('keydown', this.onKeydown)
+    this.loadEfforts()
   },
   beforeUnmount() {
     window.removeEventListener('keydown', this.onKeydown)
@@ -640,7 +733,9 @@ export default {
         guardrails: {
           ...JSON.parse(JSON.stringify(EMPTY_GUARDRAILS)),
           ...(source.guardrails || {})
-        }
+        },
+        // Effort overrides: every unset field inherits the resolved tier.
+        effort: { ...(source.effort || {}) }
       }
       this.tab = 'about'
       this.contentMode = 'view'
@@ -702,10 +797,89 @@ export default {
         ? allowed.filter(name => name !== toolName)
         : [...allowed, toolName]
     },
+    // ── Effort (profile `effort` block, overrides the tier defaults) ────────
+    /**
+     * Store one effort override. An empty control means "inherit the tier
+     * default", so it becomes `null` instead of 0/''.
+     */
+    setEffort(key, raw, control) {
+      if (!this.draft.effort) this.draft.effort = {}
+      if (control === 'toggle') {
+        this.draft.effort[key] = !!raw
+        return
+      }
+      const text = typeof raw === 'string' ? raw.trim() : raw
+      if (text === '' || text === null || text === undefined) {
+        this.draft.effort[key] = null
+        return
+      }
+      if (control === 'number') {
+        const value = Number(text)
+        this.draft.effort[key] = Number.isFinite(value) ? value : null
+        return
+      }
+      if (control === 'list') {
+        this.draft.effort[key] = String(text)
+          .split(',')
+          .map(item => item.trim())
+          .filter(Boolean)
+        return
+      }
+      this.draft.effort[key] = text
+    },
+    /**
+     * Load the effort definitions the member can be linked to.
+     *
+     * The values live in Global Settings → Efforts; this tab only needs the
+     * name and the description to let the user pick one.
+     */
+    loadEfforts() {
+      const api = this.$project?.$api?.efforts
+      if (!api) return
+      api.list()
+        .then(efforts => { this.efforts = efforts || [] })
+        .catch(() => { this.efforts = [] })
+    },
+    /** The effort currently linked to the draft (or to the member), if any. */
+    findEffort() {
+      const name = this.draft.effort_name ?? this.member?.effort_name ?? ''
+      if (!name) return null
+      return this.efforts.find(effort => effort.name === name) || null
+    },
+    /** Link the member to an effort (empty string clears the link). */
+    selectEffort(name) {
+      this.draft.effort_name = name || null
+    },
+    resetEffort() {
+      this.draft.effort = {}
+    },
+    /**
+     * Effort payload for the API: unset fields are dropped so a member with no
+     * overrides keeps sending no `effort` block at all.
+     */
+    cleanedEffort(source) {
+      const cleaned = {}
+      Object.entries(source || {}).forEach(([key, value]) => {
+        if (value === null || value === undefined || value === '') return
+        if (Array.isArray(value) && !value.length) return
+        cleaned[key] = value
+      })
+      return cleaned
+    },
+
     // ── Persistence ────────────────────────────────────────────────────────
     submit() {
       if (!this.draft.name || !this.draft.name.trim() || this.saving) return
-      this.$emit('save', { profile: this.draft })
+      const effort = this.cleanedEffort(this.draft.effort)
+      this.$emit('save', {
+        profile: {
+          ...this.draft,
+          // The association is what the team view owns: the values live in the
+          // effort definition (Global Settings → Efforts).
+          effort_name: this.draft.effort_name || null,
+          effort: Object.keys(effort).length ? effort : null
+        }
+      })
     },
     requestDelete() {
       this.$emit('delete', { profile: this.draft })

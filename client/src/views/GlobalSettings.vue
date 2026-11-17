@@ -10,6 +10,7 @@ import PluginsEditor from '@/components/global_settings/plugins/PluginsEditor.vu
 import EnvVariablesEditor from '@/components/global_settings/EnvVariablesEditor.vue'
 import GeneralSettings from '@/components/global_settings/GeneralSettings.vue'
 import ChatGlobalPrompts from '@/components/global_settings/ChatGlobalPrompts.vue'
+import EffortsSettings from '@/components/global_settings/EffortsSettings.vue'
 import TraefikRulesPanel from '@/components/traefik/TraefikRulesPanel.vue'
 import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPanel.vue'
 </script>
@@ -90,6 +91,7 @@ import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPane
             <AgentSettings v-if="activeTab === 'agents'" />
             <EnvVariablesEditor :settings="settings" v-if="activeTab === 'env'" />
             <ChatGlobalPrompts :settings="settings" v-if="activeTab === 'chat'" />
+            <EffortsSettings :settings="settings" v-if="activeTab === 'efforts'" />
             <TraefikRulesPanel
               v-if="activeTab === 'traefik'"
               scope="global"
@@ -170,6 +172,7 @@ import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPane
           <AgentSettings v-if="activeTab === 'agents'" />
           <EnvVariablesEditor :settings="settings" v-if="activeTab === 'env'" />
           <ChatGlobalPrompts :settings="settings" v-if="activeTab === 'chat'" />
+          <EffortsSettings :settings="settings" v-if="activeTab === 'efforts'" />
           <TraefikRulesPanel
             v-if="activeTab === 'traefik'"
             scope="global"
@@ -194,6 +197,7 @@ export default {
         { id: 'ai', label: 'AI Models', icon: 'fa-brain' },
         { id: 'agents', label: 'Agents', icon: 'fa-robot' },
         { id: 'chat', label: 'Chat Prompts', icon: 'fa-comments' },
+        { id: 'efforts', label: 'Efforts', icon: 'fa-gauge-high' },
         { id: 'plugins', label: 'Plugins', icon: 'fa-puzzle-piece' },
         { id: 'workspaces', label: 'Workspaces', icon: 'fa-cube' },
         { id: 'traefik', label: 'Traefik', icon: 'fa-route' },
@@ -265,7 +269,8 @@ export default {
         users: 'Control user access and permissions',
         scripts: 'Create and manage project scripts',
         oauth: 'Configure OAuth providers',
-        env: 'Manage environment variables'
+        env: 'Manage environment variables',
+        efforts: 'Define the effort budgets (name, description and values) that profiles are linked to'
       }
       return descriptions[this.activeTab] || ''
     }

@@ -217,14 +217,21 @@ def read_folder(
     )
 
 
-def _validate_path(path_str: str, project_root: str, codx_root: Optional[str] = None) -> Path:
+def _validate_path(
+    path_str: str,
+    project_root: str,
+    codx_root: Optional[str] = None,
+    extra_roots: Optional[List[str]] = None,
+) -> Path:
     """
-    Validate that a path is within project or codx boundaries.
+    Validate that a path is within the project, the codx root or a linked project.
 
     Args:
         path_str: Path string to validate.
         project_root: Project root path.
         codx_root: Optional codx root path.
+        extra_roots: Optional roots of the projects linked to this one (children
+            and declared dependencies).
 
     Returns:
         Path: Resolved path object.
@@ -252,6 +259,14 @@ def _validate_path(path_str: str, project_root: str, codx_root: Optional[str] = 
         except ValueError:
             pass
     
+    # Check if path is within a linked project (children + dependencies)
+    for extra_root in extra_roots or []:
+        try:
+            resolved_path.relative_to(Path(extra_root).resolve())
+            return resolved_path
+        except ValueError:
+            pass
+
     raise ValueError(
         f"Path '{path_str}' is not within project root '{project_root}' "
         f"or codx root '{codx_root or 'not provided'}'"
@@ -335,6 +350,42 @@ def _codx_redirect_message() -> str:
     )
 
 
+def _is_within(root: str, abs_path: str) -> bool:
+    """
+    Return True when *abs_path* is *root* or a descendant of it.
+
+    Compares path components on real paths, so ``/project-other`` is never
+    mistaken for a descendant of ``/project``.
+    """
+    try:
+        root_real = os.path.realpath(root)
+        target_real = os.path.realpath(abs_path)
+        return os.path.commonpath([root_real, target_real]) == root_real
+    except (ValueError, OSError):
+        return False
+
+
+def _related_project_settings(
+    settings: "CODXJuniorSettings",
+) -> List["CODXJuniorSettings"]:
+    """
+    Return the linked projects (children + dependencies) that have a root.
+
+    ``get_related_projects`` resolves declared dependencies through the project
+    catalogue as well, so a project linked from the settings page and living
+    outside the project tree is reachable by the file tools.
+    """
+    try:
+        related = settings.get_related_projects() or []
+    except Exception as ex:
+        logger.debug("Could not resolve related projects: %s", ex)
+        return []
+    return [
+        project for project in related
+        if (getattr(project, "abs_project_path", "") or "").strip()
+    ]
+
+
 def _build_structure(
     settings: "CODXJuniorSettings",
     include_details: bool = False,
@@ -384,25 +435,48 @@ def _build_structure(
     try:
         project_root = os.path.abspath(settings.abs_project_path)
 
-        # Read the project files directly from disk (including child projects),
-        # filtering with only the repository .gitignore.
-        project_files: List[str] = _collect_project_files(settings=settings)
-
-        if not project_files:
-            return "No files found in the project."
-
-        # Validate and resolve path if provided
+        # Validate and resolve path if provided. This runs before collecting
+        # files: a path pointing at a linked project is redirected to that
+        # project, so the redirect must not depend on the current project
+        # having files of its own.
         target_path = None
         if path:
             codx_root = getattr(settings, "abs_codx_path", None)
+            related_projects = _related_project_settings(settings)
+            related_roots = [
+                os.path.abspath(project.abs_project_path)
+                for project in related_projects
+            ]
             try:
-                target_path = _validate_path(path, project_root, codx_root)
+                target_path = _validate_path(
+                    path, project_root, codx_root, related_roots
+                )
             except ValueError as ex:
                 raise ValueError(f"Invalid path parameter: {str(ex)}") from ex
             # The control plane has its own search tool: do not dump a tree of
             # tasks/sessions and send the model wandering through .codx.
             if is_codx_path(project_root, str(target_path)):
                 return _codx_redirect_message()
+            # A linked project may live outside the tree: its files are not in
+            # ``project_files``, so the tree is built from its own root.
+            if not _is_within(project_root, str(target_path)):
+                for related in related_projects:
+                    related_root = os.path.abspath(related.abs_project_path)
+                    if _is_within(related_root, str(target_path)):
+                        return _build_structure(
+                            settings=related,
+                            include_details=include_details,
+                            max_depth=max_depth,
+                            include_file_sizes=include_file_sizes,
+                            path=os.path.relpath(str(target_path), related_root),
+                        )
+
+        # Read the project files directly from disk (including child projects),
+        # filtering with only the repository .gitignore.
+        project_files: List[str] = _collect_project_files(settings=settings)
+
+        if not project_files:
+            return "No files found in the project."
 
         structure_tree: Dict[str, Any] = {}
 

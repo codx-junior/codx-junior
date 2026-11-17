@@ -141,12 +141,24 @@ class Profile(BaseModel):
     user: Optional[CodxUser] = Field(default=CodxUser())
     tools: Optional[List[str]] = Field(default=[])
     tags: Optional[List[str]] = Field(default=[])
+    effort_name: Optional[str] = Field(
+        default=None,
+        description=(
+            "Name of the effort this profile is linked to (see `.codx/efforts` "
+            "and Global Settings → Efforts"
+            ")" 
+            "and Global Settings → Efforts). The team view only exposes this "
+            "name: the values are materialized into `effort` when the profile "
+            "is saved."
+        ),
+    )
     effort: Optional[ProfileEffortSettings] = Field(
         default=None,
         description=(
-            "Agent effort budget for turns where this profile is active. "
-            "Overrides the tier defaults from codx.junior.ai.smol.effort "
-            "(max_iterations, max_tool_calls, continuations, wall clock...)."
+            "Agent effort budget for turns where this profile is active. It is "
+            "usually materialized from `effort_name` and overrides the tier "
+            "defaults from codx.junior.ai.smol.effort (max_iterations, "
+            "max_tool_calls, continuations, wall clock...)."
         ),
     )
     api_settings: Optional[ProfileApiSettings] = Field(description="Indicates if the profile is accessible through the LLM API", default=ProfileApiSettings())

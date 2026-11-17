@@ -69,8 +69,59 @@ def _has_index(settings: Any) -> bool:
         return False
 
 
+def _catalogue_project(name: str) -> Optional[Any]:
+    """
+    Resolve a declared dependency name through the project catalogue.
+
+    ``CODXJuniorSettings.get_related_projects`` resolves a name on disk only (a
+    sibling folder, a folder inside the project or an absolute path). A project
+    linked from the settings page usually lives somewhere else entirely, so the
+    name is looked up in the project catalogue too - the same fallback
+    ``project_discover.get_project_dependencies`` already applies.
+
+    Imported lazily: the catalogue pulls the settings module.
+    """
+    wanted = (name or "").strip().lower()
+    if not wanted:
+        return None
+    try:
+        from ..project.project_discover import find_all_projects
+
+        projects = find_all_projects() or {}
+    except Exception:  # pragma: no cover - catalogue unavailable
+        logger.debug("Atlas: project catalogue unavailable", exc_info=True)
+        return None
+    for project in projects.values():
+        candidates = {
+            str(getattr(project, "project_name", "") or "").lower(),
+            str(getattr(project, "project_id", "") or "").lower(),
+            os.path.basename(_root(project)).lower(),
+        }
+        if wanted in candidates:
+            return project
+    return None
+
+
+def _row(project: Any, own_root: str) -> Optional[Dict[str, Any]]:
+    """Describe one related project (``None`` when it has no root)."""
+    root = _root(project)
+    if not root:
+        return None
+    return {
+        "name": getattr(project, "project_name", "") or os.path.basename(root),
+        "root": root,
+        # A project nested in this tree is a child; anything else was
+        # declared as a dependency (next to the project or elsewhere).
+        "kind": CHILD if own_root and _inside(root, own_root) else DEPENDENCY,
+        "settings": project,
+    }
+
+
 def _resolve_structure(settings: Any) -> List[Dict[str, Any]]:
     """Resolve children + dependencies (uncached, without index probing)."""
+    # Related search disabled: every search stays local.
+    if getattr(settings, "search_related_projects", True) is False:
+        return []
     getter = getattr(settings, "get_related_projects", None)
     if not callable(getter):
         return []
@@ -84,18 +135,36 @@ def _resolve_structure(settings: Any) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     seen: set = set()
     for project in candidates:
-        root = _root(project)
-        if not root or root in seen:
+        row = _row(project, own_root)
+        if row is None or row["root"] in seen:
             continue
-        seen.add(root)
-        rows.append({
-            "name": getattr(project, "project_name", "") or os.path.basename(root),
-            "root": root,
-            # A project nested in this tree is a child; anything else was
-            # declared as a dependency (next to the project or elsewhere).
-            "kind": CHILD if own_root and _inside(root, own_root) else DEPENDENCY,
-            "settings": project,
-        })
+        seen.add(row["root"])
+        rows.append(row)
+
+    # Names the on-disk lookup could not resolve: a dependency linked from the
+    # project settings may live outside this tree, so try the catalogue.
+    declared = getattr(settings, "get_dependency_names", None)
+    if callable(declared):
+        try:
+            names = declared() or []
+        except Exception:  # pragma: no cover - best effort
+            names = []
+        known = set()
+        for row in rows:
+            known.add(str(row["name"]).lower())
+            known.add(os.path.basename(str(row["root"])).lower())
+        for name in names:
+            wanted = (name or "").strip()
+            if not wanted or wanted.lower() in known:
+                continue
+            project = _catalogue_project(wanted)
+            row = _row(project, own_root) if project is not None else None
+            if row is None or row["root"] in seen:
+                continue
+            seen.add(row["root"])
+            known.add(wanted.lower())
+            known.add(os.path.basename(str(row["root"])).lower())
+            rows.append(row)
     return rows
 
 

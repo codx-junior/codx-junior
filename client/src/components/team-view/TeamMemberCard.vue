@@ -1,5 +1,5 @@
 <script setup>
-import { roleMeta, avatarUrl } from './config'
+import { roleMeta, avatarUrl, effortSummary } from './config'
 import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
 </script>
 
@@ -33,6 +33,16 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
         :aria-label="knowledge.tooltip"
       >
         <i class="fa-solid fa-book-bookmark text-xs"></i>
+      </span>
+      <!-- Effort tier / overrides (see the member drawer, Effort tab) -->
+      <span
+        v-if="effort.visible"
+        class="shrink-0"
+        :class="effort.id === 'max' ? 'text-error' : (effort.id === 'agile' ? 'text-success' : 'text-base-content/60')"
+        :title="effort.tooltip"
+        :aria-label="effort.tooltip"
+      >
+        <i class="fa-solid fa-gauge-high text-xs"></i>
       </span>
       <!-- Role: icon only, coloured (replaces the "Assistant"/"Chat" badge) -->
       <span class="shrink-0" :class="roleTextColor" :title="role.label" :aria-label="role.label">
@@ -137,6 +147,16 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
         <span v-if="member.llm_model" class="inline-flex items-center gap-1 truncate" :title="member.llm_model">
           <i class="fa-solid fa-brain"></i>{{ member.llm_model }}
         </span>
+        <!-- Effort tier / overrides (editable in the member drawer, Effort tab) -->
+        <span
+          v-if="effort.visible"
+          class="inline-flex items-center gap-1"
+          :class="effort.id === 'max' ? 'text-error' : (effort.id === 'agile' ? 'text-success' : '')"
+          :title="effort.tooltip"
+          :aria-label="effort.tooltip"
+        >
+          <i class="fa-solid fa-gauge-high"></i>{{ effort.label }}
+        </span>
         <!-- Role: icon only, coloured, footer top-right -->
         <span class="ml-auto shrink-0" :class="roleTextColor" :title="role.label" :aria-label="role.label">
           <i :class="role.icon" class="text-xs"></i>
@@ -172,6 +192,11 @@ export default {
     },
     avatar() {
       return avatarUrl(this.member)
+    },
+    // Resolved effort tier (codx-junior → agile, codx-junior-max → max) plus the
+    // number of overrides the member carries. Hidden when there is nothing to say.
+    effort() {
+      return effortSummary(this.member)
     },
     // What this profile has learned for the current project (rules + knowledge
     // files). Empty summary when it has learned nothing: no indicator shown.

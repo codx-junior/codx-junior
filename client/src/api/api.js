@@ -8,6 +8,7 @@ import { viewsModule } from './modules/views'
 import { chatsModule } from './modules/chats'
 import { orchestrationModule } from './modules/orchestration'
 import { teamsModule } from './modules/teams'
+import { effortsModule } from './modules/efforts'
 import { actorsModule } from './modules/actors'
 import { companiesModule } from './modules/companies'
 import { mcpModule } from './modules/mcp'
@@ -790,6 +791,18 @@ const initializeAPI = ({ project, user } = {}) => {
         API._teamsModule = teamsModule(API)
       }
       return API._teamsModule
+    },
+
+    /**
+     * Efforts: the named agent budgets profiles are linked to. The team view
+     * only renders the name/description; the values are edited in Global
+     * Settings. See api/modules/efforts.js and codx/junior/api/efforts.py.
+     */
+    get efforts() {
+      if (!API._effortsModule) {
+        API._effortsModule = effortsModule(API)
+      }
+      return API._effortsModule
     },
 
     /**

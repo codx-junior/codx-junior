@@ -536,6 +536,19 @@ class ProfileManager:
         if not profile.name:
             raise Exception('Invalid profile')
 
+        # A profile linked to an effort carries that effort's values: they are
+        # resolved here, so every consumer of ``profile.effort`` sees the
+        # definition (agile / max / custom) without changing a call site.
+        try:
+            from codx.junior.efforts.effort_manager import apply_effort_to_profile
+            apply_effort_to_profile(getattr(self, "settings", None), profile)
+        except Exception as error:  # never block a profile save
+            logger.warning(
+                "Could not apply the effort of profile '%s': %s",
+                profile.name,
+                error,
+            )
+
         # Create profile folder
         profile_folder = os.path.join(self.profiles_path, profile.name)
         os.makedirs(profile_folder, exist_ok=True)

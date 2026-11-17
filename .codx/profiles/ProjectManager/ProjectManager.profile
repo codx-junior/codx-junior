@@ -7,12 +7,13 @@
   "file_match": "",
   "content": null,
   "parsed_content": null,
-  "path": "/home/codx-junior-projects/codx-junior-projects/codx-services/codx-junior-it/codx-junior-it-demo-company/.codx/profiles/ProjectManager/ProjectManager.profile",
+  "path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/profiles/ProjectManager/ProjectManager.profile",
   "profiles": [
     "biblio",
     "file_editor",
     "TaskManager"
   ],
+  "team": [],
   "llm_model": "",
   "use_knowledge": true,
   "user": {
@@ -22,6 +23,9 @@
     "theme": "dim",
     "projects": [],
     "role": "user",
+    "companies": [],
+    "language": "auto",
+    "workspace_mode": "auto",
     "token": "",
     "disabled": false,
     "github": "",
@@ -41,7 +45,9 @@
     "github_admin": false,
     "github_only": false,
     "token_limit_rules": [],
-    "token_limit_requests": []
+    "token_limit_requests": [],
+    "is_company_mode": false,
+    "company_ids": []
   },
   "tools": [
     "list_profiles_summary",
@@ -56,6 +62,7 @@
     "delivery",
     "reporting"
   ],
+  "effort": null,
   "api_settings": {
     "active": false,
     "model_name": null,
@@ -72,6 +79,46 @@
     "use_llm_classifier": false
   },
   "chat_mode": null,
-  "project_id": "b279754c-debf-4791-945c-cf7e3b306574",
+  "actor": {
+    "enabled": true,
+    "role": "manager",
+    "policy": "full",
+    "session": "until_done",
+    "board": "Agent: ProjectManager",
+    "boards": [
+      "IT team"
+    ],
+    "interval_minutes": 60,
+    "mode": "active",
+    "budget_cxjcoins": 0.0,
+    "daily_budget_cxjcoins": 0.0,
+    "max_runtime_minutes": 30,
+    "max_turns": 4,
+    "max_agenda": 5,
+    "max_tasks": 40,
+    "include_done": false,
+    "instructions": "Own the \"IT team\" board. Every shift: keep only ONE card per member in Doing, move cards whose acceptance evidence exists to Review, move cards blocked >2 shifts to Blocked with a note of what you need from the human, and never close a card your own shift produced. Write the shift report in 10 lines: what moved, what is blocked, what you recommend next.",
+    "wake_at": "",
+    "notify": true,
+    "schedule": {
+      "enabled": true,
+      "timezone": "Europe/Madrid",
+      "windows": [
+        {
+          "days": [
+            "mon",
+            "tue",
+            "wed",
+            "thu",
+            "fri"
+          ],
+          "start": "09:00",
+          "end": "19:00"
+        }
+      ]
+    }
+  },
+  "autonomy": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
   "chat_id": "0a768e36-374b-45fa-bbb2-0ed608471589"
 }

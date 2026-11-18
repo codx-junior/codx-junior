@@ -1,0 +1,144 @@
+# =============================================================================
+# codx-junior — release artifact
+#
+# WHY THIS EXISTS
+# An unattended deployment (cloud-init on a fresh 2 vCPU / 4 GB box) must not
+# compile the product. `install.sh --ref v1.2.3` pins the tree; this workflow is
+# what makes that pin installable: every tag publishes an image under the SAME
+# tag, and `codx-junior-installer/demo/up.sh` derives the image tag from the ref
+# (`vX.Y.Z` -> :vX.Y.Z, anything else -> :demo).
+#
+# A failed pull is fatal in up.sh, so a tag without an image is a hard, loud
+# failure instead of a silent 20 minute build on the customer's machine. That is
+# why the tag push and the image publish must never drift apart: both live here.
+#
+# Secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# =============================================================================
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+    branches:
+      - main
+  workflow_dispatch:
+
+# Two releases never publish concurrently; a tag push is never cancelled by a
+# newer main build (that would leave the tag without its artifact).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: codxjunior/codx-junior
+
+jobs:
+  publish:
+    name: build, smoke test and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The provenance baked into the image is exactly what /api/health reports,
+      # so a deployment can assert the ref it asked for (api/codx/junior/version.py).
+      - name: Resolve provenance and image tags
+        id: meta
+        run: |
+          set -eu
+          ref_name="${GITHUB_REF_NAME}"
+          commit="$(git rev-parse --short=12 HEAD)"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            version="${ref_name#v}"
+            tags="${IMAGE}:${ref_name}"
+          else
+            # Rolling tag for `--ref main`: an explicit, non-pinnable artifact.
+            version="0.0.0-main.${commit}"
+            tags="${IMAGE}:demo"
+          fi
+          {
+            echo "version=${version}"
+            echo "ref=${ref_name}"
+            echo "commit=${commit}"
+            echo "tags=${tags}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Publishing ${tags} (version ${version}, ref ${ref_name}, commit ${commit})"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: codx-junior-installer/demo/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            CODX_JUNIOR_BUILD_VERSION=${{ steps.meta.outputs.version }}
+            CODX_JUNIOR_BUILD_REF=${{ steps.meta.outputs.ref }}
+            CODX_JUNIOR_BUILD_COMMIT=${{ steps.meta.outputs.commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A tag that publishes an image which does not answer, or answers with
+      # another ref, is worse than no tag at all: the pipeline would accept it.
+      - name: Smoke test the published image
+        env:
+          EXPECTED_REF: ${{ steps.meta.outputs.ref }}
+          EXPECTED_COMMIT: ${{ steps.meta.outputs.commit }}
+        run: |
+          set -eu
+          image="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | head -n1)"
+          docker run -d --name release-smoke -p 19981:19981 "${image}"
+          body=""
+          for _ in $(seq 1 60); do
+            if body="$(curl -fsS http://127.0.0.1:19981/api/health 2>/dev/null)"; then
+              break
+            fi
+            sleep 5
+          done
+          docker logs release-smoke || true
+          docker rm -f release-smoke >/dev/null 2>&1 || true
+          echo "health: ${body}"
+          [ -n "${body}" ] || { echo "::error::/api/health never answered"; exit 1; }
+          printf '%s' "${body}" | grep -q "\"ref\":\"${EXPECTED_REF}\"" \
+            || { echo "::error::/api/health does not report ref ${EXPECTED_REF}"; exit 1; }
+          printf '%s' "${body}" | grep -q "\"commit\":\"${EXPECTED_COMMIT}\"" \
+            || { echo "::error::/api/health does not report commit ${EXPECTED_COMMIT}"; exit 1; }
+
+      - name: Publish the GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```bash
+            sudo ./install.sh --ref ${{ github.ref_name }} \
+                 --env-file /etc/codx-junior/settings.env \
+                 --non-interactive </dev/null
+            ```
+
+            Release artifact: `${{ env.IMAGE }}:${{ github.ref_name }}`
+            (`codx-junior-installer/demo/up.sh` derives it from `--ref`, so nothing
+            is compiled on the target box).
+
+            Minimum box for this path: **2 vCPU / 4 GB RAM / 40 GB disk**, pull only.
+            Building from source needs >= 4 vCPU / 8 GB / 20 GB free and ~20 min.
+
+            Readiness probe: `GET /api/health` -> `{status, version, ref, commit}`.
+            The contract is `codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md`.

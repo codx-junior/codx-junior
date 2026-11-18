@@ -42,6 +42,16 @@ Only `--provider` and `--key` are required (`ollama` needs no key). Every other
 value has a default; `install.sh --help` is the full reference, and
 [`cloud/README.md`](cloud/README.md) covers the unattended cloud-VM path.
 
+**Installing on a machine nobody touches** (cloud-init, hosted workspace): the
+supported settings file, the minimum box and wall clock of each path, TLS, the
+first-admin keys and the `/api/health` readiness probe are the contract in
+[`cloud/DEPLOYMENT-CONTRACT.md`](cloud/DEPLOYMENT-CONTRACT.md). In short:
+
+```bash
+sudo ./install.sh --env-file /etc/codx-junior/settings.env \
+     --ref v1.2.3 --domain x.example.com --non-interactive </dev/null
+```
+
 ---
 
 ## 1. Requirements

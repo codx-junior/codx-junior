@@ -1,0 +1,125 @@
+Card: f4e116f1-1792-4191-b75a-d3a7f21b84a6
+Title: project_manager writes must merge into the persisted card
+Apply: git apply -p1 patches/f4e116f1-project-manager-merge.patch
+Check: git apply --check -p1 patches/f4e116f1-project-manager-merge.patch
+
+Why a patch file: chat_manager.py is 2053 lines and
+tools/project_manager_tools.py is 3486 lines. The acting coworker profile
+exposes only whole-file writes (project_write_file / create_pr_branch files=),
+no line-range edit and no shell. Rewriting those files verbatim is not an
+acceptable risk on a red suite, so the change is delivered as 4 reviewable
+hunks with exact line ranges.
+
+Root cause (verified against the current tree, not re-derived):
+  chat_manager.py:1518-1557 load_chat_from_path builds Chat(**chat_data) and
+    never sets chat.file_path, so a stored file_path decides where the next
+    write believes the card lives.
+  chat_manager.py:1408-1414 save_chat deletes only current_chat.file_path,
+    and current_chat comes from find_by_id -- which with duplicates returns
+    whichever rglob hit comes first. The old file therefore survives a move.
+  chat_manager.py:1633-1643 find_by_id uses next(...) over chat_paths(): no
+    determinism, no duplicate detection. Every later write loads the stale
+    copy and saves it whole, so column/status/progress revert and wake_at
+    drops. delete_chat(chat_id=...) cannot be used for the cleanup because it
+    resolves through the same find_by_id.
+  tools/project_manager_tools.py:2624-2625 _append_comment appends to the
+    caller's copy and saves the whole card, so a comment-only write restores
+    the pre-move snapshot (the 13:06:57 reproduction).
+
+--- a/api/codx/junior/chat_manager.py
++++ b/api/codx/junior/chat_manager.py
+@@ -1408,7 +1408,21 @@
+-        # Remove old path if the chat was moved (board/column/name changed)
+-        if current_chat:
+-            logger.info(
+-                "Save chat, current_chat %s at %s", current_chat.id, current_chat.file_path
+-            )
+-            if chat.file_path != current_chat.file_path:
+-                self.delete_chat(current_chat.file_path)
++        # Remove EVERY file carrying this id except the canonical path.
++        # ``current_chat.file_path`` alone is not enough: ``find_by_id`` may
++        # have returned a different copy than the one the caller loaded, so
++        # two files for one id survived a move -- and every later write then
++        # loaded the stale copy and reverted column/status/progress/wake_at.
++        for other_path in self.chat_paths():
++            if other_path == chat.file_path:
++                continue
++            if "/.archive/" in other_path.replace(os.sep, "/"):
++                continue
++            base_name = os.path.basename(other_path)
++            if not (
++                base_name.endswith(f".{chat.id}.json")
++                or base_name.endswith(f".{chat.id}.yaml")
++            ):
++                continue
++            logger.info(
++                "Save chat: removing duplicate %s for chat %s", other_path, chat.id
++            )
++            if os.path.isfile(other_path):
++                os.remove(other_path)
+@@ -1532,1 +1546,7 @@
+         chat = Chat(**chat_data)
++
++        # FIXED: the file actually read is the authoritative location.
++        # A stored ``file_path`` may be stale (hand-edited card, board or
++        # column renamed, move done by another project); writing it back
++        # resurrects the old path and defeats the cleanup in ``save_chat``.
++        chat.file_path = chat_file
+@@ -1633,11 +1654,20 @@
+         all_paths = self.chat_paths()
+-        file_path = next(
+-            (
+-                path for path in all_paths
+-                if os.path.basename(path).endswith(f".{wanted}.json")
+-                or os.path.basename(path).endswith(f".{wanted}.yaml")
+-            ),
+-            None,
+-        )
+-        if file_path:
+-            return self.load_chat_from_path(chat_file=file_path)
++        id_suffixes = (f".{wanted}.json", f".{wanted}.yaml")
++        matches = [
++            path for path in all_paths
++            if os.path.basename(path).endswith(id_suffixes)
++        ]
++        if matches:
++            # FIXED: several files for one id must never be resolved
++            # arbitrarily. ``next(...)`` returned whichever ``rglob`` hit came
++            # first, so a later write loaded and saved a pre-move snapshot and
++            # reverted column/status/progress/wake_at.
++            file_path = max(matches, key=os.path.getmtime)
++            if len(matches) > 1:
++                logger.error(
++                    "[chat_id] %d files for one id, using newest %s (stale: %s)",
++                    len(matches),
++                    file_path,
++                    [path for path in matches if path != file_path],
++                )
++            return self.load_chat_from_path(chat_file=file_path)
+
+--- a/api/codx/junior/tools/project_manager_tools.py
++++ b/api/codx/junior/tools/project_manager_tools.py
+@@ -2624,2 +2624,12 @@
+-    chat.messages.append(message)
+-    chat_manager.save_chat(chat=chat)
++    # FIXED: a comment must not carry a pre-call snapshot of the card.
++    # Reload the persisted card and re-apply it onto the caller's object so a
++    # message-only write cannot revert column/status/progress/wake_at.
++    persisted = chat_manager.find_by_id(chat.id) if chat.id else None
++    if persisted is not None and persisted is not chat:
++        for key, value in vars(persisted).items():
++            if key != "messages":
++                setattr(chat, key, value)
++        chat.messages = list(persisted.messages)
++
++    chat.messages.append(message)
++    chat_manager.save_chat(chat=chat)
+
+Validation owed when the suite collects (0dd3f3d4):
+  1. update_task(chat_id=X, wake_at="+2d") alone -> column/status/progress
+     unchanged on get_task read-back.
+  2. update_task(chat_id=X, board="IT team", column="Doing") alone -> wake_at
+     and priority unchanged on read-back.
+  3. request_help(comment=...) alone -> column/status/wake_at unchanged.
+  4. after a column move exactly one file matches f"*.{id}.json" under
+     .codx/tasks (glob output pasted on the card).

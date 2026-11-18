@@ -12,6 +12,7 @@ from codx.junior.security.user_management import (
     get_authenticated_user,
     is_github_admin_account,
     _redact_token,
+    redact_user,
 )
 from codx.junior.model.user import CodxUser, CodxUserLogin
 from codx.junior.model.model import GlobalSettings
@@ -200,7 +201,7 @@ async def user_login(request: Request, response: Response):
 
     login_user = CodxUserLogin(**body)
     user = get_authenticated_user(request=request)
-    logger.info(f"user_login user: {user} - body: {login_user}")
+    logger.info(f"user_login user: {redact_user(user)} - body: {redact_user(login_user)}")
     if user:
         response.set_cookie(key="codx-session", value=user.token)
         return user
@@ -213,7 +214,7 @@ async def user_update(request: Request, user: CodxUser = Depends(get_authenticat
     user_security_manager = UserSecurityManager()
     user_changes = CodxUser(**body)
     if user.username != user_changes.username:
-      logger.error(f"User {user} not match {user_changes}")
+      logger.error(f"User {redact_user(user)} not match {redact_user(user_changes)}")
       raise Exception("Invalid data")
     return user_security_manager.update_user(user_changes)
 

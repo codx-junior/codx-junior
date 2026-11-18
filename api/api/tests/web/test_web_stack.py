@@ -1,14 +1,12 @@
 """Tests for the model facing web stack (guard, extraction, search, fetch)."""
 
+import sys
+import types
+
 import pytest
 
 from codx.junior.web import guard
-
-# Reader-mode extraction (``codx.junior.web.extract``) is not shipped in this
-# tree, so the extraction cases are skipped instead of breaking collection.
-pytest.importorskip("codx.junior.web.extract")
-
-from codx.junior.web.extract import (  # noqa: E402
+from codx.junior.web.extract import (
     clean_markdown,
     extract_content,
     is_thin,
@@ -214,3 +212,192 @@ def test_fetch_page_refuses_private_targets():
 
     with pytest.raises(guard.UnsafeUrlError):
         fetch_page("http://169.254.169.254/latest/meta-data")
+
+
+# ---------------------------------------------------------------------------
+# browser escalation (no network, no Chromium: everything is faked)
+# ---------------------------------------------------------------------------
+
+class _FakeResponse:
+    status = 200
+    headers = {"content-type": "text/html"}
+
+
+class _FakeChromiumPage:
+    """Minimal stand-in for ``playwright.sync_api.Page``."""
+
+    def __init__(self, html, final_url):
+        self._html = html
+        self.url = final_url
+        self.routes = []
+
+    def route(self, pattern, handler):
+        self.routes.append((pattern, handler))
+
+    def goto(self, url, wait_until=None, timeout=None):
+        self.requested = (url, wait_until, timeout)
+        return _FakeResponse()
+
+    def wait_for_load_state(self, state, timeout=None):
+        return None
+
+    def content(self):
+        return self._html
+
+
+class _FakeBrowser:
+    def __init__(self, page):
+        self._page = page
+        self.closed = False
+
+    def new_context(self, **kwargs):
+        self.context_kwargs = kwargs
+        return self
+
+    def new_page(self):
+        return self._page
+
+    def close(self):
+        self.closed = True
+
+
+class _FakePlaywright:
+    def __init__(self, browser):
+        self.chromium = self
+        self._browser = browser
+
+    def launch(self, **kwargs):
+        self.launch_kwargs = kwargs
+        return self._browser
+
+
+def _fake_playwright(monkeypatch, html, final_url):
+    """Install a fake ``playwright.sync_api`` so no browser runtime is needed."""
+    page = _FakeChromiumPage(html, final_url)
+    browser = _FakeBrowser(page)
+    playwright = _FakePlaywright(browser)
+
+    class _PlaywrightError(Exception):
+        pass
+
+    class _Manager:
+        def __enter__(self):
+            return playwright
+
+        def __exit__(self, *exc_info):
+            return False
+
+    module = types.ModuleType("playwright.sync_api")
+    module.sync_playwright = lambda: _Manager()
+    module.Error = _PlaywrightError
+    package = types.ModuleType("playwright")
+    package.sync_api = module
+    monkeypatch.setitem(sys.modules, "playwright", package)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", module)
+    return page
+
+
+#: A page that only makes sense once JavaScript filled the ``#root`` div.
+JS_SHELL = (
+    "<html><head><title>App</title></head><body>"
+    '<div id="root"></div><script src="/app.js"></script>'
+    "</body></html>"
+)
+
+
+def test_fetch_page_escalates_to_the_browser(monkeypatch):
+    from codx.junior.web import browser_fetch
+    from codx.junior.web import fetch as web_fetch
+
+    static_page = guard.FetchedPage(
+        url="https://example.com/app",
+        final_url="https://example.com/app",
+        status=200,
+        content_type="text/html",
+        text=JS_SHELL,
+    )
+    rendered_page = guard.FetchedPage(
+        url="https://example.com/app",
+        final_url="https://example.com/app",
+        status=200,
+        content_type="text/html",
+        text=ARTICLE,
+    )
+    monkeypatch.setattr(web_fetch, "validate_url", lambda url, allow_private=False: url)
+    monkeypatch.setattr(web_fetch, "safe_get", lambda *args, **kwargs: static_page)
+    monkeypatch.setattr(browser_fetch, "render_page", lambda *args, **kwargs: rendered_page)
+
+    result = web_fetch.fetch_page(
+        "https://example.com/app",
+        max_chars=0,
+        settings=WebSettings(browser_escalation=True),
+    )
+
+    assert result.rendered is True
+    assert "Sentence with real content" in result.markdown
+    assert "NAVTOKEN" not in result.markdown
+    assert result.note == ""
+
+
+def test_fetch_page_fails_closed_when_the_browser_is_missing(monkeypatch):
+    from codx.junior.web import browser_fetch
+    from codx.junior.web import fetch as web_fetch
+
+    static_page = guard.FetchedPage(
+        url="https://example.com/app",
+        final_url="https://example.com/app",
+        status=200,
+        content_type="text/html",
+        text='<html><body><p>STATICTOKEN</p><div id="root"></div></body></html>',
+    )
+    monkeypatch.setattr(web_fetch, "validate_url", lambda url, allow_private=False: url)
+    monkeypatch.setattr(web_fetch, "safe_get", lambda *args, **kwargs: static_page)
+
+    for error in (browser_fetch.BrowserUnavailable, browser_fetch.RenderError):
+        def explode(*args, **kwargs):
+            raise error("no chromium here")
+
+        monkeypatch.setattr(browser_fetch, "render_page", explode)
+
+        result = web_fetch.fetch_page(
+            "https://example.com/app",
+            max_chars=0,
+            settings=WebSettings(browser_escalation=True),
+        )
+
+        assert result.rendered is False
+        assert "STATICTOKEN" in result.markdown
+        assert result.note == (
+            "the page looks like a browser wall and no browser is available"
+        )
+
+
+def test_render_page_validates_the_url_before_and_after_the_load(monkeypatch):
+    from codx.junior.web import browser_fetch
+
+    calls = []
+    real_validate = guard.validate_url
+
+    def recording_validate(url, allow_private=False):
+        calls.append((url, allow_private))
+        return real_validate(url, allow_private=allow_private)
+
+    def fake_resolve(host, port=None):
+        # IP literals keep their own address; public hostnames stay public.
+        return [host] if host == "169.254.169.254" else ["93.184.216.34"]
+
+    monkeypatch.setattr(guard, "resolve_host", fake_resolve)
+    monkeypatch.setattr(browser_fetch, "validate_url", recording_validate)
+    _fake_playwright(
+        monkeypatch,
+        ARTICLE,
+        final_url="http://169.254.169.254/latest/meta-data",
+    )
+
+    with pytest.raises(guard.UnsafeUrlError):
+        browser_fetch.render_page("https://example.com/post")
+
+    assert calls == [
+        ("https://example.com/post", False),
+        ("http://169.254.169.254/latest/meta-data", False),
+    ]

@@ -371,13 +371,18 @@ def _compose_base() -> List[str]:
     return ["docker-compose"]
 
 
-def _safe_exec_docker(command: List[str], timeout: int = 30, cwd: Optional[str] = None) -> DockerCommandResult:
+def _safe_exec_docker(
+    command: List[str],
+    timeout: Optional[float] = 30,
+    cwd: Optional[str] = None,
+) -> DockerCommandResult:
     """
     Safely execute a Docker command using subprocess.
 
     Args:
         command: List of command arguments (no shell interpretation).
-        timeout: Command timeout in seconds (default: 30).
+        timeout: Command timeout in seconds (default: 30). ``None`` or ``0``
+            waits indefinitely, which is what long uncapped builds need.
         cwd: Working directory for the command. Compose needs the project root.
 
     Returns:
@@ -395,7 +400,7 @@ def _safe_exec_docker(command: List[str], timeout: int = 30, cwd: Optional[str] 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            timeout=timeout or None,  # None/0 => no limit
             check=False  # Don't raise on non-zero exit
         )
 
@@ -963,6 +968,48 @@ def docker_images(**kwargs) -> ToolResponse:
         )
 
 
+def _resolve_build_timeout(timeout: Optional[int]) -> Optional[float]:
+    """
+    Resolve the ``docker build`` timeout, where ``None``/``0`` mean no limit.
+
+    An uncached multi-stage or multi-arch build regularly needs more than the
+    previous hard cap of one hour, so the limit is opt-in: an explicit
+    ``timeout`` wins, otherwise ``CODX_JUNIOR_DOCKER_BUILD_TIMEOUT`` applies
+    when it is set, otherwise the build runs until Docker finishes.
+
+    Args:
+        timeout: Requested timeout in seconds (``None``/``0`` = no limit).
+
+    Returns:
+        Optional[float]: Seconds to wait, or ``None`` for no limit.
+
+    Raises:
+        ValueError: If the value is not an integer >= 60 (or ``0``/``None``).
+    """
+    message = "timeout must be an integer >= 60 seconds, 0 or null for no limit"
+    if isinstance(timeout, bool):
+        raise ValueError(message)
+    if timeout is not None:
+        if not isinstance(timeout, int):
+            try:
+                timeout = int(timeout)
+            except (TypeError, ValueError):
+                raise ValueError(message) from None
+        if timeout < 0 or 0 < timeout < 60:
+            raise ValueError(message)
+        return float(timeout) if timeout > 0 else None
+
+    raw = (os.environ.get("CODX_JUNIOR_DOCKER_BUILD_TIMEOUT") or "").strip()
+    if not raw:
+        return None
+    try:
+        env_value = float(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid CODX_JUNIOR_DOCKER_BUILD_TIMEOUT=%r", raw)
+        return None
+    return env_value if env_value > 0 else None
+
+
 def docker_build(
     image: str,
     dockerfile: Optional[str] = None,
@@ -972,7 +1019,7 @@ def docker_build(
     no_cache: bool = False,
     pull: bool = False,
     platform: Optional[str] = None,
-    timeout: int = 1800,
+    timeout: Optional[int] = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -997,7 +1044,11 @@ def docker_build(
         no_cache: Disable the build cache (``--no-cache``).
         pull: Always pull newer base images (``--pull``).
         platform: Target platform (e.g. ``linux/amd64``).
-        timeout: Seconds before the build is killed (60-3600, default: 1800).
+        timeout: Seconds before the build is killed. Optional: ``None``
+                 (default) means no time limit and ``0`` disables it
+                 explicitly. When omitted, the env var
+                 ``CODX_JUNIOR_DOCKER_BUILD_TIMEOUT`` applies if it is set.
+                 Any integer >= 60 is accepted (no upper cap).
         **kwargs: Additional arguments including:
             - settings (CODXJuniorSettings): Project settings (required).
             - user (CodxUser): Current user (for audit logging).
@@ -1028,8 +1079,7 @@ def docker_build(
             raise ValueError(f"no valid project directory (got {project_dir!r})")
 
         _validate_input(image, "image", allow_patterns=[r"^[a-zA-Z0-9_\-\.:/@]+$"])
-        if not isinstance(timeout, int) or timeout < 60 or timeout > 3600:
-            raise ValueError("timeout must be integer between 60-3600 seconds")
+        timeout = _resolve_build_timeout(timeout)
 
         context_dir = project_dir
         if context:
@@ -2500,7 +2550,11 @@ DOCKER_BUILD_TOOL_JSON = {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Timeout in seconds before the build is killed (60-3600, default: 1800)"
+                    "description": (
+                        "Optional build time limit in seconds (>= 60). Omit it, or send 0, "
+                        "to build with no time limit; CODX_JUNIOR_DOCKER_BUILD_TIMEOUT "
+                        "applies when it is set"
+                    )
                 }
             },
             "required": ["image"]

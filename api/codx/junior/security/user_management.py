@@ -47,6 +47,41 @@ def _redact_token(token: Optional[str]) -> str:
     return f"<token sha256:{digest}>"
 
 
+def redact_user(user) -> dict:
+    """
+    Return a log-safe representation of a login/user object.
+
+    SECURITY: several branches of the login path logged the whole user model and
+    that model carries the plaintext password (``CodxUserLogin``) plus the session
+    token, so every successful login wrote a customer credential -- including the
+    one provisioned from ``settings.env`` -- into the container logs. The password
+    is always replaced by a constant and the token by its digest.
+    """
+    if user is None:
+        return {}
+    data = None
+    for extract in ("model_dump", "dict"):
+        method = getattr(user, extract, None)
+        if callable(method):
+            try:
+                data = dict(method())
+                break
+            except Exception:
+                data = None
+    if data is None:
+        try:
+            data = dict(vars(user))
+        except Exception:
+            data = None
+    if not data:
+        return {"user": str(user)}
+    if data.get("password"):
+        data["password"] = "<redacted>"
+    if data.get("token"):
+        data["token"] = _redact_token(data["token"])
+    return data
+
+
 # Project permissions that allow changing what the profiles learn in the
 # project (rules written to the profile enrichment and knowledge files).
 PROFILE_KNOWLEDGE_PERMISSIONS = {
@@ -461,15 +496,18 @@ class UserSecurityManager():
                         
                         return stored_user
                 else:
-                    logger.error(f"Invalid login, stored_user not found for {user}, token: {_redact_token(token)}")    
+                    logger.error(f"Invalid login, stored_user not found for {redact_user(user)}, token: {_redact_token(token)}")    
             except Exception as ex:
-                logging.error(f"Invalid user login {ex} {user}")
+                logging.error(f"Invalid user login {ex} {redact_user(user)}")
             
             return None
             
         try:
             logged_user = do_login(user=user, token=token)
-            logger.info(f"do_login user: {user} token: {_redact_token(token)} logged_user: {logged_user}")
+            logger.info(
+                f"do_login user: {redact_user(user)} token: {_redact_token(token)}"
+                f" logged_user: {redact_user(logged_user)}"
+            )
             if logged_user:
                 user_login = self.find_user_login(username=logged_user.username)
                 
@@ -481,7 +519,7 @@ class UserSecurityManager():
                 logged_user.token = user_login.token
             return logged_user
         except Exception as ex:
-            logger.error(f"Invalid login {ex} {user} token: {_redact_token(token)}")
+            logger.error(f"Invalid login {ex} {redact_user(user)} token: {_redact_token(token)}")
             return None
 
     def update_user(self, user: CodxUser, password: str = None):

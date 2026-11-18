@@ -223,7 +223,9 @@ def select_suite(suites: List[QaSuite], name: Optional[str] = None) -> Optional[
 
     Args:
         suites: Detected suites.
-        name: Suite name, suite kind or ``None``/``auto`` for the default.
+        name: Suite name, suite kind, any ``:``-separated segment of a composed
+            name (``api`` selects ``pytest:api``) or ``None``/``auto`` for the
+            default.
 
     Returns:
         Optional[QaSuite]: The suite, or ``None`` when nothing matches.
@@ -239,8 +241,11 @@ def select_suite(suites: List[QaSuite], name: Optional[str] = None) -> Optional[
         for suite in suites:
             if suite.kind == wanted:
                 return suite
+        # Composed names are ``<kind>:<folder>``; either segment selects the
+        # suite, so a caller that says "api" gets ``pytest:api`` instead of a
+        # ``tests.no-suite`` finding.
         for suite in suites:
-            if suite.name.split(":")[0] == wanted:
+            if wanted in suite.name.split(":"):
                 return suite
         return None
 

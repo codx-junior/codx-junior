@@ -31,6 +31,11 @@
 #   --env-file PATH       settings file                       default: /etc/codx-junior/settings.env
 #   --installer PATH      use this bootstrap.sh instead of the one of the branch
 #   --build               build the image from source instead of pulling it
+#   --domain DOMAIN       serve HTTPS on DOMAIN (automatic ACME, no extra tool)
+#   --tls none            do not terminate TLS here: a proxy in front forwards
+#                         to the web port
+#   --non-interactive     never wait for input: fail instead of prompting
+#                         (also CODX_JUNIOR_NON_INTERACTIVE=1)
 #   --no-docker-install   fail instead of installing Docker
 #   --open-firewall       ufw: allow ssh + the web port (off by default)
 #   --update              update an existing installation (the default)
@@ -83,6 +88,10 @@ Settings (flag | environment | --env-file), lowest precedence first:
   --env-file                    PATH     settings file  [/etc/codx-junior/settings.env]
   --installer                   PATH     use this bootstrap.sh for the install
   --build                                build the image instead of pulling it
+  --domain                     DOMAIN    serve HTTPS on DOMAIN (automatic ACME)
+  --tls                        MODE      `none` = a proxy in front terminates
+                                         TLS (default with --domain: caddy)
+  --non-interactive, --yes, -y           never wait for input: fail instead
   --no-docker-install                    fail instead of installing Docker
   --open-firewall                        ufw: allow ssh + the web port
   --update                               update an existing install (default)
@@ -93,7 +102,9 @@ Environment equivalent of every flag: CODX_JUNIOR_REF, CODX_JUNIOR_AI_PROVIDER,
 CODX_JUNIOR_AI_API_KEY, CODX_JUNIOR_AI_API_URL, CODX_JUNIOR_AI_MODEL,
 CODX_JUNIOR_WEB_PORT, CODX_JUNIOR_PROJECTS_PATH, CODX_JUNIOR_HOME,
 CODX_JUNIOR_REPO, CODX_JUNIOR_ENV_FILE, CODX_JUNIOR_INSTALLER,
-CODX_JUNIOR_BUILD, CODX_JUNIOR_INSTALL_DOCKER, CODX_JUNIOR_OPEN_FIREWALL.
+CODX_JUNIOR_BUILD, CODX_JUNIOR_INSTALL_DOCKER, CODX_JUNIOR_OPEN_FIREWALL,
+CODX_JUNIOR_DOMAIN, CODX_JUNIOR_TLS, CODX_JUNIOR_NON_INTERACTIVE,
+CODX_JUNIOR_PUBLIC_URL, CODX_JUNIOR_ADMIN_USER, CODX_JUNIOR_ADMIN_PASSWORD.
 
 From a checkout: ./install.sh …   As root, or with sudo in front of it.
 USAGE
@@ -119,6 +130,9 @@ INSTALLER="${CODX_JUNIOR_INSTALLER:-}"
 BUILD="${CODX_JUNIOR_BUILD:-0}"
 INSTALL_DOCKER="${CODX_JUNIOR_INSTALL_DOCKER:-1}"
 OPEN_FIREWALL="${CODX_JUNIOR_OPEN_FIREWALL:-0}"
+DOMAIN="${CODX_JUNIOR_DOMAIN:-}"
+TLS_MODE="${CODX_JUNIOR_TLS:-}"
+NON_INTERACTIVE="${CODX_JUNIOR_NON_INTERACTIVE:-0}"
 DRY_RUN=0
 UPDATE_ONLY=0
 
@@ -139,6 +153,9 @@ while [[ $# -gt 0 ]]; do
         --build|-build)                     BUILD=1; shift ;;
         --no-docker-install)                INSTALL_DOCKER=0; shift ;;
         --open-firewall)                    OPEN_FIREWALL=1; shift ;;
+        --domain)                           need "$@"; DOMAIN="${2:-}"; shift 2 ;;
+        --tls)                              need "$@"; TLS_MODE="${2:-}"; shift 2 ;;
+        --non-interactive|--yes|-y)         NON_INTERACTIVE=1; shift ;;
         --update|-update)                   UPDATE_ONLY=1; shift ;;
         --dry-run|--dry|--check)            DRY_RUN=1; shift ;;
         -h|--help|-help)                    usage; exit 0 ;;
@@ -151,6 +168,9 @@ done
 # The branch lands in a URL and in a git ref: keep it boring on purpose.
 [[ "${REF}" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid branch name: ${REF}"
 [[ "${PORT}" =~ ^[0-9]+$ || -z "${PORT}" ]] || die "invalid port: ${PORT}"
+[[ -z "${DOMAIN}" || "${DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid domain: ${DOMAIN}"
+[[ -z "${TLS_MODE}" || "${TLS_MODE}" == "none" ]] \
+    || die "invalid --tls value: ${TLS_MODE} (only 'none' is supported)"
 
 if [[ -z "${API_KEY}" && -n "${API_KEY_FILE}" ]]; then
     [[ -f "${API_KEY_FILE}" ]] || die "key file not found: ${API_KEY_FILE}"
@@ -248,12 +268,16 @@ FORWARD=(--ref "${REF}")
 [[ "${BUILD}" == "1" ]]             && FORWARD+=(--build)
 [[ "${INSTALL_DOCKER}" == "0" ]]    && FORWARD+=(--no-docker-install)
 [[ "${OPEN_FIREWALL}" == "1" ]]     && FORWARD+=(--open-firewall)
+[[ -n "${DOMAIN}" ]]                && FORWARD+=(--domain "${DOMAIN}")
+[[ -n "${TLS_MODE}" ]]              && FORWARD+=(--tls "${TLS_MODE}")
+[[ "${NON_INTERACTIVE}" == "1" ]]   && FORWARD+=(--non-interactive)
 
 # --- announce --------------------------------------------------------------
 log "codx-junior install.sh ${INSTALLER_VERSION}"
 log "  branch    : ${REF}"
 log "  provider  : ${PROVIDER:-<from ${ENV_FILE:-the settings file}>}${MODEL:+ (model ${MODEL})}"
 log "  port      : ${PORT:-<from the settings file, else 19981>}"
+log "  domain    : ${DOMAIN:-<none: plain HTTP on the web port>}${TLS_MODE:+ (tls: ${TLS_MODE})}"
 log "  installer : ${REAL_INSTALLER}"
 log "  resolved  : ${RESOLVED_HOW}"
 if [[ "${UPDATE_ONLY}" == "1" ]]; then
@@ -272,6 +296,11 @@ fi
 
 # --- hand over to the real installer (root is required from here on) --------
 if [[ "${EUID}" -eq 0 ]]; then
+    if [[ "${NON_INTERACTIVE}" == "1" ]]; then
+        # stdin closed: anything downstream that asks a question gets EOF and
+        # fails with a non-zero exit instead of blocking cloud-init forever.
+        exec bash "${REAL_INSTALLER}" "${FORWARD[@]}" </dev/null
+    fi
     exec bash "${REAL_INSTALLER}" "${FORWARD[@]}"
 fi
 

@@ -172,21 +172,27 @@ def is_codx_path(project_root: str, abs_path: str) -> bool:
 
 
 def is_path_within_project(
-    settings: CODXJuniorSettings, abs_path: str
+    settings: CODXJuniorSettings, abs_path: str, write: bool = False
 ) -> bool:
     """
-    Check that an absolute path resolves inside the project root.
+    Check that an absolute path belongs to a project the tools may use.
 
     Unlike a plain ``str.startswith`` check, this compares path components and
     resolves symlinks, so it rejects siblings such as ``/project-other`` while
     accepting every real descendant of ``/project``.
 
+    The current project (children included) is always granted. Linked projects
+    follow the settings permissions: `read_project_dependencies` grants read and
+    `read_write_project_dependencies` grants read and write, so ``write=True``
+    rejects a read-only link.
+
     Args:
         settings: The project settings.
         abs_path: Absolute path to validate.
+        write: Require write permission (default: read).
 
     Returns:
-        bool: True when the path is inside (or is) the project root.
+        bool: True when the path may be used.
 
     Example:
         >>> is_path_within_project(settings, "/project/src/main.py")
@@ -196,12 +202,135 @@ def is_path_within_project(
     """
     if not abs_path:
         return False
+    resolver = getattr(settings, "resolve_project_access", None)
+    if callable(resolver):
+        try:
+            return resolver(abs_path, write=write) is not None
+        except Exception as ex:  # pragma: no cover - never break a path check
+            logger.warning("Could not resolve project access: %s", ex)
+    # Fallback for settings objects without the permission API (mocks, tests).
     try:
         root = os.path.realpath(_project_root(settings))
         target = os.path.realpath(os.path.abspath(abs_path))
         return os.path.commonpath([root, target]) == root
     except (ValueError, OSError):
         return False
+
+
+def _linked_project_access(
+    settings: CODXJuniorSettings, write: bool = False
+) -> List[Tuple[CODXJuniorSettings, str, bool]]:
+    """
+    Return ``(project, root, can_write)`` for every project the tools may use.
+
+    The current project comes first, followed by the linked projects with the
+    permission granted in the settings (see
+    :meth:`CODXJuniorSettings.get_file_access_projects`). Read tools iterate the
+    whole list, write tools keep only the entries with ``can_write``.
+    """
+    provider = getattr(settings, "get_file_access_projects", None)
+    if not callable(provider):
+        return [(settings, _project_root(settings), True)]
+    try:
+        entries = provider(write=write)
+    except Exception as ex:  # pragma: no cover - never break a tool
+        logger.warning("Could not resolve project permissions: %s", ex)
+        return [(settings, _project_root(settings), True)]
+
+    access: List[Tuple[CODXJuniorSettings, str, bool]] = []
+    for project, can_write in entries:
+        root = (getattr(project, "abs_project_path", "") or "").strip()
+        if not root:
+            continue
+        access.append((project, os.path.abspath(root), bool(can_write)))
+    return access
+
+
+def _resolve_linked_prefix(
+    settings: CODXJuniorSettings, rel_path: str, write: bool = False
+) -> Optional[str]:
+    """
+    Resolve ``"<linked-project>/path"`` to an absolute path in that project.
+
+    Returns ``None`` when the first component names no linked project with the
+    requested permission, so the caller falls back to the project root.
+    """
+    resolver = getattr(settings, "resolve_linked_project_prefix", None)
+    if not callable(resolver):
+        return None
+    try:
+        resolved = resolver(rel_path, write=write)
+    except Exception as ex:  # pragma: no cover - never break a tool
+        logger.warning("Could not resolve linked project prefix: %s", ex)
+        return None
+    if not resolved:
+        return None
+    project, remainder = resolved
+    root = (getattr(project, "abs_project_path", "") or "").strip()
+    if not root:
+        return None
+    return os.path.normpath(os.path.abspath(os.path.join(root, remainder)))
+
+
+def _linked_glob_target(
+    settings: CODXJuniorSettings, pattern: str, write: bool = False
+) -> Optional[Tuple[CODXJuniorSettings, str]]:
+    """
+    Resolve a glob pattern that targets a linked project.
+
+    Two forms are supported: an absolute pattern whose static part lives inside
+    a linked project, and a relative pattern prefixed with the linked project
+    name (``"backend/**/*.py"``). Returns ``(project, relative_pattern)`` or
+    ``None`` when the pattern targets the current project.
+    """
+    raw = str(pattern or "")
+    if not raw:
+        return None
+
+    if not os.path.isabs(raw):
+        resolved = _resolve_linked_prefix(settings, raw, write=write)
+        project = _linked_project_for_absolute(settings, resolved)
+        if project and resolved:
+            root = os.path.abspath(project.abs_project_path)
+            return project, os.path.relpath(resolved, root)
+        return None
+
+    # Absolute pattern: walk up the static part until an accessible project owns it.
+    base = raw
+    wildcard_at = [
+        index for index in (base.find(char) for char in GLOB_PATTERN_CHARS)
+        if index >= 0
+    ]
+    if wildcard_at:
+        base = base[:min(wildcard_at)]
+    base = base.rstrip(os.sep) or os.sep
+    while base and base != os.sep:
+        project = _linked_project_for_absolute(settings, base)
+        if project is not None and project.codx_path != settings.codx_path:
+            root = os.path.abspath(project.abs_project_path)
+            return project, os.path.relpath(raw, root)
+        if project is not None:
+            return None
+        parent = os.path.dirname(base)
+        if parent == base:
+            break
+        base = parent
+    return None
+
+
+def _linked_project_for_absolute(
+    settings: CODXJuniorSettings, abs_path: Optional[str]
+) -> Optional[CODXJuniorSettings]:
+    """Return the project owning *abs_path*, or ``None`` when access is denied."""
+    if not abs_path:
+        return None
+    resolver = getattr(settings, "resolve_project_access", None)
+    if not callable(resolver):
+        return settings if is_path_within_project(settings, abs_path) else None
+    try:
+        return resolver(abs_path)
+    except Exception:  # pragma: no cover - never break a tool
+        return None
 
 
 def _to_relative_path(settings: CODXJuniorSettings, abs_path: str) -> str:
@@ -223,6 +352,16 @@ def _to_relative_path(settings: CODXJuniorSettings, abs_path: str) -> str:
             return os.path.relpath(abs_path, root)
     except (ValueError, OSError):
         pass
+
+    # A linked project file is labeled as "<project>/path", the same form the
+    # path resolution accepts on the way back.
+    owner = _linked_project_for_absolute(settings, abs_path)
+    if owner is not None and owner.codx_path != settings.codx_path:
+        try:
+            rel_path = os.path.relpath(abs_path, _project_root(owner))
+            return f"{owner.project_name}/{rel_path}".replace(os.sep, "/")
+        except (ValueError, OSError):
+            pass
     return abs_path
 
 
@@ -251,27 +390,29 @@ async def code_block(file_path: str, code: str, code_language: str, **kwargs) ->
 
 
 def path_to_absolute_project_path(
-    settings: CODXJuniorSettings, file_path: str
+    settings: CODXJuniorSettings, file_path: str, write: bool = False
 ) -> str:
     """
-    Convert a relative or absolute file path to an absolute project path.
+    Convert a relative or absolute file path to an absolute path.
 
     Paths are resolved literally: glob wildcards are NOT interpreted. The
-    returned path always points inside the project root and does not need to
-    exist on disk, which allows callers such as ``project_write_file`` to
-    create new files.
+    returned path points inside the current project or inside a linked project
+    the settings grant access to, and does not need to exist on disk, which
+    allows callers such as ``project_write_file`` to create new files.
 
-    An absolute path is honored only when it really belongs to the project
-    (path-component check, symlinks resolved). Any other absolute path keeps
-    the historical behavior of being interpreted relative to the project root,
-    so a leading ``/`` never escapes the sandbox.
+    An absolute path is honored only when it really belongs to an accessible
+    project (path-component check, symlinks resolved). A relative path may
+    address a linked project by name (``"shared-lib/src/a.py"``). Any other
+    absolute path keeps the historical behavior of being interpreted relative
+    to the project root, so a leading ``/`` never escapes the sandbox.
 
     Args:
         settings: The project settings.
         file_path: Relative or absolute path to resolve.
+        write: Resolve using write permissions only (default: read).
 
     Returns:
-        str: Absolute path inside the project root.
+        str: Absolute path inside the project root or a permitted linked project.
 
     Example:
         >>> path_to_absolute_project_path(settings, "src/main.py")
@@ -283,11 +424,17 @@ def path_to_absolute_project_path(
     raw_path = (file_path or "").strip()
 
     if os.path.isabs(raw_path):
-        if is_path_within_project(settings, raw_path):
+        if is_path_within_project(settings, raw_path, write=write):
             return os.path.normpath(os.path.abspath(raw_path))
         # Keep the legacy "absolute-looking path is project-relative" mapping,
         # but drop the separator first so it cannot escape the root.
         raw_path = raw_path.lstrip(os.sep)
+    else:
+        # "<linked-project>/path" addresses a linked project by name, as long
+        # as the settings grant the requested permission.
+        linked_path = _resolve_linked_prefix(settings, raw_path, write=write)
+        if linked_path:
+            return linked_path
 
     return os.path.normpath(os.path.abspath(os.path.join(project_root, raw_path)))
 
@@ -331,13 +478,23 @@ def _find_glob_files(
         >>> _find_glob_files(settings, "codx/**/*.py")
         ['codx/junior/tools/project_tools.py', ...]
     """
+    owner = settings
     project_root = os.path.abspath(settings.abs_project_path)
-    ignore_patterns = settings.get_ignore_patterns()
 
     rel_pattern = pattern
-    if os.path.isabs(rel_pattern):
+    linked_target = _linked_glob_target(settings, pattern)
+    if linked_target:
+        # The pattern targets a linked project the settings grant access to.
+        owner, rel_pattern = linked_target
+        project_root = os.path.abspath(owner.abs_project_path)
+    elif os.path.isabs(rel_pattern):
         rel_pattern = os.path.relpath(rel_pattern, project_root)
     rel_pattern = rel_pattern.lstrip("/")
+
+    ignore_patterns = owner.get_ignore_patterns()
+    label_prefix = ""
+    if owner is not settings and owner.codx_path != settings.codx_path:
+        label_prefix = f"{owner.project_name}/"
 
     # Reject patterns that escape the project root
     if rel_pattern.startswith(".."):
@@ -356,7 +513,7 @@ def _find_glob_files(
     # glob() itself walks ignored directories, so matches must be intersected.
     valid_files = None
     try:
-        valid_files = set(list_project_files(settings))
+        valid_files = set(list_project_files(owner))
     except Exception as ex:
         logger.warning("Could not apply project ignores to glob: %s", ex)
 
@@ -364,7 +521,7 @@ def _find_glob_files(
     for match in matches:
         abs_match = os.path.normpath(os.path.join(project_root, match))
         # Keep results inside the project (resolving symlinks) and files only
-        if not is_path_within_project(settings, abs_match):
+        if not is_path_within_project(owner, abs_match):
             continue
         if not os.path.isfile(abs_match):
             continue
@@ -373,7 +530,7 @@ def _find_glob_files(
         rel_match = os.path.relpath(abs_match, project_root)
         if valid_files is not None and rel_match not in valid_files:
             continue
-        results.append(rel_match)
+        results.append(label_prefix + rel_match)
 
     logger.debug("Glob '%s' matched %d file(s)", pattern, len(results))
     return sorted(set(results))[:limit]
@@ -697,7 +854,11 @@ def _read_single_file(
         )
 
         if not is_path_within_project(settings, abs_path):
-            error_msg = f"Path must belong to {settings.abs_project_path}"
+            error_msg = (
+                f"Path must belong to {settings.abs_project_path} or to a "
+                "linked project with read permission "
+                "(read_project_dependencies or read_write_project_dependencies)"
+            )
             error_block = FILE_READ_ERROR_TEMPLATE % (
                 file_path, file_path, error_msg
             )
@@ -1646,16 +1807,28 @@ def project_grep(
     if not pattern:
         raise ValueError("pattern must be provided and cannot be empty")
 
-    root = _project_root(settings)
     search_path = (path or ".").strip() or "."
     abs_search = path_to_absolute_project_path(settings, search_path)
 
     if not is_path_within_project(settings, abs_search):
         return ToolResponse(
-            user_response=f"⚠️ `{search_path}` is outside the project.",
-            llm_response=f"project_grep: path outside project: {search_path}",
+            user_response=(
+                f"⚠️ `{search_path}` is outside the project and outside every "
+                "linked project with read permission."
+            ),
+            llm_response=(
+                f"project_grep: path outside the project and its readable "
+                f"linked projects: {search_path}"
+            ),
         )
 
+    # A path inside a linked project is searched in that project, with its own
+    # ignore rules and file listing.
+    owner = _linked_project_for_absolute(settings, abs_search) or settings
+    root = _project_root(owner)
+    label_prefix = ""
+    if owner.codx_path != settings.codx_path:
+        label_prefix = f"{owner.project_name}/"
     try:
         context_lines = max(0, min(int(context_lines or 0), MAX_GREP_CONTEXT_LINES))
         max_results = max(1, min(int(max_results or 100), MAX_GREP_RESULTS))
@@ -1671,7 +1844,7 @@ def project_grep(
         candidates = [os.path.relpath(abs_search, root)]
     elif os.path.isdir(abs_search):
         rel_base = os.path.relpath(abs_search, root)
-        all_files = list_project_files(settings)
+        all_files = list_project_files(owner)
         if rel_base in (".", ""):
             candidates = all_files
         else:
@@ -1764,7 +1937,7 @@ def project_grep(
                 ranges.append((start, end))
 
         hit_set = set(hit_lines)
-        file_lines = [f"### `{rel_path}`"]
+        file_lines = [f"### `{label_prefix}{rel_path}`"]
         file_matches = 0
 
         for start, end in ranges:
@@ -1778,7 +1951,8 @@ def project_grep(
                     line = line[:MAX_GREP_LINE_CHARS] + " …[line truncated]"
                 separator = ":" if line_index in hit_set else "-"
                 file_lines.append(
-                    f"{rel_path}{separator}{line_index + 1}{separator}{line}"
+                    f"{label_prefix}{rel_path}{separator}"
+                    f"{line_index + 1}{separator}{line}"
                 )
                 if line_index in hit_set:
                     total_matches += 1
@@ -1787,7 +1961,7 @@ def project_grep(
                 break
 
         if file_matches:
-            matched_files.append(rel_path)
+            matched_files.append(f"{label_prefix}{rel_path}")
             groups.append("\n".join(file_lines))
 
     notes: List[str] = []
@@ -2306,7 +2480,7 @@ def project_write_file(file_path: str, content: str, **kwargs) -> ToolResponse:
 
     try:
         abs_path = path_to_absolute_project_path(
-            settings=settings, file_path=file_path
+            settings=settings, file_path=file_path, write=True
         )
     except (OSError, ValueError) as e:
         error_msg = str(e)
@@ -2316,8 +2490,15 @@ def project_write_file(file_path: str, content: str, **kwargs) -> ToolResponse:
             llm_response=f"Write failed: {error_msg}",
         )
 
-    if not is_path_within_project(settings, abs_path):
-        error_msg = f"File path must belong to {settings.abs_project_path}"
+    owner = _linked_project_for_absolute(settings, abs_path)
+    if owner is None or not is_path_within_project(
+        settings, abs_path, write=True
+    ):
+        error_msg = (
+            f"File path must belong to {settings.abs_project_path} or to a "
+            "linked project with write permission "
+            "(read_write_project_dependencies)"
+        )
         logger.error("Invalid file path for write operation: %s", file_path)
         return ToolResponse(
             user_response=f"error [{file_path}]\nERROR: {file_path} {error_msg}",
@@ -2325,15 +2506,18 @@ def project_write_file(file_path: str, content: str, **kwargs) -> ToolResponse:
         )
 
     try:
-        # Get relative path for git operations
-        rel_path = _to_relative_path(settings=settings, abs_path=abs_path)
+        # Relative to the project that owns the file: a linked project is
+        # staged (and guarded) in its own repository.
+        rel_path = os.path.relpath(
+            abs_path, _project_root(owner)
+        ).replace(os.sep, "/")
 
         # CISO: the payload is generated by an agent, so it is inspected BEFORE
         # anything touches the repository. A credential (or a malicious snippet)
         # must never become a file, and a blocked write must not leave a blob in
         # the git index either.
         verdict = ciso_gate.guard_file_write(
-            file_path=rel_path, content=content, settings=settings
+            file_path=rel_path, content=content, settings=owner
         )
         if verdict.blocked:
             logger.warning(
@@ -2361,7 +2545,7 @@ def project_write_file(file_path: str, content: str, **kwargs) -> ToolResponse:
 
         # Stage AFTER the write: staging first left a staged blob behind when
         # the write was blocked or failed.
-        _add_changes_to_git(settings=settings, file_path=rel_path)
+        _add_changes_to_git(settings=owner, file_path=rel_path)
 
         logger.info("Successfully wrote to file: %s", file_path)
         file_size = len(content.encode("utf-8"))

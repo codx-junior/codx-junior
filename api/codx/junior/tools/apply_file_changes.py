@@ -267,6 +267,23 @@ def _secure_path_check(settings: CODXJuniorSettings, abs_path: str) -> Tuple[boo
     Returns:
         Tuple[bool, Optional[str]]: (is_valid, error_message)
     """
+    access = getattr(settings, "resolve_project_access", None)
+    if callable(access):
+        # The permission model decides: the current project always, plus the
+        # linked projects granted `read_write_project_dependencies`.
+        try:
+            granted = access(abs_path, write=True) is not None
+        except Exception:  # pragma: no cover - fall back to the plain check
+            granted = None
+        if granted is not None:
+            if granted:
+                return True, None
+            return False, (
+                f"File path must belong to {settings.abs_project_path} or to "
+                "a linked project with write permission "
+                "(read_write_project_dependencies)"
+            )
+
     try:
         project_path = Path(settings.abs_project_path).resolve()
         target_path = Path(abs_path).resolve()
@@ -399,8 +416,11 @@ def apply_file_changes(
     if not isinstance(changes, list):
         raise ValueError("changes must be a list of dictionaries")
 
-    # Validate file path with secure resolution
-    abs_path = path_to_absolute_project_path(settings=settings, file_path=file_path)
+    # Validate file path with secure resolution. A linked project with write
+    # permission resolves outside the project root, so the write flag is used.
+    abs_path = path_to_absolute_project_path(
+        settings=settings, file_path=file_path, write=True
+    )
     
     is_valid, error_msg = _secure_path_check(settings, abs_path)
     if not is_valid:

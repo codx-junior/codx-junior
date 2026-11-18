@@ -90,6 +90,17 @@ from codx.junior.computer.library import (
     save_session_to_library,
     saved_library_for,
 )
+from codx.junior.computer.custom_images import (
+    CoworkingImage,
+    CoworkingImageListResponse,
+    CreateCoworkingImageRequest,
+    ImageFileContent,
+    ImageFileInfo,
+    UpdateCoworkingImageRequest,
+    can_edit,
+    coworking_image_library,
+    visible_to,
+)
 from codx.junior.computer.backend import DesktopControlError, UnsupportedComputerActionError
 from codx.junior.computer.runtime import ComputerControlError
 from codx.junior.computer.vnc_proxy import bridge_vnc, vnc_tickets
@@ -238,6 +249,236 @@ async def list_saved_computers(request: Request):
     library = saved_library_for(_browser_manager(session_ctx))
     computers = await asyncio.to_thread(library.list)
     return SavedComputerListResponse(count=len(computers), computers=computers)
+
+
+# ============================================================================
+# Custom coworking images (.codx/coworking/images)
+#
+# Static routes are declared BEFORE "/library/{item_id}" so that
+# GET /computers/library/custom is not captured by the dynamic one.
+# ============================================================================
+def _request_identity(session_ctx) -> tuple[Optional[str], bool]:
+    """Username and admin flag of the request behind ``session_ctx``."""
+    user = getattr(session_ctx, "user", None)
+    username = (getattr(user, "username", "") or "") or None
+    role = (getattr(user, "role", "") or "").lower()
+    return username, role in ("admin", "owner")
+
+
+def _gallery(session_ctx):
+    manager = _browser_manager(session_ctx)
+    return coworking_image_library(manager.settings), getattr(manager.settings, "project_id", None)
+
+
+@router.get(
+    "/library/custom",
+    response_model=CoworkingImageListResponse,
+    summary="List custom coworking images",
+)
+async def list_coworking_images(
+    request: Request,
+    q: Optional[str] = None,
+    visibility: Optional[str] = None,
+    tag: Optional[str] = None,
+):
+    """
+    Custom desktop images the caller may see.
+
+    Visibility scopes the result: ``user`` (creator only), ``project`` (the
+    owning project), ``custom`` (a list of projects) and ``global`` (all).
+    """
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    images = await asyncio.to_thread(
+        library.list_visible,
+        username=username,
+        project_id=project_id,
+        is_admin=is_admin,
+        q=q,
+        visibility=visibility,
+        tag=tag,
+    )
+    return CoworkingImageListResponse(count=len(images), images=images)
+
+
+@router.post(
+    "/library/custom",
+    response_model=CoworkingImage,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a custom coworking image",
+)
+async def create_coworking_image(request: Request, req: CreateCoworkingImageRequest):
+    """
+    Create the image definition folder with its Dockerfile/README scaffold.
+
+    The response carries ``assistant_prompt``: the instruction to hand the
+    folder to the ``codx-junior-max`` assistant, which completes the recipe.
+    """
+    session_ctx = await get_session_context(request)
+    library, _project_id = _gallery(session_ctx)
+    username, _is_admin = _request_identity(session_ctx)
+    try:
+        return await asyncio.to_thread(library.create, req, created_by=username)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+
+
+@router.post(
+    "/library/custom/import",
+    response_model=CoworkingImage,
+    status_code=status.HTTP_201_CREATED,
+    summary="Import an image from Docker Hub or a git repository",
+)
+async def import_coworking_image(request: Request, req: CreateCoworkingImageRequest):
+    """Import an existing image; the folder keeps a reference to its origin."""
+    session_ctx = await get_session_context(request)
+    library, _project_id = _gallery(session_ctx)
+    username, _is_admin = _request_identity(session_ctx)
+    extra = dict(
+        name=req.name,
+        description=req.description,
+        tags=req.tags,
+        visibility=req.visibility,
+        projects=req.projects,
+        icon_url=req.icon_url,
+        screenshot_url=req.screenshot_url,
+    )
+    try:
+        if req.source == "dockerhub":
+            return await asyncio.to_thread(
+                library.import_from_dockerhub, req.docker_ref, created_by=username, **extra
+            )
+        if req.source == "git":
+            return await asyncio.to_thread(
+                library.import_from_git, req.git_url, created_by=username, git_ref=req.git_ref, **extra
+            )
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    raise HTTPException(status_code=400, detail="Import source must be 'dockerhub' or 'git'")
+
+
+@router.get(
+    "/library/custom/{image_id}",
+    response_model=CoworkingImage,
+    summary="Get a custom coworking image",
+)
+async def get_coworking_image(request: Request, image_id: str):
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    item = await asyncio.to_thread(library.get, image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    if not visible_to(item, username=username, project_id=project_id, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="This image is not shared with you")
+    return item
+
+
+@router.put(
+    "/library/custom/{image_id}",
+    response_model=CoworkingImage,
+    summary="Update a custom coworking image",
+)
+async def update_coworking_image(
+    request: Request,
+    image_id: str,
+    req: UpdateCoworkingImageRequest,
+):
+    """Update the definition: name, description, tags, media or visibility."""
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    item = await asyncio.to_thread(library.get, image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    if not can_edit(item, username=username, project_id=project_id, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="Only the owner or an admin can edit this image")
+    try:
+        updated = await asyncio.to_thread(library.update, image_id, req)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    return updated
+
+
+@router.delete(
+    "/library/custom/{image_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a custom coworking image",
+)
+async def delete_coworking_image(request: Request, image_id: str):
+    """Delete the definition folder (Dockerfile, support files and media)."""
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    item = await asyncio.to_thread(library.get, image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    if not can_edit(item, username=username, project_id=project_id, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="Only the owner or an admin can delete this image")
+    await asyncio.to_thread(library.delete, image_id)
+    return None
+
+
+@router.get(
+    "/library/custom/{image_id}/files",
+    response_model=list[ImageFileInfo],
+    summary="Files of a custom coworking image",
+)
+async def list_coworking_image_files(request: Request, image_id: str):
+    """List the definition folder: manifest, Dockerfile, support files, media."""
+    session_ctx = await get_session_context(request)
+    library, _project_id = _gallery(session_ctx)
+    if not await asyncio.to_thread(library.get, image_id):
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    return await asyncio.to_thread(library.files, image_id)
+
+
+@router.get(
+    "/library/custom/{image_id}/file",
+    response_model=ImageFileContent,
+    summary="Read one file of a custom coworking image",
+)
+async def read_coworking_image_file(request: Request, image_id: str, path: str = Query(...)):
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    item = await asyncio.to_thread(library.get, image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    if not visible_to(item, username=username, project_id=project_id, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="This image is not shared with you")
+    try:
+        return await asyncio.to_thread(library.read_file, image_id, path)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.put(
+    "/library/custom/{image_id}/file",
+    response_model=ImageFileContent,
+    summary="Write one file of a custom coworking image",
+)
+async def write_coworking_image_file(
+    request: Request,
+    image_id: str,
+    req: ImageFileContent,
+):
+    """Save the Dockerfile or a support file edited in the gallery."""
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    item = await asyncio.to_thread(library.get, image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    if not can_edit(item, username=username, project_id=project_id, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="Only the owner or an admin can edit this image")
+    try:
+        return await asyncio.to_thread(library.write_file, image_id, req.path, req.content)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
 
 
 @router.get(

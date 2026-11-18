@@ -270,6 +270,16 @@ async def startup_event():
         bootstrap_ai_from_env()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to run the AI bootstrap: %s", ex)
+    # First-boot admin: an unattended install passes CODX_JUNIOR_ADMIN_USER /
+    # CODX_JUNIOR_ADMIN_PASSWORD and the customer gets a usable login instead of
+    # a blank form. Opt-in, once, never logged
+    # (see codx/junior/security/admin_bootstrap.py).
+    try:
+        from codx.junior.security.admin_bootstrap import bootstrap_admin_from_env
+
+        bootstrap_admin_from_env()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to provision the first admin: %s", ex)
     # Event-loop lag sampler backing /api/health: the cheapest way to notice
     # that a synchronous call has crept back onto the event loop.
     asyncio.create_task(_event_loop_lag_monitor())
@@ -508,13 +518,23 @@ def api_health_check():
 
     This endpoint used to answer ``"ok"`` while the event loop was blocked for
     ten seconds at a time, which made it useless as a probe.
+
+    It is also the documented readiness probe of a deployment: ``version``,
+    ``ref`` and ``commit`` say *which* build answered, so an unattended install
+    can assert the ref it asked for instead of "something returned HTML". The
+    shape is stable and the endpoint is unauthenticated on purpose (see
+    codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md).
     """
     from codx.junior.api_logs.storage import queue_stats
     from codx.junior.project.project_discover import get_all_projects_snapshot
+    from codx.junior.version import build_info
 
     snapshot = get_all_projects_snapshot()
     return {
         "status": "ok",
+        # Baked into the image at build time, overridable from the environment
+        # (api/codx/junior/version.py).
+        **build_info(),
         "uptime_seconds": round(time.time() - _APP_STARTED_AT, 1),
         "event_loop_lag_ms": dict(_EVENT_LOOP_LAG),
         "projects_cached": len(snapshot) if snapshot is not None else None,

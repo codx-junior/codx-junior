@@ -242,7 +242,11 @@ export default {
     /** Load the definitions and the field documentation. */
     async load() {
       const api = this.api()
-      if (!api || this.loading) return
+      if (!api) {
+        this.error = 'Efforts API not available for this project'
+        return
+      }
+      if (this.loading) return
       this.loading = true
       this.error = null
       try {
@@ -328,14 +332,34 @@ export default {
         const saved = this.isNew
           ? await api.create(payload)
           : await api.save(payload.name, payload)
+        // The connection layer resolves with the backend error envelope
+        // (`{status_code, message}`) instead of throwing, so a rejected save
+        // used to look like a silent no-op. Fail loudly instead.
+        this.assertOk(saved)
         await this.load()
         const fresh = this.efforts.find(item => item.name === saved.name)
         if (fresh) this.edit(fresh)
+        this.draft = { ...this.draft, builtin: !!saved.builtin }
+        this.$ui?.addNotification?.({
+          text: `Effort '${saved.name}' saved`,
+          type: 'success'
+        })
       } catch (error) {
         this.error = error?.message || 'Could not save the effort'
       } finally {
         this.saving = false
       }
+    },
+    /**
+     * Throw when the response is the backend error envelope instead of the
+     * expected payload.
+     * @param {Object} response - API response.
+     */
+    assertOk(response) {
+      if (!response || response.status_code || (!response.name && !response.deleted)) {
+        throw new Error(response?.message || 'The server rejected the request')
+      }
+      return response
     },
     async remove() {
       const api = this.api()
@@ -344,7 +368,7 @@ export default {
       this.saving = true
       this.error = null
       try {
-        await api.delete(this.draft.name)
+        this.assertOk(await api.delete(this.draft.name))
         this.draft = EMPTY_DRAFT()
         await this.load()
       } catch (error) {

@@ -10,8 +10,17 @@
   "parent_project_id": null,
   "child_index": 0,
   "message_id": null,
-  "status": "",
-  "status_history": [],
+  "status": "doing",
+  "status_history": [
+    {
+      "doc_id": "0516b599-2f0f-4fd6-8df5-54998a3776a8",
+      "from_status": null,
+      "to_status": "doing",
+      "user": null,
+      "at": "2026-11-18T03:35:56.113553",
+      "meta_data": null
+    }
+  ],
   "tags": [
     "bug",
     "chat",
@@ -42,6 +51,7 @@
       "task_item": "",
       "content": "## Problem\nIn task \"Multiple running processes\" (f4107713) one user message produced **3 assistant bubbles** and one of them stayed `done=false` with a phase event `llm_response / status=running` from 2026-11-15T21:46:52 until the container restart \u2014 the user could not stop it.\n\n## Root cause (verified in code)\n- `api/codx/junior/chat/turn_store.py:369-418` \u2014 `live_turn_ids()` and `chat_is_processing()` decide liveness **only** with the `flock` probe. They never consult `is_stale()` (`:512-534`, heartbeat older than `DEFAULT_STALE_SECONDS=600`). A process that is alive but blocked (LLM stream read with no wall-clock guard, or a 120 s-capped tool) holds the lock, so the turn is \"live\" **for ever**.\n- Consequence 1: `_seal_dead_responses()` (`api/codx/junior/api/chat.py:130-206`) returns 0 on `chat_is_processing()==True` \u2192 the orphan bubble is never sealed on read.\n- Consequence 2: `chat_cancel()` (`api/codx/junior/api/chat.py:269-364`) calls `repair_incomplete_messages(..., skip_turn_ids=store.live_turn_ids())` \u2192 the very bubble the user is trying to stop is **skipped**, so the API returns `cancelled: false / no in-flight token found` and the UI keeps streaming.\n- Consequence 3: `CANCELLATION_REGISTRY.cancel()` only signals a checkpoint inside the loop; nothing aborts an in-flight blocking LLM stream read.\n\n## Fix (incremental, 2 small steps)\n1. **Staleness-aware liveness** \u2014 `turn_store.py`: in `live_turn_ids()` and `chat_is_processing()` treat a record as live only when the lock is held **and** `not self.is_stale(record)`; a stale-but-locked turn is an orphan (log it, keep the record for recovery).\n2. **Cancel must win** \u2014 `chat.py:chat_cancel()`: when no in-flight token was found, force the repair without `skip_turn_ids` (or pass only non-stale ids), mark the turn record `cancelled`, and return `cancelled: true` with `stopped_turns`/`repaired` counters. The response must be idempotent: a second call returns `cancelled: true` with 0 repairs.\n3. Optional guard: wall-clock limit on a turn (e.g. `CODX_JUNIOR_CHAT_TURN_MAX_SECONDS`, default 900) that fails the turn with \"the turn exceeded its time budget\" instead of streaming for hours.\n\n## Acceptance\n- New tests in `api/tests/chat/test_single_response_per_chat.py`: (a) a turn whose heartbeat is older than `stale_seconds` but whose lock is held is NOT live; (b) `POST /chat/cancel` on a stale-locked turn closes every `done=false` assistant message; (c) re-reading the chat leaves nothing open.\n- `qa_review_changes` \u2192 `allow` or `warn`.\n- Manual: reproduce with task f4107713's chat copy and confirm `done=true` after one cancel.\n\n## Context\nEvidence and timeline are in the `neverending-tasks` task (chat `c8632422`). Files: `api/codx/junior/chat/turn_store.py`, `api/codx/junior/api/chat.py`, `api/tests/chat/test_single_response_per_chat.py`.",
       "think": null,
+      "reasoning_content": null,
       "hide": false,
       "unsent": false,
       "is_answer": false,
@@ -72,6 +82,7 @@
       "disable_knowledge": false,
       "read_by": [],
       "error": null,
+      "reply_to": null,
       "linked_chat_ids": []
     },
     {
@@ -80,6 +91,7 @@
       "task_item": "",
       "content": "## Problem\nIn task \"Multiple running processes\" (f4107713) one user message produced **3 assistant bubbles** and one of them stayed `done=false` with a phase event `llm_response / status=running` from 2026-11-15T21:46:52 until the container restart \u2014 the user could not stop it.\n\n## Root cause (verified in code)\n- `api/codx/junior/chat/turn_store.py:369-418` \u2014 `live_turn_ids()` and `chat_is_processing()` decide liveness **only** with the `flock` probe. They never consult `is_stale()` (`:512-534`, heartbeat older than `DEFAULT_STALE_SECONDS=600`). A process that is alive but blocked (LLM stream read with no wall-clock guard, or a 120 s-capped tool) holds the lock, so the turn is \"live\" **for ever**.\n- Consequence 1: `_seal_dead_responses()` (`api/codx/junior/api/chat.py:130-206`) returns 0 on `chat_is_processing()==True` \u2192 the orphan bubble is never sealed on read.\n- Consequence 2: `chat_cancel()` (`api/codx/junior/api/chat.py:269-364`) calls `repair_incomplete_messages(..., skip_turn_ids=store.live_turn_ids())` \u2192 the very bubble the user is trying to stop is **skipped**, so the API returns `cancelled: false / no in-flight token found` and the UI keeps streaming.\n- Consequence 3: `CANCELLATION_REGISTRY.cancel()` only signals a checkpoint inside the loop; nothing aborts an in-flight blocking LLM stream read.\n\n## Fix (incremental, 2 small steps)\n1. **Staleness-aware liveness** \u2014 `turn_store.py`: in `live_turn_ids()` and `chat_is_processing()` treat a record as live only when the lock is held **and** `not self.is_stale(record)`; a stale-but-locked turn is an orphan (log it, keep the record for recovery).\n2. **Cancel must win** \u2014 `chat.py:chat_cancel()`: when no in-flight token was found, force the repair without `skip_turn_ids` (or pass only non-stale ids), mark the turn record `cancelled`, and return `cancelled: true` with `stopped_turns`/`repaired` counters. The response must be idempotent: a second call returns `cancelled: true` with 0 repairs.\n3. Optional guard: wall-clock limit on a turn (e.g. `CODX_JUNIOR_CHAT_TURN_MAX_SECONDS`, default 900) that fails the turn with \"the turn exceeded its time budget\" instead of streaming for hours.\n\n## Acceptance\n- New tests in `api/tests/chat/test_single_response_per_chat.py`: (a) a turn whose heartbeat is older than `stale_seconds` but whose lock is held is NOT live; (b) `POST /chat/cancel` on a stale-locked turn closes every `done=false` assistant message; (c) re-reading the chat leaves nothing open.\n- `qa_review_changes` \u2192 `allow` or `warn`.\n- Manual: reproduce with task f4107713's chat copy and confirm `done=true` after one cancel.\n\n## Context\nEvidence and timeline are in the `neverending-tasks` task (chat `c8632422`). Files: `api/codx/junior/chat/turn_store.py`, `api/codx/junior/api/chat.py`, `api/tests/chat/test_single_response_per_chat.py`.",
       "think": null,
+      "reasoning_content": null,
       "hide": false,
       "unsent": false,
       "is_answer": false,
@@ -110,6 +122,7 @@
       "disable_knowledge": false,
       "read_by": [],
       "error": null,
+      "reply_to": null,
       "linked_chat_ids": []
     },
     {
@@ -118,6 +131,7 @@
       "task_item": "",
       "content": "I'm executing card `42bdacee`. Let me verify the call sites before touching the liveness logic.Now I'll implement the fix. Starting with the store (staleness-aware liveness + wall-clock budget):Now the tests:\n> Ops, sorry! There was an error with latest request: Chat was cancelled by the caller.",
       "think": "* Processing request, please wait...\n",
+      "reasoning_content": null,
       "hide": false,
       "unsent": false,
       "is_answer": false,
@@ -2049,6 +2063,7 @@
       "disable_knowledge": false,
       "read_by": [],
       "error": "Chat was cancelled by the caller.",
+      "reply_to": null,
       "linked_chat_ids": []
     },
     {
@@ -2057,6 +2072,7 @@
       "task_item": "",
       "content": "The card's code is already in the working tree. Let me verify it rather than re-implement it \u2014 one increment: run the mapped tests.\n> Ops, sorry! There was an error with latest request: Chat was cancelled by the caller.",
       "think": "* Processing request, please wait...\n",
+      "reasoning_content": null,
       "hide": false,
       "unsent": false,
       "is_answer": false,
@@ -2208,6 +2224,7 @@
       "disable_knowledge": false,
       "read_by": [],
       "error": "Chat was cancelled by the caller.",
+      "reply_to": null,
       "linked_chat_ids": []
     },
     {
@@ -2216,6 +2233,7 @@
       "task_item": "",
       "content": "## What happened\nThe card's code **is** in the tree (`api/codx/junior/chat/turn_store.py` +106/\u221213, `api/codx/junior/api/chat.py` +44/\u22126, the test file +111/\u22123 \u2014 staleness-aware liveness, cancel-wins, wall-clock budget all present). So I verified instead of re-implementing \u2014 and the verification **cannot run**: the mapped suite never collects.\n\n## What I did\n- Ran the mapped tests 3 ways; all dead ends but one decisive result:\n\n| probe | result |\n|---|---|\n| `qa_run_tests(pytest:api, paths=[test_single_response_per_chat.py])` | timeout 300 s, 0 tests |\n| same + explicit `tests/chat/\u2026py -q` arg | timeout 300 s, 0 tests |\n| same + `--collect-only -q` | **timeout 120 s, not one test id printed** |\n| `--version` | **0.2 s** \u2192 interpreter + pytest + plugins are fine |\n\nSo the hang is at **collection**, i.e. importing `codx.junior.api.chat` (engine/chat_engine/turn_store/security), not in the tests and not in the venv. Verdict stays **block** (`tests.timeout`, high) \u2014 per the gate, an unrunnable suite is a finding, never a pass.\n- Created card **`820c9052`** \u2014 \"api test suite cannot collect: importing codx.junior hangs\" (high, `software_developer` + `qa`), with the measured table, the candidate import-time side effects and the two probe commands. `42bdacee` is blocked behind it.\n\n## Demo\nRun `project_manager(action=\"get_task\", chat_id=\"820c9052-504c-47ea-9273-77fdc676d904\")` \u2014 or open it at `codx-junior maintenance / Backlog`.\n\n## Next tasks\n- `quick` \u2014 I run the bounded probes from that card (`-X importtime`, `timeout 60 \u2026 --collect-only`) once you say go, to name the blocking import.\n- `max` \u2014 fix the import side effect (or the `context`/`engine` circular import) and re-run `qa_review_changes` on `42bdacee`.\n- `quick` \u2014 accept `42bdacee` on code review alone and record the missing test evidence as a known gap in its card.\n\n**Good enough?** ok / next / what is wrong",
       "think": "##",
+      "reasoning_content": null,
       "hide": false,
       "unsent": false,
       "is_answer": false,
@@ -3084,19 +3102,20 @@
       "disable_knowledge": false,
       "read_by": [],
       "error": null,
+      "reply_to": null,
       "linked_chat_ids": []
     }
   ],
   "created_at": "2026-11-16 06:32:03.577676",
-  "updated_at": "2026-11-16T07:29:51.667981",
+  "updated_at": "2026-11-18T03:35:53.298653",
   "mode": "chat",
   "kanban_id": "",
   "column_id": "",
   "board": "codx-junior maintenance",
-  "column": "Harness",
+  "column": "To Do",
   "sprints": [],
   "priority": "high",
-  "due_date": null,
+  "due_date": "2026-11-20",
   "progress": 0,
   "assignees": [],
   "wake_at": null,
@@ -3112,7 +3131,7 @@
   "chat_index": 0,
   "url": "",
   "branch": "",
-  "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/tasks/codx-junior maintenance/Backlog/stop-must-always-close-a-running-response-stale-turn-lock.42bdacee-0807-4aa4-9453-9daf100c1b4b.json",
+  "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/tasks/codx-junior maintenance/To Do/stop-must-always-close-a-running-response-stale-turn-lock.42bdacee-0807-4aa4-9453-9daf100c1b4b.json",
   "llm_model": "",
   "estimation_cost": null,
   "cost": 0.2108793,

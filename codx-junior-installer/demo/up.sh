@@ -27,6 +27,7 @@ API_KEY=""
 PORT=""
 PROJECTS=""
 DO_BUILD=0
+NON_INTERACTIVE=0
 
 usage() {
     cat <<USAGE
@@ -44,6 +45,9 @@ Usage: ./up.sh [options]
   --projects <path>   Host folder that holds your projects (default ./projects)
   --build             Build the image from source instead of pulling it
   --no-wait           Do not wait for the health check
+  --non-interactive   Promise that no prompt will ever appear. up.sh never
+                      prompts today; the flag exists so an unattended caller
+                      (install.sh, cloud/bootstrap.sh) can pass it uniformly
   -h, --help          This help
 USAGE
 }
@@ -58,6 +62,7 @@ while [[ $# -gt 0 ]]; do
         --projects) PROJECTS="${2:-}"; shift 2 ;;
         --build)    DO_BUILD=1; shift ;;
         --no-wait)  NO_WAIT=1; shift ;;
+        --non-interactive|--yes|-y) NON_INTERACTIVE=1; shift ;;
         -h|--help)  usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac
@@ -122,6 +127,14 @@ chmod 600 "${ENV_FILE}"
 [[ -n "${MODEL}"    ]] && set_env_var CODX_JUNIOR_AI_MODEL    "${MODEL}"    "${ENV_FILE}"
 [[ -n "${PORT}"     ]] && set_env_var CODX_JUNIOR_WEB_PORT    "${PORT}"     "${ENV_FILE}"
 [[ -n "${PROJECTS}" ]] && set_env_var CODX_JUNIOR_PROJECTS_PATH "${PROJECTS}" "${ENV_FILE}"
+# First admin account. An unattended install has nobody to fill the "create the
+# first user" form, so the credentials travel with the settings and the API
+# stores them as a bcrypt hash on first boot (see
+# api/codx/junior/security/admin_bootstrap.py). .env is chmod 600 above and the
+# values are never printed.
+[[ -n "${CODX_JUNIOR_ADMIN_USER:-}" ]]     && set_env_var CODX_JUNIOR_ADMIN_USER     "${CODX_JUNIOR_ADMIN_USER}"     "${ENV_FILE}"
+[[ -n "${CODX_JUNIOR_ADMIN_PASSWORD:-}" ]] && set_env_var CODX_JUNIOR_ADMIN_PASSWORD "${CODX_JUNIOR_ADMIN_PASSWORD}" "${ENV_FILE}"
+[[ -n "${CODX_JUNIOR_ADMIN_EMAIL:-}" ]]    && set_env_var CODX_JUNIOR_ADMIN_EMAIL    "${CODX_JUNIOR_ADMIN_EMAIL}"    "${ENV_FILE}"
 
 FINAL_PROVIDER="$(get_env_var CODX_JUNIOR_AI_PROVIDER "${ENV_FILE}")"
 FINAL_KEY="$(get_env_var CODX_JUNIOR_AI_API_KEY "${ENV_FILE}")"
@@ -164,6 +177,21 @@ PROJECTS_PATH="$(cd "${PROJECTS_PATH}" && pwd)"
 set_env_var CODX_JUNIOR_PROJECTS_PATH "${PROJECTS_PATH}" "${ENV_FILE}"
 log "Projects folder: ${PROJECTS_PATH}"
 
+# --- image tag -------------------------------------------------------------
+# Pinning CODX_JUNIOR_REF to a release tag must pin the *artifact* too: a
+# pull-only install never reads the checkout, so tracking `:demo` while asking
+# for `v1.2.3` would silently run whatever was published last. Release tags
+# (vX.Y.Z...) pull their own image; anything else keeps the rolling tag.
+if [[ -z "${CODX_JUNIOR_IMAGE:-}" ]]; then
+    IMAGE_REF="${CODX_JUNIOR_REF:-}"
+    if [[ "${IMAGE_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        CODX_JUNIOR_IMAGE="codxjunior/codx-junior:${IMAGE_REF}"
+    else
+        CODX_JUNIOR_IMAGE="codxjunior/codx-junior:demo"
+    fi
+fi
+export CODX_JUNIOR_IMAGE
+
 # --- start -----------------------------------------------------------------
 COMPOSE_FILES=(-f docker-compose.yaml)
 COMPOSE_PROFILES=()
@@ -172,9 +200,17 @@ if [[ "${DO_BUILD}" -eq 1 ]]; then
     log "Building the demo image (first build takes a few minutes)..."
     "${COMPOSE[@]}" "${COMPOSE_FILES[@]}" "${COMPOSE_PROFILES[@]}" build
 else
-    log "Pulling the demo image..."
-    "${COMPOSE[@]}" "${COMPOSE_FILES[@]}" pull --quiet codx-junior || \
-        warn "Pull failed - falling back to a local build."
+    log "Pulling ${CODX_JUNIOR_IMAGE}..."
+    if ! "${COMPOSE[@]}" "${COMPOSE_FILES[@]}" pull --quiet codx-junior; then
+        # NEVER fall back to a build here. An unattended install (cloud-init)
+        # has nobody to notice that "1-2 min pull" became a 20+ min compile on a
+        # 2 vCPU box: it just burns a paid machine until the pipeline times out.
+        # `--build` is the explicit opt-in for compiling and says so in --help.
+        die "Could not pull ${CODX_JUNIOR_IMAGE}.
+       Check the tag and the network access of this host, or install from
+       source with --build (>= 4 vCPU / 8 GB / 20 GB free, ~20 min).
+       Nothing was started, so it is safe to re-run."
+    fi
 fi
 
 log "Starting codx-junior..."

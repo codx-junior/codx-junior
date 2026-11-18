@@ -31,8 +31,23 @@
 #   --branch BRANCH|TAG  alias of --ref
 #   --env-file PATH      CODX_JUNIOR_ENV_FILE       default: /etc/codx-junior/settings.env
 #   --build              build the image locally instead of pulling it
+#
+# Read from the settings file or the environment only (there is no flag):
+#   CODX_JUNIOR_PUBLIC_URL       the URL this instance is served on
+#   CODX_JUNIOR_ADMIN_USER       first account, created on first boot
+#   CODX_JUNIOR_ADMIN_PASSWORD   its password (bcrypt-hashed, never logged)
+#   CODX_JUNIOR_ADMIN_EMAIL      optional email of that account
+#   CODX_JUNIOR_IMAGE            image to pull (default: derived from the ref)
 #   --no-docker-install  fail instead of installing Docker
 #   --open-firewall      ufw: allow ssh + the web port (OFF by default)
+#   --domain DOMAIN      CODX_JUNIOR_DOMAIN      serve HTTPS on DOMAIN: starts a
+#                                                Caddy front door on 80/443 with
+#                                                automatic ACME (no extra step)
+#   --tls MODE           CODX_JUNIOR_TLS         `none` = TLS is terminated in
+#                                                front of this box (default with
+#                                                --domain: caddy)
+#   --non-interactive    CODX_JUNIOR_NON_INTERACTIVE=1   close stdin: never wait
+#                                                for a TTY, fail instead
 #   -h, --help
 #
 # Exit code 0 means the instance answered its health check from the host.
@@ -46,6 +61,8 @@ DEFAULT_PORT="19981"
 DEFAULT_PROVIDER="deepseek"
 DEFAULT_ENV_FILE="/etc/codx-junior/settings.env"
 CONTAINER="codx-junior-demo"
+TLS_CONTAINER="codx-junior-tls"
+TLS_IMAGE="${CODX_JUNIOR_TLS_IMAGE:-caddy:2-alpine}"
 
 # --- logging ---------------------------------------------------------------
 LOG_FILE="${CODX_JUNIOR_LOG:-/var/log/codx-junior-install.log}"
@@ -127,6 +144,10 @@ MODEL="${CODX_JUNIOR_AI_MODEL:-}"
 DO_BUILD="${CODX_JUNIOR_BUILD:-0}"
 INSTALL_DOCKER="${CODX_JUNIOR_INSTALL_DOCKER:-1}"
 OPEN_FIREWALL="${CODX_JUNIOR_OPEN_FIREWALL:-0}"
+DOMAIN="${CODX_JUNIOR_DOMAIN:-}"
+TLS_MODE="${CODX_JUNIOR_TLS:-}"
+NON_INTERACTIVE="${CODX_JUNIOR_NON_INTERACTIVE:-0}"
+ADMIN_USER="${CODX_JUNIOR_ADMIN_USER:-}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -144,10 +165,30 @@ while [[ $# -gt 0 ]]; do
         --build)             DO_BUILD=1; shift ;;
         --no-docker-install) INSTALL_DOCKER=0; shift ;;
         --open-firewall)     OPEN_FIREWALL=1; shift ;;
+        --domain)            DOMAIN="${2:-}"; shift 2 ;;
+        --tls)               TLS_MODE="${2:-}"; shift 2 ;;
+        --non-interactive|--yes|-y) NON_INTERACTIVE=1; shift ;;
         -h|--help)           usage ;;
         *) die "unknown option: $1 (see --help)" ;;
     esac
 done
+
+# Unattended by contract: nothing below may read stdin, because a prompt would
+# block cloud-init until the machine is killed. Every child inherits a closed
+# stdin, so a library that asks a question gets EOF and fails loudly instead.
+if [[ "${NON_INTERACTIVE}" == "1" ]]; then
+    exec </dev/null
+    export DEBIAN_FRONTEND=noninteractive
+    export NEEDRESTART_MODE=a
+    export GIT_TERMINAL_PROMPT=0
+fi
+
+[[ -z "${DOMAIN}" || "${DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid --domain: ${DOMAIN}"
+[[ -z "${TLS_MODE}" || "${TLS_MODE}" == "none" ]] \
+    || die "invalid --tls value: ${TLS_MODE} (only 'none' is supported)"
+if [[ -z "${DOMAIN}" && -n "${TLS_MODE}" ]]; then
+    die "--tls needs --domain (or CODX_JUNIOR_DOMAIN)"
+fi
 
 if [[ -z "${API_KEY}" && -n "${API_KEY_FILE}" ]]; then
     [[ -f "${API_KEY_FILE}" ]] || die "key file not found: ${API_KEY_FILE}"
@@ -181,6 +222,8 @@ log "  provider : ${PROVIDER}${MODEL:+ (model ${MODEL})}"
 log "  port     : ${WEB_PORT}"
 log "  projects : ${PROJECTS}"
 log "  source   : ${REPO} @ ${REF}"
+log "  domain   : ${DOMAIN:-<none: plain HTTP on port ${WEB_PORT}>}${TLS_MODE:+ (tls: ${TLS_MODE})}"
+log "  admin    : ${ADMIN_USER:-<none: create the first account in the UI>}"
 log "  log      : ${LOG_FILE}"
 
 # --- 2. host dependencies ---------------------------------------------------
@@ -286,32 +329,97 @@ export CODX_JUNIOR_PROJECTS_PATH="${PROJECTS}"
 export CODX_JUNIOR_WEB_PORT="${WEB_PORT}"
 if [[ -n "${API_URL}" ]]; then export CODX_JUNIOR_AI_API_URL="${API_URL}"; fi
 if [[ -n "${MODEL}" ]]; then export CODX_JUNIOR_AI_MODEL="${MODEL}"; fi
+# up.sh derives the image tag from the ref, so it has to see it.
+export CODX_JUNIOR_REF="${REF}"
+if [[ -n "${DOMAIN}" ]]; then
+    # The instance must know the URL it is served on (links, OAuth redirects,
+    # websockets). An explicit CODX_JUNIOR_PUBLIC_URL still wins.
+    export CODX_JUNIOR_PUBLIC_URL="${CODX_JUNIOR_PUBLIC_URL:-https://${DOMAIN}}"
+fi
 
-BUILD_ARGS=()
+UP_ARGS=()
 if [[ "${DO_BUILD}" == "1" ]]; then
-    BUILD_ARGS+=(--build)
+    UP_ARGS+=(--build)
+fi
+if [[ "${NON_INTERACTIVE}" == "1" ]]; then
+    UP_ARGS+=(--non-interactive)
 fi
 
 log "Installing codx-junior (this pulls or builds the image: 1-2 min pulled, 5-10 min built)"
 cd "${DEMO_DIR}"
-bash ./up.sh "${BUILD_ARGS[@]+"${BUILD_ARGS[@]}"}"
+bash ./up.sh "${UP_ARGS[@]+"${UP_ARGS[@]}"}"
 
 # --- 6. verify from the host (outside the container) ------------------------
-log "Verifying the published port from the host"
+# The readiness probe is GET /api/health, not "/": it reports the running
+# version/ref, so a pipeline can assert *which* build answered instead of
+# "something returned HTML". Same contract the hosting pipeline polls from the
+# outside (see cloud/DEPLOYMENT-CONTRACT.md).
+log "Verifying http://127.0.0.1:${WEB_PORT}/api/health from the host"
 for _ in $(seq 1 30); do
-    if curl -fsS --max-time 3 "http://127.0.0.1:${WEB_PORT}/" >/dev/null 2>&1; then
+    if curl -fsS --max-time 3 "http://127.0.0.1:${WEB_PORT}/api/health" >/dev/null 2>&1; then
         break
     fi
     sleep 2
 done
-curl -fsS --max-time 3 "http://127.0.0.1:${WEB_PORT}/" >/dev/null 2>&1 \
-    || die "the web UI did not answer on port ${WEB_PORT} (docker logs ${CONTAINER})"
+HEALTH="$(curl -fsS --max-time 5 "http://127.0.0.1:${WEB_PORT}/api/health" 2>/dev/null || true)"
+[[ -n "${HEALTH}" ]] \
+    || die "the API did not answer /api/health on port ${WEB_PORT} (docker logs ${CONTAINER})"
+log "Health: ${HEALTH}"
 
 BOOTSTRAP_STATE="$(docker exec "${CONTAINER}" curl -fsS http://127.0.0.1:19980/api/bootstrap 2>/dev/null || true)"
 if [[ -n "${BOOTSTRAP_STATE}" ]]; then
     log "AI configuration: ${BOOTSTRAP_STATE}"
 else
     warn "could not read /api/bootstrap; configure the provider from the UI"
+fi
+
+# --- 6b. HTTPS front door (--domain) ---------------------------------------
+# A Caddy container in front of the published port, with automatic ACME. Caddy
+# retries the order on its own, so a DNS record that becomes visible a minute
+# late still converges; we wait a bounded time before failing because an
+# unattended install must never hang.
+TLS_URL=""
+if [[ -n "${DOMAIN}" ]]; then
+    if [[ "${TLS_MODE}" == "none" ]]; then
+        TLS_URL="https://${DOMAIN}"
+        log "TLS: not terminated here (--tls=none) - point your proxy at 127.0.0.1:${WEB_PORT}"
+    else
+        # 80/443 must be ours: a distro web server left running would steal them.
+        systemctl stop nginx apache2 >/dev/null 2>&1 || true
+        log "Starting the HTTPS front door for ${DOMAIN} (Caddy, automatic ACME)"
+        docker rm -f "${TLS_CONTAINER}" >/dev/null 2>&1 || true
+        docker run -d --name "${TLS_CONTAINER}" --restart unless-stopped \
+            -p 80:80 -p 443:443 -p 443:443/udp \
+            --add-host "host.docker.internal:host-gateway" \
+            -v codx-junior-tls-data:/data \
+            -v codx-junior-tls-config:/config \
+            "${TLS_IMAGE}" \
+            reverse-proxy --from "${DOMAIN}" --to "host.docker.internal:${WEB_PORT}" \
+            >/dev/null \
+            || die "could not start the TLS front door (docker logs ${TLS_CONTAINER})"
+        TLS_URL="https://${DOMAIN}"
+        log "Waiting for the certificate of ${DOMAIN} (max 3 min; needs its A record)"
+        TLS_OK=0
+        for _ in $(seq 1 36); do
+            # --resolve pins the name to this machine, so the check does not
+            # depend on the box's own resolver nor on NAT hairpinning.
+            if curl -fsS --max-time 5 --resolve "${DOMAIN}:443:127.0.0.1" \
+                    "${TLS_URL}/api/health" >/dev/null 2>&1; then
+                TLS_OK=1
+                break
+            fi
+            sleep 5
+        done
+        if [[ "${TLS_OK}" != "1" ]]; then
+            docker logs --tail 30 "${TLS_CONTAINER}" 2>&1 || true
+            die "${TLS_URL} did not answer with a valid certificate.
+       The A record of ${DOMAIN} must point at this machine before ACME can
+       issue anything, and ports 80/443 must reach it. Caddy keeps retrying in
+       the background: docker logs -f ${TLS_CONTAINER}
+       Use --tls=none when another proxy already terminates TLS."
+        fi
+        log "Certificate ready: ${TLS_URL}"
+    fi
 fi
 
 # --- 7. firewall (opt-in) ---------------------------------------------------
@@ -322,6 +430,10 @@ if [[ "${OPEN_FIREWALL}" == "1" ]]; then
     if command -v ufw >/dev/null 2>&1; then
         ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 || true
         ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true
+        if [[ -n "${DOMAIN}" && "${TLS_MODE}" != "none" ]]; then
+            ufw allow 80/tcp >/dev/null 2>&1 || true
+            ufw allow 443/tcp >/dev/null 2>&1 || true
+        fi
         ufw --force enable >/dev/null 2>&1 || true
         log "ufw: ssh + ${WEB_PORT}/tcp allowed"
     else
@@ -332,6 +444,10 @@ fi
 # --- 8. summary -------------------------------------------------------------
 PUBLIC_URL=""
 detect_url() {
+    if [[ -n "${TLS_URL:-}" ]]; then
+        printf '%s' "${TLS_URL}"
+        return
+    fi
     if [[ -n "${CODX_JUNIOR_PUBLIC_URL:-}" ]]; then
         printf '%s' "${CODX_JUNIOR_PUBLIC_URL}"
         return
@@ -344,6 +460,10 @@ detect_url() {
     printf 'http://%s:%s' "${ip:-localhost}" "${WEB_PORT}"
 }
 PUBLIC_URL="$(detect_url)"
+
+if [[ -n "${ADMIN_USER}" ]]; then
+    log "First account: ${ADMIN_USER} (created on first boot from ${ENV_FILE_SETTING})"
+fi
 
 cat <<DONE
 

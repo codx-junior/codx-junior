@@ -143,6 +143,34 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                   <label class="label-text block mb-2">Dependencies</label>
                   <ProjectDependenciesEditor v-model="settings.project_dependencies" />
                 </div>
+                <div class="divider"></div>
+                <div>
+                  <div class="font-bold">Linked project file permissions</div>
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Child projects live inside this project's tree and are always readable and
+                    writable. These lists grant file access to projects living outside it.
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Read-only linked projects</label>
+                  <ProjectDependenciesEditor
+                    v-model="settings.read_project_dependencies"
+                    placeholder="Add a project the AI may read"
+                    empty-text="No read-only projects."
+                    help="The AI can list, read and search these projects' files but can never modify them."
+                    :blocked-names="readWriteDependencyNames"
+                  />
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Read &amp; write linked projects</label>
+                  <ProjectDependenciesEditor
+                    v-model="settings.read_write_project_dependencies"
+                    placeholder="Add a project the AI may read and write"
+                    empty-text="No read/write projects."
+                    help="The AI can also write files, apply changes and stage them in these projects' repositories."
+                    :blocked-names="readDependencyNames"
+                  />
+                </div>
               </div>
             </div>
 
@@ -915,6 +943,14 @@ export default {
         return repoPath ? `${repoPath}-worktrees` : ''
       }
       return `${repoPath.substring(0, index)}/${repoPath.substring(index + 1)}-worktrees`
+    },
+    /** Names already granted read+write, hidden from the read-only picker. */
+    readWriteDependencyNames() {
+      return this.splitDependencyNames(this.settings?.read_write_project_dependencies)
+    },
+    /** Names already granted read-only, hidden from the read+write picker. */
+    readDependencyNames() {
+      return this.splitDependencyNames(this.settings?.read_project_dependencies)
     }
   },
   watch: {
@@ -923,6 +959,13 @@ export default {
     }
   },
   methods: {
+    /** Comma separated permission list → trimmed project names. */
+    splitDependencyNames(value) {
+      return `${value || ''}`
+        .split(',')
+        .map(name => name.trim())
+        .filter(name => name)
+    },
     async reloadSettings() {
       this.settings = await this.$project?.$api.settings.read()
       if (this.settings && !this.settings.mcp_servers) {
@@ -937,6 +980,15 @@ export default {
       if (this.settings && this.settings.git_worktrees_path === undefined) {
         this.settings.git_worktrees_path = ''
       }
+      // The file permission lists are optional strings: start them as `''` so the
+      // dependency editors render an empty list instead of `null`.
+      ;['read_project_dependencies', 'read_write_project_dependencies'].forEach(
+        key => {
+          if (this.settings && !this.settings[key]) {
+            this.settings[key] = ''
+          }
+        }
+      )
       await this.loadGlobalGitSettings()
       this.confirmDelete = false
     },

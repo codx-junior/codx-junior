@@ -164,6 +164,10 @@ def test_detect_suites_finds_pytest_and_npm(tmp_path):
     names = {suite.name for suite in suites}
     assert {"pytest:api", "npm:client"} <= names
     assert select_suite(suites, "pytest").cwd == "api"
+    # Either segment of a composed name selects the suite: asking for the
+    # folder must not fall through to a `tests.no-suite` block.
+    assert select_suite(suites, "api").cwd == "api"
+    assert select_suite(suites, "client").cwd == "client"
 
 
 # -----------------------------------------------------------------------------

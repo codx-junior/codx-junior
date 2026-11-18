@@ -2,11 +2,12 @@
   "name": "codx-junior-max",
   "url": "",
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=codx-junior-max",
-  "description": "codx-junior harness (max tier): the high-effort tier for long or complex work — multi-file refactors, migrations, full-suite validation, long research. It inherits everything from codx-junior (plain language, 4-section close, mandatory validation, checkpoint) and only adds a bigger budget, orchestration for multi-step runs, the harness tool-limit exemption and the heavy validation gate. Entered only on an explicit 'max'.",
+  "description": "codx-junior harness (max tier): the high-effort tier for long or complex work \u2014 multi-file refactors, migrations, full-suite validation, long research. It inherits everything from codx-junior (plain language, 4-section close, mandatory validation, checkpoint) and only adds a bigger budget, orchestration for multi-step runs, the harness tool-limit exemption and the heavy validation gate. Entered only on an explicit 'max'.",
   "category": "assistant",
   "file_match": "",
   "content": null,
-  "path": "",
+  "parsed_content": null,
+  "path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/profiles/codx-junior-max/codx-junior-max.profile",
   "profiles": [
     "codx-junior"
   ],
@@ -31,6 +32,39 @@
   ],
   "llm_model": "",
   "use_knowledge": true,
+  "user": {
+    "username": "",
+    "email": "",
+    "avatar": "",
+    "theme": "dim",
+    "projects": [],
+    "role": "user",
+    "companies": [],
+    "language": "auto",
+    "workspace_mode": "auto",
+    "token": "",
+    "disabled": false,
+    "github": "",
+    "apps": [],
+    "api_key": "",
+    "env": {},
+    "wallet": {
+      "wallet_id": "fb08f8aa-eab9-4664-80ac-f7a3eb94fa75",
+      "name": "Default Wallet",
+      "balance_cxjcoins": 0.0,
+      "spending_limits": [],
+      "transactions": [],
+      "created_at": "2026-11-17T15:07:47.640240",
+      "updated_at": "2026-11-17T15:07:47.640247",
+      "enabled": true
+    },
+    "github_admin": false,
+    "github_only": false,
+    "token_limit_rules": [],
+    "token_limit_requests": [],
+    "is_company_mode": false,
+    "company_ids": []
+  },
   "tools": [
     "*"
   ],
@@ -40,10 +74,39 @@
     "max-effort",
     "long-running"
   ],
+  "effort_name": "max",
+  "effort": {
+    "max_iterations": 24,
+    "max_tool_calls": 6,
+    "max_tool_rounds": 40,
+    "continue_on_tool_limit": true,
+    "continuations": 2,
+    "continuation_max_iterations": 6,
+    "continuation_max_calls": 3,
+    "wall_clock_seconds": 3600.0,
+    "target_seconds": 3600.0,
+    "stop_on_wall_clock": false,
+    "validation": "full+coverage+security",
+    "tool_allowlist": null
+  },
   "api_settings": {
     "active": false,
     "model_name": null,
     "description": null
   },
-  "project_id": ""
+  "guardrails": {
+    "enabled": false,
+    "scope": null,
+    "scope_keywords": [],
+    "scope_similarity_threshold": 0.35,
+    "allowed_tools": [],
+    "refusal_message": "I can only answer questions within my configured scope.",
+    "risk_threshold": 10.0,
+    "use_llm_classifier": false
+  },
+  "chat_mode": null,
+  "actor": null,
+  "autonomy": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "chat_id": ""
 }

@@ -50,6 +50,43 @@ Validation is **never optional**; only its *breadth* changes with the effort lev
 Both tiers close with the same four sections; a delivery without its tier's validation
 is not a delivery.
 
+### QA gate availability
+
+In this repository the QA gate (`qa_plan` / `qa_run_tests`) currently **cannot run**:
+the project is opened at `docs/`, its file tools are jailed there, while the QA tools
+resolve the git root one level up — and no suite is declared for either root.
+
+* `qa_plan()` → `suites: none`, `default_suite: none`, `mapped_tests: 0`, `unmapped_sources: 14`.
+* `qa_run_tests(suite="pytest")` → `decision: block`, `[high] tests.no-suite`.
+* A runnable command *does* exist for the docs site itself — `npm run docs:build`
+  (VitePress, dead-link aware), see `package.json:11`.
+
+Until the platform root is opened instead of `docs/`, or `docs/` is registered as its
+own sub-project, deliveries on this project fall back to a **manual reproduction** for
+validation, as allowed by the `agile` tier above.
+
+**Default taken by the shift of 2026-11-17 — pending human confirmation (card
+`b776e9a7`): keep `docs/` as the project root, do not open the platform root.**
+Opening the platform root would hand the QA gate the whole monorepo — 50 changed
+files under `api/`, `ui/` and the effort/atlas work — none of which this project
+publishes, and none of which it can even read, because the file tools stay jailed at
+`docs/`. The fix therefore belongs to *this* project: declare the only runnable suite
+in the project config, so the gate executes it from the docs root.
+
+```json
+"qa_policy": {
+  "suites": {
+    "docs": { "command": ["npm", "run", "docs:build"] }
+  }
+}
+```
+
+**Unverified:** whether `.codx/project.json` accepts a `qa_policy` key. The service
+that owns `qa_*` (`codx-api`, root `…/codx-junior-platform/api`) is indexed as a
+related project, but its atlas times out (>120 s) on every search, so the config
+schema was not read. Until the key is accepted, `qa_plan()` keeps returning
+`suites: none` and deliveries keep using the manual reproduction described above.
+
 ## Effort levels
 
 * `codx-junior` — **agile**. Small BASE budget and an ADVISORY clock: reaching

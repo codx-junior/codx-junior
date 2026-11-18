@@ -8,7 +8,7 @@ import traceback
 from urllib.parse import quote
 
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 
 from codx.junior.global_settings import (
@@ -79,6 +79,23 @@ class CODXJuniorSettings(BaseModel):
     project_wiki: Optional[bool] = Field(default=False)
     project_wiki_path: Optional[str] = Field(default=None)
     project_dependencies: Optional[str] = Field(default=None)
+
+    # File permissions over the linked (dependency) projects.
+    # `project_dependencies` declares the links used by search/RAG; these two
+    # comma separated lists decide what the file tools may do with each linked
+    # project: `read_project_dependencies` grants read only, and
+    # `read_write_project_dependencies` grants read and write. A linked project
+    # with no permission entry stays searchable but is never read or written
+    # through the file tools.
+    read_project_dependencies: Optional[str] = Field(
+        default=None,
+        description="Linked projects whose files can be read (comma separated project names)",
+    )
+    read_write_project_dependencies: Optional[str] = Field(
+        default=None,
+        description="Linked projects whose files can be read and written (comma separated project names)",
+    )
+
     # Search (knowledge, wiki, files) runs over the current project plus its
     # children and its dependencies. Disable it to keep every search local.
     search_related_projects: Optional[bool] = Field(default=True)
@@ -985,6 +1002,181 @@ class CODXJuniorSettings(BaseModel):
             seen.add(project.codx_path)
             dependencies.append(project)
         return dependencies
+
+    def _dependency_permission_names(self, attribute: str) -> List[str]:
+        """
+        Split one of the comma separated dependency permission lists.
+
+        Names are trimmed, empty entries dropped and duplicates removed, so the
+        settings UI can store whatever the user typed without breaking a
+        lookup.
+        """
+        names: List[str] = []
+        for name in str(getattr(self, attribute, None) or "").split(","):
+            clean = name.strip()
+            if clean and clean not in names:
+                names.append(clean)
+        return names
+
+    def get_read_dependency_names(self) -> List[str]:
+        """Linked projects whose files the file tools may read."""
+        return self._dependency_permission_names("read_project_dependencies")
+
+    def get_read_write_dependency_names(self) -> List[str]:
+        """Linked projects whose files the file tools may read and write."""
+        return self._dependency_permission_names("read_write_project_dependencies")
+
+    def get_readable_dependency_names(self) -> List[str]:
+        """Every linked project readable through the file tools."""
+        names = self.get_read_dependency_names()
+        for name in self.get_read_write_dependency_names():
+            if name not in names:
+                names.append(name)
+        return names
+
+    def _dependency_projects_for_names(
+        self, names: List[str]
+    ) -> List["CODXJuniorSettings"]:
+        """
+        Resolve a list of dependency names to real projects.
+
+        Unresolved names are logged and skipped, so a stale permission entry
+        never breaks a file tool. The current project is never returned (it has
+        its own permissions) and the result is deduplicated by `codx_path`.
+        """
+        projects: List["CODXJuniorSettings"] = []
+        seen = {self.codx_path}
+        for name in names:
+            project = self.find_dependency_project(name)
+            if not project:
+                logger.warning(
+                    "Project '%s': linked project '%s' does not match any project",
+                    self.project_name, name,
+                )
+                continue
+            if project.codx_path in seen:
+                continue
+            seen.add(project.codx_path)
+            projects.append(project)
+        return projects
+
+    def get_read_dependency_projects(self) -> List["CODXJuniorSettings"]:
+        """Linked projects the file tools may read (read-only permission)."""
+        return self._dependency_projects_for_names(
+            self.get_read_dependency_names()
+        )
+
+    def get_read_write_dependency_projects(self) -> List["CODXJuniorSettings"]:
+        """Linked projects the file tools may read and write."""
+        return self._dependency_projects_for_names(
+            self.get_read_write_dependency_names()
+        )
+
+    def get_readable_dependency_projects(self) -> List["CODXJuniorSettings"]:
+        """Every linked project readable through the file tools."""
+        return self._dependency_projects_for_names(
+            self.get_readable_dependency_names()
+        )
+
+    def get_file_access_projects(
+        self, write: bool = False
+    ) -> List[Tuple["CODXJuniorSettings", bool]]:
+        """
+        Projects the file tools may use, with the permission granted to each one.
+
+        The current project is always granted read and write — every child
+        project lives inside its tree and is covered by the same root. Linked
+        projects follow the permission lists: `read_project_dependencies` grants
+        read only and `read_write_project_dependencies` grants read and write.
+        With ``write`` only the entries that may be written are returned.
+        """
+        write_projects = self.get_read_write_dependency_projects()
+        write_paths = {project.codx_path for project in write_projects}
+
+        access: List[Tuple["CODXJuniorSettings", bool]] = [(self, True)]
+        seen = {self.codx_path}
+        for project in self.get_read_dependency_projects() + write_projects:
+            if project.codx_path in seen:
+                continue
+            seen.add(project.codx_path)
+            access.append((project, project.codx_path in write_paths))
+
+        if write:
+            return [(project, granted) for project, granted in access if granted]
+        return access
+
+    def _project_contains_path(
+        self, project: "CODXJuniorSettings", target: str
+    ) -> bool:
+        """Return True when *target* (already resolved) is inside *project*."""
+        root = (getattr(project, "abs_project_path", "") or "").strip()
+        if not root:
+            return False
+        try:
+            root_real = os.path.realpath(os.path.abspath(root))
+            return os.path.commonpath([root_real, target]) == root_real
+        except (ValueError, OSError):
+            return False
+
+    def resolve_project_access(
+        self, path: str, write: bool = False
+    ) -> Optional["CODXJuniorSettings"]:
+        """
+        Return the project that owns *path* when the file tools may use it.
+
+        ``None`` means *denied*: the path belongs to no project reachable from
+        this one, or it belongs to a linked project without the requested
+        permission (a read-only link rejects ``write=True``).
+        """
+        if not path:
+            return None
+        try:
+            target = os.path.realpath(os.path.abspath(str(path)))
+        except (ValueError, OSError):
+            return None
+        for project, _granted in self.get_file_access_projects(write=write):
+            if self._project_contains_path(project, target):
+                return project
+        return None
+
+    def can_access_path(self, path: str, write: bool = False) -> bool:
+        """True when the file tools may use *path* (see `resolve_project_access`)."""
+        return self.resolve_project_access(path, write=write) is not None
+
+    def resolve_linked_project_prefix(
+        self, relative_path: str, write: bool = False
+    ) -> Optional[Tuple["CODXJuniorSettings", str]]:
+        """
+        Resolve a relative path whose first component names a linked project.
+
+        ``"backend/src/main.py"`` becomes ``(backend_settings, "src/main.py")``
+        when `backend` is a linked project the tools may use, so a model can
+        address a linked project by name instead of by absolute path. Returns
+        ``None`` when the first component names no accessible linked project.
+        """
+        raw = str(relative_path or "").replace("\\", "/").strip()
+        if not raw or os.path.isabs(raw):
+            return None
+        head, separator, tail = raw.partition("/")
+        head = head.strip()
+        if not separator or not head or head in (".", ".."):
+            return None
+        wanted = head.lower()
+        for project, _granted in self.get_file_access_projects(write=write):
+            if project.codx_path == self.codx_path:
+                continue
+            candidates = {
+                str(getattr(project, "project_name", "") or "").strip().lower(),
+                os.path.basename(
+                    os.path.abspath(
+                        (getattr(project, "abs_project_path", "") or "").strip()
+                    )
+                ).strip().lower(),
+            }
+            candidates.discard("")
+            if wanted in candidates:
+                return project, tail
+        return None
 
     def get_related_projects(
         self,

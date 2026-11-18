@@ -369,14 +369,24 @@ def _related_project_settings(
     settings: "CODXJuniorSettings",
 ) -> List["CODXJuniorSettings"]:
     """
-    Return the linked projects (children + dependencies) that have a root.
+    Return the projects the file tools may read next to the current one.
 
-    ``get_related_projects`` resolves declared dependencies through the project
-    catalogue as well, so a project linked from the settings page and living
-    outside the project tree is reachable by the file tools.
+    Children live inside the project tree and are always reachable. Linked
+    projects are included only when the settings grant read access —
+    ``read_project_dependencies`` or ``read_write_project_dependencies`` — so
+    ``project_dependencies`` alone (the search/RAG declaration) never opens a
+    tree the settings did not allow. Settings without the permission API fall
+    back to ``get_related_projects``.
     """
+    provider = getattr(settings, "get_readable_dependency_projects", None)
     try:
-        related = settings.get_related_projects() or []
+        if callable(provider):
+            related = list(provider() or [])
+            children = getattr(settings, "get_sub_projects", None)
+            if callable(children):
+                related.extend(children() or [])
+        else:
+            related = settings.get_related_projects() or []
     except Exception as ex:
         logger.debug("Could not resolve related projects: %s", ex)
         return []

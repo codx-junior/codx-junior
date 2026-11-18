@@ -83,6 +83,30 @@ RUN python -m venv "${CODX_JUNIOR_API_VENV}" \
     && "${CODX_JUNIOR_API_VENV}/bin/pip" install --upgrade pip \
     && "${CODX_JUNIOR_API_VENV}/bin/pip" install ./api
 
+# -----------------------------------------------------------------------------
+# Build provenance, declared LAST on purpose. Declared before the apt-get and
+# venv layers these three ARGs would invalidate them on every tag: a release
+# rebuild would re-download the whole product (~20 min) to change one string.
+#
+# `GET /api/health` reports them so an unattended install can assert WHICH build
+# answered instead of "something returned HTML" (api/codx/junior/version.py).
+# `.github/workflows/release.yml` passes the git tag; a local build leaves them
+# `unknown`.
+# -----------------------------------------------------------------------------
+ARG CODX_JUNIOR_BUILD_VERSION=unknown
+ARG CODX_JUNIOR_BUILD_REF=unknown
+ARG CODX_JUNIOR_BUILD_COMMIT=unknown
+ENV CODX_JUNIOR_BUILD_VERSION=${CODX_JUNIOR_BUILD_VERSION} \
+    CODX_JUNIOR_BUILD_REF=${CODX_JUNIOR_BUILD_REF} \
+    CODX_JUNIOR_BUILD_COMMIT=${CODX_JUNIOR_BUILD_COMMIT}
+
+# Also written to disk: the env above only survives while the container keeps
+# its build-time environment, the file survives `docker commit`/re-tagging.
+RUN mkdir -p /etc/codx-junior \
+    && printf '{"version":"%s","ref":"%s","commit":"%s"}\n' \
+        "${CODX_JUNIOR_BUILD_VERSION}" "${CODX_JUNIOR_BUILD_REF}" "${CODX_JUNIOR_BUILD_COMMIT}" \
+        > /etc/codx-junior/build-info.json
+
 # Web client + web server + process manager
 COPY --from=client /build/client/dist /usr/share/codx-junior/client
 COPY codx-junior-installer/demo/nginx.conf /etc/nginx/nginx.conf

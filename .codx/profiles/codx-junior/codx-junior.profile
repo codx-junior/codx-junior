@@ -7,7 +7,7 @@
   "file_match": "",
   "content": null,
   "parsed_content": null,
-  "path": "",
+  "path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/profiles/codx-junior/codx-junior.profile",
   "profiles": [],
   "team": [
     "software_developer",
@@ -30,6 +30,39 @@
   ],
   "llm_model": "",
   "use_knowledge": true,
+  "user": {
+    "username": "",
+    "email": "",
+    "avatar": "",
+    "theme": "dim",
+    "projects": [],
+    "role": "user",
+    "companies": [],
+    "language": "auto",
+    "workspace_mode": "auto",
+    "token": "",
+    "disabled": false,
+    "github": "",
+    "apps": [],
+    "api_key": "",
+    "env": {},
+    "wallet": {
+      "wallet_id": "fb08f8aa-eab9-4664-80ac-f7a3eb94fa75",
+      "name": "Default Wallet",
+      "balance_cxjcoins": 0.0,
+      "spending_limits": [],
+      "transactions": [],
+      "created_at": "2026-11-17T15:07:47.640240",
+      "updated_at": "2026-11-17T15:07:47.640247",
+      "enabled": true
+    },
+    "github_admin": false,
+    "github_only": false,
+    "token_limit_rules": [],
+    "token_limit_requests": [],
+    "is_company_mode": false,
+    "company_ids": []
+  },
   "tools": [
     "*"
   ],
@@ -44,10 +77,28 @@
     "sprint",
     "audit"
   ],
+  "effort_name": "agile",
+  "effort": {
+    "max_iterations": 11
+  },
   "api_settings": {
     "active": false,
     "model_name": null,
     "description": null
   },
-  "project_id": ""
+  "guardrails": {
+    "enabled": false,
+    "scope": null,
+    "scope_keywords": [],
+    "scope_similarity_threshold": 0.35,
+    "allowed_tools": [],
+    "refusal_message": "I can only answer questions within my configured scope.",
+    "risk_threshold": 10.0,
+    "use_llm_classifier": false
+  },
+  "chat_mode": null,
+  "actor": null,
+  "autonomy": null,
+  "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+  "chat_id": ""
 }

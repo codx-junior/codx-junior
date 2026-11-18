@@ -26,7 +26,7 @@
       </span>
     </div>
     <div v-else class="text-sm text-base-content/60 italic">
-      No dependencies yet.
+      {{ emptyText }}
     </div>
 
     <!-- Selection reuses ProjectDetailt so picking a dependency behaves exactly
@@ -35,7 +35,7 @@
          action, the chips above hold the real value. -->
     <ProjectDetailt
       :model-value="null"
-      placeholder="Add a dependency project"
+      :placeholder="placeholder"
       :display-limit="6"
       @select="addDependency"
     />
@@ -45,9 +45,8 @@
       <span>{{ feedback }}</span>
     </p>
 
-    <p class="text-xs text-base-content/60">
-      Dependency projects are searched together with this one: their knowledge, wiki and
-      files are part of the results. Entries flagged in yellow no longer match a known project.
+    <p v-if="help" class="text-xs text-base-content/60">
+      {{ help }}
     </p>
   </div>
 </template>
@@ -69,6 +68,29 @@ export default {
     modelValue: {
       type: String,
       default: ''
+    },
+    /** Placeholder of the project picker (the same component edits different lists). */
+    placeholder: {
+      type: String,
+      default: 'Add a dependency project'
+    },
+    /** Text shown when the list is empty. */
+    emptyText: {
+      type: String,
+      default: 'No dependencies yet.'
+    },
+    /** Explanation rendered under the picker. */
+    help: {
+      type: String,
+      default:
+        'Dependency projects are searched together with this one: their knowledge, ' +
+        'wiki and files are part of the results. Entries flagged in yellow no longer ' +
+        'match a known project.'
+    },
+    /** Names granted by another permission list, so a project is never listed twice. */
+    blockedNames: {
+      type: Array,
+      default: () => []
     }
   },
   emits: ['update:modelValue'],
@@ -115,6 +137,12 @@ export default {
       }
       if (this.names.includes(project.project_name)) {
         this.feedback = `"${project.project_name}" is already a dependency.`
+        return
+      }
+      if ((this.blockedNames || []).includes(project.project_name)) {
+        this.feedback =
+          `"${project.project_name}" is already granted by another permission list; ` +
+          'remove it there first.'
         return
       }
 

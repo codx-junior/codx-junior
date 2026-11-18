@@ -27,6 +27,7 @@ API_KEY=""
 PORT=""
 PROJECTS=""
 DO_BUILD=0
+DO_DEV=0
 NON_INTERACTIVE=0
 
 usage() {
@@ -44,6 +45,10 @@ Usage: ./up.sh [options]
   --port <port>       Web port (default 19981)
   --projects <path>   Host folder that holds your projects (default ./projects)
   --build             Build the image from source instead of pulling it
+  --dev               Developer flavour: build from this checkout as
+                      `codxjunior/codx-junior:dev`, with the whole repository
+                      (control plane included) mounted on top of the image, so
+                      nothing has to be baked in. Implies --build.
   --no-wait           Do not wait for the health check
   --non-interactive   Promise that no prompt will ever appear. up.sh never
                       prompts today; the flag exists so an unattended caller
@@ -61,6 +66,7 @@ while [[ $# -gt 0 ]]; do
         --port)     PORT="${2:-}"; shift 2 ;;
         --projects) PROJECTS="${2:-}"; shift 2 ;;
         --build)    DO_BUILD=1; shift ;;
+        --dev)      DO_DEV=1; DO_BUILD=1; shift ;;
         --no-wait)  NO_WAIT=1; shift ;;
         --non-interactive|--yes|-y) NON_INTERACTIVE=1; shift ;;
         -h|--help)  usage; exit 0 ;;
@@ -178,11 +184,23 @@ set_env_var CODX_JUNIOR_PROJECTS_PATH "${PROJECTS_PATH}" "${ENV_FILE}"
 log "Projects folder: ${PROJECTS_PATH}"
 
 # --- image tag -------------------------------------------------------------
-# Pinning CODX_JUNIOR_REF to a release tag must pin the *artifact* too: a
-# pull-only install never reads the checkout, so tracking `:demo` while asking
-# for `v1.2.3` would silently run whatever was published last. Release tags
-# (vX.Y.Z...) pull their own image; anything else keeps the rolling tag.
-if [[ -z "${CODX_JUNIOR_IMAGE:-}" ]]; then
+# `--dev` is the only flavour that runs the checkout instead of a release
+# artifact: it builds locally and tags `:dev`, and the overlay compose file
+# mounts the repository (control plane included) on top of the container.
+# Release tags (vX.Y.Z...) pull their own image; anything else keeps the rolling
+# tag. A pull-only install never reads the checkout, so tracking `:demo` while
+# asking for `v1.2.3` would silently run whatever was published last.
+if [[ "${DO_DEV}" -eq 1 ]]; then
+    CODX_JUNIOR_IMAGE="codxjunior/codx-junior:dev"
+    # Build provenance for a local build: `git describe` gives `v0.0.1`, which
+    # is what `/api/health` then reports (release images get it from CI).
+    repo_dir="${SCRIPT_DIR}/../.."
+    if [[ -z "${CODX_JUNIOR_BUILD_VERSION:-}" ]]; then
+        CODX_JUNIOR_BUILD_VERSION="$(git -C "${repo_dir}" describe --tags --always 2>/dev/null || echo unknown)"
+    fi
+    CODX_JUNIOR_BUILD_COMMIT="${CODX_JUNIOR_BUILD_COMMIT:-$(git -C "${repo_dir}" rev-parse HEAD 2>/dev/null || echo unknown)}"
+    export CODX_JUNIOR_BUILD_VERSION CODX_JUNIOR_BUILD_COMMIT
+elif [[ -z "${CODX_JUNIOR_IMAGE:-}" ]]; then
     IMAGE_REF="${CODX_JUNIOR_REF:-}"
     if [[ "${IMAGE_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
         CODX_JUNIOR_IMAGE="codxjunior/codx-junior:${IMAGE_REF}"
@@ -194,6 +212,7 @@ export CODX_JUNIOR_IMAGE
 
 # --- start -----------------------------------------------------------------
 COMPOSE_FILES=(-f docker-compose.yaml)
+[[ "${DO_DEV}" -eq 1 ]] && COMPOSE_FILES+=(-f docker-compose.dev.yaml)
 COMPOSE_PROFILES=()
 
 if [[ "${DO_BUILD}" -eq 1 ]]; then

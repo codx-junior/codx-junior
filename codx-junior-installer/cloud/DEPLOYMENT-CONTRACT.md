@@ -68,6 +68,12 @@ install.sh --ref v1.2.3 --non-interactive </dev/null
 
 * `vX.Y.Z` → image `codxjunior/codx-junior:vX.Y.Z` (`[verified]`)
 * anything else (`main`, a branch name, a raw commit) → `codxjunior/codx-junior:demo`
+* `--dev` (developers only) → `codxjunior/codx-junior:dev`, built from the checkout
+
+The project is **pre-1.0**: the first release tag is `v0.0.1` and the installer
+reports `install.sh 0.0.1`. Tags stay orderable (`v0.0.1` < `v0.1.0` < `v1.0.0`),
+so pinning works exactly the same from the first one on — do not expect a `v1.x`
+line before the API is frozen.
 
 A release tag publishes its own image from `.github/workflows/release.yml`, so a
 pinned ref is reproducible and rollbackable. **Do not track `main` in customer
@@ -199,7 +205,13 @@ Anything else is a failed install: the installer exits non-zero and starts nothi
 * The release workflow has never run in this repository (no tag exists yet), so
   the first `v*` push is its real smoke test. Until then a pinned `--ref vX.Y.Z`
   fails at the pull — loudly, by design.
-* `demo/up.sh --build` reports `"unknown"` build provenance; only release images
-  carry `version`/`ref`/`commit`.
-* `.codx` is runtime data; it is excluded from the build context but is still a
-  tracked folder in some clones (`git rm -r --cached .codx` is the cleanup).
+* `demo/up.sh --build` reports `"unknown"` build provenance; `--dev` and release
+  images both carry a real `version`/`ref`/`commit` (from `git describe` and
+  from the CI build args respectively).
+* `.codx` is the control plane. `.dockerignore` drops only the **generated** data
+  plane (chat turns, browser sessions, atlas, db, logs — 1.5 GB on a developer
+  box) and keeps every tracked artifact (profiles, tasks, boards, views, teams,
+  workspaces) in the context, so `./up.sh --dev` builds against the real control
+  plane. The release image never `COPY`s `.codx`: it is created at first boot
+  inside the `codx-junior-settings` volume. **Nothing is untracked from the
+  repository** — no `git rm --cached`.

@@ -51,7 +51,7 @@
 # =============================================================================
 set -euo pipefail
 
-INSTALLER_VERSION="1.0.0"
+INSTALLER_VERSION="0.0.1"
 DEFAULT_REPO="https://github.com/codx-junior/codx-junior.git"
 DEFAULT_REF="main"
 

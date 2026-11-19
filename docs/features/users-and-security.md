@@ -20,6 +20,14 @@ Users can be disabled without being deleted.
 * **Username and password.** The `admin` user sets its password on the first login.
 * **GitHub OAuth.** Configure an OAuth provider in **Global settings → OAuth**. GitHub accounts listed as admins get the admin role. A user can be restricted to GitHub-only login.
 
+## Security posture
+
+The [CISO view](/features/ciso) shows the project's security posture, runs
+background analyses and lets an operator review findings, the detector rules and
+the policy (block/approval/warn thresholds, ignored paths and silenced rules).
+The same deterministic gates protect file writes, commits, shell commands,
+containers, knowledge ingestion and model output.
+
 ## Protecting apps
 
 Every app routed by Traefik (workspace apps, LocalAI, the Traefik dashboard) goes through codx-junior's **forward-auth** endpoint. Only signed-in users with access to that app can open it.

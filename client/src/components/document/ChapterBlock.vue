@@ -4,16 +4,11 @@ import Code from '../Code.vue'
 import ChapterBlock from './ChapterBlock.vue'
 import EditableBlock from './EditableBlock.vue'
 import BlockEditor from '../BlockEditor.vue'
-import ChapterMenu from './ChapterMenu.vue'
 import parser from '@/utils/markdownParser'
 </script>
 
 <template>
-  <div 
-    class="chapter-block transition-all duration-200 mb-4"
-    @mouseenter="isHovered = true"
-    @mouseleave="isHovered = false"
-  >
+  <div class="chapter-block transition-all duration-200 mb-4">
     <!-- Chapter header with menu -->
     <div v-if="chapter.level > 0">
       <div class="flex items-center justify-between group/header relative">
@@ -25,24 +20,6 @@ import parser from '@/utils/markdownParser'
           <h5 v-else-if="chapter.level === 5" class="font-bold">{{ chapter.title }}</h5>
           <h6 v-else class="font-bold text-sm">{{ chapter.title }}</h6>
         </div>
-        
-        <!-- Menu: CSS reveals it on hover/focus and keeps it reachable on
-             touch devices (where there is no hover). -->
-        <ChapterMenu
-          v-if="!isEditing"
-          :editable="editable"
-          @edit="startEditing"
-          @copy="copyChapterMarkdown"
-          @create-task="createTaskFromChapter"
-        >
-          <template #chapter-actions>
-            <slot 
-              name="chapter-actions" 
-              :chapter="chapter"
-              :full-content="fullChapterContent"
-            />
-          </template>
-        </ChapterMenu>
       </div>
     </div>
 
@@ -178,7 +155,6 @@ export default {
   ],
   data() {
     return {
-      isHovered: false,
       isEditing: false
     }
   },

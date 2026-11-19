@@ -14,6 +14,7 @@
  *   GET    /api/git/repo/graph
  *   GET    /api/git/repo/remotes
  *   GET    /api/git/repo/worktrees
+ *   GET    /api/git/repo/task-workspaces
  *   POST   /api/git/repo/worktree/remove
  *   GET    /api/git/repo/gitignore
  *   POST   /api/git/repo/gitignore
@@ -235,6 +236,19 @@ export const repoModule = (API) => ({
       `/api/git/repo/worktrees${toQuery({ include_changes: includeChanges ? 1 : 0 })}`
     )
     return Array.isArray(payload) ? payload : payload?.worktrees || []
+  },
+
+  /**
+   * Per-task worktrees created for autonomous agent runs.
+   *
+   * The registry lives in the project data plane (`task_workspaces`); the
+   * checkout itself is a regular git worktree. The Git view uses this mapping
+   * to label a `codx/task/...` branch with the task that owns it.
+   *
+   * @returns {Promise<{ enabled: boolean, workspaces: Array }>}.
+   */
+  taskWorkspaces() {
+    return API.get('/api/git/repo/task-workspaces')
   },
 
   /**

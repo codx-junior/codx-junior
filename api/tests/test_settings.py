@@ -16,6 +16,7 @@ def _settings(root, name):
     return CODXJuniorSettings(
         project_name=name,
         abs_project_path=str(root),
+        codx_path=os.path.join(str(root), ".codx"),
     )
 
 
@@ -66,3 +67,64 @@ def test_unknown_name_resolves_to_none(tmp_path, monkeypatch):
 
     assert settings.find_dependency_project("does-not-exist") is None
     assert settings.find_dependency_project("   ") is None
+
+
+def test_permission_lists_are_links_for_search(tmp_path, monkeypatch):
+    """A project added from the linked-project editors is a search link too."""
+    root = tmp_path / "workspace" / "site"
+    root.mkdir(parents=True)
+    docs = tmp_path / "docs"
+    design = tmp_path / "design"
+    for folder in (docs, design):
+        folder.mkdir()
+
+    settings = CODXJuniorSettings(
+        project_name="site",
+        abs_project_path=str(root),
+        read_project_dependencies="docs",
+        read_write_project_dependencies="design",
+    )
+    docs_project = _settings(docs, "docs")
+    design_project = _settings(design, "design")
+    _patch_catalogue(
+        monkeypatch, {"docs": docs_project, "design": design_project}
+    )
+
+    assert settings.get_dependency_names() == ["docs", "design"]
+    assert [
+        project.project_name for project in settings.get_related_projects()
+    ] == ["docs", "design"]
+
+
+def test_permission_lists_grant_the_expected_file_access(tmp_path, monkeypatch):
+    """Read-only links are readable but never writable; read/write links are both."""
+    root = tmp_path / "workspace" / "site"
+    root.mkdir(parents=True)
+    docs = tmp_path / "docs"
+    design = tmp_path / "design"
+    for folder in (docs, design):
+        folder.mkdir()
+
+    settings = CODXJuniorSettings(
+        project_name="site",
+        abs_project_path=str(root),
+        read_project_dependencies="docs",
+        read_write_project_dependencies="design",
+    )
+    _patch_catalogue(
+        monkeypatch,
+        {
+            "docs": _settings(docs, "docs"),
+            "design": _settings(design, "design"),
+        },
+    )
+
+    access = {
+        project.project_name: can_write
+        for project, can_write in settings.get_file_access_projects()
+    }
+
+    assert access == {"site": True, "docs": False, "design": True}
+    assert settings.can_access_path(str(docs / "readme.md"))
+    assert not settings.can_access_path(str(docs / "readme.md"), write=True)
+    assert settings.can_access_path(str(design / "readme.md"), write=True)

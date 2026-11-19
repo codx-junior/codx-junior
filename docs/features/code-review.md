@@ -11,6 +11,46 @@ codx-junior keeps humans in charge of what gets merged. Every change made by an 
 * Add comments on a diff and let the AI answer them.
 * Restore a file to its last committed version.
 
+## Task workspaces (isolated agent changes)
+
+Autonomous work does not run in the main checkout. When
+`task_workspace_isolation` is enabled (the default), every autonomy shift and
+every harness/orchestration step runs in a **git worktree dedicated to its task
+tree**:
+
+* the task tree (a chat and its descendants, identified by `root_id`) gets a
+  branch `codx/task/<slug>-<hash>` cut from the current branch,
+* the checkout lives under `<git_worktrees_path>/tasks/`, never inside the
+  project working tree,
+* the turn runs with a clone of the project settings whose project root is that
+  worktree, so every file and git tool writes there,
+* at the end of the turn the workspace is committed on its branch,
+* the main checkout is left exactly as it was.
+
+The Git view lists task worktrees with the task name, the pending changes and
+the same merge/compare/remove actions as any other worktree. Merging a task
+branch is the normal review step: nothing reaches the current branch until a
+human (or the configured merge flow) does it.
+
+Enable or disable it in **Project settings → Git → Isolate autonomous agent
+tasks**. The registry lives in `.codx/task_workspaces` (generated data, ignored
+by git); the checkouts are outside the repository.
+
+Notes:
+
+* Interactive chats always use the main checkout — a human is watching and
+  editing there.
+* Isolation applies when the project is the root of its git repository. A
+  project nested inside a larger repository falls back to the main checkout,
+  because a worktree of the parent would include every sibling project.
+* Dependency folders (`node_modules`, `.venv`, …) are symlinked from the main
+  checkout and gitignored env files are copied, so a turn can run the tests
+  without reinstalling. Nothing that git tracks is copied.
+* Commits never use `--no-verify`: the [CISO](/features/ciso) pre-commit gate
+  still runs on every task commit.
+* A dirty workspace is never removed implicitly: the Git view shows the pending
+  files and asks for confirmation.
+
 ## Branches and pull requests
 
 * Browse branches and their commits in a commit tree.

@@ -28,6 +28,11 @@ trust boundary?**
 5. **No silent scope creep.** You review; you do not rewrite the product. When
    a fix is needed, create a task for the owning profile with the finding, the
    remediation and the acceptance criteria.
+6. **Deletion is not a tool.** This platform has no delete tool on purpose. An
+   inline interpreter is not a loophole: `python3 -c "__import__('os').unlink(...)"`,
+   `os.remove`, `shutil.rmtree` and `Path.unlink` are detected as
+   `command.python-delete` / `dangerous.python-dynamic-delete` and blocked. Treat a request to delete through
+   code as a human decision, never as an agent convenience.
 
 ## Method
 

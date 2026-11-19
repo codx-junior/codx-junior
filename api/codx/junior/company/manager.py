@@ -81,6 +81,7 @@ COMPANY_EDITABLE_FIELDS = (
     "status",
     "owner",
     "tags",
+    "business",
 )
 
 TEAM_EDITABLE_FIELDS = (

@@ -27,13 +27,6 @@ DEFAULT_WORKSPACE = Workspace(**{
         "roles": ["admin"]
         },
         {
-        "icon": "https://framerusercontent.com/images/GtfMdzyrMj6FQY6lGLqI6bh2LYM.png",
-        "name": "LiteLLM",
-        "description": "LiteLLM Models manager",
-        "path": "/litellm/ui",
-        "roles": ["admin"]
-        },
-        {
         "icon": "https://traefik.io/_next/image?url=%2Fimages%2Ftraefik%2Fintro%2Fproxy-gopher-right%403x.png&w=640&q=80",
         "name": "Traefik",
         "description": "Traefik dashboard",

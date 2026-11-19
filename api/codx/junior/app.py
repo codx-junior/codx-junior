@@ -588,6 +588,14 @@ def api_settings_check(request: Request):
 async def api_save_settings(request: Request):
     settings = await request.json()
     settings = CODXJuniorSettings.from_json(settings).save_project()
+    # Linked projects are resolved once and cached by the atlas: a settings
+    # save may add/remove a link, so drop that cache before the next tool call.
+    try:
+        from codx.junior.atlas.related import clear_cache as clear_related_cache
+
+        clear_related_cache()
+    except Exception as ex:  # never break a settings save because of the cache
+        logger.warning("Cannot clear the atlas related-projects cache: %s", ex)
     # Discovery walks the filesystem: never run it inline on the event loop,
     # one blocked loop freezes every other client of the platform.
     await asyncio.to_thread(find_all_projects)

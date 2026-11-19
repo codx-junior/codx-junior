@@ -192,7 +192,7 @@ RESPONSE_OPTIONS_SYSTEM_PROMPT = (
 # Attachment → vision content constants
 # ---------------------------------------------------------------------------
 # Raster formats accepted by the vision APIs we talk to (OpenAI compatible
-# providers and Anthropic through LiteLLM). Any other image is converted to one
+# providers and Anthropic through an OpenAI-compatible gateway). Any other image is converted to one
 # of these before being sent (:meth:`ChatPromptBuilder._reencode_image`): the
 # provider either rejects the payload or silently replaces it with an
 # ``[Unsupported Image]`` placeholder, which is exactly what "the AI cannot see

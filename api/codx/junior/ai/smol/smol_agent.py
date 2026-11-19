@@ -660,7 +660,6 @@ def _format_ai_error(ex: BaseException) -> str:
             provider_request_id = (
                 headers.get("x-request-id")
                 or headers.get("request-id")
-                or headers.get("x-litellm-call-id")
             )
         except (AttributeError, TypeError):
             # Defensive: unusual header container — request id is optional.
@@ -1551,9 +1550,6 @@ class SmolAgent:
         orchestration_info = self._resolve_orchestration_info(config, headers)
         provider_headers: Dict[str, str] = self._strip_profiles_header(headers)
         session_id: Optional[str] = headers.get("session_id")
-        tags: str = self._build_tags(headers)
-        headers["x-litellm-tags"] = tags
-        provider_headers["x-litellm-tags"] = tags
 
         # Inject session context into settings for tools that need it
         current_chat = config.get("current_chat")
@@ -4917,24 +4913,6 @@ class SmolAgent:
             kwargs["temperature"] = float(self.llm_settings.temperature)
 
         return kwargs
-
-    def _build_tags(self, headers: Dict[str, str]) -> str:
-        """
-        Build the comma-separated analytics tag string.
-
-        Args:
-            headers: Request headers possibly containing a ``tags`` entry.
-
-        Returns:
-            Comma-joined tag string.
-        """
-        tags = headers.get("tags", "").split(",") + [
-            f"temperature:{self.llm_settings.temperature}",
-            self.settings.project_name or "",
-        ]
-        if self.user:
-            tags.append(f"user:{self.user.username}")
-        return ",".join(tag for tag in tags if tag)
 
     @staticmethod
     def _make_callback_sender(

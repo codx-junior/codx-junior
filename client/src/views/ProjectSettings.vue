@@ -145,10 +145,10 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                 </div>
                 <div class="divider"></div>
                 <div>
-                  <div class="font-bold">Linked project file permissions</div>
+                  <div class="font-bold">Linked projects</div>
                   <div class="text-xs text-base-content/60 mt-1">
-                    Child projects live inside this project's tree and are always readable and
-                    writable. These lists grant file access to projects living outside it.
+                    These projects are searched together with this one. The permission list
+                    also decides whether the AI may read only, or read and write, their files.
                   </div>
                 </div>
                 <div>
@@ -213,6 +213,15 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                   </div>
                   <div class="text-xs text-base-content/60 mt-1">
                     Leave empty to use the default: <code>{{ defaultWorktreesPath }}</code>
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Isolate autonomous agent tasks</label>
+                  <input v-model="settings.task_workspace_isolation" type="checkbox" class="toggle toggle-primary" />
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Run autonomy shifts and harness/orchestration steps in a per-task worktree on a
+                    <code>codx/task/…</code> branch. Their changes never mix with other tasks in the main checkout;
+                    review and merge them from the Git view. Interactive chats are never isolated.
                   </div>
                 </div>
               </div>
@@ -545,12 +554,55 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                 <div class="flex-1">
                   <label class="label-text block font-semibold mb-2">Dependencies</label>
                   <p class="text-xs text-base-content/60">
-                    Projects searched together with this one. Their knowledge, wiki and files
-                    are included in every search.
+                    Projects searched together with this one (legacy, search only). Their
+                    knowledge, wiki and files are included in every search. Use the linked
+                    project lists below to grant file access.
                   </p>
                 </div>
                 <div class="w-96">
                   <ProjectDependenciesEditor v-model="settings.project_dependencies" />
+                </div>
+              </div>
+
+              <div class="pt-2">
+                <label class="label-text block font-semibold mb-2">Linked projects</label>
+                <p class="text-xs text-base-content/60">
+                  Projects outside this tree that are searched with it. The list also decides
+                  whether the AI may read only, or read and write, their files.
+                </p>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Read-only linked projects</label>
+                  <p class="text-xs text-base-content/60">
+                    Listed, read and searched by the AI, but never modified.
+                  </p>
+                </div>
+                <div class="w-96">
+                  <ProjectDependenciesEditor
+                    v-model="settings.read_project_dependencies"
+                    placeholder="Add a project the AI may read"
+                    empty-text="No read-only projects."
+                    :blocked-names="readWriteDependencyNames"
+                  />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Read &amp; write linked projects</label>
+                  <p class="text-xs text-base-content/60">
+                    Read, searched and writable: files, changes and git staging.
+                  </p>
+                </div>
+                <div class="w-96">
+                  <ProjectDependenciesEditor
+                    v-model="settings.read_write_project_dependencies"
+                    placeholder="Add a project the AI may read and write"
+                    empty-text="No read/write projects."
+                    :blocked-names="readDependencyNames"
+                  />
                 </div>
               </div>
             </div>
@@ -609,6 +661,20 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                 </div>
                 <div class="w-96">
                   <input v-model="settings.git_worktrees_path" type="text" :placeholder="defaultWorktreesPath" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Isolate autonomous agent tasks</label>
+                  <p class="text-xs text-base-content/60">
+                    Run autonomy shifts and harness/orchestration steps in a per-task worktree on a
+                    <code>codx/task/…</code> branch. Their changes never mix with other tasks in the main
+                    checkout; review and merge them from the Git view. Interactive chats are never isolated.
+                  </p>
+                </div>
+                <div class="w-96 flex justify-end">
+                  <input v-model="settings.task_workspace_isolation" type="checkbox" class="toggle toggle-primary" />
                 </div>
               </div>
             </div>
@@ -979,6 +1045,9 @@ export default {
       }
       if (this.settings && this.settings.git_worktrees_path === undefined) {
         this.settings.git_worktrees_path = ''
+      }
+      if (this.settings && this.settings.task_workspace_isolation === undefined) {
+        this.settings.task_workspace_isolation = true
       }
       // The file permission lists are optional strings: start them as `''` so the
       // dependency editors render an empty list instead of `null`.

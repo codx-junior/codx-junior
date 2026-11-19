@@ -29,24 +29,7 @@ function onSave({ originalContent, newContent }) {
 </script>
 
 <template>
-  <div class="group/editable-block relative">
-    <!-- Block-level edit affordance. Kept visible on touch layouts (there is no
-         hover) and revealed on hover/focus for pointer layouts. -->
-    <div
-      v-if="editable && !editing"
-      class="absolute -top-2 right-0 z-20 flex items-center gap-1 rounded-lg border border-base-content/10 bg-base-100/90 px-1 py-0.5 shadow-sm opacity-0 transition-opacity group-hover/editable-block:opacity-100 focus-within:opacity-100 max-md:opacity-100"
-    >
-      <button
-        class="btn btn-xs btn-ghost gap-1 tooltip tooltip-left"
-        data-tip="Edit this block"
-        aria-label="Edit this block"
-        @click.stop.prevent="startEdit"
-      >
-        <i class="fa-solid fa-pen-to-square"></i>
-        <span class="text-[11px]">Edit</span>
-      </button>
-    </div>
-
+  <div class="relative">
     <BlockEditor
       ref="blockEditor"
       :original-content="content"

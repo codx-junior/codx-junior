@@ -240,8 +240,9 @@ def _project_scan_roots(
 
     * the project checkout (``abs_project_path``);
     * every registered project nested inside it (a "child project");
-    * every project named in ``project_dependencies`` (even when it lives
-      outside the checkout).
+    * every linked project (legacy ``project_dependencies`` and the
+      read/read-write permission lists), even when it lives outside the
+      checkout.
 
     The global project snapshot is used instead of ``get_sub_projects()``
     because the latter re-walks the whole checkout on every call; the snapshot
@@ -275,13 +276,25 @@ def _project_scan_roots(
         )
     ]
 
-    raw_dependencies = getattr(settings, "project_dependencies", "") or ""
-    if isinstance(raw_dependencies, (list, tuple, set)):
-        dependencies = {str(name).strip() for name in raw_dependencies if str(name).strip()}
-    else:
+    # Every declared link counts: the legacy search list and the read/read-write
+    # permission lists are all projects the active one can inspect.
+    name_provider = getattr(settings, "get_dependency_names", None)
+    if callable(name_provider):
         dependencies = {
-            name.strip() for name in str(raw_dependencies).split(",") if name.strip()
+            str(name).strip() for name in (name_provider() or []) if str(name).strip()
         }
+    else:
+        raw_dependencies = getattr(settings, "project_dependencies", "") or ""
+        if isinstance(raw_dependencies, (list, tuple, set)):
+            dependencies = {
+                str(name).strip() for name in raw_dependencies if str(name).strip()
+            }
+        else:
+            dependencies = {
+                name.strip()
+                for name in str(raw_dependencies).split(",")
+                if name.strip()
+            }
     try:
         snapshot = get_all_projects_snapshot() or {}
     except Exception as ex:  # discovery must never break the Docker view

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { API } from '@/api/api'
 import { $storex } from '@/store'
 import MessengerChannelList from '@/components/messenger/MessengerChannelList.vue'
@@ -17,7 +17,8 @@ import ChatView from '@/views/ChatView.vue'
 const props = defineProps({
   companyId: { type: String, required: true },
   snapshot: { type: Object, default: null },
-  canManage: { type: Boolean, default: false }
+  canManage: { type: Boolean, default: false },
+  teamId: { type: String, default: '' }
 })
 
 const emit = defineEmits(['close', 'changed'])
@@ -44,8 +45,16 @@ const form = reactive({
 const projects = computed(() => props.snapshot?.projects || [])
 const teams = computed(() => props.snapshot?.teams || [])
 
+const focusedTeam = computed(() =>
+  props.teamId ? teams.value.find(team => team.id === props.teamId) || null : null
+)
+
+const visibleChats = computed(() =>
+  props.teamId ? chats.value.filter(item => item.team_id === props.teamId) : chats.value
+)
+
 const groups = computed(() =>
-  chats.value.map(item => ({
+  visibleChats.value.map(item => ({
     id: item.chat_id,
     name: item.name || item.chat?.name || 'Channel',
     updated_at: item.chat?.updated_at || item.updated_at,
@@ -85,8 +94,8 @@ async function loadChats({ selectFirst = false } = {}) {
   loading.value = true
   try {
     chats.value = await api.listChats(props.companyId)
-    if (selectFirst && chats.value.length) {
-      const first = chats.value.find(item => item.available)
+    if (selectFirst && visibleChats.value.length) {
+      const first = visibleChats.value.find(item => item.available)
       if (first) await selectChat({ _companyChat: first })
     }
   } catch (error) {
@@ -133,7 +142,7 @@ function openCreate() {
   Object.assign(form, {
     name: '',
     description: '',
-    team_id: teams.value[0]?.id || '',
+    team_id: props.teamId || teams.value[0]?.id || '',
     project_id: projects.value[0]?.project_id || ''
   })
   formError.value = ''
@@ -205,7 +214,11 @@ async function removeChannel() {
   }
 }
 
-onMounted(() => loadChats({ selectFirst: true }))
+watch(() => [props.teamId, props.companyId], async () => {
+  activeChat.value = null
+  activeRef.value = null
+  await loadChats({ selectFirst: true })
+}, { immediate: true })
 </script>
 
 <template>
@@ -217,10 +230,10 @@ onMounted(() => loadChats({ selectFirst: true }))
           <i class="fa-regular fa-comments"></i>
         </div>
         <div class="min-w-0 flex-1">
-          <h2 class="text-sm font-bold truncate">Company chats</h2>
+          <h2 class="text-sm font-bold truncate">{{ focusedTeam ? focusedTeam.name : 'Company chats' }}</h2>
           <p class="text-[10px] text-base-content/45 truncate">
-            {{ chats.length }} channel{{ chats.length === 1 ? '' : 's' }} ·
-            hosted by the company projects
+            {{ visibleChats.length }} channel{{ visibleChats.length === 1 ? '' : 's' }} ·
+            {{ focusedTeam ? 'team room' : 'hosted by the company projects' }}
           </p>
         </div>
         <button
@@ -243,7 +256,7 @@ onMounted(() => loadChats({ selectFirst: true }))
     <div class="flex-1 min-h-0 flex overflow-hidden">
       <!-- Channel sidebar (desktop) -->
       <aside
-        class="hidden md:flex shrink-0 flex-col border-r border-base-content/10 bg-base-200/40"
+        v-if="!$storex.ui.isMobile" class="flex shrink-0 flex-col border-r border-base-content/10 bg-base-200/40"
         :style="sidebarCollapsed ? 'width:64px' : 'width:260px'"
       >
         <MessengerChannelList
@@ -291,7 +304,7 @@ onMounted(() => loadChats({ selectFirst: true }))
         >
           <i class="fa-regular fa-comments text-5xl"></i>
           <p class="text-sm text-center">
-            Pick a channel to talk with your team, or create one for a team.
+            {{ focusedTeam ? `No room yet for ${focusedTeam.name}. Create one and the whole team joins.` : 'Pick a channel to talk with your team, or create one for a team.' }}
           </p>
           <div class="flex gap-2">
             <button class="btn btn-sm md:hidden" @click="showMobileChannels = true">

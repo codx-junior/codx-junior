@@ -426,6 +426,15 @@ def path_to_absolute_project_path(
     if os.path.isabs(raw_path):
         if is_path_within_project(settings, raw_path, write=write):
             return os.path.normpath(os.path.abspath(raw_path))
+        if write:
+            # A readable linked project is not writable through this link. Keep
+            # the path in that project so the write gate rejects it; remapping it
+            # under the current project would create a shadow copy instead.
+            readable_owner = _linked_project_for_absolute(settings, raw_path)
+            if readable_owner is not None and (
+                readable_owner.codx_path != settings.codx_path
+            ):
+                return os.path.normpath(os.path.abspath(raw_path))
         # Keep the legacy "absolute-looking path is project-relative" mapping,
         # but drop the separator first so it cannot escape the root.
         raw_path = raw_path.lstrip(os.sep)
@@ -435,6 +444,15 @@ def path_to_absolute_project_path(
         linked_path = _resolve_linked_prefix(settings, raw_path, write=write)
         if linked_path:
             return linked_path
+        if write:
+            # Read-only link: resolve to the linked project on purpose so the
+            # caller's write check fails instead of writing a shadow path under
+            # the current project.
+            readable_linked_path = _resolve_linked_prefix(
+                settings, raw_path, write=False
+            )
+            if readable_linked_path:
+                return readable_linked_path
 
     return os.path.normpath(os.path.abspath(os.path.join(project_root, raw_path)))
 

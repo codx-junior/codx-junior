@@ -38,6 +38,8 @@ import os
 import re
 import secrets
 
+from datetime import datetime, timezone
+
 from typing import Any, Dict, Iterable, List, Optional
 
 from codx.junior.model.user import (
@@ -63,6 +65,31 @@ FORM_ADD_TEAM_MEMBER = "add_team_member"
 
 #: Suggestions shown as chips under the assistant input, per company view.
 VIEW_SUGGESTIONS: Dict[str, List[str]] = {
+    "home": [
+        "Give me today's executive brief",
+        "What needs my attention?",
+        "How is the business doing?",
+        "What should we focus on this week?",
+        "Review the work in progress",
+    ],
+    "work": [
+        "What is blocked and why?",
+        "Review the work waiting for me",
+        "Create a goal for this month",
+        "What should we ship next?",
+    ],
+    "business": [
+        "How can we increase revenue this month?",
+        "Which deals deserve attention?",
+        "Where are we losing money?",
+        "Turn the revenue gap into a plan",
+    ],
+    "settings": [
+        "Open company settings",
+        "How much autonomy do we allow?",
+        "What is our daily AI budget?",
+        "Add a person",
+    ],
     "overview": [
         "What needs my attention?",
         "How is our budget?",
@@ -327,7 +354,7 @@ class CompanyAssistant:
         return ""
 
     def _company_context_for_ai(self, company: Any, user: Any, language: str, view: str) -> str:
-        """Compact, factual company + user context for the LLM."""
+        """Compact, factual company + business context for the LLM."""
         counts = company.counts()
         user_role = ""
         if user is not None:
@@ -335,31 +362,78 @@ class CompanyAssistant:
                 user_role = (user.company_role(company.id) if hasattr(user, "company_role") else "") or ""
             except Exception:
                 user_role = ""
+        business = getattr(company, "business", None)
         lines = [
-            f"Company: {company.name}",
-            f"Company status: {company.status}",
+            f"Today (UTC): {datetime.now(timezone.utc).isoformat(timespec='minutes')}Z",
+            f"Company: {company.name} ({company.status})",
+            f"Description: {company.description or '(not set)'}",
             f"Mission: {company.mission or '(not set)'}",
             f"Vision: {company.vision or '(not set)'}",
+            f"Values: {', '.join(company.values) if company.values else '(not set)'}",
             f"Counts: {counts}",
             f"Assistant language: {language_name(language)} ({language})",
             f"Current view: {view or 'home'}",
         ]
+
+        # ── Commercial cockpit ────────────────────────────────────────────
+        if business is not None:
+            lines += [
+                "Business cockpit:",
+                f"- Currency/period: {business.currency} / {business.period}",
+                f"- Revenue: {business.revenue_actual} of {business.revenue_target} "
+                f"({business.revenue_progress}%), gap {business.revenue_gap}",
+                f"- Costs: {business.costs_actual}; gross profit {business.gross_profit}",
+                f"- Pipeline: {business.pipeline_value} open, "
+                f"{business.weighted_pipeline_value} weighted, {len(business.open_deals)} open deals",
+            ]
+            for deal in business.pipeline[:8]:
+                lines.append(
+                    f"  - {deal.name}"
+                    + (f" ({deal.account})" if deal.account else "")
+                    + f": {deal.value} {deal.currency}, {deal.stage}, {deal.probability}%"
+                    + (f", next: {deal.next_step}" if deal.next_step else "")
+                    + (f", due: {deal.due_date}" if deal.due_date else "")
+                )
+            if business.metrics:
+                lines.append("- Metrics: " + "; ".join(
+                    f"{metric.label}={metric.value}{(' / ' + str(metric.target)) if metric.target else ''}{(' ' + metric.unit) if metric.unit else ''}"
+                    for metric in business.metrics[:10]
+                ))
+            if business.notes:
+                lines.append(f"- Owner notes: {business.notes[:800]}")
+
+        # ── Teams, rosters and workload ───────────────────────────────────
         if company.teams:
             lines.append("Teams:")
-            for team in company.teams[:12]:
+            for team in company.teams[:14]:
+                open_missions = [
+                    mission for mission in company.missions
+                    if mission.team_id == team.id and mission.is_open
+                ]
+                running = len([m for m in open_missions if m.status == "running"])
+                blocked = len([m for m in open_missions if m.status == "blocked"])
+                review = len([m for m in open_missions if m.status == "review"])
+                roster = "; ".join(
+                    f"{member.name} ({member.kind}, {member.role or 'member'})"
+                    for member in team.members[:8]
+                )
                 lines.append(
                     f"- {team.name}: lead {team.lead_name or 'none'}, "
-                    f"{team.human_count} people + {team.ai_count} AI, "
-                    f"autonomy {team.autonomy}"
+                    f"{team.human_count} human + {team.ai_count} AI, "
+                    f"autonomy {team.autonomy}, open {len(open_missions)} "
+                    f"(running {running}, blocked {blocked}, review {review}), "
+                    f"budget {team.budget_cxjcoins} cxj. Roster: {roster or 'empty'}"
                 )
+
         members = self.manager.company_members(company)
         if members:
             lines.append("People:")
-            for member in members[:15]:
+            for member in members[:20]:
                 lines.append(
                     f"- {member['username']} ({member.get('company_role', 'member')})"
                     + (f", {member.get('title')}" if member.get("title") else "")
                 )
+
         if company.projects:
             lines.append("Projects:")
             try:
@@ -374,15 +448,81 @@ class CompanyAssistant:
                 for child in children:
                     if child.get("parent_project_id") == project.project_id:
                         lines.append(f"  - child: {child['project_name']}")
-        open_missions = company.open_missions
-        if open_missions:
-            lines.append("Open missions:")
-            for mission in open_missions[:12]:
+
+        # ── Missions, including the human-facing decision fields ──────────
+        if company.missions:
+            lines.append("Missions:")
+            for mission in company.missions[:20]:
                 team = company.team(mission.team_id)
                 lines.append(
                     f"- {mission.title}: {mission.status}, team "
-                    f"{team.name if team else 'none'}, {mission.progress}%"
+                    f"{team.name if team else 'none'}, project {mission.project_id or 'none'}, "
+                    f"{mission.progress}%, priority {mission.priority}, "
+                    f"due {mission.due_date or 'none'}, approval {mission.approval_status}, "
+                    f"run {mission.run_status or 'none'}"
+                    + (f", last error: {mission.last_error[:250]}" if mission.last_error else "")
+                    + (f", result: {mission.result[:250]}" if mission.result else "")
                 )
+
+        # ── What needs the owner, in plain language ───────────────────────
+        attention = []
+        for mission in company.missions:
+            if mission.status in ("ready", "blocked") and mission.approval_status in ("pending", "denied"):
+                attention.append(f"approval needed: {mission.title}")
+            elif mission.status == "blocked":
+                attention.append(f"blocked: {mission.title}")
+            elif mission.status == "review":
+                attention.append(f"waiting for review: {mission.title}")
+            elif mission.last_error:
+                attention.append(f"error: {mission.title} ({mission.last_error[:160]})")
+        if attention:
+            lines.append("Needs the owner:")
+            for item in attention[:12]:
+                lines.append(f"- {item}")
+
+        # ── AI budget and autonomous teammates ────────────────────────────
+        try:
+            budget = self.manager.budget_state(company)
+            lines.append(
+                "AI budget: "
+                f"spent today {budget.get('spent_today_cxjcoins')} / "
+                f"{budget.get('daily_limit_cxjcoins')} cxj; "
+                f"spent total {budget.get('spent_total_cxjcoins')} cxj"
+            )
+        except Exception:
+            pass
+        try:
+            actor_snapshot = self.manager.actor_snapshot(company.id)
+            actors = actor_snapshot.get("actors") or []
+            if actors:
+                lines.append("Autonomous teammates:")
+                for actor in actors[:12]:
+                    config = actor.get("config") or {}
+                    state = actor.get("state") or {}
+                    lines.append(
+                        f"- {actor.get('actor')} ({actor.get('project_name')}): "
+                        f"{'on duty' if config.get('enabled') else 'paused'}, "
+                        f"role {config.get('role')}, "
+                        f"schedule {(actor.get('schedule') or {}).get('description') or 'always'}, "
+                        f"shift budget {config.get('budget_cxjcoins')}, "
+                        f"daily spend {state.get('day_spent', state.get('spent_today', 0))}"
+                    )
+        except Exception:
+            pass
+
+        # ── Recent activity ───────────────────────────────────────────────
+        try:
+            journal = self.manager.journal(company.id, limit=10)
+            if journal:
+                lines.append("Recent activity:")
+                for event in journal[-10:]:
+                    lines.append(
+                        f"- {event.get('at', '')[:16]} {event.get('type')}: "
+                        f"{str(event.get('message', ''))[:220]}"
+                    )
+        except Exception:
+            pass
+
         if user is not None:
             lines.append("Manager:")
             lines.append(
@@ -413,30 +553,40 @@ class CompanyAssistant:
             if not content:
                 continue
             history_lines.append(f"{role}: {content[:400]}")
-        return f"""You are codx-junior, the always-present assistant of the company **{company.name}**.
+        return f"""You are **codx-junior**, the owner's chief of staff and operating partner of **{company.name}**.
 
-You are talking to **{display_name}** ({getattr(user, 'username', '') if user else 'the manager'}),
-who has no technical background. Use warm, plain language and be concise.
+You are talking to **{display_name}** ({getattr(user, 'username', '') if user else 'the owner'}), a business person with no technical background. Your job is to help them run and grow the company: understand the real status, make decisions, unblock the team and make money.
 
-IMPORTANT:
-- Answer in **{language_label}** ({language}). Do not switch language unless the manager does.
-- Personalise naturally: you may address them as {display_name}; do not overuse the name.
-- This turn was not understood by the rule-based assistant. Answer the manager's
-  question with the company context below. If they asked for an action, explain
-  what you can help with and ask one short clarifying question.
-- Never claim that you performed an action in this turn. Actions are confirmed
-  and executed by the company assistant; do not invent results.
-- Never invent company data, people, projects, missions or numbers.
-- If the request is unrelated to the company, answer helpfully in the same language.
+## Voice
+- Answer in **{language_label}** ({language}). Never switch language unless the owner does.
+- Warm, direct, confident. Plain business language: revenue, margin, pipeline, customer, deadline, risk. No engineering jargon.
+- Be concise: 120-220 words unless the owner asks for a full brief.
+- Address the owner by name only occasionally.
 
-Known company-assistant actions (for guidance only):
-add/remove people, build teams and profiles, choose leads, create/link/unlink
-projects, create and review missions, change company details, autopilot on/off.
+## Ground rules
+- Use ONLY the live context below. Never invent a person, team, mission, number, deal or result.
+- If a number is missing or a source is stale, say so in one sentence and say what you need.
+- Distinguish **fact** (from context) from **recommendation** (your judgment). Use "I recommend" for the latter.
+- Never claim you executed an action in this turn. You may propose the exact action; the company UI or the assistant action flow will execute it after confirmation.
+- If the owner asks for something outside your data, answer the business question and name the missing input.
+- Do not expose internal implementation details (agents, profiles, contexts, APIs) unless the owner asks.
 
-Company and user context:
+## How to answer (default)
+1. **Bottom line** — the answer in one sentence.
+2. **Why** — 2-3 bullets grounded in the live numbers/status.
+3. **Next move** — one concrete action, with owner and timing. Offer one alternative only if the trade-off is material.
+
+## Special modes
+- If asked for a **brief** or "what should I focus on": use exactly the headings **What matters now**, **What I would do**, **Risks / watch-outs**; 3 bullets max each; end with the single most important decision.
+- If asked about **money/revenue**: state actual vs target, gap, gross profit, open and weighted pipeline; recommend the commercial action with the highest expected value; flag cash/collection risk.
+- If asked about a **team/person**: state who owns it, current load, blockers and the next decision. Do not blame people; focus on the system.
+- If asked to **plan**: 3-5 sequenced steps, each with owner and a deadline; call out the first step that can start today.
+- If asked a **why** question: give the most likely cause, the evidence you have, and one check that would confirm it.
+
+## Live company context
 {context}
 
-Recent conversation:
+## Recent conversation
 {chr(10).join(history_lines) if history_lines else '(none)'}
 """
 
@@ -543,8 +693,13 @@ Recent conversation:
                 company, text, user, effective_language, view, history
             )
         if not answer:
+            fallback_text = (
+                fallback_reply.get("reply", "")
+                if isinstance(fallback_reply, dict)
+                else str(fallback_reply or "")
+            )
             return {
-                "reply": fallback_reply or self._welcome(company, False, False, unknown=True),
+                "reply": fallback_text or self._welcome(company, False, False, unknown=True),
                 "state": None,
                 "language": effective_language,
                 "ai_fallback": False,
@@ -557,6 +712,31 @@ Recent conversation:
             "ai_fallback": True,
             "suggestions": list(VIEW_SUGGESTIONS.get(view or "", VIEW_SUGGESTIONS[""])),
         }
+
+    @staticmethod
+    def _looks_strategic(lowered: str) -> bool:
+        """True for advice/strategy questions that deserve reasoning."""
+        signals = (
+            "should", "how can", "how could", "how do we", "how is", "how are",
+            "what do you think", "what would", "what is the best", "what's the best",
+            "advice", "recommend", "strategy", "strategic", "grow", "increase",
+            "improve", "reduce", "why ", "why is", "why are", "plan for", "next step",
+            "help me", "opinion", "priorit", "focus", "biggest", "risk", "opportunit",
+            "make money", "revenue", "profit", "sales", "margin", "forecast",
+            "what is missing", "where are we", "how is the business",
+        )
+        return any(signal in lowered for signal in signals)
+
+    @staticmethod
+    def _looks_like_command(lowered: str) -> bool:
+        """True when the message is a concrete UI/data command, not advice."""
+        return bool(re.match(
+            r"^(show|list|open|create|add|remove|delete|dispatch|approve|deny|"
+            r"accept|reject|set|change|make|build|hire|invite|edit|update|run|"
+            r"pause|start|send|link|unlink|assign|who|what is|what are|how much|"
+            r"how many|status|budget)\b",
+            lowered,
+        ))
 
     def _dispatch_intent(
         self,
@@ -576,6 +756,21 @@ Recent conversation:
 
         if lowered in ("help", "?", "what can you do", "what can you do?"):
             return {"reply": self._help(company, can_manage, can_admin)}
+
+        # Strategic / advisory questions are the assistant's job, not a keyword
+        # lookup. "How can we increase revenue?" must never be answered with a
+        # generic team list just because it contains the word "team".
+        if self._looks_strategic(lowered) and not self._looks_like_command(lowered):
+            return self._ai_fallback(
+                company=company,
+                text=text,
+                actor=actor,
+                user=user,
+                language=language,
+                view=view,
+                history=history,
+                fallback_reply=self._status(company)['reply'] if isinstance(self._status(company), dict) else self._status(company),
+            )
 
         if "delete" in lowered and "company" in lowered:
             return self._delete_company(company, text, can_admin, actor)
@@ -705,7 +900,13 @@ Recent conversation:
                 and " to " not in lowered and " from " not in lowered):
             return self._create_team(company, text, can_manage, actor)
 
-        if ("create" in lowered or "new" in lowered or "add" in lowered) and "mission" in lowered:
+        if (
+            ("create" in lowered or "new" in lowered or "add" in lowered)
+            and ("mission" in lowered or "goal" in lowered or "objective" in lowered)
+        ):
+            return self._start_create_mission(company, text, can_manage, actor)
+
+        if re.match(r"^(set|define|start)\b.*\b(goal|objective)\b", lowered):
             return self._start_create_mission(company, text, can_manage, actor)
 
         if "dispatch" in lowered and "mission" in lowered:

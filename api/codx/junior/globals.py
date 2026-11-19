@@ -30,9 +30,17 @@ APPS_COMMANDS = {
 
 AGENT_DONE_WORD = "$$@@AGENT_DONE@@$$$"
 
-from langchain_text_splitters import Language
+try:
+    from langchain_text_splitters import Language
+except ImportError:  # pragma: no cover - lets the dependency-free modules import
+    # ``codx.junior.runtime`` is imported by the CISO gates and the harness audit
+    # journal, which must keep working in a git hook or a slim container where
+    # the AI stack is not installed. The language list is only consumed by the
+    # knowledge splitters (which import langchain themselves), so an empty list
+    # is a safe degradation here.
+    Language = None
 
-CURRENT_SPLITTER_LANGUAGES = [lang.lower() for lang in dir(Language)]
+CURRENT_SPLITTER_LANGUAGES = [lang.lower() for lang in dir(Language)] if Language else []
 LANGUAGE_PARSER_MAPPING = {
     "ts": "js",
     "cs": "csharp"

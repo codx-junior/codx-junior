@@ -184,6 +184,13 @@ export const MOBILE_APP_GROUPS = [
         tone: 'error'
       },
       {
+        key: 'ciso',
+        title: 'CISO',
+        description: 'Security posture, scans and policy',
+        icon: 'fa-solid fa-shield-halved',
+        tone: 'error'
+      },
+      {
         key: 'workspaces',
         title: 'Workspaces',
         description: 'Project apps and environments',
@@ -343,6 +350,7 @@ export const MOBILE_ROUTE_TITLES = {
   kanban: 'Task manager',
   calendar: 'Calendar',
   harness: 'Harness',
+  ciso: 'CISO',
   messenger: 'Messenger',
   meet: 'Meet',
   'meet-session': 'Meeting',

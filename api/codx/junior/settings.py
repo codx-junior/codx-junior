@@ -80,20 +80,27 @@ class CODXJuniorSettings(BaseModel):
     project_wiki_path: Optional[str] = Field(default=None)
     project_dependencies: Optional[str] = Field(default=None)
 
-    # File permissions over the linked (dependency) projects.
-    # `project_dependencies` declares the links used by search/RAG; these two
-    # comma separated lists decide what the file tools may do with each linked
-    # project: `read_project_dependencies` grants read only, and
-    # `read_write_project_dependencies` grants read and write. A linked project
-    # with no permission entry stays searchable but is never read or written
-    # through the file tools.
+    # File permissions over the linked projects.
+    # `project_dependencies` is the legacy search/RAG declaration; these two
+    # comma separated lists are links too, and they also decide what the file
+    # tools may do with each project: `read_project_dependencies` grants read
+    # only, and `read_write_project_dependencies` grants read and write. A
+    # linked project with no permission entry stays searchable (when it is in
+    # `project_dependencies`) but is never read or written through the file
+    # tools.
     read_project_dependencies: Optional[str] = Field(
         default=None,
-        description="Linked projects whose files can be read (comma separated project names)",
+        description=(
+            "Linked projects whose files can be read and searched "
+            "(comma separated project names)"
+        ),
     )
     read_write_project_dependencies: Optional[str] = Field(
         default=None,
-        description="Linked projects whose files can be read and written (comma separated project names)",
+        description=(
+            "Linked projects whose files can be read, written and searched "
+            "(comma separated project names)"
+        ),
     )
 
     # Search (knowledge, wiki, files) runs over the current project plus its
@@ -242,6 +249,27 @@ class CODXJuniorSettings(BaseModel):
     git_worktrees_path: Optional[str] = Field(
         default="",
         description="Folder where PR worktrees are created (absolute or relative to the project path)"
+    )
+
+    ciso_policy: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Security policy overrides (block/approval/warn thresholds, ignored "
+            "rules and paths, scanner limits and the secrets resolver options). "
+            "Validated and written by the CISO view; every gate resolves it "
+            "through codx.junior.security.ciso.policy.resolve_policy."
+        )
+    )
+
+    task_workspace_isolation: Optional[bool] = Field(
+        default=True,
+        description=(
+            "Run autonomous agent turns (autonomy shifts, harness/orchestration "
+            "steps) in a per-task git worktree on a dedicated branch, so their "
+            "changes never mix with other tasks in the main working tree. The "
+            "worktree is committed after every turn and reviewed/merged from the "
+            "Git view. Interactive chats always use the main checkout."
+        )
     )
 
     # Git identity used by codx-junior when it signs commits on this project
@@ -893,20 +921,29 @@ class CODXJuniorSettings(BaseModel):
 
     def get_dependency_names(self) -> List[str]:
         """
-        Return the configured dependency project names as a clean list.
+        Return every project name linked to this one.
+
+        Three settings declare a link: ``project_dependencies`` (the legacy
+        search/RAG list) and the two file-permission lists
+        (``read_project_dependencies`` / ``read_write_project_dependencies``).
+        They are merged here so a project added from the "linked project file
+        permissions" editors is also searched, indexed and visible to the
+        atlas, instead of only being reachable by the file tools.
 
         The value is persisted as a comma separated string (the legacy format
         that `.codx/project.json` files and the client store already use), so it
         is normalized here: entries are trimmed, empty ones dropped and
         duplicates removed while keeping the declared order.
         """
-        if not self.project_dependencies:
-            return []
         names: List[str] = []
-        for raw_name in self.project_dependencies.split(","):
-            name = (raw_name or "").strip()
-            if name and name not in names:
-                names.append(name)
+        for attribute in (
+            "project_dependencies",
+            "read_project_dependencies",
+            "read_write_project_dependencies",
+        ):
+            for name in self._dependency_permission_names(attribute):
+                if name not in names:
+                    names.append(name)
         return names
 
     def get_project_dependencies(self):
@@ -982,10 +1019,13 @@ class CODXJuniorSettings(BaseModel):
 
     def get_dependency_projects(self) -> List["CODXJuniorSettings"]:
         """
-        Resolve the configured dependencies to real projects.
+        Resolve every declared link to a real project.
 
-        Names that do not resolve are skipped (and logged) so a stale entry
-        never breaks a search; the settings UI shows them as a warning.
+        The names come from :meth:`get_dependency_names`, so a project linked
+        through either file-permission list is included next to the legacy
+        ``project_dependencies`` entries. Names that do not resolve are skipped
+        (and logged) so a stale entry never breaks a search; the settings UI
+        shows them as a warning.
         """
         dependencies: List["CODXJuniorSettings"] = []
         seen = {self.codx_path}

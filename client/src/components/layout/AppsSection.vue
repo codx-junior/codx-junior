@@ -177,6 +177,16 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         @click="handleNavigateToGitView"
       />
 
+      <!-- CISO security view: posture, scans, findings, rules and policy.
+           Registered as 'ciso' in config/apps.js, so the single opener uses a
+           dockview panel on desktop and "/:projectName/ciso" otherwise. -->
+      <NavItem
+        icon="fas fa-shield-halved"
+        label="CISO"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToCiso"
+      />
+
       <!-- `/api/infra/*` is admin-only, including the container shell. Hide the
            entry for other roles instead of opening a view that can only 403. -->
       <NavItem
@@ -329,6 +339,11 @@ export default {
     // health, audit journal). Registered as 'harness' in config/apps.js.
     handleNavigateToHarness() {
       this.openApp('harness')
+    },
+    // Opens the CISO security view for the active project (same app registry
+    // entry as the menu / route: desktop panel or single-mode route).
+    handleNavigateToCiso() {
+      this.openApp('ciso')
     },
     handleNavigateToCompany() {
       this.openApp('company')

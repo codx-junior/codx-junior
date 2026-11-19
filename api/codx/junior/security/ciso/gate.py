@@ -84,6 +84,17 @@ def _audit(
     try:
         from codx.junior.harness.audit import record_audit
 
+        # The subject is a path, a command or a URL, and a command can carry a
+        # credential. A security report must never reproduce what it detected,
+        # so the value is redacted before it becomes an audit line.
+        safe_subject = str(subject or "")
+        try:
+            safe_subject, _replacements = secrets.redact_text(
+                safe_subject, ciso_policy.resolve_policy(settings)
+            )
+        except Exception:  # pragma: no cover - redaction must never block the gate
+            safe_subject = ""
+
         record_audit(
             codx_path,
             AUDIT_EVENT,
@@ -91,7 +102,7 @@ def _audit(
             action=verdict.action.value,
             risk_score=verdict.risk_score,
             highest_severity=(verdict.highest_severity.value if verdict.highest_severity else None),
-            subject=subject,
+            subject=safe_subject,
             blocked=verdict.blocked,
             requires_approval=verdict.requires_approval,
             rules=verdict.rules_evaluated,

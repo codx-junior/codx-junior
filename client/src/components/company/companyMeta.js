@@ -188,3 +188,86 @@ export function eventMeta(type) {
 }
 
 // Made with ❤️ by codx-junior
+
+// ── Business cockpit ────────────────────────────────────────────────────────
+
+export const DEAL_STAGES = [
+  { id: 'lead', label: 'Lead', tone: 'text-base-content/60', badge: 'badge-ghost' },
+  { id: 'qualified', label: 'Qualified', tone: 'text-info', badge: 'badge-info' },
+  { id: 'proposal', label: 'Proposal', tone: 'text-primary', badge: 'badge-primary' },
+  { id: 'negotiation', label: 'Negotiation', tone: 'text-warning', badge: 'badge-warning' },
+  { id: 'won', label: 'Won', tone: 'text-success', badge: 'badge-success' },
+  { id: 'lost', label: 'Lost', tone: 'text-error', badge: 'badge-error' }
+]
+
+export function dealStageMeta(stage) {
+  return DEAL_STAGES.find(item => item.id === stage) || DEAL_STAGES[0]
+}
+
+export function formatMoney(value, currency = 'EUR', compact = false) {
+  const number = Number(value || 0)
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: currency || 'EUR',
+      maximumFractionDigits: compact ? 1 : 0,
+      notation: compact && Math.abs(number) >= 10000 ? 'compact' : 'standard'
+    }).format(number)
+  } catch {
+    return `${number.toLocaleString(undefined, { maximumFractionDigits: 0 })} ${currency || ''}`.trim()
+  }
+}
+
+export function percent(value, total) {
+  const denominator = Number(total || 0)
+  if (denominator <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round((Number(value || 0) / denominator) * 100)))
+}
+
+/** A small, explainable operating-health score. */
+export function companyHealth({ attention = 0, blocked = 0, review = 0, budgetOver = false, teamsWithoutManager = 0 } = {}) {
+  let score = 100
+  score -= Math.min(35, attention * 9)
+  score -= Math.min(20, blocked * 6)
+  score -= Math.min(10, review * 3)
+  score -= Math.min(15, teamsWithoutManager * 5)
+  if (budgetOver) score -= 12
+  return Math.max(0, Math.min(100, Math.round(score)))
+}
+
+export function healthTone(score) {
+  if (score >= 75) return { label: 'Healthy', tone: 'text-success', stroke: '#34d399' }
+  if (score >= 50) return { label: 'Watch', tone: 'text-warning', stroke: '#fbbf24' }
+  return { label: 'At risk', tone: 'text-error', stroke: '#f87171' }
+}
+
+export function initials(name) {
+  return String(name || '?')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(part => part[0].toUpperCase())
+    .join('')
+}
+
+export function isMissionAttention(mission) {
+  if (!mission) return false
+  return mission.status === 'blocked'
+    || mission.status === 'review'
+    || (['ready', 'blocked'].includes(mission.status)
+      && ['pending', 'denied'].includes(mission.approval_status))
+    || Boolean(mission.last_error)
+}
+
+export function attentionLabel(reason) {
+  const labels = {
+    approval: 'Approval needed',
+    blocked: 'Blocked',
+    error: 'Needs a fix',
+    overdue: 'Overdue',
+    unassigned_team: 'No team',
+    unassigned_project: 'No project',
+    project_missing: 'Project unavailable'
+  }
+  return labels[reason] || 'Needs you'
+}

@@ -48,6 +48,8 @@ def _synthetic(seed: str, size: int = 36) -> str:
 
 #: Provider token: known prefix, value generated at runtime.
 GITHUB_TOKEN = "ghp" + "_" + _synthetic("ciso-test-github")
+#: Slack bot token: known prefix, value assembled at runtime.
+SLACK_TOKEN = "xox" + "b-" + "123456789012" + "-" + "abcdefghijklmnop"
 #: Unknown high-entropy value assigned to a credential-looking key.
 API_KEY_VALUE = _synthetic("ciso-test-unknown", 32)
 #: Shell metacharacter sequence, split so this file carries no pipeline.
@@ -164,7 +166,17 @@ def test_assignment_rule_still_fires_on_an_unknown_token():
 
 def test_identifier_shapes_do_not_hide_a_known_provider_token():
     assert not secrets.looks_like_identifier(GITHUB_TOKEN)
-    assert not secrets.looks_like_identifier(API_KEY_VALUE)
+    assert not secrets.looks_like_identifier(SLACK_TOKEN)
+
+
+def test_a_bare_digest_is_treated_as_an_identifier():
+    """Hex-only values are digests, not unknown tokens.
+
+    The entropy rule skips them (4 bits/char cannot reach the threshold without
+    a very long run), while the assignment rule still reports
+    ``API_KEY = <hex>`` -- covered by the test above.
+    """
+    assert secrets.looks_like_identifier(API_KEY_VALUE)
 
 
 def test_identifier_shapes_match_the_noise():
@@ -197,3 +209,185 @@ def test_policy_was_not_loosened():
     assert policy.block_above.value == "high"
     assert policy.redact_secrets is True
     assert policy.entropy_threshold > 0
+
+
+# -----------------------------------------------------------------------------
+# Request correlators (audit logs and transcripts)
+# -----------------------------------------------------------------------------
+CALL_ID_VALUE = "call" + "_00_DXOo093mJKE4i8" + "IlaLAU7702"
+SESSION_ID_VALUE = "sess" + "_" + _synthetic("ciso-test-session", 24)
+AUDIT_LOG = "codx-junior-installer/.codx/harness/audit.jsonl"
+
+
+def _secret_rules(findings) -> set:
+    """Return only the `secret.*` rule ids reported by *findings*."""
+    return {f.rule_id for f in findings if f.rule_id.startswith("secret.")}
+
+
+def test_request_correlators_are_identifiers():
+    assert secrets.looks_like_identifier(CALL_ID_VALUE)
+    assert secrets.names_an_identifier("tool_call_id")
+    assert secrets.names_an_identifier("request_id")
+    assert secrets.names_an_identifier("cancellation_token_id")
+    assert not secrets.names_an_identifier("api_key")
+    assert not secrets.names_an_identifier("token")
+
+
+def test_audit_log_ids_report_no_secret():
+    payload = (
+        '{"tool_call_id": "' + CALL_ID_VALUE + '", '
+        '"chat_id": "' + UUID_VALUE + '", '
+        '"request_id": "' + UUID_VALUE + '"}\n'
+    )
+    findings, _redacted, _truncated = secrets.scan_text(payload, path=AUDIT_LOG)
+    assert _secret_rules(findings) == set()
+
+
+def test_a_session_id_key_is_an_identifier_not_a_credential():
+    payload = 'session_id = "' + SESSION_ID_VALUE + '"'
+    findings, _redacted, _truncated = secrets.scan_text(payload, path="config.py")
+    assert "secret.hardcoded-credential" not in _secret_rules(findings)
+
+
+def test_the_id_rule_does_not_hide_a_real_assignment():
+    payload = 'api_key = "' + API_KEY_VALUE + '"'
+    findings, _redacted, _truncated = secrets.scan_text(payload, path="config.py")
+    assert "secret.hardcoded-credential" in _secret_rules(findings)
+
+
+#: One complete harness audit record, the exact shape that produced ~1 750
+#: findings on `audit.jsonl`: a timestamp, two correlators and a `call_...` id.
+#: Timestamps are written literally: the entropy rule splits them on `:`, so no
+#: fragment reaches `min_secret_length`.
+AUDIT_RECORD = (
+    '{"ts": "2026-11-17T14:04:09.639876+00:00", "event": "tool_call", '
+    '"tool": "project_manager", "tool_call_id": "' + CALL_ID_VALUE + '", '
+    '"chat_id": "' + UUID_VALUE + '", '
+    '"request_id": "' + UUID_VALUE + '", '
+    '"started_at": "2026-11-17T14:04:09.273Z", '
+    '"finished_at": "2026-11-17T14:04:09.491Z", '
+    '"duration_ms": 217.5, "status": "ok", "timed_out": false}'
+)
+
+
+def test_a_full_audit_record_reports_no_secret():
+    """The whole record, not just its fields, must stay silent.
+
+    Every field is exempt on its own; this asserts that the record as a whole
+    adds no finding -- the shape that made the gate permanently red.
+    """
+    findings, _redacted, _truncated = secrets.scan_text(AUDIT_RECORD, path=AUDIT_LOG)
+    assert _secret_rules(findings) == set()
+
+
+def test_an_audit_record_still_reports_a_real_credential():
+    """Negative control: correlators are exempt, credentials are not."""
+    payload = AUDIT_RECORD.replace('"status": "ok"', '"status": "' + GITHUB_TOKEN + '"')
+    findings, _redacted, _truncated = secrets.scan_text(payload, path=AUDIT_LOG)
+    assert _secret_rules(findings)
+
+
+# -----------------------------------------------------------------------------
+# Value shape: a credential KEY does not make a credential VALUE
+# -----------------------------------------------------------------------------
+def test_a_prose_constant_is_not_a_credential():
+    findings, _redacted, _truncated = secrets.scan_text(
+        'ERROR_INVALID_PASSWORD = "Invalid password"', path="config.py"
+    )
+    assert "secret.hardcoded-credential" not in _secret_rules(findings)
+
+
+def test_a_module_path_is_not_a_credential():
+    findings, _redacted, _truncated = secrets.scan_text(
+        'TOKEN_MODULE = "codx.junior.security.ciso.gate"', path="config.py"
+    )
+    assert "secret.hardcoded-credential" not in _secret_rules(findings)
+
+
+def test_an_endpoint_is_not_a_credential():
+    findings, _redacted, _truncated = secrets.scan_text(
+        'OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"',
+        path="config.py",
+    )
+    assert "secret.hardcoded-credential" not in _secret_rules(findings)
+
+
+def test_a_short_human_password_is_still_reported():
+    """Negative control: the shape filter must not excuse a real password."""
+    findings, _redacted, _truncated = secrets.scan_text(
+        'password = "s3cr3t-pw"', path="config.py"
+    )
+    assert "secret.hardcoded-credential" in _secret_rules(findings)
+
+
+def test_credential_value_shape():
+    assert secrets.looks_like_credential_value("s3cr3t-pw")
+    assert not secrets.looks_like_credential_value("Invalid password")
+    assert not secrets.looks_like_credential_value("/path/to/file")
+    assert not secrets.looks_like_credential_value("codx.junior.ciso")
+    assert not secrets.looks_like_credential_value(chr(92) + "u2ff")
+
+
+# -----------------------------------------------------------------------------
+# Provider tokens: documentation samples are not leaks
+# -----------------------------------------------------------------------------
+DOC_TASK = "api/.codx/tasks/OAuth/ToDo/github-oauth.md"
+DOC_SAMPLE = (
+    "<OAuth>\n  <access_token>" + GITHUB_TOKEN + "</access_token>\n</OAuth>"
+)
+
+
+#: A docs page prints the sample token and explains the formats after it.
+DOC_RESPONSE = (
+    "access_token=" + GITHUB_TOKEN + "&scope=repo%2Cgist&token_type=bearer\n"
+    "You can also receive the response in different formats if you provide the "
+    "format in the Accept header. For example, Accept: application/json\n"
+)
+
+
+def _severities(verdict, rule_id: str) -> list:
+    """Return the severities reported for *rule_id*."""
+    return [f.severity for f in verdict.findings if f.rule_id == rule_id]
+
+
+def test_a_documented_sample_token_is_reported_but_not_blocking():
+    """Still reported, as low: silence would hide a real credential.
+
+    A token quoted from a provider's documentation page is a sample, but it is
+    indistinguishable from a paste of a real one, so it stays visible and only
+    loses the ability to block the gate.
+    """
+    verdict = scan_content(DOC_SAMPLE, path=DOC_TASK)
+    severities = _severities(verdict, "secret.github-token")
+    assert severities
+    assert set(severities) == {SecuritySeverity.LOW}
+
+
+def test_a_docs_response_sample_is_low_severity():
+    """The marker is often on the line AFTER the token, not on it."""
+    verdict = scan_content(DOC_RESPONSE, path=DOC_TASK)
+    severities = _severities(verdict, "secret.github-token")
+    assert severities
+    assert set(severities) == {SecuritySeverity.LOW}
+
+
+def test_the_same_token_in_source_code_is_still_a_leak():
+    verdict = scan_content(
+        'ACCESS_TOKEN = "' + GITHUB_TOKEN + '"', path="api/github/oauth.py"
+    )
+    assert SecuritySeverity.CRITICAL in _severities(verdict, "secret.github-token")
+
+
+def test_a_token_in_prose_without_a_marker_is_still_a_leak():
+    verdict = scan_content('{"body": "' + GITHUB_TOKEN + '"}', path=DOC_TASK)
+    assert SecuritySeverity.CRITICAL in _severities(verdict, "secret.github-token")
+
+
+def test_a_provider_token_is_reported_once():
+    """One value, one finding: no provider + generic duplicate for one span."""
+    findings, _redacted, _truncated = secrets.scan_text(
+        'api_key = "' + GITHUB_TOKEN + '"', path="config.py"
+    )
+    rules = _secret_rules(findings)
+    assert "secret.github-token" in rules
+    assert "secret.hardcoded-credential" not in rules

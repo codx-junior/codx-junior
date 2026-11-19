@@ -348,11 +348,11 @@ def build_provider_and_models(config: Optional[Dict[str, Any]] = None) -> Option
         return None
 
     if provider_name == "anthropic":
-        # Anthropic does not expose an OpenAI-compatible endpoint: it needs the
-        # litellm sidecar (or any compatible gateway) in front of it.
+        # Anthropic does not expose an OpenAI-compatible endpoint: it needs an
+        # OpenAI-compatible gateway in front of it.
         logger.warning(
             "AI bootstrap: 'anthropic' has no OpenAI-compatible endpoint. "
-            "Run an OpenAI-compatible gateway (litellm) and set CODX_JUNIOR_AI_API_URL."
+            "Run an OpenAI-compatible gateway and set CODX_JUNIOR_AI_API_URL."
         )
         return None
 

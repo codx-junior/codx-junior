@@ -24,6 +24,7 @@ import { consoleModule } from './modules/console'
 import { traefikModule } from './modules/traefik'
 import { dshModule } from './modules/dsh'
 import { harnessModule } from './modules/harness'
+import { cisoModule } from './modules/ciso'
 import { RequestCache, hashBody } from './requestCache'
 import { requestQueues } from './requestQueue'
 
@@ -827,6 +828,18 @@ const initializeAPI = ({ project, user } = {}) => {
         API._harnessModule = harnessModule(API)
       }
       return API._harnessModule
+    },
+
+    /**
+     * CISO: security posture, background scans, findings, detector rules and
+     * the project `ciso_policy`. See api/modules/ciso.js and
+     * codx/junior/api/ciso.py.
+     */
+    get ciso() {
+      if (!API._cisoModule) {
+        API._cisoModule = cisoModule(API)
+      }
+      return API._cisoModule
     },
 
     /**

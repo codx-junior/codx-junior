@@ -208,7 +208,7 @@ class RawLogRecord(BaseModel):
         description="request_id of the parent call when spawned from a tool-call response.",
     )
     provider: str = Field(
-        description="Provider identifier, e.g. 'openai', 'litellm'.",
+        description="Provider identifier, e.g. 'openai', 'google'.",
     )
     model: str = Field(
         description="Model name used for the completion call.",

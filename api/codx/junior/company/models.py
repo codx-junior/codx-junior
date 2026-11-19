@@ -104,6 +104,11 @@ APPROVAL_STATUSES = ("not_required", "pending", "approved", "denied")
 AUTONOMY_LEVELS = ("off", "supervised", "autonomous")
 TEAM_AUTONOMY_LEVELS = ("manual", "supervised", "autonomous")
 
+#: Revenue pipeline stages (commercial view).
+PIPELINE_STAGES = ("lead", "qualified", "proposal", "negotiation", "won", "lost")
+PIPELINE_OPEN_STAGES = ("lead", "qualified", "proposal", "negotiation")
+BUSINESS_PERIODS = ("month", "quarter", "year")
+
 #: Longer names are unreadable in a card and cannot be referenced safely.
 MAX_NAME_LENGTH = 120
 
@@ -115,6 +120,8 @@ ID_PREFIXES = {
     "mission": "msn",
     "event": "evt",
     "spend": "spd",
+    "deal": "deal",
+    "metric": "metric",
 }
 
 
@@ -1239,6 +1246,253 @@ class SpendEntry(BaseModel):
             return 0.0
 
 
+class BusinessMetric(BaseModel):
+    """
+    One owner-editable business number (MRR, customers, churn, ...).
+
+    Metrics are deliberately lightweight: the company document is not an
+    accounting system, it is the owner's cockpit. The labels and units are free
+    form so any business can define what it measures.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    id: str = Field(default_factory=lambda: new_id("metric"))
+    label: str = Field(default="", description="What is measured")
+    value: float = Field(default=0.0, description="Current value")
+    target: float = Field(default=0.0, description="Target value (0 = no target)")
+    unit: str = Field(default="", description="currency, %, count, ...")
+    period: str = Field(default="month", description="month | quarter | year")
+    updated_at: str = Field(default_factory=now_iso, description="Last update")
+
+    @field_validator("label", "unit", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> str:
+        return _clean(value)
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _period(cls, value: Any) -> str:
+        period = _clean(value).lower() or "month"
+        return period if period in BUSINESS_PERIODS else "month"
+
+    @field_validator("value", "target", mode="before")
+    @classmethod
+    def _number(cls, value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @model_validator(mode="after")
+    def _validate(self) -> "BusinessMetric":
+        if not self.label:
+            raise ValueError("metric label is required")
+        return self
+
+
+class PipelineDeal(BaseModel):
+    """
+    One opportunity in the commercial pipeline.
+
+    The deal is a reference-level record: the company stores the value, stage,
+    owner and next step, not the customer's whole CRM. The assistant and the
+    UI use it to answer "how much is in the pipeline?" and to prioritise work.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    id: str = Field(default_factory=lambda: new_id("deal"))
+    name: str = Field(default="", description="Opportunity name")
+    account: str = Field(default="", description="Customer/prospect")
+    value: float = Field(default=0.0, description="Deal value")
+    currency: str = Field(default="EUR", description="ISO currency")
+    stage: str = Field(default="lead", description="lead | qualified | proposal | negotiation | won | lost")
+    probability: int = Field(default=20, description="Win probability 0-100")
+    owner_kind: str = Field(default="user", description="user | profile")
+    owner_name: str = Field(default="", description="Owner reference")
+    next_step: str = Field(default="", description="The next concrete action")
+    due_date: str = Field(default="", description="Expected close date (ISO)")
+    notes: str = Field(default="", description="Free-form notes")
+    created_at: str = Field(default_factory=now_iso)
+    updated_at: str = Field(default_factory=now_iso)
+
+    @field_validator("name", "account", "currency", "stage", "owner_name", "next_step", "due_date", "notes", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> str:
+        return _clean(value)
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def _stage(cls, value: Any) -> str:
+        stage = _clean(value).lower() or "lead"
+        if stage not in PIPELINE_STAGES:
+            raise ValueError(
+                f"invalid pipeline stage '{stage}' (expected one of "
+                f"{', '.join(PIPELINE_STAGES)})"
+            )
+        return stage
+
+    @field_validator("owner_kind", mode="before")
+    @classmethod
+    def _owner_kind(cls, value: Any) -> str:
+        kind = _normalize_member_kind(value)
+        return kind if kind in MEMBER_KINDS else "user"
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value(cls, value: Any) -> float:
+        try:
+            return max(0.0, float(value or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @field_validator("probability", mode="before")
+    @classmethod
+    def _probability(cls, value: Any) -> int:
+        try:
+            return max(0, min(100, int(value if value is not None else 20)))
+        except (TypeError, ValueError):
+            return 20
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _currency(cls, value: Any) -> str:
+        currency = _clean(value).upper() or "EUR"
+        return currency[:3]
+
+    @model_validator(mode="after")
+    def _validate(self) -> "PipelineDeal":
+        if not self.name:
+            raise ValueError("deal name is required")
+        return self
+
+    @property
+    def weighted_value(self) -> float:
+        """Expected value of the deal (value * probability)."""
+        return round(self.value * (self.probability / 100.0), 2)
+
+
+class BusinessPlan(BaseModel):
+    """
+    The commercial cockpit of the company.
+
+    Everything here is editable by the owner (or a manager with the right
+    permission) from the Business view. It does not replace a CRM or the
+    accounting system: it is the one screen the owner needs to see whether the
+    business is making money and what the team should do next.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    currency: str = Field(default="EUR", description="ISO currency")
+    period: str = Field(default="month", description="month | quarter | year")
+    revenue_target: float = Field(default=0.0, description="Revenue goal for the period")
+    revenue_actual: float = Field(default=0.0, description="Revenue booked in the period")
+    costs_actual: float = Field(default=0.0, description="Costs booked in the period")
+    pipeline: List[PipelineDeal] = Field(default_factory=list)
+    metrics: List[BusinessMetric] = Field(default_factory=list)
+    notes: str = Field(default="", description="Owner notes / strategy")
+    updated_at: str = Field(default_factory=now_iso)
+    version: int = Field(default=1)
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def _currency(cls, value: Any) -> str:
+        currency = _clean(value).upper() or "EUR"
+        return currency[:3]
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def _period(cls, value: Any) -> str:
+        period = _clean(value).lower() or "month"
+        return period if period in BUSINESS_PERIODS else "month"
+
+    @field_validator("revenue_target", "revenue_actual", "costs_actual", mode="before")
+    @classmethod
+    def _amount(cls, value: Any) -> float:
+        try:
+            return max(0.0, float(value or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _notes(cls, value: Any) -> str:
+        return _clean(value)[:4000]
+
+    @field_validator("pipeline", mode="before")
+    @classmethod
+    def _pipeline(cls, value: Any) -> List[PipelineDeal]:
+        if value is None:
+            return []
+        if isinstance(value, (str, dict)):
+            value = [value]
+        deals: List[PipelineDeal] = []
+        seen = set()
+        for index, item in enumerate(value):
+            deal = item if isinstance(item, PipelineDeal) else PipelineDeal(**item)
+            if deal.id in seen:
+                deal = deal.model_copy(update={"id": new_id("deal")})
+            seen.add(deal.id)
+            deals.append(deal)
+        return deals
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _metrics(cls, value: Any) -> List[BusinessMetric]:
+        if value is None:
+            return []
+        if isinstance(value, (str, dict)):
+            value = [value]
+        metrics: List[BusinessMetric] = []
+        seen = set()
+        for item in value:
+            metric = item if isinstance(item, BusinessMetric) else BusinessMetric(**item)
+            if metric.id in seen:
+                metric = metric.model_copy(update={"id": new_id("metric")})
+            seen.add(metric.id)
+            metrics.append(metric)
+        return metrics
+
+    @property
+    def open_deals(self) -> List[PipelineDeal]:
+        """Deals still in play."""
+        return [deal for deal in self.pipeline if deal.stage in PIPELINE_OPEN_STAGES]
+
+    @property
+    def pipeline_value(self) -> float:
+        """Total value of the open pipeline."""
+        return round(sum(deal.value for deal in self.open_deals), 2)
+
+    @property
+    def weighted_pipeline_value(self) -> float:
+        """Probability-weighted value of the open pipeline."""
+        return round(sum(deal.weighted_value for deal in self.open_deals), 2)
+
+    @property
+    def won_value(self) -> float:
+        """Value of the deals marked as won."""
+        return round(sum(deal.value for deal in self.pipeline if deal.stage == "won"), 2)
+
+    @property
+    def gross_profit(self) -> float:
+        """Revenue minus costs (can be negative)."""
+        return round(self.revenue_actual - self.costs_actual, 2)
+
+    @property
+    def revenue_progress(self) -> int:
+        """Revenue attainment against the target, 0-100+."""
+        if self.revenue_target <= 0:
+            return 0
+        return round((self.revenue_actual / self.revenue_target) * 100)
+
+    @property
+    def revenue_gap(self) -> float:
+        """How much revenue is still missing to hit the target."""
+        return round(max(0.0, self.revenue_target - self.revenue_actual), 2)
+
+
 class Company(BaseModel):
     """
     The top-level company entity.
@@ -1259,6 +1513,7 @@ class Company(BaseModel):
         projects: Linked codx-junior projects.
         missions: Objectives and their execution state.
         autonomy: Autopilot policy.
+        business: Owner-editable commercial cockpit (revenue, pipeline, metrics).
         tags: Discovery tags.
     """
 
@@ -1293,6 +1548,10 @@ class Company(BaseModel):
         description="Cumulative AI spend observed by the company (cxjcoins)",
     )
     autonomy: AutonomyPolicy = Field(default_factory=AutonomyPolicy)
+    business: BusinessPlan = Field(
+        default_factory=BusinessPlan,
+        description="Owner-editable commercial cockpit (revenue, pipeline, metrics)",
+    )
     tags: List[str] = Field(default_factory=list)
     created_at: str = Field(default_factory=now_iso, description="Creation timestamp")
     updated_at: str = Field(default_factory=now_iso, description="Last update timestamp")
@@ -1474,6 +1733,16 @@ class Company(BaseModel):
             "logo": self.logo,
             "counts": self.counts(),
             "autonomy": self.autonomy.model_dump(),
+            "business": {
+                "currency": self.business.currency,
+                "period": self.business.period,
+                "revenue_target": self.business.revenue_target,
+                "revenue_actual": self.business.revenue_actual,
+                "revenue_progress": self.business.revenue_progress,
+                "gross_profit": self.business.gross_profit,
+                "pipeline_value": self.business.pipeline_value,
+                "weighted_pipeline_value": self.business.weighted_pipeline_value,
+            },
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

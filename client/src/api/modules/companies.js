@@ -83,6 +83,23 @@ export const companiesModule = (API) => ({
     )
   },
 
+  /**
+   * Cross-project CISO posture: one row per linked project (score, severity
+   * counters, latest scan and gate activity).
+   */
+  security(companyId) {
+    return API.get(`${BASE}/${encodeURIComponent(companyId)}/security`)
+  },
+
+  /** Start a CISO scan for one linked project (company admin/manager). */
+  scanSecurity(companyId, { projectId, scope = 'project', maxFiles = 300 } = {}) {
+    return API.post(`${BASE}/${encodeURIComponent(companyId)}/security/scan`, {
+      project_id: projectId,
+      scope,
+      max_files: maxFiles
+    })
+  },
+
   /** Autonomous actors of the company's linked projects (read-only). */
   actors(companyId) {
     return API.get(`${BASE}/${encodeURIComponent(companyId)}/actors`)

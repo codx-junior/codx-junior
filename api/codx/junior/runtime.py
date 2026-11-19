@@ -117,6 +117,8 @@ DATA_PLANE_ENTRIES = (
     "board_manager",
     "autonomy",
     "atlas",
+    "ciso",
+    "task_workspaces",
     "db",
     "logs",
     "media",

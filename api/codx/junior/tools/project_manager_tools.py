@@ -2541,6 +2541,7 @@ def _action_update_task(
     progress: Optional[int],
     assignees: Any,
     tags: Any,
+    profiles: Any = None,
     schedule: Optional[str] = None,
     schedule_context: Optional[str] = None,
 ) -> ToolResponse:
@@ -2632,6 +2633,10 @@ def _action_update_task(
         metadata["assignees"] = _to_list(assignees)
     if tags is not None:
         metadata["tags"] = _to_list(tags)
+    if profiles is not None:
+        # Profiles come only from the parameters: omitting the argument keeps
+        # the current owners, an explicit empty list clears them.
+        metadata["profiles"] = _to_profiles(profiles)
 
     if sprints_changed and new_sprints != list(chat.sprints or []):
         metadata["sprints"] = new_sprints
@@ -3219,6 +3224,7 @@ async def project_manager(
                 wake_at=wake_at,
                 progress=progress,
                 assignees=assignees,
+                profiles=profiles,
                 tags=tags,
                 schedule=schedule,
                 schedule_context=schedule_context,

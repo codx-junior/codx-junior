@@ -18,6 +18,8 @@ DELETE /api/companies/{company_id}             delete company
 
 GET    /api/companies/{id}/snapshot            dashboard payload (incl. members)
 GET    /api/companies/{id}/journal             audit journal
+GET    /api/companies/{id}/security            CISO posture of linked projects
+POST   /api/companies/{id}/security/scan       start a project CISO scan
 
 GET    /api/companies/{id}/members             human roster + company roles
 POST   /api/companies/{id}/members             add/onboard a person (company admin)
@@ -72,6 +74,8 @@ Made with ❤️ by codx-junior
 from __future__ import annotations
 
 import logging
+import os
+from datetime import datetime, timezone
 
 from typing import Any, Dict, List, Optional
 
@@ -146,6 +150,13 @@ class CompanyUpdateRequest(BaseModel):
     status: Optional[str] = None
     owner: Optional[str] = None
     tags: Optional[List[str]] = None
+    business: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Commercial cockpit: currency, period, revenue_target, "
+            "revenue_actual, costs_actual, pipeline[] and metrics[]"
+        ),
+    )
 
 
 class OrgUnitRequest(BaseModel):
@@ -609,6 +620,167 @@ def api_company_snapshot(
     return _run(
         lambda: _manager().snapshot(company_id, journal_limit=journal_limit)
     )
+
+
+class CompanySecurityScanRequest(BaseModel):
+    """Start a CISO analysis for one project linked to a company."""
+
+    project_id: str = Field(description="Linked project id")
+    scope: str = Field(default="project", description="project | changes | staged | paths")
+    max_files: int = Field(default=300, ge=1, le=5000)
+
+
+def _company_security_row(linked: Any, catalog: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Build the CISO summary of one linked project (never raises)."""
+    reference = catalog.get(getattr(linked, "project_id", "")) or {}
+    project_id = getattr(linked, "project_id", "")
+    display_name = (
+        getattr(linked, "name", "")
+        or reference.get("project_name", "")
+        or project_id
+    )
+    codx_path = str(reference.get("codx_path") or "")
+    row: Dict[str, Any] = {
+        "project_id": project_id,
+        "name": display_name,
+        "project_name": reference.get("project_name", "") or display_name,
+        "codx_path": codx_path,
+        "available": False,
+        "score": None,
+        "grade": None,
+        "risk_score": None,
+        "highest_severity": None,
+        "critical": 0,
+        "high": 0,
+        "medium": 0,
+        "total_findings": 0,
+        "scan_id": "",
+        "scan_status": "",
+        "scan_created_at": "",
+        "blocked": False,
+        "policy_enabled": False,
+        "gates_total": 0,
+        "gates_blocked": 0,
+        "error": "",
+    }
+    if not codx_path:
+        row["error"] = "The project is not discovered in this installation"
+        return row
+    settings_file = os.path.join(codx_path, "project.json")
+    if not os.path.isfile(settings_file):
+        row["error"] = "The project settings file is missing"
+        return row
+    try:
+        from codx.junior.settings import CODXJuniorSettings
+        from codx.junior.security.ciso import service as ciso_service
+
+        settings = CODXJuniorSettings.from_project_file(settings_file)
+        overview = ciso_service.overview(settings)
+        posture = overview.get("posture") or {}
+        counts = posture.get("counts") or {}
+        latest = overview.get("latest_completed_scan") or {}
+        summary = latest.get("summary") or {}
+        gates = overview.get("gates") or {}
+        policy = overview.get("policy") or {}
+        row.update(
+            {
+                "available": True,
+                "score": posture.get("score"),
+                "grade": posture.get("grade"),
+                "risk_score": posture.get("risk_score"),
+                "highest_severity": posture.get("highest_severity"),
+                "critical": int(counts.get("critical") or 0),
+                "high": int(counts.get("high") or 0),
+                "medium": int(counts.get("medium") or 0),
+                "total_findings": int(posture.get("total_findings") or 0),
+                "scan_id": latest.get("scan_id", ""),
+                "scan_status": latest.get("status", ""),
+                "scan_created_at": latest.get("created_at", ""),
+                "blocked": bool(summary.get("blocked")),
+                "policy_enabled": bool(policy.get("enabled")),
+                "gates_total": int(gates.get("total") or 0),
+                "gates_blocked": int(gates.get("blocked") or 0),
+            }
+        )
+    except Exception as ex:  # pragma: no cover - one broken project never blocks the panel
+        logger.warning("Company security: project %s failed: %s", project_id, ex)
+        row["error"] = str(ex)
+    return row
+
+
+@router.get("/companies/{company_id}/security")
+def api_company_security(
+    company_id: str,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    CISO posture of every project linked to the company.
+
+    This is the cross-project security view of the company shell: one row per
+    linked project with its latest score, severity counters, scan and gate
+    activity. Each project is read independently; one broken project is shown
+    as unavailable instead of failing the whole panel.
+    """
+    manager = _manager()
+    company = _run(lambda: manager.get_company(company_id))
+    catalog = {
+        project["project_id"]: project
+        for project in _run(manager.references)["projects"]
+    }
+    rows = [_company_security_row(linked, catalog) for linked in company.projects]
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "company_id": company.id,
+        "company_name": company.name,
+        "projects": rows,
+        "totals": {
+            "projects": len(rows),
+            "available": len([row for row in rows if row["available"]]),
+            "critical": sum(row["critical"] for row in rows),
+            "high": sum(row["high"] for row in rows),
+            "blocked": len([row for row in rows if row["blocked"]]),
+            "gates_blocked": sum(row["gates_blocked"] for row in rows),
+        },
+    }
+
+
+@router.post("/companies/{company_id}/security/scan", status_code=202)
+def api_company_security_scan(
+    company_id: str,
+    payload: CompanySecurityScanRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Start a CISO scan for one project linked to the company."""
+    manager = _manager()
+    company = _run(lambda: manager.get_company(company_id))
+    _assert_can_edit(company, user)
+    catalog = {
+        project["project_id"]: project
+        for project in _run(manager.references)["projects"]
+    }
+    linked = next(
+        (project for project in company.projects if project.project_id == payload.project_id),
+        None,
+    )
+    if linked is None:
+        raise HTTPException(status_code=404, detail="Project is not linked to this company")
+    reference = catalog.get(payload.project_id) or {}
+    codx_path = str(reference.get("codx_path") or "")
+    settings_file = os.path.join(codx_path, "project.json") if codx_path else ""
+    if not settings_file or not os.path.isfile(settings_file):
+        raise HTTPException(status_code=404, detail="The project settings file is missing")
+    try:
+        from codx.junior.settings import CODXJuniorSettings
+        from codx.junior.security.ciso import service as ciso_service
+
+        settings = CODXJuniorSettings.from_project_file(settings_file)
+        return ciso_service.start_scan(
+            settings,
+            scope=payload.scope,
+            max_files=payload.max_files,
+        )
+    except Exception as ex:
+        raise _fail(ex)
 
 
 @router.get("/companies/{company_id}/actors")

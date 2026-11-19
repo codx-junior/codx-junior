@@ -191,7 +191,7 @@ class ImageEngine:
         """
         Build the Google-native ``:generateContent`` URL.
 
-        Supports both Google's direct Gemini API and a LiteLLM-compatible proxy:
+        Supports both Google's direct Gemini API and an OpenAI-compatible proxy:
         the latter exposes ``POST {proxy_root}/v1beta/models/{model}:generateContent``.
         """
         base_url = (getattr(image_settings, "api_url", "") or "").rstrip("/")
@@ -206,7 +206,7 @@ class ImageEngine:
                 base_url = base_url[:-3].rstrip("/")
             return f"{base_url}/v1beta/models/{model_name}:generateContent"
 
-        # LiteLLM / OpenAI-compatible gateway. Resolve the Google-native route
+        # OpenAI-compatible gateway. Resolve the Google-native route
         # from the proxy root, stripping any OpenAI-style version prefix such
         # as ``/v1`` or ``/v1main``.
         for prefix in ("/v1beta", "/v1main", "/v1"):

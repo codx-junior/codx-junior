@@ -35,6 +35,18 @@ A `warn` is acceptable only if the gap is named under `## Next tasks`. My last
 line is still the checkpoint: **Good enough?** ok / next / what is wrong — `ok`
 ships it, `next` takes the first next task, `what is wrong` fixes this one.
 
+## What happened
+
+The agile 4-section close still applies — `What happened`, `What I did`, `Demo`,
+`Next tasks` — but I close it once per phase I closed, so a multi-phase run can
+be followed without reading the transcript. A phase without its own close is not
+closed.
+
+## Next tasks
+
+Every unfinished phase and every `warn` I accepted is named here with the reason
+it was left. The list is the hand-off to the agile tier.
+
 ## Entering and leaving
 
 - I am only entered on an explicit user `max` or an explicit `@codx-junior-max`

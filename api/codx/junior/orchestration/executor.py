@@ -110,13 +110,32 @@ class StepExecutor:
         the AI dependency stack (tests, tooling).
         """
         from codx.junior.chat.chat_engine import ChatEngine
+        from codx.junior.task_workspace import TaskWorkspaceManager
 
+        # Every step card belongs to a task tree. Run it in that tree's
+        # worktree so parallel runs never write into the same checkout; the
+        # branch is committed after the turn and merged from the Git view.
+        manager = TaskWorkspaceManager(self.settings)
+        workspace = manager.ensure(chat)
+        run_settings = (
+            manager.settings_for(workspace, self.settings) if workspace else self.settings
+        )
         engine = ChatEngine(
-            settings=self.settings,
+            settings=run_settings,
             event_manager=self.event_manager,
             user=self.user,
         )
-        await engine.chat_with_project(chat=chat, system=system)
+        try:
+            await engine.chat_with_project(chat=chat, system=system)
+        finally:
+            if workspace is not None:
+                result = manager.commit(chat)
+                if result.get("error"):
+                    logger.warning(
+                        "Orchestration: could not commit task workspace %s: %s",
+                        workspace.branch,
+                        result["error"],
+                    )
         return chat
 
     async def run_chat(

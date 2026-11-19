@@ -195,6 +195,20 @@ _RULES: List[Tuple[str, str, SecuritySeverity, SecurityCategory, "re.Pattern", s
      SecurityCategory.DANGEROUS_OPERATION,
      re.compile(r"\b(?:DROP\s+(?:DATABASE|SCHEMA|TABLE)|TRUNCATE\s+TABLE)\b|\.drop_all\s*\(|db\.dropDatabase\s*\(", re.IGNORECASE),
      "Migrations must never drop data implicitly; require an explicit, reviewed step."),
+    # Content rule only for the *dynamic* form. A regular os.remove/unlink in
+    # platform code is legitimate (the platform deletes its own temp files), so
+    # flagging every occurrence would bury the actual agent bypass. The broad
+    # deletion family lives in the command rules, where the payload really is a
+    # command the agent asked to execute.
+    ("dangerous.python-dynamic-delete", "Dynamic Python file deletion", SecuritySeverity.HIGH,
+     SecurityCategory.DANGEROUS_OPERATION,
+     re.compile(
+         r"__import__\s*\(\s*['\"]os['\"]\s*\)\s*\.\s*(?:unlink|remove|rmdir)\s*\(",
+         re.IGNORECASE,
+     ),
+     "Dynamic Python deletion bypasses the tool allow-list. Remove the call and "
+     "request an explicit, reviewed deletion; this platform has no delete tool "
+     "by design."),
     ("destructive.permissive-chmod", "World-writable permissions", SecuritySeverity.MEDIUM,
      SecurityCategory.DANGEROUS_OPERATION,
      re.compile(r"\bchmod\s+(?:-R\s+)?0?777\b|\bos\.chmod\s*\([^)]*0o?777"),
@@ -288,6 +302,17 @@ _COMMAND_EXTRA_RULES: List[Tuple[str, str, SecuritySeverity, SecurityCategory, "
      SecurityCategory.DATA_EXFILTRATION,
      re.compile(r"\b(?:cat|less|more|head|tail|cp|scp|base64)\b[^\n]{0,80}(?:\.env\b|id_rsa|\.aws/credentials|\.kube/config|/etc/shadow)"),
      "Reading credential material in a command is exfiltration: block it."),
+    ("command.python-delete", "File deletion through inline Python", SecuritySeverity.HIGH,
+     SecurityCategory.DANGEROUS_OPERATION,
+     re.compile(
+         r"__import__\s*\(\s*['\"]os['\"]\s*\)\s*\.\s*(?:unlink|remove|rmdir|system|popen)\s*\("
+         r"|(?:os|shutil)\s*\.\s*(?:unlink|remove|rmdir|rmtree)\s*\("
+         r"|(?:pathlib\s*\.\s*)?Path\s*\([^)\n]*\)\s*\.\s*unlink\s*\(",
+         re.IGNORECASE,
+     ),
+     "Deletion through inline Python bypasses the tool allow-list. Remove the "
+     "call and request an explicit, reviewed deletion; this platform has no "
+     "delete tool by design."),
 ]
 
 _ALL_RULES = _RULES + _COMMAND_EXTRA_RULES

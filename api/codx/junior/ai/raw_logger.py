@@ -38,7 +38,7 @@ class RawAILogger:
         - status           : "success" | "cancelled" | "error"
         - request_id       : unique UUID per request/response pair
         - parent_request_id: request_id of the parent call when spawned from a tool call
-        - provider         : e.g. "openai", "litellm"
+        - provider         : e.g. "openai", "google"
         - model            : model name
         - base_url         : API base URL
         - username         : requesting user (or "anonymous")

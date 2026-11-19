@@ -69,6 +69,18 @@ IGNORED_SUFFIXES = (
     ".zip", ".gz", ".tar", ".whl", ".so", ".dylib", ".dll",
 )
 
+def is_compose_file(file_name: str) -> bool:
+    """True for a compose file (``compose.y*ml``, ``docker-compose*.y*ml``).
+
+    Compose files describe how the project is deployed, so they are always
+    project content: the folder they live in (``demo``, a nested stack...)
+    must not decide whether the atlas indexes them.
+    """
+    lower = (file_name or "").lower()
+    if not lower.endswith((".yaml", ".yml")):
+        return False
+    return lower.startswith("compose.") or lower.startswith("docker-compose")
+
 PY_ROUTE_METHODS = {"get", "post", "put", "delete", "patch", "head", "options", "route"}
 
 _PY_CLASS_RE = re.compile(r"^(\s*)class\s+([A-Za-z_]\w*)\b")
@@ -461,6 +473,10 @@ class AtlasIndexer:
         if any(part in IGNORED_PARTS for part in parts):
             return False
         name = parts[-1]
+        if is_compose_file(name):
+            # Compose files are project content wherever they live; the
+            # control plane and VCS folders are excluded above.
+            return True
         if name in IGNORED_NAMES or name.startswith("."):
             return False
         lower = name.lower()

@@ -104,6 +104,15 @@ export const APPS = {
     route: () => ({ name: 'harness' })
   },
 
+  // CISO security view: posture, background scans, findings, detector rules,
+  // policy and the gate journal of the active project. Desktop mode → dockview
+  // panel; single/mobile mode → "/:projectName/ciso". The backend is the
+  // deterministic security engine (`/api/ciso/*`), not an LLM opinion.
+  ciso: {
+    id: 'ciso', title: 'CISO', component: 'ciso', icon: 'fa-solid fa-shield-halved',
+    route: () => ({ name: 'ciso' })
+  },
+
   // Management dashboard — the cross-project "command center" for management.
   // One screen that answers "what is happening, what is stuck and when will it
   // be delivered" across EVERY project, with a time window (last 7 days by

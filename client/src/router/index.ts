@@ -288,6 +288,7 @@ const router = createRouter({
     // desktop the very same key opens a dockview panel (config/apps.js).
     { path: '/:projectName/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', ...mobile('Calendar', 'more') } },
     { path: '/:projectName/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
+    { path: '/:projectName/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', ...mobile('CISO', 'more') } },
     { path: '/:projectName/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
     { path: '/:projectName/knowledge-settings', name: 'knowledge-settings', component: AppRouteView, meta: { app: 'knowledge_settings' } },
     { path: '/:projectName/projects', name: 'projects', component: AppRouteView, meta: { app: 'projects' } },

@@ -41,6 +41,7 @@ context and stay in budget. This section documents every feature in detail.
 | Feature | Summary |
 | --- | --- |
 | [Git and code review](/features/code-review) | Branches, commits, diffs, pull-request views and GitHub issues. |
+| [CISO](/features/ciso) | Security posture, background scans, findings, detector rules, policy and the gate journal. |
 | [AI providers and models](/features/ai-providers) | Any OpenAI-compatible provider, with per-purpose models and MCP servers. |
 | [Budget and analytics](/features/budget-and-analytics) | cxjcoins, wallets, spending limits and usage dashboards. |
 | [Users and security](/features/users-and-security) | Roles, project permissions, GitHub OAuth and forward-auth for apps. |

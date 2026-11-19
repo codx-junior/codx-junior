@@ -28,6 +28,10 @@ export default {
       saving: false,
       error: '',
       flash: '',
+      // One view at a time: the list gets the whole width, the form too.
+      view: 'list',
+      // Row whose details are open (view === 'detail').
+      selected: null,
       vault: { available: true, detail: '' },
       rows: [],
       defaultAllowTools: [],
@@ -216,6 +220,8 @@ export default {
         this.toolPick = ''
         this.customTool = ''
         await this.refresh()
+        // Back to the list so the result of the save is visible in the table.
+        this.view = 'list'
       } catch (ex) {
         this.error = this.describe(ex)
       } finally {
@@ -241,7 +247,29 @@ export default {
         this.error = this.describe(ex)
       }
     },
+    openForm() {
+      this.error = ''
+      this.flash = ''
+      this.view = 'form'
+    },
+    backToList() {
+      this.error = ''
+      this.selected = null
+      this.view = 'list'
+    },
+    // Clicking a row opens its details instead of a modal stacked on the table.
+    openDetail(row) {
+      this.error = ''
+      this.flash = ''
+      this.selected = row
+      this.view = 'detail'
+    },
+    editSelected() {
+      if (!this.selected) return
+      this.reuse(this.selected)
+    },
     reuse(row) {
+      this.view = 'form'
       this.form.name = row.name
       this.form.description = row.description || ''
       this.form.value = ''
@@ -269,13 +297,23 @@ export default {
 
 <template>
   <div class="w-full flex flex-col gap-6">
-    <div>
-      <div class="text-xl font-bold">Secrets</div>
-      <p class="text-xs text-base-content/60 mt-1">
-        Credentials live encrypted on the server. Only the name is visible here and to the
-        model; the value is written once and never read back. An agent uses the name as a
-        handle, so the value never enters the conversation.
-      </p>
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <div class="text-xl font-bold">Secrets</div>
+        <p class="text-xs text-base-content/60 mt-1">
+          Credentials live encrypted on the server. Only the name is visible here and to the
+          model; the value is written once and never read back. An agent uses the name as a
+          handle, so the value never enters the conversation.
+        </p>
+      </div>
+      <button
+        v-if="view === 'list'"
+        class="btn btn-sm btn-primary shrink-0"
+        @click="openForm"
+      >
+        <i class="fa-solid fa-plus"></i>
+        Add secret
+      </button>
     </div>
 
     <div v-if="!vault.available" class="alert alert-error text-sm">
@@ -293,8 +331,8 @@ export default {
     </div>
 
     <!-- Existing secrets: names, never values -->
-    <div class="overflow-x-auto">
-      <table class="table table-sm">
+    <div v-if="view === 'list'" class="overflow-x-auto">
+      <table class="table table-xs">
         <thead>
           <tr>
             <th>Name</th>
@@ -314,10 +352,15 @@ export default {
           </tr>
           <tr v-else-if="!rows.length">
             <td colspan="7" class="text-center text-base-content/60 py-6">
-              No secret yet. Add the first one below.
+              No secret yet. Use “Add secret”.
             </td>
           </tr>
-          <tr v-for="row in rows" :key="`${row.scope}:${row.name}`">
+          <tr
+            v-for="row in rows"
+            :key="`${row.scope}:${row.name}`"
+            class="cursor-pointer hover:bg-base-200/60"
+            @click="openDetail(row)"
+          >
             <td class="font-mono text-xs">{{ row.name }}</td>
             <td>
               <span class="badge badge-ghost badge-sm">{{ row.scope }}</span>
@@ -341,8 +384,14 @@ export default {
             <td>
               <span class="badge badge-sm" :class="statusClass(row.status)">{{ row.status }}</span>
             </td>
-            <td class="text-xs">{{ (row.allow_tools || []).join(', ') || '— (no tool)' }}</td>
-            <td class="text-xs">{{ row.description || '—' }}</td>
+            <td class="text-xs whitespace-nowrap">
+              {{ (row.allow_tools || []).join(', ') || '— (no tool)' }}
+            </td>
+            <td class="text-xs">
+              <div class="max-w-[18rem] truncate" :title="row.description || ''">
+                {{ row.description || '—' }}
+              </div>
+            </td>
             <td class="text-right whitespace-nowrap">
               <span
                 v-if="row.inherited_from"
@@ -352,10 +401,10 @@ export default {
                 <i class="fa-solid fa-lock"></i>
               </span>
               <template v-else>
-                <button class="btn btn-xs btn-ghost" title="Edit" @click="reuse(row)">
+                <button class="btn btn-xs btn-ghost" title="Edit" @click.stop="reuse(row)">
                   <i class="fa-regular fa-pen-to-square"></i>
                 </button>
-                <button class="btn btn-xs btn-ghost text-error" title="Delete" @click="remove(row)">
+                <button class="btn btn-xs btn-ghost text-error" title="Delete" @click.stop="remove(row)">
                   <i class="fa-regular fa-trash-can"></i>
                 </button>
               </template>
@@ -365,9 +414,94 @@ export default {
       </table>
     </div>
 
-    <!-- Add / update -->
-    <div class="border border-base-300 rounded-lg p-4 flex flex-col gap-4">
-      <div class="font-semibold">Add or update a secret</div>
+    <!-- Details of one secret: its own view, reached by clicking a table row -->
+    <div
+      v-if="view === 'detail' && selected"
+      class="border border-base-300 rounded-lg p-4 flex flex-col gap-4"
+    >
+      <div class="flex items-center justify-between gap-3">
+        <div class="font-mono font-semibold">{{ selected.name }}</div>
+        <button class="btn btn-xs btn-ghost" @click="backToList">
+          <i class="fa-solid fa-arrow-left"></i>
+          Back to list
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 @md:grid-cols-2 gap-4 text-sm">
+        <div>
+          <div class="text-xs text-base-content/60 mb-1">Scope</div>
+          <div>
+            <span class="badge badge-ghost badge-sm">{{ selected.scope }}</span>
+            <span
+              v-if="selected.share_with_children"
+              class="badge badge-info badge-xs ml-1"
+            >+children</span>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs text-base-content/60 mb-1">Applies to</div>
+          <div>
+            <template v-if="selected.inherited_from">
+              {{ selected.project_name || 'this project' }}
+              <span class="text-base-content/60">— inherited from {{ selected.inherited_from }}</span>
+            </template>
+            <template v-else-if="selected.scope === 'global'">all projects</template>
+            <template v-else>
+              {{ selected.project_name || 'this project' }}
+              <span v-if="selected.share_with_children" class="text-base-content/60">+ child projects</span>
+            </template>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs text-base-content/60 mb-1">Status</div>
+          <div>
+            <span class="badge badge-sm" :class="statusClass(selected.status)">{{ selected.status }}</span>
+          </div>
+        </div>
+        <div>
+          <div class="text-xs text-base-content/60 mb-1">Allowed tools</div>
+          <div class="text-xs font-mono break-words">
+            {{ (selected.allow_tools || []).join(', ') || '— (no tool: the value is unreadable)' }}
+          </div>
+        </div>
+        <div class="@md:col-span-2">
+          <div class="text-xs text-base-content/60 mb-1">Description</div>
+          <div class="whitespace-pre-wrap break-words">{{ selected.description || '—' }}</div>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <template v-if="selected.inherited_from">
+          <span class="text-xs text-base-content/60">
+            <i class="fa-solid fa-lock"></i>
+            Declared in the parent project: edit it there.
+          </span>
+        </template>
+        <template v-else>
+          <button class="btn btn-sm btn-primary" @click="editSelected">
+            <i class="fa-regular fa-pen-to-square"></i>
+            Set a new value
+          </button>
+          <button class="btn btn-sm btn-ghost text-error" @click="remove(selected)">
+            <i class="fa-regular fa-trash-can"></i>
+            Delete
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- Add / update: its own view, so the table keeps the full width -->
+    <div
+      v-if="view === 'form'"
+      class="border border-base-300 rounded-lg p-4 flex flex-col gap-4"
+    >
+      <div class="flex items-center justify-between gap-3">
+        <div class="font-semibold">Add or update a secret</div>
+        <button class="btn btn-xs btn-ghost" @click="backToList">
+          <i class="fa-solid fa-arrow-left"></i>
+          Back to list
+        </button>
+      </div>
 
       <div class="grid grid-cols-1 @md:grid-cols-2 gap-4">
         <div>

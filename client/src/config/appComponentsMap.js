@@ -38,6 +38,7 @@ export const APP_COMPONENTS_MAP = {
   'tasks': lazy(() => import('../components/kanban/board/KanbanBoardView.vue')),
   'calendar': lazy(() => import('../views/CalendarView.vue')),
   'harness': lazy(() => import('../views/HarnessView.vue')),
+  'ciso': lazy(() => import('../views/CisoView.vue')),
   'metrics': lazy(() => import('../components/metrics/MetricsViewer.vue')),
   'account': lazy(() => import('../components/security/AccountSettings.vue')),
   'file-explorer': lazy(() => import('../components/filebrowser/FileExplorerPanel.vue')),

@@ -57,6 +57,7 @@ from codx.junior.security.ciso.policy import (
 )
 from codx.junior.security.ciso.scanner import (
     RULE_COUNT,
+    ScanCancelled,
     collect_findings,
     findings_table,
     iter_project_files,
@@ -104,6 +105,7 @@ __all__ = [
     "summarize",
     # scanners
     "RULE_COUNT",
+    "ScanCancelled",
     "collect_findings",
     "findings_table",
     "iter_project_files",

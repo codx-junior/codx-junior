@@ -590,3 +590,57 @@ def test_apply_file_changes_conflict_leaves_file_untouched(project):
     with open(path, "r", encoding="utf-8") as file:
         assert file.read() == "alpha\nbeta\n"
     assert "Conflict" in response.llm_response
+
+
+def _linked_project_settings(tmp_path):
+    """Main project with one read-only and one read/write linked project."""
+    main = tmp_path / "main"
+    readonly = tmp_path / "readonly"
+    writable = tmp_path / "writable"
+    for root in (main, readonly, writable):
+        (root / ".codx").mkdir(parents=True)
+        (root / ".codx" / "project.json").write_text(
+            '{"project_name": "%s"}' % root.name, encoding="utf-8"
+        )
+
+    from codx.junior.settings import CODXJuniorSettings
+
+    settings = CODXJuniorSettings(
+        project_name="main",
+        abs_project_path=str(main),
+        codx_path=str(main / ".codx"),
+        read_project_dependencies="readonly",
+        read_write_project_dependencies="writable",
+    )
+    return settings, main, readonly, writable
+
+
+def test_write_to_a_read_only_linked_project_is_rejected(tmp_path):
+    settings, main, readonly, _writable = _linked_project_settings(tmp_path)
+
+    response = project_write_file("readonly/new.txt", "hello", settings=settings)
+
+    assert "write permission" in response.llm_response
+    assert not (readonly / "new.txt").exists()
+    # The old buggy fallback wrote a shadow copy under the current project.
+    assert not (main / "readonly" / "new.txt").exists()
+
+
+def test_write_to_a_read_write_linked_project_lands_in_that_project(tmp_path):
+    settings, main, _readonly, writable = _linked_project_settings(tmp_path)
+
+    response = project_write_file("writable/new.txt", "hello", settings=settings)
+
+    assert "error" not in response.llm_response.lower()
+    assert (writable / "new.txt").read_text(encoding="utf-8") == "hello"
+    assert not (main / "writable" / "new.txt").exists()
+
+
+def test_absolute_read_only_path_is_not_remapped_for_write(tmp_path):
+    settings, _main, readonly, _writable = _linked_project_settings(tmp_path)
+    target = str(readonly / "new.txt")
+
+    resolved = path_to_absolute_project_path(settings, target, write=True)
+
+    assert resolved == target
+    assert not is_path_within_project(settings, resolved, write=True)

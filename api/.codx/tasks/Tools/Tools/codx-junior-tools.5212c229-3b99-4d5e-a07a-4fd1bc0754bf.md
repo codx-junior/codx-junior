@@ -574,7 +574,7 @@ Make sure the tool_json schema is correct
 Fix the way we read tool_calls. As we read the repsonse in a stream way, response for tools is returned like that:
 ```
 
- provider='openai' api_url='http://172.20.0.6:4000/v1' api_key='sk-RHvmduMUJQohXgmuUB-SXA' model='openai/gpt-4o' context_length=0 temperature=0.6 vector_size=1536 chunk_size=8190 merge_messages=False model_type=<AIModelType.llm: 'llm'> url=''
+ provider='openai' api_url='http://172.20.0.6:4000/v1' api_key='[REDACTED]' model='openai/gpt-4o' context_length=0 temperature=0.6 vector_size=1536 chunk_size=8190 merge_messages=False model_type=<AIModelType.llm: 'llm'> url=''
         
           [2025-09-14 15:26:43] [INFO] [codx.junior.ai.ai_logger:13]: AI response choice: Choice(delta=ChoiceDelta(content=None, function_call=None, refusal=None, role='assistant', tool_calls=[ChoiceDeltaToolCall(index=0, id='call_UgQEUaX1CgPfMN1k8NuMBwTX', function=ChoiceDeltaToolCallFunction(arguments='', name='fetch_webpage'), type='function')]), finish_reason=None, index=0, logprobs=None)
         

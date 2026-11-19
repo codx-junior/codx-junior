@@ -460,26 +460,24 @@ def security_policy(action: str = "show", changes: Optional[Dict[str, Any]] = No
         raise Exception("Invalid project settings")
 
     stored: Dict[str, Any] = {}
-    configured = getattr(settings, "settings", None)
-    if isinstance(configured, dict) and isinstance(configured.get(ciso_policy.POLICY_SETTINGS_KEY), dict):
-        stored = dict(configured[ciso_policy.POLICY_SETTINGS_KEY])
+    direct = getattr(settings, "ciso_policy", None)
+    if isinstance(direct, dict):
+        stored = dict(direct)
+    else:
+        configured = getattr(settings, "settings", None)
+        if isinstance(configured, dict) and isinstance(
+            configured.get(ciso_policy.POLICY_SETTINGS_KEY), dict
+        ):
+            stored = dict(configured[ciso_policy.POLICY_SETTINGS_KEY])
 
-    if changes and action == "show":
-        merged = dict(stored)
-        merged.update(changes or {})
-        validated = ciso_policy.policy_from_dict(merged)
+    if changes and str(action or "show").lower() != "show":
+        # One write path with the CISO view: validate, persist to project.json
+        # and refresh the in-memory settings so the next gate sees it.
         try:
-            configured = getattr(settings, "settings", None)
-            if isinstance(configured, dict):
-                configured[ciso_policy.POLICY_SETTINGS_KEY] = validated.to_dict()
-                save = getattr(settings, "save", None)
-                if callable(save):
-                    save()
-            else:
-                return ToolResponse(
-                    user_response="⚠️ This project settings object does not expose a writable `settings` dict.",
-                    llm_response="security_policy: unsupported settings object",
-                )
+            from codx.junior.security.ciso import service as ciso_service
+
+            ciso_service.update_policy(settings, changes or {})
+            stored = dict(getattr(settings, "ciso_policy", None) or {})
         except Exception as ex:
             return ToolResponse(
                 user_response=f"⚠️ Could not persist the policy: {ex}",

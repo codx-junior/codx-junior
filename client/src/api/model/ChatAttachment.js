@@ -6,7 +6,7 @@
  */
 
 // Raster formats the vision APIs we talk to (OpenAI compatible providers and
-// Anthropic through LiteLLM) can decode. Anything else is re-encoded before the
+// Anthropic through an OpenAI-compatible gateway) can decode. Anything else is re-encoded before the
 // attachment is stored: the API rejects unknown types and providers replace an
 // undecodable image with an "[Unsupported Image]" placeholder, which looks like
 // "the AI cannot see my screenshot".

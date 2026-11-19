@@ -21,6 +21,7 @@ unless ``policy.fail_closed`` is set.
 Made with ❤️ by codx-junior
 """
 
+import json
 import logging
 import os
 from typing import Any, Dict, Iterable, List, Optional
@@ -61,6 +62,54 @@ POLICY_DISABLE_ENV = "CODX_JUNIOR_CISO_DISABLED"
 
 # Settings key (project or global settings JSON) holding the policy overrides.
 POLICY_SETTINGS_KEY = "ciso_policy"
+
+#: Cache of the ``ciso_policy`` block read from ``project.json``, keyed by path.
+#: The mtime/size pair invalidates it, so a policy edited from the CISO view (or
+#: by another worker) is picked up by the next gate without a restart and
+#: without parsing the whole settings file on every write.
+_POLICY_FILE_CACHE: Dict[str, Any] = {}
+
+
+def _policy_from_project_file(settings: Any) -> Optional[Dict[str, Any]]:
+    """Read the project policy from ``project.json`` (mtime-cached).
+
+    Args:
+        settings: Object exposing ``get_project_settings_file()``.
+
+    Returns:
+        The ``ciso_policy`` dict, or ``None`` when the file/field is absent or
+        unreadable. The cache is best effort: a malformed file falls back to the
+        in-memory settings instead of breaking every gate.
+    """
+    getter = getattr(settings, "get_project_settings_file", None)
+    if not callable(getter):
+        return None
+    try:
+        path = str(getter() or "")
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    cache_key = path
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _POLICY_FILE_CACHE.get(cache_key)
+    if cached and cached.get("signature") == signature:
+        return cached.get("data")
+    data: Optional[Dict[str, Any]] = None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        candidate = payload.get(POLICY_SETTINGS_KEY) if isinstance(payload, dict) else None
+        if isinstance(candidate, dict):
+            data = candidate
+    except (OSError, ValueError):
+        data = None
+    _POLICY_FILE_CACHE[cache_key] = {"signature": signature, "data": data}
+    return data
 
 
 def severity_rank(severity: Optional[SecuritySeverity]) -> int:
@@ -163,12 +212,14 @@ def policy_from_dict(data: Optional[Dict[str, Any]]) -> CisoPolicy:
 def resolve_policy(settings: Any = None) -> CisoPolicy:
     """Return the effective policy for *settings*.
 
-    Resolution order: environment kill-switch, project settings, global
-    settings, defaults. Any error degrades to the default policy.
+    Resolution order: environment kill-switch, the project ``ciso_policy``
+    block (read from ``project.json`` when the settings object exposes the
+    file, so every session sees a change), the in-memory settings, defaults.
+    Any error degrades to the default policy.
 
     Args:
         settings: Optional ``CODXJuniorSettings`` (or any object exposing
-            ``get_project_config``/``settings``).
+            ``get_project_settings_file``/``ciso_policy``/``settings``).
 
     Returns:
         CisoPolicy: Effective policy.
@@ -181,11 +232,23 @@ def resolve_policy(settings: Any = None) -> CisoPolicy:
     data: Optional[Dict[str, Any]] = None
     if settings is not None:
         try:
-            project_config = getattr(settings, "settings", None)
-            if isinstance(project_config, dict):
-                candidate = project_config.get(POLICY_SETTINGS_KEY)
-                if isinstance(candidate, dict):
-                    data = candidate
+            # ``CODXJuniorSettings.ciso_policy`` is the canonical store (it is a
+            # real field, so it survives project.json round-trips and appears in
+            # the settings API). The ``settings.settings`` dict is kept as a
+            # compatibility path for older call sites and test doubles.
+            # The file is authoritative across sessions/workers: an agent
+            # session created before a policy change must still see it.
+            data = _policy_from_project_file(settings)
+            if data is None:
+                direct = getattr(settings, "ciso_policy", None)
+                if isinstance(direct, dict):
+                    data = direct
+            if data is None:
+                project_config = getattr(settings, "settings", None)
+                if isinstance(project_config, dict):
+                    candidate = project_config.get(POLICY_SETTINGS_KEY)
+                    if isinstance(candidate, dict):
+                        data = candidate
         except Exception as ex:  # pragma: no cover - defensive
             logger.warning("CISO policy: could not read project settings: %s", ex)
 

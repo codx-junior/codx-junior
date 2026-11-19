@@ -25,7 +25,7 @@ import os
 import re
 import threading
 from collections import Counter, OrderedDict
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Set, Tuple
 
 from codx.junior.security.ciso.models import (
     CisoPolicy,
@@ -342,6 +342,175 @@ def looks_like_path(value: str) -> bool:
     return "." in last_segment
 
 
+# -----------------------------------------------------------------------------
+# Value shape and documentation context
+# -----------------------------------------------------------------------------
+# The assignment rule fires on the KEY: any `*password*` / `*token*` / `*secret*`
+# name qualifies, so the value must also look like a credential. Without this, a
+# constant (``ERROR_INVALID_PASSWORD = "Invalid password"``), a module path
+# (``codx.junior.security.ciso.gate``) or a code-fence opener is reported as a
+# hardcoded credential -- in every transcript that quotes it.
+#
+# KEPT NEGATIVE ON PURPOSE: these patterns reject shapes that cannot hold a
+# secret; they do not demand a "random looking" value. A short human password
+# (``password = "hunter2"``) is therefore still reported.
+_NON_CREDENTIAL_VALUE_PATTERNS: List[re.Pattern] = [
+    re.compile(r"\s"),                       # a sentence, not a value
+    re.compile(r"[()\[\]{}<>;,\"'`|\\]"),    # code punctuation / escapes
+    re.compile(r"\\u[0-9a-fA-F]{2,4}"),      # JSON escape (``\u2...``)
+    # Dotted lowercase names: modules, packages, domains. Case-sensitive on
+    # purpose: a JWT also has dot-separated segments but carries uppercase.
+    re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,}$"),
+    # A plain endpoint carries no credential; ``user:pass@`` is the URL rule's job.
+    re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^@\s]*$"),
+    re.compile(
+        r"^(?:true|false|null|none|nil|undefined|nan|\d+(?:\.\d+)*)$",
+        re.IGNORECASE,
+    ),
+]
+
+
+def looks_like_credential_value(value: str) -> bool:
+    """Return True when *value* can actually be a credential.
+
+    Args:
+        value: Right-hand side of an assignment whose key names a credential.
+
+    Returns:
+        bool: False for sentences, code fragments, module paths and bare URLs.
+    """
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+    if looks_like_path(candidate):
+        return False
+    return not any(
+        pattern.search(candidate) for pattern in _NON_CREDENTIAL_VALUE_PATTERNS
+    )
+
+
+# Vendor documentation gets pasted into task bodies, notes and transcripts: the
+# "Authorizing OAuth apps" page ships a sample access token, and every note that
+# quoted it was reported as a leaked credential.
+_PROSE_PATH_PATTERN = re.compile(r"(?i)\.(?:md|markdown|mdx|rst|adoc|txt|json)$")
+# Wording that marks the surrounding text as a documentation sample.
+_DOC_CONTEXT_PATTERN = re.compile(
+    r"(?i)(?:\bexample\b|\be\.g\.|\bfor instance\b|\bsample\b|\bplaceholder\b|"
+    r"\bdummy\b|\bredacted\b|\bdocumentation\b|\bauthoriz\w+|\byour [\w ]{0,24}app\b)"
+)
+# ``<access_token>gho_...`` ... ``</access_token>``: a value inside a markup sample.
+_XML_SAMPLE_OPEN_PATTERN = re.compile(r"<[A-Za-z_][\w\-]{0,40}>[^<>\n]{0,200}$")
+_XML_SAMPLE_CLOSE_PATTERN = re.compile(r"^[^<>\n]{0,200}</[A-Za-z_][\w\-]{0,40}>")
+_DOC_CONTEXT_WINDOW = 200
+
+
+#: Non-executable paths: a connection string written there is documentation or
+#: a transcript, never an endpoint the code dials.
+_NON_EXECUTABLE_EXTENSIONS = frozenset({
+    ".md", ".markdown", ".mdx", ".rst", ".txt", ".adoc", ".log",
+})
+#: Public search-only keys (Algolia / DocSearch) ship in the browser bundle by
+#: design. They are shape-identical to a provider key, so only the context can
+#: tell them apart: such a value is still reported, as ``low``.
+_PUBLIC_SEARCH_KEY_CONTEXT = re.compile(
+    r"(?i)(?:\balgolia\b|\bdocsearch\b|\bappid\b|\bindexname\b|\bsearch-only\b)"
+)
+
+
+def is_non_executable_path(path: Optional[str]) -> bool:
+    """Return True when *path* is runtime data or documentation.
+
+    Args:
+        path: File path.
+
+    Returns:
+        bool: True for a ``.codx`` control-plane path or a prose extension.
+    """
+    if not path:
+        return False
+    posix = path.replace("\\", "/").lower()
+    if ".codx" in posix.split("/"):
+        return True
+    return os.path.splitext(posix)[1] in _NON_EXECUTABLE_EXTENSIONS
+
+
+def is_compose_example_url(value: str, path: Optional[str]) -> bool:
+    """Return True for a connection string pointing at a compose service.
+
+    A host without a dot (``db``, ``postgres``, ``milvus``) is a service name
+    inside a stack definition, not an external endpoint. Such a value is
+    reported as ``low``, and only on a non-executable path: the same URL in a
+    ``.env`` or a Python module still blocks.
+
+    Args:
+        value: Matched connection string.
+        path: File the value was found in.
+
+    Returns:
+        bool: True for an internal compose-style connection string.
+    """
+    if not is_non_executable_path(path) or "@" not in (value or ""):
+        return False
+    host = (value or "").split("@", 1)[1].split("/")[0].split("?")[0]
+    hostname = host.split(":")[0].strip()
+    return bool(hostname) and "." not in hostname
+
+
+def is_public_search_key(payload: str, start: int, end: int) -> bool:
+    """Return True when a 32-char hex value is a public search-only key.
+
+    Args:
+        payload: Whole text.
+        start: Match start offset.
+        end: Match end offset.
+
+    Returns:
+        bool: True when the value sits next to a search-client configuration.
+    """
+    if not payload or end - start != 32:
+        return False
+    if not re.fullmatch(r"[0-9a-fA-F]{32}", payload[start:end]):
+        return False
+    window = payload[max(0, start - 300): min(len(payload), end + 300)]
+    return bool(_PUBLIC_SEARCH_KEY_CONTEXT.search(window))
+
+
+def in_documentation_context(
+    payload: str,
+    start: int,
+    end: int,
+    path: Optional[str] = None,
+) -> bool:
+    """Return True when a match sits inside pasted documentation.
+
+    Applies to the provider token rules only. The path must be prose (a task
+    body, a note, a transcript) -- a token in the source tree is never excused --
+    and the value must sit inside a markup sample or next to documentation
+    wording, so a real credential merely sitting near the word "example" is
+    still reported at full severity by the value-shape rules.
+
+    Args:
+        payload: Text being scanned.
+        start: Match start offset.
+        end: Match end offset.
+        path: File being scanned.
+
+    Returns:
+        bool: True when the value is a documentation example.
+    """
+    if not _PROSE_PATH_PATTERN.search((path or "").replace("\\", "/")):
+        return False
+    before = payload[max(0, start - _DOC_CONTEXT_WINDOW):start]
+    after = payload[end:end + _DOC_CONTEXT_WINDOW]
+    if _XML_SAMPLE_OPEN_PATTERN.search(before) and _XML_SAMPLE_CLOSE_PATTERN.match(after):
+        return True
+    # The marker is not always on the match line: a docs page prints the sample
+    # token first and explains "For example, Accept: application/json" right
+    # after it, so both sides of the match are inspected.
+    window = payload[max(0, start - _DOC_CONTEXT_WINDOW):end + _DOC_CONTEXT_WINDOW]
+    return bool(_DOC_CONTEXT_PATTERN.search(window))
+
+
 # A secret HANDLE (``{{secret:NAME}}`` / ``{{env:NAME}}``) names a secret, it is
 # not one. Without this the gate blocks every file that documents the resolver
 # syntax -- including the design doc and the tool schemas. See
@@ -358,6 +527,46 @@ _ENV_NAME_KEY_PATTERN = re.compile(r"(?i)_(?:env|env_var|envvar|var|variable|nam
 # to a ``*_NAME`` key is still reported.
 _ENV_NAME_VALUE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{2,127}$")
 
+# A key that ends in `_id` stores an identifier by contract: `chat_id`,
+# `request_id`, `tool_call_id` (`call_…`), `cancellation_token_id`. The key
+# contains the word "token" or "session", so the assignment rule reported every
+# one of them as a hardcoded credential.
+_IDENTIFIER_KEY_PATTERN = re.compile(r"(?i)(?:^|[_\-.])(?:ids?|uuid|hash|digest)$")
+
+# Key/value pair of an identifier field, used to locate the exact span of the
+# value so the entropy rule can skip it without re-parsing the payload.
+_JSON_IDENTIFIER_VALUE_PATTERN = re.compile(
+    r"(?P<key>[A-Za-z0-9_.\-]+)\s*[:=]\s*[\"'](?P<value>[^\"'\n]{8,})[\"']"
+)
+
+
+def names_an_identifier(key: str) -> bool:
+    """Return True when *key* is a field that stores an identifier.
+
+    Args:
+        key: Left-hand side identifier of an assignment, or a JSON field name.
+
+    Returns:
+        bool: True for `chat_id`, `tool_call_id`, `request_id`, `doc_uuid`.
+    """
+    return bool(_IDENTIFIER_KEY_PATTERN.search((key or "").strip()))
+
+
+def identifier_value_spans(payload: str) -> Set[Tuple[int, int]]:
+    """Return the spans of the values stored in identifier fields.
+
+    Args:
+        payload: Text being scanned.
+
+    Returns:
+        set: `(start, end)` offsets of each identifier value in *payload*.
+    """
+    return {
+        match.span("value")
+        for match in _JSON_IDENTIFIER_VALUE_PATTERN.finditer(payload)
+        if names_an_identifier(match.group("key"))
+    }
+
 
 def names_an_env_variable(key: str, value: str) -> bool:
     """Return True when the assignment stores an env variable NAME, not a secret.
@@ -371,6 +580,77 @@ def names_an_env_variable(key: str, value: str) -> bool:
     """
     return bool(_ENV_NAME_KEY_PATTERN.search(key or "") and
                 _ENV_NAME_VALUE_PATTERN.match((value or "").strip()))
+
+
+# Committed placeholder files: `.env.example`, `config.sample.yml`, `*.template`.
+# The secret-file rule itself recommends committing them, so reporting them is a
+# finding about following the rule.
+_EXAMPLE_FILE_PATTERN = re.compile(
+    r"(?i)(?:^|/)[^/]*(?:\.|_|-)(?:example|examples|sample|template|tpl|defaults?)"
+    r"(?:\.[^/]*)?$"
+)
+
+# Long, random-looking values that *name* something instead of authenticating:
+# UUIDs, digests, timestamps, versions and CONSTANT_CASE variable names. Inside
+# the tracked task transcripts of this project they produced ~1 500 MEDIUM
+# findings -- enough to hide a real token at position 1 501.
+_IDENTIFIER_SHAPE_PATTERNS: List[re.Pattern] = [
+    # UUID / run id.
+    re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"),
+    # Prefixed or bare digest: `sha256:…`, `md5=…`, 40/64 hex characters.
+    re.compile(r"^(?:sha\d{0,3}|md5|blake2[bs]?|xxh\d*)[:=\-_]?[0-9a-fA-F]{16,}$", re.IGNORECASE),
+    re.compile(r"^[0-9a-fA-F]{20,}$"),
+    # Timestamp / date / version.
+    re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T_ ]?\d{2}[-:. ]\d{2}(?:[-:. ]\d{2})?)?(?:Z|[+-]\d{2}:?\d{2})?$"),
+    re.compile(r"^v?\d+(?:\.\d+){1,}[0-9A-Za-z.\-+]*$"),
+    # CONSTANT_CASE variable name (`CODX_JUNIOR_CONFIG_FOLDER`).
+    re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){2,}$"),
+    # Slug built from words and numeric groups (`shift-2026-11-18-14-35`).
+    re.compile(r"^[A-Za-z0-9_.\-]*[_\-]\d{4}(?:[_\-]\d{2}){2}[A-Za-z0-9_.\-]*$"),
+    # Platform object id: `<prefix>_<random>`, such as `call_00_DXOo093mJKE4i8…`
+    # or `msg_0A1B2C3D`. They are the bulk of `harness/audit.jsonl` (827 lines,
+    # ~2 per line) and each one was a MEDIUM finding. The prefix list is closed
+    # on purpose: an unknown `xxx_<random>` value may still be a credential, and
+    # a provider token keeps its own known-shape rule.
+    re.compile(
+        r"^(?:call|msg|req|res|resp|run|chat|sess|thread|tool|evt|event|obj|node|"
+        r"edge|turn|trace|span|job|task|batch|item|file|art|build|deploy|img|"
+        r"doc|blk|usr|org|proj|cmpl|fn)_[A-Za-z0-9_\-]{6,}$",
+        re.IGNORECASE,
+    ),
+]
+
+
+def is_example_file(path: Optional[str]) -> bool:
+    """Return True when *path* is a committed placeholder file.
+
+    Args:
+        path: File path.
+
+    Returns:
+        bool: True for `.env.example`, `config.sample.yml`, `values.template`.
+    """
+    return bool(_EXAMPLE_FILE_PATTERN.search((path or "").replace("\\", "/")))
+
+
+def looks_like_identifier(value: str) -> bool:
+    """Return True when *value* is a machine identifier, not a credential.
+
+    UUIDs, digests, timestamps, versions and CONSTANT_CASE names are long and
+    random enough to pass the entropy rule while authenticating nothing.
+    Assignment rules are unaffected: a real token assigned to a password key is
+    still reported, because the shape check is applied to the entropy rule only.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        bool: True when the value must not be reported as an unknown token.
+    """
+    candidate = (value or "").strip()
+    if not candidate:
+        return True
+    return any(pattern.match(candidate) for pattern in _IDENTIFIER_SHAPE_PATTERNS)
 
 
 def is_secret_placeholder(value: str) -> bool:
@@ -622,6 +902,7 @@ def scan_text(
             confidence=0.95,
         ))
 
+    token_spans: List[Tuple[int, int]] = []
     for rule_id, title, severity, pattern in _TOKEN_PATTERNS:
         for match in pattern.finditer(payload):
             # Same guard as `redact_text` and the rules below: a value the
@@ -630,10 +911,22 @@ def scan_text(
             # cleanup never converges.
             if is_secret_placeholder(match.group(0)):
                 continue
+            documented = in_documentation_context(
+                payload, match.start(), match.end(), path
+            )
+            token_spans.append(match.span())
             _add(
                 rule_id=rule_id,
                 title=title,
-                severity=severity,
+                # A token quoted from a provider's documentation page
+                # (``<access_token>gho_...``) is a sample. It is still reported,
+                # but as low: quoting the docs must not turn the gate red, and
+                # silence would hide a real credential pasted the same way.
+                severity=(
+                SecuritySeverity.LOW
+                if documented or is_compose_example_url(match.group(0), path)
+                else severity
+            ),
                 category=SecurityCategory.SECRET,
                 start=match.start(),
                 end=match.end(),
@@ -649,13 +942,33 @@ def scan_text(
         if is_secret_placeholder(value):
             continue
         key = match.group("key")
+        if names_an_identifier(key):
+            # `session_id`, `cancellation_token_id`: the key carries a secret
+            # word but the value identifies a request.
+            continue
         if names_an_env_variable(key, value):
             # The right-hand side names WHERE a value is looked up; the
             # credential itself lives in the environment.
             continue
+        if not looks_like_credential_value(value):
+            # The key names a credential but the value is a sentence, a code
+            # fragment or a module path: ``ERROR_INVALID_PASSWORD =
+            # "Invalid password"`` is not a leak.
+            continue
+        if any(
+            start <= match.start("value") and match.end("value") <= end
+            for start, end in token_spans
+        ):
+            # Already reported by a provider rule: one value, one finding.
+            continue
         severity = SecuritySeverity.HIGH
         if (match.group("quote") == '"' or match.group("quote") == "'") and len(value) >= 16:
             severity = SecuritySeverity.CRITICAL
+        if is_public_search_key(payload, match.start("value"), match.end("value")):
+            # A DocSearch/Algolia search-only key is published in the browser
+            # bundle by design: same shape as a provider key, so the value is
+            # still reported, but never blocks. A real key has no such context.
+            severity = SecuritySeverity.LOW
         _add(
             rule_id="secret.hardcoded-credential",
             title=f"Hardcoded credential in '{key}'",
@@ -689,11 +1002,16 @@ def scan_text(
         )
 
     if policy.entropy_threshold > 0:
+        identifier_spans = identifier_value_spans(payload)
         for match in _ENTROPY_CANDIDATE_PATTERN.finditer(payload):
             token = match.group(0)
             if len(token) < policy.min_secret_length:
                 continue
-            if is_secret_placeholder(token):
+            if match.span() in identifier_spans:
+                # The value of a `*_id` field addresses an object; it does not
+                # authenticate anything.
+                continue
+            if is_secret_placeholder(token) or looks_like_identifier(token):
                 continue
             # A long run of the same character class is usually an identifier,
             # a hash of a non-secret or an already redacted value.

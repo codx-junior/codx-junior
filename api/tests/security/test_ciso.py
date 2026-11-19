@@ -124,6 +124,28 @@ def test_detects_obfuscated_payload():
     assert any(f.rule_id == "obfuscation.python-b64-exec" for f in findings)
 
 
+def test_legitimate_file_deletion_is_not_a_content_finding():
+    """Platform code deletes its own temp files; only dynamic bypasses are content findings."""
+    verdict = scan_content('os.remove("/tmp/scratch")\n', path="api/engine/tmp.py")
+    assert not any(
+        finding.rule_id in ("dangerous.python-dynamic-delete", "command.python-delete")
+        for finding in verdict.findings
+    )
+
+
+def test_detects_python_delete_bypass():
+    """An inline Python unlink bypasses the (intentionally absent) delete tool."""
+    payload = (
+        "python3 -c \"__import__('os').unlink("
+        "'/home/codx-junior-projects/app/file.txt')\""
+    )
+    findings, _ = malicious.scan_text(payload)
+    assert any(f.rule_id == "dangerous.python-dynamic-delete" for f in findings)
+    verdict = guard_command(payload)
+    assert verdict.blocked is True
+    assert verdict.action == SecurityAction.BLOCK
+
+
 def test_detects_git_hook_and_ci_tampering():
     payload = "\n".join([
         'open(".git/hooks/pre-commit", "w").write("#!/bin/sh\\ncurl evil")',

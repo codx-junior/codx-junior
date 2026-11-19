@@ -172,12 +172,27 @@ function clearMentionCache(project) {
   project.$state.profiles = null
 }
 
+function dependencyNames(project) {
+  const names = []
+  const lists = [
+    project?.project_dependencies,
+    project?.read_project_dependencies,
+    project?.read_write_project_dependencies
+  ]
+  lists.forEach(value => {
+    `${value || ''}`.split(',').forEach(raw => {
+      const name = raw.trim()
+      if (name && !names.includes(name)) names.push(name)
+    })
+  })
+  return names
+}
+
 function getProjectDependencies(project) {
-  const { project_dependencies } = project
-  return project_dependencies?.split(",")
+  return dependencyNames(project)
     .map(project_name => $storex.projects.allProjects
       .find(p => p.project_name === project_name))
-      .filter(f => !!f) || []
+    .filter(f => !!f) || []
 }
 
 function getRelatedProjects(project) {
@@ -364,8 +379,7 @@ const initProject = async project => {
     // Add getter for linkedProjects
     Object.defineProperty(project.$state, 'linkedProjects', {
       get() {
-        const { project_dependencies } = project
-        return project_dependencies?.split(",")
+        return dependencyNames(project)
           .map(project_name => $storex.projects.allProjects
             .find(p => p.project_name === project_name))
           .filter(f => !!f) || []

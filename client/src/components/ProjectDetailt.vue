@@ -236,21 +236,26 @@ export default {
       return !!this.searchQuery.trim()
     },
 
-    // When searching, filter ALL projects. Projects whose NAME matches come
-    // first (they are what the user is looking for), path-only matches after.
+    // When searching, filter ALL projects and rank them by how close the NAME is
+    // to the query: exact name first, then name prefix, then name substring and
+    // finally path/tag-only matches. The store order is kept inside every group.
     searchResults() {
-      const query = this.searchQuery.toLowerCase()
-      const nameMatches = []
-      const otherMatches = []
+      const query = this.searchQuery.trim().toLowerCase()
+      // 0 = exact name, 1 = name starts with the query, 2 = name contains it,
+      // 3 = only the path (or a tag) matched.
+      const rank = (project) => {
+        const name = (project.project_name || '').toLowerCase()
+        if (name === query) return 0
+        if (name.startsWith(query)) return 1
+        if (name.includes(query)) return 2
+        return 3
+      }
+      const groups = [[], [], [], []]
       this.allProjects.forEach(project => {
         if (!this.matchesSearch(project)) return
-        if ((project.project_name || '').toLowerCase().includes(query)) {
-          nameMatches.push(project)
-        } else {
-          otherMatches.push(project)
-        }
+        groups[rank(project)].push(project)
       })
-      return nameMatches.concat(otherMatches)
+      return [].concat(...groups)
     },
 
     // Ordered sections shown top down: Parent -> Children -> More (or Search Results)

@@ -9,7 +9,7 @@ Made with ❤️ by codx-junior
 
 import os
 import logging
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from pathlib import Path
 
 from .project_tools import CODX_DIRNAME, is_codx_path, list_project_files
@@ -45,7 +45,7 @@ PROJECT_STRUCTURE_TOOL_JSON = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional folder path to limit results to a specific directory. Must be within the project's path or codx path."
+                    "description": "Optional folder path to limit results to a specific directory. Must be within the project's path, codx path or a linked project ('<project>/folder')."
                 }
             },
             "required": []
@@ -63,7 +63,7 @@ READ_FOLDER_TOOL_JSON = {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Folder path to read. Must be within the project's path or codx path."
+                    "description": "Folder path to read. Must be within the project's path, codx path or a linked project ('<project>/folder')."
                 },
                 "include_details": {
                     "type": "boolean",
@@ -107,7 +107,7 @@ def project_structure(
         max_depth: Maximum folder depth to traverse (None = no limit). Folders at
             the limit are shown collapsed with their file and folder counts.
         include_file_sizes: If True, includes file sizes in bytes for each file.
-        path: Optional folder path to limit results to. Must be within project or codx path.
+        path: Optional folder path to limit results to. Must be within the project, the codx path or an accessible linked project.
         settings: CODXJuniorSettings instance (passed by SmolAgent).
 
     Returns:
@@ -185,7 +185,7 @@ def read_folder(
     to explore specific areas of the project structure.
 
     Args:
-        path: Folder path to read. Must be within project or codx path.
+        path: Folder path to read. Must be within the project, the codx path or an accessible linked project.
         include_details: If True, includes additional metadata like file counts per folder.
         include_file_sizes: If True, includes file sizes in bytes for each file.
         settings: CODXJuniorSettings instance (passed by SmolAgent).
@@ -396,6 +396,53 @@ def _related_project_settings(
     ]
 
 
+def _resolve_linked_path(
+    settings: "CODXJuniorSettings", path: str
+) -> Optional[Tuple["CODXJuniorSettings", str]]:
+    """
+    Resolve a tree path that addresses a linked project.
+
+    Two forms are supported: ``"<project-name>/folder"`` (the same form the
+    file tools return for linked files) and a bare ``"<project-name>"``. The
+    bare form only matches a linked project that lives *outside* this tree: a
+    nested project is already part of the current tree and must stay there.
+
+    Returns ``(project, remainder)`` or ``None`` when the path does not address
+    an accessible linked project.
+    """
+    raw = str(path or "").strip()
+    if not raw or os.path.isabs(raw):
+        return None
+    resolver = getattr(settings, "resolve_linked_project_prefix", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(raw)
+        except Exception as ex:  # pragma: no cover - never break a tree read
+            logger.debug("Could not resolve linked project prefix: %s", ex)
+            resolved = None
+        if resolved:
+            return resolved
+
+    head, separator, tail = raw.replace("\\", "/").partition("/")
+    head = head.strip()
+    if not head or head in (".", ".."):
+        return None
+    wanted = head.lower()
+    project_root = os.path.abspath(settings.abs_project_path)
+    for project in _related_project_settings(settings):
+        root = os.path.abspath(project.abs_project_path)
+        # A bare child name is already part of this tree: keep it local.
+        if not separator and _is_within(project_root, root):
+            continue
+        names = {
+            str(getattr(project, "project_name", "") or "").lower(),
+            os.path.basename(root).lower(),
+        }
+        if wanted in names:
+            return project, tail
+    return None
+
+
 def _build_structure(
     settings: "CODXJuniorSettings",
     include_details: bool = False,
@@ -451,6 +498,20 @@ def _build_structure(
         # having files of its own.
         target_path = None
         if path:
+            local_candidate = os.path.normpath(
+                os.path.join(project_root, str(path))
+            )
+            if not os.path.exists(local_candidate):
+                linked = _resolve_linked_path(settings, str(path))
+                if linked is not None:
+                    linked_project, remainder = linked
+                    return _build_structure(
+                        settings=linked_project,
+                        include_details=include_details,
+                        max_depth=max_depth,
+                        include_file_sizes=include_file_sizes,
+                        path=remainder or None,
+                    )
             codx_root = getattr(settings, "abs_codx_path", None)
             related_projects = _related_project_settings(settings)
             related_roots = [

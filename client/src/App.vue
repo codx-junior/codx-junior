@@ -20,7 +20,7 @@ const isCompanyMode = computed(() => $storex.users.isCompanyMode)
 
 // Solopreneur mode is a product shell of its own: it owns the full viewport on
 // every device, so neither the desktop sidebar nor the mobile shell wraps it.
-const isFullScreenRoute = computed(() => route.name === 'solopreneur')
+const isFullScreenRoute = computed(() => route.name === 'solopreneur' || ['company-home', 'company'].includes(route.name))
 
 // ── Company mode entry ──────────────────────────────────────────────────────
 // Role-driven landing: a manager/company admin (or a member of any company)

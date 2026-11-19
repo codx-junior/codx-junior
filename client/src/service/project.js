@@ -45,10 +45,17 @@ export class ProjectService extends Service {
 
   findProjectDependencies(project) {
     const  { allProjects } = this.$storex.api
-    const { project_dependencies } = project
-    return `${project_dependencies}`.split(",").map(dep => 
-      allProjects.find(({ project_name }) => project_name === dep.trim()))
-                          .filter(p => !!p)
+    const names = [
+      project?.project_dependencies,
+      project?.read_project_dependencies,
+      project?.read_write_project_dependencies
+    ]
+      .flatMap(value => `${value || ''}`.split(','))
+      .map(name => name.trim())
+      .filter((name, index, list) => name && list.indexOf(name) === index)
+    return names
+      .map(dep => allProjects.find(({ project_name }) => project_name === dep))
+      .filter(p => !!p)
   }
 
   async searchProjectFiles(project, searchQuery, limit = 20) {

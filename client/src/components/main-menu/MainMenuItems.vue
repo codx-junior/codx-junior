@@ -91,6 +91,9 @@ function openCompanySettings() {
   <MenubarItem @click="$ui.openGitView()">
     <i class="fa-solid fa-code-branch"></i> Git
   </MenubarItem>
+  <MenubarItem @click="$ui.openApp('ciso')">
+    <i class="fa-solid fa-shield-halved"></i> CISO
+  </MenubarItem>
   <MenubarItem @click="$ui.setActiveTab('knowledge')"
     v-if="$users.isProjectAdmin">
     <i class="fa-solid fa-magnifying-glass"></i>

@@ -38,20 +38,6 @@ const CanvaViewer = asyncChunk(() => import('./canva/CanvaViewer.vue'))
     @edit-save="onEditSave"
   >
     <div class="rounded-md py-2">
-      <!-- Edit button (revealed on hover, always reachable on touch) -->
-      <div
-        class="absolute -left-10 top-0 opacity-0 hover:opacity-100 group-hover/editable-block:opacity-100 focus-within:opacity-100 max-md:opacity-100 transition-opacity"
-        v-if="editable && !isEditing"
-      >
-        <button
-          class="btn btn-xs btn-ghost tooltip tooltip-right"
-          data-tip="Edit block source"
-          @click="startEdit"
-        >
-          <i class="fa-solid fa-pen-to-square"></i>
-        </button>
-      </div>
-
       <div class="flex gap-2 w-full justify-end rounded-t" ref="toolbar" v-if="(showMermaid || showHTMLPreview || showCanva) && !isEditing">
         <button class="btn btn-xs" @click="showMermaidSource = !showMermaidSource" v-if="showMermaid">
           <span v-if="showMermaidSource">View diagram</span>

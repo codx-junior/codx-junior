@@ -113,6 +113,25 @@ full policy report for a specific finding.
 Exit code `1` means there is something at or above the floor, so the audit can
 fail a nightly job.
 
+## CISO view (API + UI)
+
+The engine is exposed by ``api/codx/junior/api/ciso.py`` and
+``codx/junior/security/ciso/service.py``; the screen is the **CISO** app in the
+client (``client/src/views/CisoView.vue``). It offers:
+
+* the posture of the project (score, severity mix, trend),
+* background scans (whole project, working tree + untracked, staged, paths),
+* filtered findings with redacted evidence,
+* the detector catalogue (built from these tables, so it cannot drift),
+* the decision ladder and scanner options, persisted as ``ciso_policy``,
+* the ``ciso_verdict`` gate journal.
+
+Scan records are generated data: they live in ``.codx/ciso`` and are ignored by
+git. The service never returns a secret value; the secrets card only reports
+declared names and availability.
+
+See ``docs/features/ciso.md`` for the user documentation.
+
 ## Verify
 
 ```bash
@@ -131,7 +150,7 @@ PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python -m pytest -q \
 | Module | Answers |
 |---|---|
 | `secrets.py` | known provider token shapes, credential assignments, URL credentials, entropy, placeholder filter |
-| `malicious.py` | malicious / obfuscated / destructive / supply-chain / exfiltration code, shell commands |
+| `malicious.py` | malicious / obfuscated / destructive / supply-chain / exfiltration code, shell commands. `command.python-delete` / `dangerous.python-dynamic-delete` catch inline Python deletion (`__import__("os").unlink(...)`) used to bypass the absent delete tool. |
 | `injection.py` | stored prompt injection (override, coercion, hidden HTML/invisible chars) |
 | `policy.py` | the deterministic ladder `ALLOW → WARN → REQUIRE_APPROVAL → REDACT → BLOCK` |
 | `scanner.py` | `scan_content`, `scan_file`, `scan_diff`, `scan_project` (all size-bounded) |

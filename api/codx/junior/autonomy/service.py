@@ -1113,14 +1113,34 @@ class ActorService:
         the first model call when the background worker ran the shift.
         """
         from codx.junior.chat.chat_engine import ChatEngine
+        from codx.junior.task_workspace import TaskWorkspaceManager
 
+        # Autonomous work is isolated per task tree: the turn runs with a clone
+        # of the settings whose project root is a dedicated git worktree, and
+        # the result is committed on the task branch at the end. The main
+        # checkout never accumulates another agent's changes.
+        manager = TaskWorkspaceManager(self.settings)
+        workspace = manager.ensure(chat)
+        run_settings = (
+            manager.settings_for(workspace, self.settings) if workspace else self.settings
+        )
         engine = ChatEngine(
-            settings=self.settings,
+            settings=run_settings,
             event_manager=self._event_manager(),
             user=self.user,
             tool_allowlist=tool_allowlist,
         )
-        await engine.chat_with_project(chat=chat, system=system)
+        try:
+            await engine.chat_with_project(chat=chat, system=system)
+        finally:
+            if workspace is not None:
+                result = manager.commit(chat)
+                if result.get("error"):
+                    logger.warning(
+                        "Autonomy: could not commit task workspace %s: %s",
+                        workspace.branch,
+                        result["error"],
+                    )
         return chat
 
     # -- shift card -------------------------------------------------------

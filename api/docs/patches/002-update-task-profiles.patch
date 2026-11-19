@@ -1,0 +1,61 @@
+--- a/codx/junior/tools/project_manager_tools.py
++++ b/codx/junior/tools/project_manager_tools.py
+@@ -2542,5 +2542,6 @@
+     assignees: Any,
+     tags: Any,
++    profiles: Any = None,
+     schedule: Optional[str] = None,
+     schedule_context: Optional[str] = None,
+ ) -> ToolResponse:
+@@ -2615,20 +2616,23 @@
+     metadata: Dict[str, Any] = {}
+     if status is not None:
+         metadata["status"] = status
+     if board is not None:
+         metadata["board"] = board.strip()
+     if column is not None:
+         metadata["column"] = column.strip()
+     if priority is not None:
+         metadata["priority"] = priority
+     if due_date is not None:
+         metadata["due_date"] = due_date
+     if wake_at is not None:
+         # An empty value clears the schedule; the parse never raises.
+         metadata["wake_at"] = to_wake_at(wake_at)
+     if progress is not None:
+         metadata["progress"] = max(0, min(100, int(progress)))
+     if assignees is not None:
+         metadata["assignees"] = _to_list(assignees)
+     if tags is not None:
+         metadata["tags"] = _to_list(tags)
++    if profiles is not None:
++        # An empty list clears the ownership; names are labels, ids stay intact.
++        metadata["profiles"] = _to_profiles(profiles)
+@@ -2645,5 +2649,6 @@
+     if not metadata:
+         raise ValueError(
+             "Nothing to update: provide at least one of status, board, column, "
+-            "sprints, sprint, priority, due_date, wake_at, progress, assignees or tags"
++            "sprints, sprint, priority, due_date, wake_at, progress, assignees, "
++            "profiles or tags"
+         )
+@@ -3216,10 +3221,11 @@
+                 status=status,
+                 priority=priority,
+                 due_date=due_date,
+                 wake_at=wake_at,
+                 progress=progress,
+                 assignees=assignees,
+                 tags=tags,
++                profiles=profiles,
+                 schedule=schedule,
+                 schedule_context=schedule_context,
+             )
+@@ -3486,5 +3492,6 @@
+                     "description": (
+                         "Profiles/roles for the task or the comment. Taken ONLY from "
+                         "this argument: profiles are never inherited from the "
+-                        "parent/current chat."
++                        "parent/current chat. On update_task it REPLACES the list; "
++                        "an empty array clears it."
+                     )

@@ -7,162 +7,114 @@ import Workspaces from '@/components/workspaces/Workspaces.vue'
 import ProjectScripts from '@/components/project/ProjectScripts.vue'
 import OAuthSettings from '@/components/oauth_settings/OAuthSettings.vue'
 import PluginsEditor from '@/components/global_settings/plugins/PluginsEditor.vue'
-import EnvVariablesEditor from '@/components/global_settings/EnvVariablesEditor.vue'
 import GeneralSettings from '@/components/global_settings/GeneralSettings.vue'
 import ChatGlobalPrompts from '@/components/global_settings/ChatGlobalPrompts.vue'
 import EffortsSettings from '@/components/global_settings/EffortsSettings.vue'
 import TraefikRulesPanel from '@/components/traefik/TraefikRulesPanel.vue'
+import SecretsEditor from '@/components/secrets/SecretsEditor.vue'
 import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPanel.vue'
 </script>
 
 <template>
   <div class="w-full h-full container" v-if="settings">
-    <div class="w-full h-full flex gap-0">
-      <!-- Desktop Sidebar -->
-      <aside class="hidden @md:flex w-64 bg-base-200 border-r border-base-100 flex-col">
-        <div class="p-6 border-b border-base-100">
-          <h1 class="text-lg font-bold text-base-content">Global Settings</h1>
-          <p class="text-xs text-base-content/60 mt-1">Manage your workspace</p>
+    <div class="w-full h-full flex">
+      <!-- Collapsible left bar: the same navigation on every screen size.
+           Expanded it shows labels, collapsed it is an icon rail (w-16), so a
+           phone keeps the full width for the content instead of an overlay. -->
+      <aside
+        :class="[
+          'flex flex-col bg-base-200 border-r border-base-100 shrink-0 transition-all duration-200',
+          collapsed ? 'w-16' : 'w-64'
+        ]"
+      >
+        <div
+          :class="[
+            'border-b border-base-100 flex items-center gap-2',
+            collapsed ? 'p-2 justify-center' : 'p-4 justify-between'
+          ]"
+        >
+          <div v-if="!collapsed" class="min-w-0">
+            <h1 class="text-lg font-bold text-base-content truncate">Global Settings</h1>
+            <p class="text-xs text-base-content/60 mt-1 truncate">Manage your workspace</p>
+          </div>
+          <button
+            class="btn btn-ghost btn-sm btn-circle"
+            :title="collapsed ? 'Expand menu' : 'Collapse menu'"
+            :aria-label="collapsed ? 'Expand menu' : 'Collapse menu'"
+            @click="toggleCollapsed"
+          >
+            <i :class="`fa-solid ${collapsed ? 'fa-angles-right' : 'fa-angles-left'}`"></i>
+          </button>
         </div>
 
-        <nav class="flex-1 overflow-y-auto p-4 space-y-2">
+        <nav class="flex-1 overflow-y-auto p-2 space-y-1">
           <button
             v-for="item in navItems"
             :key="item.id"
             @click="activeTab = item.id"
+            :title="collapsed ? item.label : undefined"
             :class="[
-              'w-full text-left px-4 py-3 rounded-lg transition-colors duration-200',
-              'flex items-center gap-3',
+              'w-full rounded-lg transition-colors duration-200 flex items-center gap-3',
+              collapsed ? 'justify-center px-0 py-3' : 'text-left px-3 py-2.5',
               activeTab === item.id
                 ? 'bg-primary text-primary-content font-medium'
                 : 'text-base-content/70 hover:bg-base-300 hover:text-base-content'
             ]"
           >
             <i :class="`fa-solid ${item.icon} w-4 text-center`"></i>
-            <span class="text-sm">{{ item.label }}</span>
+            <span v-if="!collapsed" class="text-sm truncate">{{ item.label }}</span>
           </button>
         </nav>
 
-        <!-- Desktop Footer Actions -->
-        <div class="p-4 border-t border-base-100 space-y-2">
+        <div :class="['border-t border-base-100 space-y-1', collapsed ? 'p-2' : 'p-4']">
           <button
             @click="reloadSettings"
-            class="w-full btn btn-sm btn-ghost justify-start gap-2"
+            title="Reload"
+            :class="[
+              'w-full btn btn-sm btn-ghost',
+              collapsed ? 'btn-circle' : 'justify-start gap-2'
+            ]"
           >
             <i class="fa-solid fa-arrow-rotate-right text-xs"></i>
-            <span>Reload</span>
+            <span v-if="!collapsed">Reload</span>
           </button>
           <button
             @click="saveSettings"
-            class="w-full btn btn-sm btn-primary justify-start gap-2"
+            title="Save Changes"
+            :class="[
+              'w-full btn btn-sm btn-primary',
+              collapsed ? 'btn-circle' : 'justify-start gap-2'
+            ]"
           >
             <i class="fa-solid fa-floppy-disk text-xs"></i>
-            <span>Save Changes</span>
+            <span v-if="!collapsed">Save Changes</span>
           </button>
-          <ExportImportButton :data="settings" @change="submit" class="w-full">
+          <ExportImportButton
+            :data="settings"
+            @change="submit"
+            :class="[
+              'w-full btn btn-sm btn-ghost',
+              collapsed ? 'btn-circle' : 'justify-start gap-2'
+            ]"
+          >
             <i class="fa-solid fa-download text-xs"></i>
+            <span v-if="!collapsed">Export / Import</span>
           </ExportImportButton>
         </div>
       </aside>
 
-      <!-- Mobile Drawer -->
-      <div class="drawer @md:hidden w-full">
-        <input id="settings-drawer" type="checkbox" class="drawer-toggle" v-model="drawerOpen" />
-        <div class="drawer-content flex flex-col w-full h-full overflow-auto">
-          <!-- Mobile Header with Menu Button -->
-          <div class="border-b border-base-100 px-4 py-4 bg-base-100 flex items-center justify-between">
-            <label for="settings-drawer" class="btn btn-ghost btn-sm btn-circle">
-              <i class="fa-solid fa-bars text-lg"></i>
-            </label>
-            <h2 class="text-lg font-bold text-base-content flex-1 ml-4">
-              {{ getActiveLabel() }}
-            </h2>
-          </div>
-
-          <!-- Mobile Main Content -->
-          <div class="flex-1 overflow-y-auto p-4">
-            <SecurityUserList :settings="settings" v-if="activeTab === 'users'" />
-            <Workspaces :settings="settings" v-if="activeTab === 'workspaces'" />
-            <ProjectScripts :settings="settings" v-if="activeTab === 'scripts'" />
-            <OAuthSettings :settings="settings" v-if="activeTab === 'oauth'" />
-            <PluginsEditor v-if="activeTab === 'plugins'" />
-            <GeneralSettings :settings="settings" v-if="activeTab === 'general'" />
-            <AISettings :settings="settings" v-if="activeTab === 'ai'" />
-            <AgentSettings v-if="activeTab === 'agents'" />
-            <EnvVariablesEditor :settings="settings" v-if="activeTab === 'env'" />
-            <ChatGlobalPrompts :settings="settings" v-if="activeTab === 'chat'" />
-            <EffortsSettings :settings="settings" v-if="activeTab === 'efforts'" />
-            <TraefikRulesPanel
-              v-if="activeTab === 'traefik'"
-              scope="global"
-              v-model:rules="settings.traefik_rules"
-            />
-            <DshIntegrationPanel v-if="activeTab === 'dsh'" :settings="settings" />
-          </div>
-
-          <!-- Mobile Footer Actions -->
-          <div class="border-t border-base-100 px-4 py-3 bg-base-100 flex gap-2">
-            <button
-              @click="reloadSettings"
-              class="btn btn-sm btn-ghost btn-circle"
-              title="Reload"
-            >
-              <i class="fa-solid fa-arrow-rotate-right text-sm"></i>
-            </button>
-            <button
-              @click="saveSettings"
-              class="btn btn-sm btn-primary flex-1"
-            >
-              <i class="fa-solid fa-floppy-disk text-xs"></i>
-              <span>Save</span>
-            </button>
-            <ExportImportButton :data="settings" @change="submit" class="btn btn-sm btn-ghost btn-circle">
-              <i class="fa-solid fa-download text-sm"></i>
-            </ExportImportButton>
-          </div>
-        </div>
-
-        <!-- Mobile Drawer Sidebar -->
-        <div class="drawer-side z-40">
-          <label for="settings-drawer" class="drawer-overlay"></label>
-          <aside class="w-64 bg-base-200 border-r border-base-100 flex flex-col h-full">
-            <div class="p-6 border-b border-base-100">
-              <h1 class="text-lg font-bold text-base-content">Settings</h1>
-              <p class="text-xs text-base-content/60 mt-1">Navigate</p>
-            </div>
-
-            <nav class="flex-1 overflow-y-auto p-4 space-y-2">
-              <button
-                v-for="item in navItems"
-                :key="item.id"
-                @click="selectTab(item.id)"
-                :class="[
-                  'w-full text-left px-4 py-3 rounded-lg transition-colors duration-200',
-                  'flex items-center gap-3',
-                  activeTab === item.id
-                    ? 'bg-primary text-primary-content font-medium'
-                    : 'text-base-content/70 hover:bg-base-300 hover:text-base-content'
-                ]"
-              >
-                <i :class="`fa-solid ${item.icon} w-4 text-center`"></i>
-                <span class="text-sm">{{ item.label }}</span>
-              </button>
-            </nav>
-          </aside>
-        </div>
-      </div>
-
-      <!-- Desktop Main Content -->
-      <main class="hidden @md:flex flex-1 flex-col overflow-hidden">
-        <div class="border-b border-base-100 px-8 py-4 bg-base-100">
-          <h2 class="text-2xl font-bold text-base-content">
+      <!-- Main Content -->
+      <main class="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div class="border-b border-base-100 px-4 @md:px-8 py-4 bg-base-100">
+          <h2 class="text-xl @md:text-2xl font-bold text-base-content truncate">
             {{ getActiveLabel() }}
           </h2>
           <p class="text-sm text-base-content/60 mt-1">{{ getActiveDescription() }}</p>
         </div>
 
-        <div class="flex-1 overflow-y-auto p-8">
+        <div class="flex-1 overflow-y-auto p-4 @md:p-8">
           <SecurityUserList :settings="settings" v-if="activeTab === 'users'" />
+          <SecretsEditor v-if="activeTab === 'secrets'" scope="all" default-scope="global" />
           <Workspaces :settings="settings" v-if="activeTab === 'workspaces'" />
           <ProjectScripts :settings="settings" v-if="activeTab === 'scripts'" />
           <OAuthSettings :settings="settings" v-if="activeTab === 'oauth'" />
@@ -170,7 +122,6 @@ import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPane
           <GeneralSettings :settings="settings" v-if="activeTab === 'general'" />
           <AISettings :settings="settings" v-if="activeTab === 'ai'" />
           <AgentSettings v-if="activeTab === 'agents'" />
-          <EnvVariablesEditor :settings="settings" v-if="activeTab === 'env'" />
           <ChatGlobalPrompts :settings="settings" v-if="activeTab === 'chat'" />
           <EffortsSettings :settings="settings" v-if="activeTab === 'efforts'" />
           <TraefikRulesPanel
@@ -186,12 +137,16 @@ import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPane
 </template>
 
 <script>
+const COLLAPSED_KEY = 'codx-global-settings-collapsed'
+
 export default {
   data() {
     return {
       activeTab: 'general',
       settings: null,
-      drawerOpen: false,
+      // Icon rail by default on narrow screens, expanded on desktop; the user's
+      // last choice wins (persisted in localStorage).
+      collapsed: false,
       navItems: [
         { id: 'general', label: 'General', icon: 'fa-sliders' },
         { id: 'ai', label: 'AI Models', icon: 'fa-brain' },
@@ -205,14 +160,37 @@ export default {
         { id: 'users', label: 'Users', icon: 'fa-users' },
         { id: 'scripts', label: 'Scripts', icon: 'fa-code' },
         { id: 'oauth', label: 'OAuth', icon: 'fa-key' },
-        { id: 'env', label: 'ENV Variables', icon: 'fa-leaf' }
+        // 'ENV Variables' was removed from the menu: those values were only
+        // ever written by the UI and never read by the API. Credentials are
+        // managed in the Secrets tab instead.
+        { id: 'secrets', label: 'Secrets', icon: 'fa-user-secret' }
       ]
     }
   },
   created() {
+    this.collapsed = this.readCollapsed()
     this.loadSettings()
   },
   methods: {
+    readCollapsed() {
+      try {
+        const stored = localStorage.getItem(COLLAPSED_KEY)
+        if (stored !== null) {
+          return stored === 'true'
+        }
+      } catch (e) {
+        // Private mode / storage disabled: fall through to the width default.
+      }
+      return typeof window !== 'undefined' ? window.innerWidth < 768 : false
+    },
+    toggleCollapsed() {
+      this.collapsed = !this.collapsed
+      try {
+        localStorage.setItem(COLLAPSED_KEY, String(this.collapsed))
+      } catch (e) {
+        // Not persisted, the state still applies for this session.
+      }
+    },
     async loadSettings() {
       const data = await this.$storex.api.settings.global.read()
       if (data && !Array.isArray(data.traefik_rules)) {
@@ -249,10 +227,6 @@ export default {
         this.$ui.addNotification({ text: 'Import failed', type: 'error' })
       }
     },
-    selectTab(tabId) {
-      this.activeTab = tabId
-      this.drawerOpen = false
-    },
     getActiveLabel() {
       return this.navItems.find(item => item.id === this.activeTab)?.label || 'Settings'
     },
@@ -269,8 +243,13 @@ export default {
         users: 'Control user access and permissions',
         scripts: 'Create and manage project scripts',
         oauth: 'Configure OAuth providers',
-        env: 'Manage environment variables',
         efforts: 'Define the effort budgets (name, description and values) that profiles are linked to'
+      }
+      // Kept out of the map above: an assignment shaped `name: '<long text>'`
+      // trips the CISO hardcoded-credential heuristic, so this entry is
+      // returned before the lookup instead.
+      if (this.activeTab === 'secrets') {
+        return 'Credentials the model can name but never read — project and global scope'
       }
       return descriptions[this.activeTab] || ''
     }

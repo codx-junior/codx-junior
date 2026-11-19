@@ -1,0 +1,46 @@
+diff --git a/codx/junior/tools/repository_tools.py b/codx/junior/tools/repository_tools.py
+--- a/codx/junior/tools/repository_tools.py
++++ b/codx/junior/tools/repository_tools.py
+@@ -1444,11 +1444,10 @@
+             ),
+         )
+ 
+-    stage_all = not requested
+-    if stage_all:
+-        command = f'git commit -m "{message}"'
+-    else:
++    if requested:
+         command = f'git add -- {" ".join(requested)} && git commit -m "{message}"'
++    else:
++        command = f'git commit -m "{message}"'
+ 
+     refusal = _refuse_unless_allowed(command, kwargs.get("settings"))
+     if refusal:
+@@ -1465,8 +1464,8 @@
+         if requested:
+             stage_result = engine.stage_files(requested)
+             staging_errors = stage_result.get("errors") or []
+         result = engine.commit_changes(
+-            message=message, stage_all=stage_all, allow_empty=allow_empty
++            message=message, stage_all=False, allow_empty=allow_empty
+         )
+     except Exception as ex:
+         return _error_response("repository_commit", ex)
+@@ -1484,7 +1483,7 @@
+             "",
+             f"- **Commit**: `{short_commit}`",
+             f"- **Message**: {message.splitlines()[0]}",
+-            f"- **Content**: {'the files given in `paths`' if not stage_all else 'already staged files'}",
++            f"- **Content**: {'the files given in `paths`' if requested else 'already staged files'}",
+         ]
+     else:
+         lines += ["### ❌ Commit failed", ""]
+@@ -1502,7 +1501,7 @@
+                 "commit": result.get("commit", ""),
+                 "short_commit": result.get("short_commit", ""),
+                 "message": message,
+-                "stage_all": stage_all,
++                "staged_paths": requested,
+                 "errors": errors,
+                 "staging_errors": staging_errors,
+             },

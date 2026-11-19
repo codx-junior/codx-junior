@@ -56,7 +56,10 @@ In this repository the QA gate (`qa_plan` / `qa_run_tests`) currently **cannot r
 the project is opened at `docs/`, its file tools are jailed there, while the QA tools
 resolve the git root one level up — and no suite is declared for either root.
 
-* `qa_plan()` → `suites: none`, `default_suite: none`, `mapped_tests: 0`, `unmapped_sources: 14`.
+* `qa_plan()` → `suites: none`, `default_suite: none`, `mapped_tests: 0`,
+  `unmapped_sources: 14` (measured 2026-11-17) and `16` (measured 2026-11-18). The
+  count tracks the parent repo's pending change: treat it as a moving value, not as a
+  contract.
 * `qa_run_tests(suite="pytest")` → `decision: block`, `[high] tests.no-suite`.
 * A runnable command *does* exist for the docs site itself — `npm run docs:build`
   (VitePress, dead-link aware), see `package.json:11`.
@@ -65,13 +68,15 @@ Until the platform root is opened instead of `docs/`, or `docs/` is registered a
 own sub-project, deliveries on this project fall back to a **manual reproduction** for
 validation, as allowed by the `agile` tier above.
 
-**Default taken by the shift of 2026-11-17 — pending human confirmation (card
-`b776e9a7`): keep `docs/` as the project root, do not open the platform root.**
-Opening the platform root would hand the QA gate the whole monorepo — 50 changed
-files under `api/`, `ui/` and the effort/atlas work — none of which this project
-publishes, and none of which it can even read, because the file tools stay jailed at
-`docs/`. The fix therefore belongs to *this* project: declare the only runnable suite
-in the project config, so the gate executes it from the docs root.
+**Decision taken on 2026-11-18 (card `b776e9a7`) — keep `docs/` as the project root,
+do not open the platform root, and declare the docs build as this project's only
+suite.** Opening the platform root would hand the QA gate the whole monorepo — ~50
+changed files under `api/`, `client/` and the effort/atlas work — none of which this
+project publishes, and none of which it can even read, because the file tools stay
+jailed at `docs/`. The decision is recorded here; it is **not applied yet**, because
+applying it needs project-root control or `qa_policy` write access, and this assistant
+has neither. Whoever holds that access applies exactly this declaration to the project
+config, so the gate executes it from the docs root:
 
 ```json
 "qa_policy": {
@@ -81,11 +86,37 @@ in the project config, so the gate executes it from the docs root.
 }
 ```
 
-**Unverified:** whether `.codx/project.json` accepts a `qa_policy` key. The service
-that owns `qa_*` (`codx-api`, root `…/codx-junior-platform/api`) is indexed as a
-related project, but its atlas times out (>120 s) on every search, so the config
-schema was not read. Until the key is accepted, `qa_plan()` keeps returning
-`suites: none` and deliveries keep using the manual reproduction described above.
+**Unverified:** whether `.codx/project.json` accepts a `qa_policy` key. Re-confirmed on
+2026-11-18 that the schema cannot be read from this project: `codx-api` (root
+`…/codx-junior-platform/api`), the service that owns `qa_*`, is indexed as a related
+project but its atlas times out (>120 s) on every search — including a single-file
+scope — and direct reads of its files are refused by the `docs/` jail. Until the key is
+accepted, `qa_plan()` keeps returning `suites: none` and deliveries keep using the
+manual reproduction described above. This schema question is tracked as its own task and
+does not block this contract.
+
+### PDF render availability
+
+`markdown -> pdf` is **not available** in this environment, and not because of the
+markdown being rendered. Every engine the converter can reach fails for a different,
+environmental reason (measured 2026-11-17 and re-confirmed 2026-11-18):
+
+| engine | result |
+| --- | --- |
+| `xelatex` (pandoc default) | not found on the host |
+| `lualatex` / `pdflatex` (pandoc fallbacks) | abort on the `❤️` in the page footer |
+| `weasyprint` / `typst` | not installed |
+| Chromium (browser renderer) | binary present in `~/.cache/ms-playwright/`, but it cannot start: `libnspr4.so: cannot open shared object file` (exit code 127) |
+
+So a PDF render is **not** a valid validation signal for a markdown change: it fails
+identically on every change, and a red result says nothing about the change under
+review. The accepted replacement is `markdown -> docx` via `doc_converter`, which
+exercises the same markdown parse and yields a non-zero-byte file to check; for the docs
+site itself the stronger check stays `npm run docs:build`.
+
+PDF export returns as soon as the host provides one working engine: `weasyprint` or
+`typst`, or the Chromium runtime library `libnspr4` — the browser binary itself is
+already cached, it is only missing that shared object.
 
 ## Effort levels
 

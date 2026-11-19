@@ -28,7 +28,7 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .model import ToolResponse
 
@@ -36,8 +36,36 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_NAMESPACE = "codxjuniorai"
 HUB_API = "https://hub.docker.com/v2"
+# Registry auth service: the endpoint `docker login` and `docker push` talk to.
+AUTH_SERVICE = "https://auth.docker.io/token"
+REGISTRY_SERVICE = "registry.docker.io"
 PUBLISH_SCRIPT = "scripts/dockerhub_publish.sh"
+TOKEN_NAME = "DOCKERHUB_TOKEN"
 _TIMEOUT = 30
+# A value pasted into Settings > Secrets sometimes keeps a few trailing
+# characters from the clipboard or from the token screen. They are dropped only
+# when the registry authenticates the shortened value (never blindly).
+_STRIPPED_SUFFIX = 4
+
+
+class HubError(RuntimeError):
+    """A Docker Hub API failure.
+
+    Deliberately a ``RuntimeError``: every existing caller catches that, so the
+    finer subclasses below add information without changing old behaviour.
+    """
+
+
+class HubAuthError(HubError):
+    """The value was sent and the registry refused it (HTTP 401/403)."""
+
+
+class HubNetworkError(HubError):
+    """The API could not be reached, so the value was never judged."""
+
+
+class HubApiError(HubError):
+    """The API answered with a status that is neither auth nor reachability."""
 
 
 # ---------------------------------------------------------------------------
@@ -51,8 +79,284 @@ def _user() -> str:
     return (os.environ.get("DOCKERHUB_USER") or _namespace()).strip()
 
 
+_ACTIVE_SETTINGS = None
+_TOKEN_CACHE: Dict[str, str] = {}
+# Why the vault could not provide the value (never the value itself): lets the
+# caller tell "nothing stored" apart from "stored but unreadable".
+_VAULT_ERROR: Dict[str, str] = {}
+
+
+def _note_vault_error(error) -> None:
+    """Remember the vault verdict for this lookup ("missing" means absent)."""
+    _VAULT_ERROR.clear()
+    code = str(getattr(error, "code", "") or "")
+    if code and code != "missing":
+        _VAULT_ERROR["code"] = code
+        _VAULT_ERROR["detail"] = str(getattr(error, "detail", "") or code)
+
+
+def _bind(settings) -> None:
+    """Remember the settings of the running tool so _token() can reach the vault."""
+    global _ACTIVE_SETTINGS
+    if settings is not None and settings is not _ACTIVE_SETTINGS:
+        _ACTIVE_SETTINGS = settings
+        _TOKEN_CACHE.clear()
+
+
+def _vault_token(settings=None) -> str:
+    """Read DOCKERHUB_TOKEN from the project secret vault (value never logged).
+
+    The policy is optional: a tool invoked outside a turn (or before the project
+    resolved its CISO policy) still gets the vault default policy, so a missing
+    policy degrades the source of the token, it does not lose it.
+    """
+    target = settings or _ACTIVE_SETTINGS
+    policy = None
+    try:
+        from codx.junior.security.ciso.policy import resolve_policy
+
+        policy = resolve_policy(target)
+    except Exception:  # noqa: BLE001 - the vault ships a usable default policy
+        logger.debug("CISO policy not resolvable for the vault", exc_info=True)
+    try:
+        from codx.junior.security.ciso import vault as secret_vault
+
+        project_dir = _project_dir(target)
+        try:
+            vault = secret_vault.SecretVault(project_dir, policy)
+        except TypeError:  # older signature without a policy argument
+            vault = secret_vault.SecretVault(project_dir)
+        # The source name must be the vault's own constant ("secret"). Passing
+        # a literal "vault" made get_value() answer invalid_handle, so a value
+        # stored in Settings -> Secrets silently read as "not configured".
+        value, error = vault.get_value(secret_vault.SOURCE_VAULT, TOKEN_NAME)
+        _note_vault_error(error)
+        if error is not None:
+            logger.debug("DOCKERHUB_TOKEN unavailable from the vault: %s", error.code)
+            return ""
+        return (value or "").strip()
+    except Exception:  # noqa: BLE001 - the vault is optional for this tool
+        logger.debug("DOCKERHUB_TOKEN not resolvable from the vault", exc_info=True)
+        return ""
+
+
+def _normalise_token(raw: str) -> str:
+    """Return *raw* as the registry expects it: no wrappers, no invisible junk.
+
+    The value travels through a clipboard, a JSON field and a password box
+    before it reaches the vault, and each step can leave something behind
+    (quotes, a ``Bearer`` prefix, CR/LF, a zero width character).
+    """
+    value = (raw or "").strip()
+    if value.lower().startswith("bearer "):
+        value = value[7:].strip()
+    value = re.sub("[\u200b-\u200d\ufeff\x00\r\n]", "", value)
+    return value.strip("\"'`<>,;")
+
+
+def _token_variants(value: str) -> List[str]:
+    """Candidate values for *value*, the stored one first.
+
+    The shortened candidate exists because a value can arrive with trailing
+    characters that no ``strip()`` removes (a suffix glued on by the UI or the
+    clipboard). It is never used on a guess: the caller adopts it only when the
+    registry authenticates it, so a healthy token is never truncated.
+    """
+    candidates = [value]
+    if len(value) > _STRIPPED_SUFFIX + 8:
+        shortened = value[:-_STRIPPED_SUFFIX]
+        if shortened and shortened not in candidates:
+            candidates.append(shortened)
+    return candidates
+
+
+def _token_with_origin() -> Tuple[str, str]:
+    """Return ``(value, origin)`` where origin is ``env``, ``vault`` or ``""``."""
+    value = _normalise_token(os.environ.get(TOKEN_NAME, ""))
+    if value:
+        _VAULT_ERROR.clear()
+        return value, "env"
+    if "vault" in _TOKEN_CACHE:
+        return _TOKEN_CACHE["vault"], "vault"
+    found = _normalise_token(_vault_token())
+    if found:
+        # Only a hit is cached. A miss must be re-read on the next call: a
+        # secret added in Settings right after a failed attempt has to become
+        # visible without restarting the API.
+        _TOKEN_CACHE["vault"] = found
+    return found, ("vault" if found else "")
+
+
 def _token() -> str:
-    return os.environ.get("DOCKERHUB_TOKEN", "").strip()
+    """Token from the environment, falling back to the project secret vault.
+
+    A value the registry accepted in a shortened form wins: ``_registry_verdict``
+    caches it here, so every caller (API headers and the publish script) sends
+    the same, working value.
+    """
+    return _TOKEN_CACHE.get("resolved") or _token_with_origin()[0]
+
+
+def _registry_verdict() -> Tuple[str, str]:
+    """Judge the value with the registry auth service (what `docker login` uses).
+
+    ``hub.docker.com`` and the registry do not accept the same credentials: a
+    token scoped to an organization or to a single repository is refused by the
+    Docker Hub *API* (``/user/``) but authenticates normally for ``docker push``.
+    Declaring such a value invalid blocks publishing for the wrong reason, so the
+    registry exchange is the authoritative check before blaming the token.
+
+    Returns:
+        Tuple[str, str]: ``("ok" | "refused" | "unknown", detail)``. ``unknown``
+        means nobody judged the value (network problem), so it must not block.
+    """
+    value = _token()
+    if not value:
+        return "unknown", "no value is configured"
+    verdict, detail = _registry_check(value)
+    if verdict != "refused":
+        return verdict, detail
+    # Refused as stored: try the value without the trailing characters a paste
+    # or the token screen can leave behind. Only the variant the registry
+    # authenticates is adopted, so a healthy value is never truncated.
+    for candidate in _token_variants(value)[1:]:
+        candidate_verdict, candidate_detail = _registry_check(candidate)
+        if candidate_verdict == "unknown":
+            break
+        if candidate_verdict == "ok":
+            logger.warning(
+                "DOCKERHUB_TOKEN: refused as stored and accepted without its last "
+                "%s character(s); using the accepted variant.", _STRIPPED_SUFFIX
+            )
+            _TOKEN_CACHE["resolved"] = candidate
+            return "ok", (
+                f"{candidate_detail}; the value is refused while it keeps its last "
+                f"{_STRIPPED_SUFFIX} character(s)"
+            )
+    return verdict, detail
+
+
+def _registry_check(value: str) -> Tuple[str, str]:
+    """Judge one *value* against the registry auth service (the `docker login` path)."""
+    if not value:
+        return "unknown", "no value is configured"
+    repository = f"{_namespace()}/codx-junior"
+    query = urllib.parse.urlencode({
+        "service": REGISTRY_SERVICE,
+        "scope": f"repository:{repository}:pull,push",
+    })
+    credentials = base64.b64encode(f"{_user()}:{value}".encode()).decode()
+    request = urllib.request.Request(
+        f"{AUTH_SERVICE}?{query}",
+        headers={"Authorization": f"Basic {credentials}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT) as response:
+            payload = json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            return "refused", f"registry auth -> HTTP {exc.code} for {repository}"
+        return "unknown", f"registry auth -> HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001 - a network problem never blames the value
+        logger.warning("registry auth check skipped: %s", exc)
+        return "unknown", f"registry auth unreachable: {exc}"
+    if payload.get("token") or payload.get("access_token"):
+        return "ok", "accepted by the registry auth service (docker login compatible)"
+    return "refused", "the registry auth service returned no token"
+
+
+def _diagnose_token() -> Dict[str, str]:
+    """Return the state of the Docker Hub value, never the value itself.
+
+    The distinctions matter because the operator has to do something different
+    in each case: nothing configured (store a secret) is not the same as a
+    value the registry refused (rotate it), and neither is the same as a hub
+    that could not be reached (nobody's fault).
+
+    Returns:
+        Dict[str, str]: ``present`` (``true``/``false``), ``origin``
+        (``env``/``vault``/``""``), ``verdict`` (``missing``, ``valid``,
+        ``invalid``, ``unreachable``, ``unverified``) and ``detail``.
+    """
+    value, origin = _token_with_origin()
+    if not value:
+        if _VAULT_ERROR.get("code"):
+            # Stored but unreadable (no key, wrong key): NOT the same problem as
+            # "nobody configured it", and not fixable by storing the value again
+            # until the key is restored.
+            return {
+                "present": "true",
+                "origin": "vault",
+                "verdict": "unreadable",
+                "detail": _VAULT_ERROR.get("detail") or _VAULT_ERROR.get("code", ""),
+            }
+        return {
+            "present": "false",
+            "origin": "",
+            "verdict": "missing",
+            "detail": "no value is configured in the environment or the vault",
+        }
+    state = {"present": "true", "origin": origin or "unknown", "detail": ""}
+    try:
+        _api("user/")
+    except HubAuthError as exc:
+        registry_verdict, registry_detail = _registry_verdict()
+        if registry_verdict == "ok":
+            state.update({"verdict": "valid", "detail": registry_detail})
+        elif registry_verdict == "refused":
+            state.update({"verdict": "invalid", "detail": f"{exc}. {registry_detail}"})
+        else:
+            state.update({"verdict": "unverified", "detail": f"{exc}. {registry_detail}"})
+    except HubNetworkError as exc:
+        state.update({"verdict": "unreachable", "detail": str(exc)})
+    except HubError as exc:
+        state.update({"verdict": "unverified", "detail": str(exc)})
+    else:
+        state.update({"verdict": "valid", "detail": "accepted by the Docker Hub API"})
+    return state
+
+
+def _require_token(action: str) -> Optional[str]:
+    """Explain, value-free, why *action* cannot authenticate.
+
+    Args:
+        action: What the caller is about to do ("publishing", "deleting ...").
+
+    Returns:
+        Optional[str]: The message to report, or None when the call may run.
+    """
+    state = _diagnose_token()
+    verdict = state["verdict"]
+    if verdict == "valid":
+        return None
+    if verdict in ("unreachable", "unverified"):
+        # hub.docker.com is not the registry endpoint: an unreachable API does
+        # not prove the value is wrong, so the preflight stays advisory.
+        logger.warning("Docker Hub API not reachable, skipping the preflight: %s", state["detail"])
+        return None
+    if verdict == "unreadable":
+        return (
+            f"{TOKEN_NAME} is stored but the secret vault cannot read it "
+            f"({state['detail']}). The deployment key (CODX_JUNIOR_VAULT_KEY or the "
+            "project's vault key file) is missing or belongs to another key than the "
+            "one the value was written with. Storing the value again does not help "
+            "until the key is restored: the operator has to re-add it once the key "
+            "is in place."
+        )
+    if verdict == "missing":
+        return (
+            f"{TOKEN_NAME} is not configured, so {action} cannot authenticate. "
+            f"Store it in Settings > Secrets as {TOKEN_NAME} (scope: global or this "
+            "project, allowed tools: dockerhub_*), or export it in the API "
+            "environment. Nothing was sent to Docker Hub; dry_run=true previews "
+            "the build without it."
+        )
+    return (
+        f"{TOKEN_NAME} is configured (from the {state['origin']}) but Docker Hub "
+        f"rejected it: {state['detail']}. The value is expired, revoked, or belongs "
+        f"to another account than DOCKERHUB_USER ({_user()}). Rotate it out of band "
+        f"(Settings > Secrets) or with `docker login`; the value is never printed."
+    )
 
 
 def _auth_header() -> Optional[str]:
@@ -99,9 +403,12 @@ def _api(
             payload = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]
-        raise RuntimeError(f"Docker Hub API {method} {path} -> HTTP {exc.code}: {detail}")
+        message = f"Docker Hub API {method} {path} -> HTTP {exc.code}: {detail}"
+        if exc.code in (401, 403):
+            raise HubAuthError(message) from None
+        raise HubApiError(message) from None
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Docker Hub API unreachable: {exc.reason}")
+        raise HubNetworkError(f"Docker Hub API unreachable: {exc.reason}") from None
 
     if not payload:
         return {}
@@ -112,10 +419,30 @@ def _api(
 
 
 def _project_dir(settings) -> str:
+    """Return the project root that actually holds PUBLISH_SCRIPT.
+
+    ``codx_path`` points at the control plane (``<project>/.codx``) and the API
+    process runs with ``<project>/api`` as cwd, so neither is the repo root the
+    publish script lives in: every candidate is checked against the script, and
+    the repo root is derived from this file as a last resort.
+    """
+    candidates: List[str] = []
     for attribute in ("project_path", "project_dir", "codx_path"):
         value = getattr(settings, attribute, None)
-        if value and os.path.isdir(str(value)):
-            return str(value)
+        if not value:
+            continue
+        path = os.path.abspath(str(value))
+        candidates += [path, os.path.dirname(path)]
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(here)))))
+    candidates.append(os.getcwd())
+
+    for path in candidates:
+        if os.path.isfile(os.path.join(path, PUBLISH_SCRIPT)):
+            return path
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
     return os.getcwd()
 
 
@@ -138,21 +465,24 @@ def dockerhub_whoami(namespace: Optional[str] = None, **kwargs) -> ToolResponse:
     """
     try:
         target = _namespace(namespace)
-        has_token = bool(_token())
+        state = _diagnose_token()
+        has_token = state["present"] == "true"
         lines = [
             f"namespace: {target}",
             f"user: {_user()}",
-            f"token: {'present' if has_token else 'missing'}",
+            f"token: {'present' if has_token else 'missing'}"
+            + (f" ({state['origin']})" if state["origin"] else ""),
             f"hub: https://hub.docker.com/u/{target}",
         ]
-        status = "anonymous"
-        if has_token:
-            try:
-                _api("user/")
-                status = "token accepted"
-            except RuntimeError as exc:
-                status = f"token rejected ({exc})"
-        lines.append(f"auth: {status}")
+        statuses = {
+            "missing": "anonymous (nothing configured)",
+            "valid": "token accepted",
+            "invalid": f"token rejected ({state['detail']})",
+            "unreadable": f"stored but the vault cannot read it ({state['detail']})",
+            "unreachable": f"not checked ({state['detail']})",
+            "unverified": f"not verified ({state['detail']})",
+        }
+        lines.append(f"auth: {statuses.get(state['verdict'], state['verdict'])}")
         return ToolResponse(
             user_response="Docker Hub configuration\n" + "\n".join(f"- {line}" for line in lines),
             llm_response="Docker Hub configuration:\n" + "\n".join(lines),
@@ -203,6 +533,7 @@ def dockerhub_publish(
         ToolResponse: the command, its output tail and the published references.
     """
     settings = kwargs.get("settings")
+    _bind(settings)
     try:
         if not isinstance(timeout, int) or timeout < 60 or timeout > 3600:
             raise ValueError("timeout must be an integer between 60-3600 seconds")
@@ -220,8 +551,18 @@ def dockerhub_publish(
         if not tag_list:
             tag_list = [os.environ.get("IMAGE_TAG", "latest")]
 
-        if push and not _token():
-            raise ValueError("DOCKERHUB_TOKEN is required to push (or set push=False)")
+        if push and not dry_run:
+            # A dry run only prints the commands, so it must not require the
+            # value at all (that wrongly failed `dry_run=true` before).
+            token_problem = _require_token("publishing")
+            if token_problem:
+                return ToolResponse(
+                    user_response=f"Cannot publish: {token_problem}",
+                    llm_response=(
+                        f"dockerhub_publish aborted before the build: {token_problem} "
+                        "Nothing was pushed and nothing was sent to Docker Hub."
+                    ),
+                )
 
         env = dict(os.environ)
         env.update(
@@ -245,6 +586,12 @@ def dockerhub_publish(
             env["BUILD_ARGS"] = " ".join(
                 f"{key}={value}" for key, value in build_args.items()
             )
+        token = _token()
+        if token:
+            # The value normally comes from the vault, so it is NOT in
+            # os.environ: without this line the child script saw an empty
+            # DOCKERHUB_TOKEN and silently skipped `docker login`.
+            env[TOKEN_NAME] = token
 
         command = ["bash", script]
         logger.info("Publishing %s/%s tags=%s", target_namespace, repository, tag_list)
@@ -271,13 +618,22 @@ def dockerhub_publish(
                 ),
             )
 
+        headline = "Dry run (nothing pushed)" if dry_run else "Published"
+        notes = ""
+        if dry_run:
+            value, origin = _token_with_origin()
+            notes = (
+                "\n\nDry run: nothing was built, pushed or logged in. "
+                f"{TOKEN_NAME}: {'present' if value else 'not configured'}"
+                + (f" ({origin})" if origin else " (not needed for a dry run)")
+            )
         return ToolResponse(
             user_response=(
-                f"Published {', '.join(refs)}\n\n"
+                f"{headline}: {', '.join(refs)}\n\n"
                 f"https://hub.docker.com/r/{target_namespace}/{repository}/tags\n\n"
-                f"```\n{tail[-1500:]}\n```"
+                f"```\n{tail[-1500:]}\n```{notes}"
             ),
-            llm_response=f"Published: {', '.join(refs)}\nOutput tail:\n{tail}",
+            llm_response=f"{headline}: {', '.join(refs)}\nOutput tail:\n{tail}{notes}",
         )
     except Exception as exc:  # noqa: BLE001 - tool boundary
         logger.exception("dockerhub_publish failed")
@@ -456,8 +812,9 @@ def dockerhub_delete_tag(
     try:
         if not confirm:
             raise ValueError("confirm=True is required to delete a published tag")
-        if not _token():
-            raise ValueError("DOCKERHUB_TOKEN is required to delete a tag")
+        token_problem = _require_token("deleting a published tag")
+        if token_problem:
+            raise ValueError(token_problem)
         if str(tag).strip().lower() in ("latest", "stable"):
             raise ValueError(f"refusing to delete the floating tag {tag!r}")
 

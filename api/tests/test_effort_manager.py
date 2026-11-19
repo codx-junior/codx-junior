@@ -20,11 +20,19 @@ import pytest
 from codx.junior.ai.smol.effort import (
     AGILE_NAME,
     MAX_NAME,
+    MAX_VALIDATION,
     agile_policy,
     effort_for,
+    max_policy,
 )
 from codx.junior.efforts.effort_manager import EffortManager
-from codx.junior.model.effort import BUILTIN_EFFORTS, EffortDefinition, EffortValues
+from codx.junior.model.effort import (
+    BUILTIN_DESCRIPTIONS,
+    BUILTIN_EFFORTS,
+    BUILTIN_REVISION,
+    EffortDefinition,
+    EffortValues,
+)
 from codx.junior.model.profile import Profile
 
 
@@ -204,6 +212,70 @@ def test_field_docs_document_every_value():
 
     # Every value the model accepts is documented: no silent option.
     assert set(keys) == set(EffortValues.model_fields.keys())
+def test_max_tier_does_not_inherit_agile():
+    """codx-junior-max is a waterfall/long-horizon method, not a bigger agile."""
+    agile = agile_policy()
+    maximum = max_policy()
+
+    # Bigger budget on every axis.
+    assert maximum.max_iterations > agile.max_iterations
+    assert maximum.max_tool_calls > agile.max_tool_calls
+    assert maximum.max_tool_rounds > agile.max_tool_rounds
+
+    # Its own course corrections: a limit must not collapse a phased plan.
+    assert maximum.continuations > agile.continuations
+    assert maximum.continuation_max_iterations > agile.continuation_max_iterations
+    assert maximum.continuation_max_calls > agile.continuation_max_calls
+
+    # Long horizon: a much later promise, still advisory (nothing stops it).
+    assert maximum.target_seconds > agile.target_seconds
+    assert maximum.wall_clock_seconds > agile.wall_clock_seconds
+    assert maximum.stop_on_wall_clock is False
+
+    # The heaviest validation breadth is the one of max.
+    assert maximum.validation == MAX_VALIDATION
+
+
+def test_builtins_are_refreshed_when_the_revision_changes(manager):
+    """A built-in is owned by codx-junior: a bumped revision refreshes it."""
+    manager.ensure_builtins()
+    path = manager.definition_path("max")
+    with open(path, encoding="utf-8") as file:
+        payload = json.load(file)
+
+    # Simulate a definition written by an older release.
+    payload["revision"] = BUILTIN_REVISION - 1
+    payload["description"] = "old description"
+    payload["values"]["max_iterations"] = 1
+    created_at = payload["created_at"]
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file)
+
+    manager.ensure_builtins()
+
+    refreshed = manager.read_effort("max", with_profiles=False)
+    assert refreshed.revision == BUILTIN_REVISION
+    assert refreshed.description == BUILTIN_DESCRIPTIONS["max"]
+    assert refreshed.values.max_iterations == max_policy().max_iterations
+    # Refreshing is not a new effort: the creation stamp is preserved.
+    assert refreshed.created_at == created_at
+
+
+def test_save_effort_keeps_a_customized_builtin(manager):
+    """An edited built-in is not clobbered by the next seed."""
+    manager.ensure_builtins()
+    definition = manager.read_effort("max", with_profiles=False)
+    definition.description = "my tuning"
+    definition.values.max_iterations = 7
+    definition.revision = 0  # the editor does not send the revision back
+
+    manager.save_effort(definition)
+    manager.ensure_builtins()
+
+    kept = manager.read_effort("max", with_profiles=False)
+    assert kept.revision == BUILTIN_REVISION
+    assert kept.description == "my tuning"
+    assert kept.values.max_iterations == 7
 
 
 # Made with ❤️ by codx-junior

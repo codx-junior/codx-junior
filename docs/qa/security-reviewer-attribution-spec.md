@@ -6,7 +6,7 @@
 > profile — `project_locate("security_review_changes")` and
 > `project_locate("security_audit")` return **0 code matches** in this tree
 > (measured 2026-11-18). Nothing below is presented as demonstrated output.
-> This page is the deliverable of card **M5**: the three defects, the exact
+> This page is the deliverable of card **M5**: the four defects, the exact
 > reproducers and the expected output shape, handed to the owner of the reviewer code.
 >
 > Internal engineering note. It is not part of the user guide and is deliberately
@@ -27,7 +27,7 @@ Two independent defects sit behind it, and they must not be merged:
 | **A** — ~1000 `secret.high-entropy-token` findings come from `.codx/` runtime state (timestamps, task UUIDs) | *what is scanned* | `8909f356` (M6) |
 | **B** — the remaining report is unreadable and unlocatable | *what is reported* | this card (M5) |
 
-## 2. The three defects
+## 2. The four defects
 
 ### D1 — Findings are not aggregated and a `block` can carry no location
 
@@ -82,6 +82,39 @@ directory that exists in both cases.
 a single declared base, echoed in the report, and a subdirectory of an existing tree is
 never "not found" while its parent resolves.
 
+### D4 — Untracked paths are invisible to the reviewer
+
+**Symptom.** `security_review_changes` walks the git diff only, so a file that has never
+been committed is not scanned at all — and the empty result is published as a clean one.
+The gate is blind to exactly the content it exists to inspect: an added page, script or
+manifest can sit in the working tree, be published by the build, and be declared
+"nothing to review".
+
+**Reproducer (same tree, two calls, opposite verdicts).**
+
+```
+security_review_changes(scope="all", paths=["transformation/ai-company.md"])
+security_audit(path="transformation/ai-company.md")
+```
+
+**Current output (as reported on card `7567eaae`).** The first returns
+`security_review_changes: empty diff, nothing to review.`; the second returns
+`require_approval`, `highest_severity: high`, 1 finding —
+`[high] injection.coercion @ transformation/ai-company.md:95`. The file is 3 219 lines
+and has never been in a commit. Folder level repeats it:
+`security_review_changes(paths=["features",".vitepress","transformation"])` → `allow`,
+0 findings, while `security_audit(path="transformation")` → high.
+
+**Expected.** With `scope` `all`/`unstaged`, untracked files are part of the payload
+(`git ls-files --others --exclude-standard`), resolved against the same root as D3 and
+filtered by the same `paths` entries. When the diff is empty but untracked files exist
+inside the filtered paths, the reviewer returns an explicit `nothing_to_review` state
+carrying their count — never a bare `allow`.
+
+**Do not fix it by ignoring the file.** The gate must see what the build can see. Same
+false-green class as `6c697929` (tests switched off) and `54658755` (dead links
+ignored), different cause. Owner card: `7567eaae`.
+
 ## 3. Expected output shape
 
 ```json
@@ -111,6 +144,7 @@ whenever a `paths` filter was used.
 - [ ] The highest severity names a `path:line` that resolves on disk — quoted.
 - [ ] The same finding is reachable through a `paths=[...]` filter containing that file — both outputs quoted against the same tree.
 - [ ] The report states the total count **and** the number omitted; no silent truncation.
+- [ ] An untracked file inside the filtered paths is scanned, and an empty diff over it returns `nothing_to_review` with a count — never `allow` (D4).
 - [ ] No regression on the clean surface: `security_review_changes(scope="all", paths=["delivery-contract.md","docs"])` still returns `allow` / `0 findings`.
 - [ ] Before/after output quoted on the card before it moves to Done.
 
@@ -124,5 +158,5 @@ policy question), viewer UI, dashboards, new rules.
 Owner of the reviewer code: the platform/core team (`api/`), not this `docs/`
 workspace. The demo card `f6d1855e` must present this as
 **not demonstrated — blocked on repo access**, and name that owner. Once the platform
-root is opened as the project, D1–D3 are implementable with the reproducers above and
+root is opened as the project, D1–D4 are implementable with the reproducers above and
 no further discovery.

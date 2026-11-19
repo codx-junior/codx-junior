@@ -31,7 +31,6 @@ EFFORT_TIERS: tuple = ("agile", "max", "default")
 #: Names seeded on first use. They mirror the hardcoded tiers, so a fresh project
 #: behaves exactly as before this feature existed.
 BUILTIN_EFFORTS: tuple = ("agile", "max", "default")
-
 #: One-line description of each seeded effort.
 BUILTIN_DESCRIPTIONS: Dict[str, str] = {
     "agile": (
@@ -40,9 +39,12 @@ BUILTIN_DESCRIPTIONS: Dict[str, str] = {
         "valid outcome. This is the default for the codx-junior harness."
     ),
     "max": (
-        "Heavy tier for multi-file refactors, migrations and full-suite "
-        "validation: a much larger budget, the same course corrections and a "
-        "long advisory target. Used by the codx-junior-max harness."
+        "WATERFALL tier: the objective is planned as phases and each phase is "
+        "closed behind its own gate (tests, review, evidence) before the next "
+        "one starts. Long-horizon work: several hours per run, more course "
+        "corrections than agile, full-suite + coverage + security validation "
+        "and parallel workstreams for complex systems. Used by the "
+        "codx-junior-max harness; it inherits nothing from codx-junior."
     ),
     "default": (
         "Plain chat behaviour: moderate rounds, one tool batch and no course "
@@ -50,6 +52,222 @@ BUILTIN_DESCRIPTIONS: Dict[str, str] = {
         "turn."
     ),
 }
+
+#: Revision of the seeded built-ins. It is bumped whenever the values or the
+#: description of a built-in effort change: ``ensure_builtins`` then REFRESHES
+#: the definition on disk, so an existing installation receives the new method
+#: instead of keeping the file created on its first run. A built-in is owned by
+#: codx-junior: clone it under another name to keep a customized copy.
+BUILTIN_REVISION: int = 3
+
+
+# ── Base effort types ───────────────────────────────────────────────────────
+# Effort is DATA: the numbers of a turn live in the effort definitions stored in
+# Global Settings, never in ``ai/smol/constants.py``. These four types are what a
+# new installation is seeded with, and they are the vocabulary the team view
+# offers when linking a profile to an effort. Everything about them (name,
+# description, values) can be edited, cloned or extended by the user.
+#
+# The types describe a METHOD, not a size:
+#
+# * ``agile``           — incrementally add value with quick user revisions.
+# * ``waterfall``       — big thinking first, then deliver; notify the user only
+#                         when all tests pass.
+# * ``obsessed``        — the task must be perfect: think, rethink, experiment,
+#                         test, try again.
+# * ``fire-department`` — we have a bug: fix it now and push to production.
+# * ``default``         — plain chat, no effort associated.
+EFFORT_TYPES: tuple = (
+    "agile",
+    "waterfall",
+    "obsessed",
+    "fire-department",
+    "default",
+)
+
+#: Effort used when a turn resolves to no associated effort.
+FALLBACK_EFFORT: str = "default"
+
+#: Human description of every base type: the tagline is what the team view shows
+#: next to the effort name, ``method`` is what the advanced editor explains.
+EFFORT_TYPE_DOCS: List[Dict[str, str]] = [
+    {
+        "name": "agile",
+        "tagline": "Incrementally add value with quick user revisions",
+        "method": (
+            "Work in the smallest slice that is worth showing, then hand control "
+            "back for a revision. The clock is a promise, not a deadline: a "
+            "partial increment closed with its own summary is a valid outcome."
+        ),
+    },
+    {
+        "name": "waterfall",
+        "tagline": "Big thinking, then deliver; notify when all tests pass",
+        "method": (
+            "Plan the whole objective as phases before touching code, close each "
+            "phase behind its own gate (tests, review, evidence) and deliver once "
+            "at the end. The user is notified only when the full validation is "
+            "green; independent phases may run in parallel."
+        ),
+    },
+    {
+        "name": "obsessed",
+        "tagline": "Perfect or nothing: think, rethink, experiment, test, try",
+        "method": (
+            "Treat correctness and quality as the goal, not the budget: re-read "
+            "the change, question the first design, run throw-away experiments "
+            "and repeat the reasoning until no known defect is left. Expensive by "
+            "design and meant for work that must not come back."
+        ),
+    },
+    {
+        "name": "fire-department",
+        "tagline": "We have a bug: fix it now and push to production",
+        "method": (
+            "Minimal diagnosis, smallest possible fix, targeted verification and "
+            "straight to production. No refactors, no opportunistic cleanup, no "
+            "planning phase: the only acceptable output is the incident closed, "
+            "fast, without breaking anything else."
+        ),
+    },
+    {
+        "name": "default",
+        "tagline": "Plain chat, no effort attached",
+        "method": (
+            "Moderate rounds, one tool batch and no course correction. Used when "
+            "no effort is associated with the profiles of the turn."
+        ),
+    },
+]
+
+#: Values seeded for every base type. They are the single source of truth for a
+#: new installation: no runtime constant is read, none is required.
+#: ``None``/missing keys mean "inherit the engine default".
+BASE_EFFORT_VALUES: Dict[str, Dict[str, Any]] = {
+    "agile": {
+        "strategy": "agile",
+        "max_iterations": 10,
+        "max_tool_calls": 5,
+        "max_tool_rounds": 12,
+        "continue_on_tool_limit": True,
+        "continuations": 2,
+        "continuation_max_iterations": 6,
+        "continuation_max_calls": 3,
+        "wall_clock_seconds": 300.0,
+        "target_seconds": 1200.0,
+        "stop_on_wall_clock": False,
+        "validation": "targeted+qa_review_changes",
+        "planning_depth": "light",
+        "review_cycles": 1,
+        "experiments_enabled": False,
+        "user_checkpoints": "each-increment",
+        "notify_on_tests_pass": False,
+        "deliver_once": False,
+        "parallel_workstreams": 1,
+        "push_to_production": False,
+    },
+    "waterfall": {
+        "strategy": "waterfall",
+        "max_iterations": 40,
+        "max_tool_calls": 8,
+        "max_tool_rounds": 80,
+        "continue_on_tool_limit": True,
+        "continuations": 4,
+        "continuation_max_iterations": 12,
+        "continuation_max_calls": 6,
+        "wall_clock_seconds": 14400.0,
+        "target_seconds": 7200.0,
+        "stop_on_wall_clock": False,
+        "validation": "full+coverage+security",
+        "planning_depth": "phases",
+        "review_cycles": 1,
+        "experiments_enabled": False,
+        "user_checkpoints": "end",
+        "notify_on_tests_pass": True,
+        "deliver_once": True,
+        "parallel_workstreams": 2,
+        "push_to_production": False,
+    },
+    "obsessed": {
+        "strategy": "obsessed",
+        "max_iterations": 60,
+        "max_tool_calls": 10,
+        "max_tool_rounds": 120,
+        "continue_on_tool_limit": True,
+        "continuations": 6,
+        "continuation_max_iterations": 16,
+        "continuation_max_calls": 8,
+        "wall_clock_seconds": 21600.0,
+        "target_seconds": 10800.0,
+        "stop_on_wall_clock": False,
+        "validation": "full+coverage+security+mutation",
+        "planning_depth": "exhaustive",
+        "review_cycles": 3,
+        "experiments_enabled": True,
+        "user_checkpoints": "end",
+        "notify_on_tests_pass": True,
+        "deliver_once": True,
+        "parallel_workstreams": 1,
+        "push_to_production": False,
+    },
+    "fire-department": {
+        "strategy": "fire-department",
+        "max_iterations": 8,
+        "max_tool_calls": 6,
+        "max_tool_rounds": 10,
+        "continue_on_tool_limit": True,
+        "continuations": 1,
+        "continuation_max_iterations": 4,
+        "continuation_max_calls": 2,
+        "wall_clock_seconds": 900.0,
+        "target_seconds": 300.0,
+        "stop_on_wall_clock": False,
+        "validation": "targeted+smoke",
+        "planning_depth": "none",
+        "review_cycles": 0,
+        "experiments_enabled": False,
+        "user_checkpoints": "end",
+        "notify_on_tests_pass": True,
+        "deliver_once": True,
+        "parallel_workstreams": 1,
+        "push_to_production": True,
+    },
+    "default": {
+        "strategy": "default",
+        "max_iterations": 10,
+        "max_tool_calls": 5,
+        "max_tool_rounds": 20,
+        "continue_on_tool_limit": False,
+        "continuations": 0,
+        "continuation_max_iterations": 0,
+        "continuation_max_calls": 0,
+        "wall_clock_seconds": 0.0,
+        "target_seconds": 0.0,
+        "stop_on_wall_clock": False,
+        "validation": "none",
+        "planning_depth": "light",
+        "review_cycles": 0,
+        "experiments_enabled": False,
+        "user_checkpoints": "none",
+        "notify_on_tests_pass": False,
+        "deliver_once": False,
+        "parallel_workstreams": 1,
+        "push_to_production": False,
+    },
+}
+
+
+def base_effort_values(name: str) -> Dict[str, Any]:
+    """
+    Return the seeded values of a base effort type.
+
+    Args:
+        name: One of :data:`EFFORT_TYPES`.
+
+    Returns:
+        A copy of the values mapping (safe to mutate).
+    """
+    return dict(BASE_EFFORT_VALUES.get(name, BASE_EFFORT_VALUES[FALLBACK_EFFORT]))
 
 
 def _now() -> str:
@@ -112,6 +330,72 @@ class EffortValues(BaseModel):
     tool_allowlist: Optional[List[str]] = Field(
         default=None,
         description="Granted tools; None means every enabled tool.",
+    )
+
+    # ── Method: what the profile DOES, not how much ─────────────────────────
+    # These values describe the way the work is done. They are stored with the
+    # effort definition (and explained by the advanced editor) so a user can
+    # clone ``agile`` into a softer agile or turn ``obsessed`` into an extra
+    # careful review profile without touching code.
+    strategy: Optional[str] = Field(
+        default=None,
+        description=(
+            "Method followed: agile | waterfall | obsessed | fire-department "
+            "(any name is allowed for a custom effort)."
+        ),
+    )
+    planning_depth: Optional[str] = Field(
+        default=None,
+        description=(
+            "none | light | phases | exhaustive - how much thinking happens "
+            "before the first change."
+        ),
+    )
+    review_cycles: Optional[int] = Field(
+        default=None,
+        description=(
+            "How many times the profile re-reads, re-thinks and re-tests its "
+            "own work before delivering (0 = deliver on first success)."
+        ),
+    )
+    experiments_enabled: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Allow throw-away experiments (spikes, probes, trial runs) before "
+            "the real change."
+        ),
+    )
+    user_checkpoints: Optional[str] = Field(
+        default=None,
+        description=(
+            "none | each-increment | end - when the profile hands control back "
+            "to the user for a revision."
+        ),
+    )
+    notify_on_tests_pass: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Notify the user only once the whole validation is green, instead "
+            "of reporting progress."
+        ),
+    )
+    deliver_once: Optional[bool] = Field(
+        default=None,
+        description="One single delivery at the end instead of incremental ones.",
+    )
+    parallel_workstreams: Optional[int] = Field(
+        default=None,
+        description=(
+            "Independent workstreams the profile may run in parallel (complex "
+            "systems); 1 = strictly sequential."
+        ),
+    )
+    push_to_production: Optional[bool] = Field(
+        default=None,
+        description=(
+            "After the fix is verified, publish/deploy without a second "
+            "confirmation (fire-department)."
+        ),
     )
 
     def to_overrides(self) -> Dict[str, Any]:
@@ -273,8 +557,8 @@ EFFORT_FIELD_DOCS: List[Dict[str, Any]] = [
         "effect": (
             "A short contract written in the prompt: e.g. "
             "'targeted+qa_review_changes' (agile) or 'full+coverage+security' "
-            "(max). It does not run anything by itself, it states the evidence the "
-            "close must contain."
+            "(waterfall). It does not run anything by itself, it states the "
+            "evidence the close must contain."
         ),
     },
     {
@@ -290,10 +574,146 @@ EFFORT_FIELD_DOCS: List[Dict[str, Any]] = [
             "needs blocks the work, so leave it empty unless you mean it."
         ),
     },
+    {
+        "key": "strategy",
+        "label": "Effort type",
+        "group": "Method",
+        "control": "select",
+        "unit": "",
+        "options": [name for name in EFFORT_TYPES],
+        "summary": "The method the profile follows, not how big its budget is.",
+        "effect": (
+            "It is the label the team view shows and the method the prompt "
+            "announces: 'agile' (small increments, quick user revisions), "
+            "'waterfall' (plan the phases, deliver once when everything is "
+            "green), 'obsessed' (perfect or nothing: rethink, experiment, "
+            "retest), 'fire-department' (fix the incident now, push). Any other "
+            "name is allowed for a custom effort."
+        ),
+    },
+    {
+        "key": "planning_depth",
+        "label": "Planning depth",
+        "group": "Method",
+        "control": "select",
+        "unit": "",
+        "options": ["none", "light", "phases", "exhaustive"],
+        "summary": "How much thinking happens before the first change.",
+        "effect": (
+            "'none' goes straight to the fix (incidents); 'light' is a short "
+            "sketch; 'phases' splits the objective into gated phases before "
+            "touching code; 'exhaustive' explores the problem and alternative "
+            "designs first. More planning costs rounds up front and saves rework "
+            "on large tasks."
+        ),
+    },
+    {
+        "key": "review_cycles",
+        "label": "Review cycles",
+        "group": "Method",
+        "control": "number",
+        "unit": "cycles",
+        "summary": "How many times the profile re-reads and re-thinks its own work.",
+        "effect": (
+            "After a change looks done, each cycle re-reads the diff, questions the "
+            "first design and re-runs the checks before delivering. 0 delivers on "
+            "the first success (fast, for hotfixes); 3+ is the 'obsessed' method, "
+            "where a second and third look are expected to find something."
+        ),
+    },
+    {
+        "key": "experiments_enabled",
+        "label": "Allow experiments",
+        "group": "Method",
+        "control": "toggle",
+        "unit": "",
+        "summary": "Throw-away probes, spikes and trial runs before the real change.",
+        "effect": (
+            "On, the profile may try something, measure it and discard it instead "
+            "of committing to the first idea. It costs turns and produces "
+            "evidence the summary can cite; off keeps the profile on the shortest "
+            "path to the change."
+        ),
+    },
+    {
+        "key": "user_checkpoints",
+        "label": "User checkpoints",
+        "group": "Method",
+        "control": "select",
+        "unit": "",
+        "options": ["none", "each-increment", "end"],
+        "summary": "When the profile hands control back for a revision.",
+        "effect": (
+            "'each-increment' closes every slice with a demo and waits for the "
+            "user (agile); 'end' delivers once, after the whole objective "
+            "(waterfall); 'none' is for unattended work. This is what makes a "
+            "profile collaborative or autonomous."
+        ),
+    },
+    {
+        "key": "notify_on_tests_pass",
+        "label": "Notify when tests pass",
+        "group": "Method",
+        "control": "toggle",
+        "unit": "",
+        "summary": "Report only when the validation is green, not while working.",
+        "effect": (
+            "On, intermediate progress stays silent and the user is notified when "
+            "the full suite (and the coverage/security gates this effort asks for) "
+            "passes. Off, the profile reports each increment as it finishes."
+        ),
+    },
+    {
+        "key": "deliver_once",
+        "label": "Single delivery",
+        "group": "Method",
+        "control": "toggle",
+        "unit": "",
+        "summary": "One delivery at the end instead of incremental ones.",
+        "effect": (
+            "On, partial work is never presented as a result: the profile keeps "
+            "going until the objective is complete (waterfall, obsessed). Off, "
+            "every finished slice is a valid delivery."
+        ),
+    },
+    {
+        "key": "parallel_workstreams",
+        "label": "Parallel workstreams",
+        "group": "Method",
+        "control": "number",
+        "unit": "streams",
+        "summary": "Independent workstreams the profile may run at the same time.",
+        "effect": (
+            "Complex systems split into independent fronts (API, client, infra) "
+            "that can advance in parallel. 1 keeps the profile strictly "
+            "sequential; raising it shortens long builds but multiplies "
+            "concurrent edits, so use it only when the fronts really are "
+            "independent."
+        ),
+    },
+    {
+        "key": "push_to_production",
+        "label": "Push to production",
+        "group": "Method",
+        "control": "toggle",
+        "unit": "",
+        "summary": "Deploy after the fix is verified, without a second confirmation.",
+        "effect": (
+            "On (fire-department), the profile closes the incident by shipping it: "
+            "fix, targeted verification, deploy. Off, the delivery stops at a "
+            "reviewable change. Never turn this on for work that needs a review."
+        ),
+    },
 ]
 
 #: Groups in the order the editor shows them.
-EFFORT_FIELD_GROUPS: List[str] = ["Turn budget", "Course corrections", "Clock", "Validation"]
+EFFORT_FIELD_GROUPS: List[str] = [
+    "Method",
+    "Turn budget",
+    "Course corrections",
+    "Clock",
+    "Validation",
+]
 
 
 class EffortDefinition(BaseModel):
@@ -327,6 +747,13 @@ class EffortDefinition(BaseModel):
     )
     created_at: str = Field(default="", description="Creation timestamp (ISO).")
     updated_at: str = Field(default="", description="Last update timestamp (ISO).")
+    revision: int = Field(
+        default=0,
+        description=(
+            "Revision of the built-in seed that produced this definition "
+            "(0 = written by hand or customized, never refreshed)."
+        ),
+    )
 
     def stamp_created(self) -> "EffortDefinition":
         """Fill the timestamps of a new definition."""
@@ -346,13 +773,18 @@ class EffortDefinition(BaseModel):
 
 
 __all__ = [
+    "BASE_EFFORT_VALUES",
     "BUILTIN_DESCRIPTIONS",
     "BUILTIN_EFFORTS",
     "EFFORT_FIELD_DOCS",
     "EFFORT_FIELD_GROUPS",
     "EFFORT_TIERS",
+    "EFFORT_TYPES",
+    "EFFORT_TYPE_DOCS",
+    "FALLBACK_EFFORT",
     "EffortDefinition",
     "EffortValues",
+    "base_effort_values",
 ]
 
 # Made with ❤️ by codx-junior

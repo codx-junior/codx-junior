@@ -369,6 +369,47 @@ def _default_ignore_paths() -> List[str]:
     ]
 
 
+def _default_denied_tools() -> List[str]:
+    """Tools that may never receive a secret, whatever the grant says.
+
+    Two families: tools whose OUTPUT is model-visible text (a value passed in is
+    echoed back) and tools that PERSIST their arguments (a file, a task body, a
+    knowledge entry), which would write the credential into the repository. A
+    trailing ``*`` is a prefix match.
+    """
+    return [
+        "fetch_webpage*", "web_search*", "web_fetch*",
+        "security_*",
+        "project_write_file*", "apply_file_changes*", "code_writer*",
+        "create_task*", "project_manager*",
+        "profile_*", "knowledge_*",
+    ]
+
+
+@dataclass
+class SecretPolicy(CisoModel):
+    """Rules for the secrets resolver (``codx.junior.security.ciso.vault``).
+
+    Kept as a sub-model of :class:`CisoPolicy` so a deployment tightens it from
+    the same ``ciso_policy`` settings block and one edit changes every gate.
+    """
+
+    enabled: bool = True
+    allow_env_source: bool = True
+    require_grant: bool = True
+    audit: bool = True
+    denied_tools: List[str] = None
+    supported_sinks: List[str] = None
+
+    def __post_init__(self) -> None:
+        """Materialise the list defaults and coerce them."""
+        if self.denied_tools is None:
+            self.denied_tools = _default_denied_tools()
+        if self.supported_sinks is None:
+            self.supported_sinks = ["env", "stdin"]
+        super().__post_init__()
+
+
 @dataclass
 class CisoPolicy(CisoModel):
     """Security policy used to decide what happens with the findings.
@@ -396,6 +437,9 @@ class CisoPolicy(CisoModel):
     ignore_rules: List[str] = None
     allow_secret_files: List[str] = None
 
+    # Secrets resolver: handles the model can name, values it never sees.
+    secrets: SecretPolicy = None
+
     entropy_threshold: float = 4.2
     min_secret_length: int = 20
     max_scan_bytes: int = 1024 * 1024
@@ -417,6 +461,8 @@ class CisoPolicy(CisoModel):
             self.ignore_rules = []
         if self.allow_secret_files is None:
             self.allow_secret_files = []
+        if self.secrets is None:
+            self.secrets = SecretPolicy()
         super().__post_init__()
 
     def is_domain_enabled(self, domain: SecurityDomain) -> bool:

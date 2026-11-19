@@ -108,12 +108,10 @@ test('delete() DELETEs /api/efforts/{name}', () => {
   assert.deepEqual(lastCall(API), { method: 'delete', args: ['/api/efforts/fast'] })
 })
 
-test('load/create/save propagate the response, delete() resolves undefined', async () => {
+test('load/create/save/delete propagate the response', async () => {
   // The connection layer resolves the backend envelope (`{ status_code, message }`)
   // instead of throwing, so the module must not swallow it: the settings screen
-  // asserts on the value it gets back. `delete()` deliberately resolves
-  // `undefined` (same convention as `profiles.delete`), which is why the caller
-  // cannot treat its result as a response.
+  // inspects the value it gets back to surface a refused delete (409).
   const envelope = { status_code: 409, message: 'linked to profiles' }
   const respond = () => Promise.resolve(envelope)
   const efforts = effortsModule({
@@ -125,7 +123,7 @@ test('load/create/save propagate the response, delete() resolves undefined', asy
   assert.equal(await efforts.load('fast'), envelope)
   assert.equal(await efforts.create({ name: 'fast' }), envelope)
   assert.equal(await efforts.save('fast', {}), envelope)
-  assert.equal(await efforts.delete('fast'), undefined)
+  assert.equal(await efforts.delete('fast'), envelope)
 })
 
 test('every instance talks only through its own API object', () => {

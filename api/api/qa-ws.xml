@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.122" timestamp="2026-11-18T14:20:43.209936+00:00" hostname="0c78f27ca760"><testcase classname="codx-junior-platform.api.tests.harness.test_harness_profile" name="test_workspace_copy_matches_builtin" time="0.002"><failure message="AssertionError: ## What happened missing from /home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/profiles/codx-junior-max/codx-junior-max.md&#10;assert '## What happened' in '# codx-junior-max\n\nI am the heavy tier of the `codx-junior` harness: the SAME discipline, only with\na bigger budge...n: I report the increment and offer to\n  continue in the agile tier. Agile stays the default; `max` is the exception.'">def test_workspace_copy_matches_builtin():
+        """The workspace copy must stay in sync with the built-in profile.
+    
+        Byte equality is *not* the contract. When a profile is saved the application
+        serializes the loaded ``Profile`` back to ``.codx/profiles``, so the
+        workspace copy also carries the fields resolved at load time (``path``,
+        ``user``, ``guardrails``, ``effort_name``, ``project_id``) and is written
+        without the trailing newline. Re-syncing the bytes would be undone by the
+        next profile save, and copying those bytes into the built-in tree would
+        embed a machine-specific path and a user snapshot in the shipped profile.
+    
+        What must never drift is the meaning: identity, linked profiles, tools,
+        team, tags and the instruction content.
+        """
+        assert WORKSPACE_PROFILE.is_file()
+        workspace = Profile(**json.loads(WORKSPACE_PROFILE.read_text(encoding="utf-8")))
+        builtin = Profile(**json.loads(BUILTIN_PROFILE.read_text(encoding="utf-8")))
+        assert _synced_fields(workspace) == _synced_fields(builtin)
+    
+        assert WORKSPACE_MAX_PROFILE.is_file()
+        workspace_max = Profile(**json.loads(WORKSPACE_MAX_PROFILE.read_text(encoding="utf-8")))
+        builtin_max = Profile(**json.loads(MAX_PROFILE.read_text(encoding="utf-8")))
+        assert _synced_fields(workspace_max) == _synced_fields(builtin_max)
+    
+        # The workspace instructions are copies of the built-in content: they must
+        # still carry the delivery contract, never be emptied or replaced.
+        for path in (WORKSPACE_CONTENT, WORKSPACE_MAX_CONTENT):
+            assert path.is_file(), f"missing {path}"
+            text = _instruction_text(path)
+            assert text.strip(), f"empty instructions in {path}"
+            for marker in DELIVERY_MARKERS:
+&gt;               assert marker in text, f"{marker} missing from {path}"
+E               AssertionError: ## What happened missing from /home/codx-junior-projects/codx-junior/codx-junior-platform/.codx/profiles/codx-junior-max/codx-junior-max.md
+E               assert '## What happened' in '# codx-junior-max\n\nI am the heavy tier of the `codx-junior` harness: the SAME discipline, only with\na bigger budge...n: I report the increment and offer to\n  continue in the agile tier. Agile stays the default; `max` is the exception.'
+
+../tests/harness/test_harness_profile.py:138: AssertionError</failure></testcase></testsuite></testsuites>

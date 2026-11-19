@@ -31,7 +31,7 @@ import { EXTENSION_LANGUAGE_MAP } from '@/store'
     </div>
 
     <!-- File header (collapsed in slide mode until the top bar is clicked) -->
-    <div class="flex items-center gap-3 px-3 py-2 bg-base-200 border-b border-base-100 flex-shrink-0" v-if="!slideMode || slideHeaderOpen">
+    <div class="flex items-center gap-3 px-3 py-2 bg-base-200 border-b border-base-100 flex-shrink-0 min-w-0 overflow-hidden" v-if="!slideMode || slideHeaderOpen">
       <i :class="getHeaderIcon()"></i>
       <span
         class="text-sm font-mono font-semibold truncate cursor-move hover:opacity-75 transition-opacity"

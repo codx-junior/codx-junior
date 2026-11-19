@@ -82,6 +82,16 @@ export const chatsModule = (API) => ({
     return API.post('/api/chats/metadata', { chat_id: chatId, metadata })
   },
 
+  // ── Recurrence ("every friday at noon") ────────────────────────────────
+  // A recurrence is not plain metadata: the API parses the rule, arms
+  // `wake_at` to its next occurrence and remembers the home column, and the
+  // autonomy runtime re-arms it after every run. An empty `schedule` ends the
+  // series. `context` decides whether each run sees the previous ones
+  // ('history', same card) or starts clean ('clean', new card).
+  async scheduleChat({ chat_id, schedule, context, timezone }) {
+    return API.post('/api/chats/schedule', { chat_id, schedule, context, timezone })
+  },
+
   // ── Unsent draft (composer) ────────────────────────────────────────────
   // The draft is an "unsent" message the API keeps out of the conversation:
   // it never reaches the message list, the LLM prompt or the socket events.

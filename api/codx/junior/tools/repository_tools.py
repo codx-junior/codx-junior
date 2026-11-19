@@ -1224,6 +1224,296 @@ def repository_status(include_patch: bool = False, **kwargs) -> ToolResponse:
     )
 
 
+# -----------------------------------------------------------------------------
+# Staging and committing
+# -----------------------------------------------------------------------------
+
+# A single staging call accepts at most this many paths: a longer list is a
+# mistake (a whole repository staged by accident) and is refused.
+MAX_STAGE_PATHS = 500
+
+
+def _as_path_list(paths) -> List[str]:
+    """
+    Normalize the ``paths`` argument of the staging and commit tools.
+
+    Args:
+        paths: ``None``, a single path or a list of paths.
+
+    Returns:
+        The raw path strings, stripped, without empty values.
+
+    Example:
+        >>> _as_path_list("README.md")
+        ['README.md']
+    """
+    if paths is None:
+        return []
+    if isinstance(paths, str):
+        values = [paths]
+    elif isinstance(paths, (list, tuple, set)):
+        values = list(paths)
+    else:
+        values = [paths]
+
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _refuse_unless_allowed(command: str, settings) -> Optional[str]:
+    """
+    Run the CISO command gate over a command composed by a repository tool.
+
+    The repository tools never accept a free-form command: they build the
+    command themselves from validated arguments and hand the resulting string
+    to the same gate ``security_check_command`` exposes. Nothing is executed
+    when the gate blocks the command.
+
+    Args:
+        command: Command line composed by the tool.
+        settings: Project settings injected by the runtime (may be ``None``).
+
+    Returns:
+        ``None`` when the command may run, otherwise the reason it was refused.
+    """
+    from codx.junior.security.ciso import gate
+
+    verdict = gate.guard_command(command, settings=settings)
+    if getattr(verdict, "blocked", False):
+        summary = getattr(verdict, "summary", "") or "blocked by the CISO command gate"
+        return f"{summary} (`{command[:120]}`)"
+
+    return None
+
+
+def repository_stage(paths: Optional[List[str]] = None, **kwargs) -> ToolResponse:
+    """
+    Stage files so the next commit includes them.
+
+    The tool stages exactly the paths it is given. There is no "stage
+    everything" switch and no free-form command, so a destructive git operation
+    cannot be expressed through it. The composed ``git add`` is checked by the
+    CISO command gate before anything is staged.
+
+    Args:
+        paths: Single path or list of paths, repository relative or absolute.
+        **kwargs: Additional arguments including:
+            - settings (CODXJuniorSettings): Project settings, injected by the runtime.
+            - session: Project session, injected by the runtime when available.
+
+    Returns:
+        ToolResponse: Contains:
+            - user_response: Markdown list of the staged paths and the failures.
+            - llm_response: The staging result as JSON.
+
+    Example:
+        >>> repository_stage(paths=["README.md"], settings=settings).user_response
+        '### 📥 Staged\\n...'
+    """
+    try:
+        engine = _resolve_repo_engine(**kwargs)
+    except Exception as ex:
+        return _error_response("repository_stage", ex)
+
+    requested = _as_path_list(paths)
+    if not requested:
+        return ToolResponse(
+            user_response=(
+                "⚠️ **repository_stage** needs at least one path\n\n"
+                'Pass the files to stage, e.g. `paths=["README.md"]`. '
+                "Staging the whole repository in one call is not supported."
+            ),
+            llm_response="repository_stage: 'paths' is required.",
+        )
+    if len(requested) > MAX_STAGE_PATHS:
+        return ToolResponse(
+            user_response=(
+                f"⚠️ **repository_stage** received {len(requested)} paths "
+                f"(max {MAX_STAGE_PATHS})\n\nSplit the list into smaller calls."
+            ),
+            llm_response=(
+                f"repository_stage: too many paths ({len(requested)} > "
+                f"{MAX_STAGE_PATHS})."
+            ),
+        )
+
+    command = "git add -- " + " ".join(requested)
+    refusal = _refuse_unless_allowed(command, kwargs.get("settings"))
+    if refusal:
+        return ToolResponse(
+            user_response=(
+                f"⛔ **repository_stage** refused by the security gate\n\n> {refusal}"
+            ),
+            llm_response=f"repository_stage refused by the security gate: {refusal}",
+            logs=[f"repository_stage refused: {refusal}"],
+        )
+
+    try:
+        result = engine.stage_files(requested)
+    except Exception as ex:
+        return _error_response("repository_stage", ex)
+
+    staged = result.get("staged") or []
+    errors = result.get("errors") or []
+
+    lines: List[str] = ["### 📥 Staged", ""]
+    if staged:
+        lines.append(f"- **Staged**: {len(staged)} path(s)")
+        lines += [f"  - `{path}`" for path in staged]
+    else:
+        lines.append("- **Staged**: nothing")
+
+    if errors:
+        lines += ["", "**Failures**"] + [f"- {error}" for error in errors]
+    if result.get("locked"):
+        lock_path = result.get("lock_path") or ".git/index.lock"
+        lines += ["", f"⚠️ The repository is locked (`{lock_path}`)."]
+
+    return ToolResponse(
+        user_response="\n".join(lines),
+        llm_response=json.dumps(
+            {
+                "command": command,
+                "staged": staged,
+                "errors": errors,
+                "locked": bool(result.get("locked")),
+            },
+            indent=2,
+        ),
+        logs=[f"repository_stage: {len(staged)} staged, {len(errors)} error(s)"],
+    )
+
+
+def repository_commit(
+    message: str,
+    paths: Optional[List[str]] = None,
+    allow_empty: bool = False,
+    **kwargs,
+) -> ToolResponse:
+    """
+    Commit changes with a message that follows the 50/72 rule.
+
+    Without ``paths`` the commit contains what is already staged (``git commit
+    -m``). With ``paths`` only those files are staged first and then committed,
+    so changes nobody named are never swept into the commit. The composed git
+    command is checked by the CISO command gate before anything runs.
+
+    Args:
+        message: Commit message (subject of at most 50 characters, body lines of
+            at most 72 — see ``repository_commit_message``).
+        paths: Optional files to stage before committing.
+        allow_empty: Allow a commit with no content changes.
+        **kwargs: Additional arguments including:
+            - settings (CODXJuniorSettings): Project settings, injected by the runtime.
+            - session: Project session, injected by the runtime when available.
+
+    Returns:
+        ToolResponse: Contains:
+            - user_response: The commit hash and message, or the failure.
+            - llm_response: The commit result as JSON.
+
+    Example:
+        >>> repository_commit(message="fix: guard the staging tool",
+        ...                   settings=settings).user_response
+        '### ✅ Commit created\\n...'
+    """
+    try:
+        engine = _resolve_repo_engine(**kwargs)
+    except Exception as ex:
+        return _error_response("repository_commit", ex)
+
+    message = (message or "").strip()
+    if not message:
+        return ToolResponse(
+            user_response=(
+                "⚠️ **repository_commit** needs a commit message\n\n"
+                "Build one with `repository_commit_message` first."
+            ),
+            llm_response="repository_commit: 'message' is required.",
+        )
+
+    requested = _as_path_list(paths)
+    if len(requested) > MAX_STAGE_PATHS:
+        return ToolResponse(
+            user_response=(
+                f"⚠️ **repository_commit** received {len(requested)} paths "
+                f"(max {MAX_STAGE_PATHS})\n\nSplit the list into smaller calls."
+            ),
+            llm_response=(
+                f"repository_commit: too many paths ({len(requested)} > "
+                f"{MAX_STAGE_PATHS})."
+            ),
+        )
+
+    stage_all = not requested
+    if stage_all:
+        command = f'git commit -m "{message}"'
+    else:
+        command = f'git add -- {" ".join(requested)} && git commit -m "{message}"'
+
+    refusal = _refuse_unless_allowed(command, kwargs.get("settings"))
+    if refusal:
+        return ToolResponse(
+            user_response=(
+                f"⛔ **repository_commit** refused by the security gate\n\n> {refusal}"
+            ),
+            llm_response=f"repository_commit refused by the security gate: {refusal}",
+            logs=[f"repository_commit refused: {refusal}"],
+        )
+
+    staging_errors: List[str] = []
+    try:
+        if requested:
+            stage_result = engine.stage_files(requested)
+            staging_errors = stage_result.get("errors") or []
+        result = engine.commit_changes(
+            message=message, stage_all=stage_all, allow_empty=allow_empty
+        )
+    except Exception as ex:
+        return _error_response("repository_commit", ex)
+
+    success = bool(result.get("success"))
+    errors = list(result.get("errors") or [])
+    if not success and not errors:
+        errors = ["Could not commit changes"]
+
+    lines: List[str] = []
+    if success:
+        short_commit = result.get("short_commit") or result.get("commit") or ""
+        lines += [
+            "### ✅ Commit created",
+            "",
+            f"- **Commit**: `{short_commit}`",
+            f"- **Message**: {message.splitlines()[0]}",
+            f"- **Content**: {'the files given in `paths`' if not stage_all else 'already staged files'}",
+        ]
+    else:
+        lines += ["### ❌ Commit failed", ""]
+        lines += [f"- {error}" for error in errors]
+
+    if staging_errors:
+        lines += ["", "**Staging failures**"] + [f"- {error}" for error in staging_errors]
+
+    return ToolResponse(
+        user_response="\n".join(lines),
+        llm_response=json.dumps(
+            {
+                "command": command,
+                "success": success,
+                "commit": result.get("commit", ""),
+                "short_commit": result.get("short_commit", ""),
+                "message": message,
+                "stage_all": stage_all,
+                "errors": errors,
+                "staging_errors": staging_errors,
+            },
+            indent=2,
+        ),
+        logs=[
+            f"repository_commit: {'ok ' + str(result.get('short_commit', '')) if success else 'failed'}"
+        ],
+    )
+
+
 def repository_branches(
     include_remote: bool = True,
     limit: int = 200,

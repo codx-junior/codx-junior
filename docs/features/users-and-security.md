@@ -5,6 +5,8 @@
 Admins manage users in **Global settings → Users**. Each user has:
 
 * a username, email, avatar and theme,
+* an **assistant language** (`auto`, `en`, `es`, …) used by chat answers and
+  [voice calls](/features/voice-conversation),
 * a **role**: `admin` or `user`,
 * **project permissions**, optionally inherited by sub-projects,
 * access to specific **workspace apps**,

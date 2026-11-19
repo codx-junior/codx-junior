@@ -85,7 +85,8 @@ from codx.junior.settings import (
   CODXJuniorSettings
 )
 from codx.junior.global_settings import (
-  read_global_settings
+  read_global_settings,
+  validate_signing_secret_at_startup,
 )
 
 from codx.junior.engine import (
@@ -240,6 +241,17 @@ APP_STOP_EVENT = asyncio.Event()
     
 @app.on_event("startup")
 async def startup_event():
+    # Security gate: tokens used to be signed with the 17-byte constant
+    # "codx-junior-rules", shipped in the source tree and therefore shared by
+    # every installation. Replace it (and refuse to start when the
+    # replacement cannot be persisted) before serving a single request.
+    try:
+        validate_signing_secret_at_startup()
+    except RuntimeError:
+        logger.exception(
+            "JWT signing secret validation failed: refusing to start"
+        )
+        raise
     start_background_services(APP_STOP_EVENT)
     # Resume chat turns interrupted by a previous shutdown/crash. Runs in the
     # API process too (not only in the background one): the per-turn flock

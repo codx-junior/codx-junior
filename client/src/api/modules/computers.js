@@ -102,6 +102,66 @@ export const computersModule = (API) => ({
     return API.connection.getBlob(`/api/computers/library/${itemId}/preview`)
   },
 
+  // ── Custom coworking images (.codx/coworking/images) ──────────────────
+
+  /**
+   * Browse the team's custom coworking images.
+   *
+   * Visibility is resolved by the backend (`user`, `project`, `custom` project
+   * list, `global`); admins see every definition.
+   *
+   * @param {Object} [filters] - q, visibility, tag.
+   */
+  async coworkingImages(filters = {}) {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        params.set(key, String(value))
+      }
+    })
+    const qs = params.toString()
+    return API.get(`/api/computers/library/custom${qs ? `?${qs}` : ''}`)
+  },
+
+  /** Create the definition folder (manifest + Dockerfile/README scaffold). */
+  async createCoworkingImage(payload) {
+    return API.post('/api/computers/library/custom', payload)
+  },
+
+  /** Import a Docker Hub image or a git repository that ships a Dockerfile. */
+  async importCoworkingImage(payload) {
+    return API.post('/api/computers/library/custom/import', payload)
+  },
+
+  async coworkingImage(imageId) {
+    return API.get(`/api/computers/library/custom/${imageId}`)
+  },
+
+  /** Change name, tags, media or visibility of an image. */
+  async updateCoworkingImage(imageId, payload) {
+    return API.put(`/api/computers/library/custom/${imageId}`, payload)
+  },
+
+  async deleteCoworkingImage(imageId) {
+    return API.delete(`/api/computers/library/custom/${imageId}`)
+  },
+
+  /** Files of the definition folder (manifest, Dockerfile, support, media). */
+  async coworkingImageFiles(imageId) {
+    return API.get(`/api/computers/library/custom/${imageId}/files`)
+  },
+
+  /** Read one file of the definition folder. */
+  async coworkingImageFile(imageId, path) {
+    const params = new URLSearchParams({ path })
+    return API.get(`/api/computers/library/custom/${imageId}/file?${params.toString()}`)
+  },
+
+  /** Write one file of the definition folder (Dockerfile, support files...). */
+  async writeCoworkingImageFile(imageId, path, content) {
+    return API.put(`/api/computers/library/custom/${imageId}/file`, { path, content })
+  },
+
   // ── CRUD & lifecycle ────────────────────────────────────────────────────
 
   async create(payload) {
@@ -219,6 +279,86 @@ export const computersModule = (API) => ({
 
   async source(sessionId) {
     return API.get(`/api/computers/${sessionId}/source`)
+  },
+
+  // ── Recording + reusable recipes ───────────────────────────────────────
+
+  /**
+   * Current recording state and the recipes for the session's site.
+   *
+   * The recording is stored server-side next to the activity log, so a page
+   * reload (or another chat) still sees an in-flight recording.
+   */
+  async recording(sessionId) {
+    return API.get(`/api/computers/${sessionId}/recording`)
+  },
+
+  /** Start capturing the human's clicks/typing into replayable steps. */
+  async startRecording(sessionId, payload = {}) {
+    return API.post(`/api/computers/${sessionId}/recording/start`, payload)
+  },
+
+  /** Stop and get the generated step preview. */
+  async stopRecording(sessionId) {
+    return API.post(`/api/computers/${sessionId}/recording/stop`, {})
+  },
+
+  /**
+   * Save the preview (optionally edited) as a recipe.
+   *
+   * Passing `script_id` updates that recipe in place: the previous body is
+   * archived and the version is bumped by the backend.
+   */
+  async saveRecording(sessionId, payload) {
+    return API.post(`/api/computers/${sessionId}/recording/save`, payload)
+  },
+
+  async cancelRecording(sessionId) {
+    return API.delete(`/api/computers/${sessionId}/recording`)
+  },
+
+  /**
+   * Review the stopped recording with codx-junior and convert it into steps.
+   *
+   * `save=true` updates the targeted recipe in place (or creates one). The
+   * deterministic recorder steps are the fallback when the AI is unavailable.
+   */
+  async analyzeRecording(sessionId, payload = {}) {
+    return API.post(`/api/computers/${sessionId}/recording/analyze`, {
+      save: true,
+      use_ai: true,
+      ...payload
+    })
+  },
+
+  async scripts(sessionId, { site = null, query = null, limit = 50 } = {}) {
+    const params = new URLSearchParams()
+    if (site) params.set('site', site)
+    if (query) params.set('query', query)
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString()
+    return API.get(`/api/computers/${sessionId}/scripts${qs ? `?${qs}` : ''}`)
+  },
+
+  async script(sessionId, scriptId) {
+    return API.get(`/api/computers/${sessionId}/scripts/${scriptId}`)
+  },
+
+  async updateScript(sessionId, scriptId, payload) {
+    return API.put(`/api/computers/${sessionId}/scripts/${scriptId}`, payload)
+  },
+
+  async deleteScript(sessionId, scriptId, hard = false) {
+    const qs = hard ? '?hard=true' : ''
+    return API.delete(`/api/computers/${sessionId}/scripts/${scriptId}${qs}`)
+  },
+
+  /** Run the whole recipe on the shared browser (one round-trip). */
+  async runScript(sessionId, scriptId, variables = {}) {
+    return API.post(`/api/computers/${sessionId}/scripts/${scriptId}/run`, {
+      variables,
+      force: true
+    })
   },
 
   // ── Co-driving audit + cost ────────────────────────────────────────────

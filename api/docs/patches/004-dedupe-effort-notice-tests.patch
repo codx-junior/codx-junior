@@ -1,0 +1,84 @@
+# 004 — remove the duplicated EFFORT-STOP NOTICE test block
+#
+# Card: b09a3762-b6b4-42d9-a744-b93a55717a8a
+# Target: tests/ai/smol/test_model_transport.py (461 lines)
+# Format: find-replace/1 (see codx/junior/file_patch/format.py)
+# Apply:  apply_file_patch(path="tests/ai/smol/test_model_transport.py", patch=<body below>)
+#         or validate_file_patch(...) first to get the diff + sha256.
+#
+# Problem
+# ------- The three effort-notice tests are declared twice:
+#   lines 354-383 (first copies) and lines 425-454 (second copies), byte-identical,
+#   each preceded by the same 3-line "EFFORT-STOP NOTICE" box. Python rebinds the
+#   module-level names, so pytest silently collects only the second trio and the
+#   first trio is dead code. The file then ends (457-459) on a "LOOP LIMIT
+#   PRECEDENCE" box with ZERO tests under it — the fingerprint of a cut edit.
+#
+# Fix
+# --- Delete lines 420-461 in one hunk: the duplicated box + the three duplicated
+#   tests + the orphan "LOOP LIMIT PRECEDENCE" box. Keep the originals at 354-383.
+#   Net: -42 lines, collected test count unchanged (6 effort tests: 3 notice
+#   tests + test_loop_limits_come_from_the_effort_policy, test_profile_effort_
+#   overrides_the_tier_defaults, test_effort_header_is_parsed, test_effort_config
+#   _dict_is_accepted, test_invalid_effort_header_is_ignored).
+#
+# Notes
+# ----- The FIND block covers BOTH boxes, so it occurs exactly once (the
+#   "LOOP LIMIT PRECEDENCE" box exists nowhere else in the file). If the service
+#   reports that FIND matches more than once, split it in two hunks and add the
+#   tie-breaker `at=420` to the first one (documented in format.py: at=<line>
+#   only breaks ties between already-verified occurrences).
+#   REPLACE is empty: the file then ends after line 417
+#   (`assert agent._resolve_effort_settings({}, {"effort": "not-json"}) == {}`),
+#   which is a syntactically complete module.
+#
+# Verification (needs a test runner — this profile is not granted one, see 682e5f02)
+#   python -m pytest tests/ai/smol/test_model_transport.py -v
+#   expect: same collected count before and after (no test silently disappears),
+#           all green, and `grep -c "def test_loop_limit_notice" file` == 3.
+
+file: tests/ai/smol/test_model_transport.py
+
+<<<<<<< FIND
+# ──────────────────────────────────────────────────────────────────────────────
+# EFFORT-STOP NOTICE
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_loop_limit_notice_explains_how_to_raise_effort(agent):
+    notice = agent._build_loop_limit_notice(
+        "Maximum tool rounds (80) exceeded.",
+        default_policy(),
+        max_iterations=80,
+    )
+    assert "Turn paused by the effort budget" in notice
+    assert "Maximum tool rounds (80) exceeded." in notice
+    assert "80 model rounds" in notice
+    assert "@codx-junior-max" in notice
+
+
+def test_loop_limit_notice_for_agile_tier(agent):
+    notice = agent._build_loop_limit_notice(
+        "Maximum tool rounds (10) exceeded.",
+        agile_policy(),
+    )
+    assert "continuations" in notice
+    assert "@codx-junior-max" in notice
+    assert "effort.max_iterations" in notice
+
+
+def test_loop_limit_notice_for_max_tier(agent):
+    notice = agent._build_loop_limit_notice(
+        "Maximum tool rounds (24) exceeded.",
+        max_policy(),
+    )
+    assert "continuations" in notice
+    assert "Split the task" in notice
+    assert "effort.max_iterations" in notice
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOOP LIMIT PRECEDENCE
+# ──────────────────────────────────────────────────────────────────────────────
+=======
+>>>>>>> REPLACE

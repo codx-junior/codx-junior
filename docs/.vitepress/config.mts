@@ -6,6 +6,10 @@ export default defineConfig({
   description: 'The open-source workspace transforming how software projects are built.',
   lang: 'en-US',
   base: '/',
+  // Internal engineering reviews live next to the feature pages they audit. They
+  // are not in the sidebar, but the build would publish them and the local search
+  // index (search.provider 'local') would surface them. Keep them off the site.
+  srcExclude: ['features/workspaces-*-review.md'],
   // Many cross-links are added as features grow; don't fail the build on them.
   ignoreDeadLinks: true,
   head: [
@@ -40,6 +44,8 @@ export default defineConfig({
           items: [
             { text: 'Overview', link: '/features/' },
             { text: 'Chats and agents', link: '/features/chats-and-agents' },
+            { text: 'Suggested replies', link: '/features/suggested-replies' },
+            { text: 'Voice conversation', link: '/features/voice-conversation' },
             { text: 'Kanban and tasks', link: '/features/kanban' },
             { text: 'codx-junior harness (@codx-junior)', link: '/features/codx-junior-harness' },
             { text: 'DSH task sync', link: '/features/dsh-sync' },
@@ -54,6 +60,7 @@ export default defineConfig({
             { text: 'Profiles', link: '/features/profiles' },
             { text: '@codx mentions', link: '/features/mentions' },
             { text: 'Wiki', link: '/features/wiki' },
+            { text: 'CISO (security view)', link: '/features/ciso' },
             { text: 'Git and code review', link: '/features/code-review' },
             { text: 'AI providers and models', link: '/features/ai-providers' },
             { text: 'MCP connections', link: '/features/mcp-connections' },

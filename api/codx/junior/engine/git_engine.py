@@ -3181,7 +3181,8 @@ class GitEngine:
         }
 
     def _commit_all(
-        self, cwd: str, message: str, allow_empty: bool = True
+        self, cwd: str, message: str, allow_empty: bool = True,
+        no_verify: bool = False,
     ) -> dict:
         """
         Stage every change and commit it.
@@ -3217,6 +3218,8 @@ class GitEngine:
         args = ["commit", "-m", message]
         if allow_empty:
             args.append("--allow-empty")
+        if no_verify:
+            args.append("--no-verify")
         commit = self._run_git(args, cwd=cwd)
 
         return {
@@ -4156,6 +4159,7 @@ class GitEngine:
         message: str,
         stage_all: bool = True,
         allow_empty: bool = False,
+        no_verify: bool = False,
     ) -> dict:
         """
         Commit the working tree changes.
@@ -4168,6 +4172,11 @@ class GitEngine:
             message: Commit message.
             stage_all: Stage every change before committing (``git add -A``).
             allow_empty: Allow commits with no content changes.
+            no_verify: Commit with ``--no-verify``, skipping the git hooks (the
+                CISO pre-commit secret gate among them). This is the human
+                waiver exposed by the git view: the caller takes the decision to
+                commit a finding, so the result records it in 'ciso_waived' and
+                the caller must surface it.
 
         Returns:
             Operation result dict with 'commit' (full hash), 'short_commit'
@@ -4184,12 +4193,17 @@ class GitEngine:
         repo_path = self._get_repo_root()
         if stage_all:
             result = self._commit_all(
-                cwd=repo_path, message=message, allow_empty=allow_empty
+                cwd=repo_path,
+                message=message,
+                allow_empty=allow_empty,
+                no_verify=no_verify,
             )
         else:
             args: List[str] = ["commit", "-m", message]
             if allow_empty:
                 args.append("--allow-empty")
+            if no_verify:
+                args.append("--no-verify")
             result = self._run_git(args, cwd=repo_path)
 
         response = self._git_operation_result(
@@ -4198,6 +4212,10 @@ class GitEngine:
             stage_all=stage_all,
             staging_errors=result.get("staging_errors", []),
         )
+        if no_verify:
+            # Recorded so the waiver is never silent: the git view shows it and
+            # the review of this commit knows the hooks were skipped.
+            response["ciso_waived"] = True
         if not response["success"]:
             error = (result["error"] or result["output"] or "").strip()
             response["errors"] = [error or "Could not commit changes"]

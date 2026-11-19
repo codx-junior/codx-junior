@@ -55,6 +55,7 @@ import UserSelector from '../chat/UserSelector.vue'
             :chat="chat"
             :message="message"
             v-for="message in chatMessages" :key="message.id"
+            @answer-option="onResponseOption"
           />
         </div>
         <div class="text-xs text-info" v-if="$session.lastEvent?.chat?.id === chat.id">{{ $session.lastEvent?.text }}</div>
@@ -103,6 +104,14 @@ export default {
   },
   watch: {},
   methods: {
+    // A suggested reply populates the assistant's query box and follows the
+    // normal send path (including the project mention when no profile is set).
+    onResponseOption({ option } = {}) {
+      const value = String(option?.value ?? option?.label ?? '').trim()
+      if (!value) return
+      this.query = value
+      this.sendMessage()
+    },
     async newChat(query) {
       const column = moment().format("YYYY-MM-DD")
       const name = `${query.replace(/[^a-zA-Z0-9 ]/g, '-').slice(0, 20)} - ${moment().format("hhmmss")}` 

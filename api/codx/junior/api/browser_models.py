@@ -631,3 +631,95 @@ class ComputerViewerCredentialsResponse(BaseModel):
     user: Optional[str] = None
     password: Optional[str] = None
     note: Optional[str] = None
+
+# ============================================================================
+# Recording + reusable browser scripts
+# ============================================================================
+
+class BrowserRecordingState(BaseModel):
+    """State of the recording attached to a browser session."""
+
+    session_id: str
+    active: bool = False
+    started_at: Optional[str] = None
+    stopped_at: Optional[str] = None
+    start_url: Optional[str] = None
+    start_title: Optional[str] = None
+    title: str = ""
+    description: str = ""
+    site: str = ""
+    tags: List[str] = Field(default_factory=list)
+    script_id: Optional[str] = Field(default=None, description="Existing script this recording updates")
+    saved_script_id: Optional[str] = Field(default=None, description="Script created by the last save")
+    event_count: int = 0
+    elapsed_seconds: int = 0
+    step_count: int = 0
+
+
+class BrowserRecordingStartRequest(BaseModel):
+    """Start recording the human's actions in the live browser."""
+
+    title: Optional[str] = Field(default=None, description="Human title, e.g. 'Create a post'")
+    description: Optional[str] = Field(default=None, description="What the flow does")
+    site: Optional[str] = Field(default=None, description="Domain; inferred from the current URL")
+    tags: Optional[List[str]] = Field(default=None, description="Searchable labels")
+    script_id: Optional[str] = Field(
+        default=None, description="Existing script id to update instead of creating a new one"
+    )
+
+
+class BrowserRecordingStopResponse(BaseModel):
+    """Preview produced when a recording stops."""
+
+    recording: BrowserRecordingState
+    steps: List[Dict[str, Any]] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    variables: List[str] = Field(default_factory=list)
+    event_count: int = 0
+    skipped: int = 0
+    truncated: bool = False
+    suggested_title: str = ""
+    existing_scripts: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class BrowserRecordingSaveRequest(BaseModel):
+    """Save the preview as a reusable per-site script."""
+
+    title: str = Field(description="Human title, e.g. 'Create a post'")
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        default=None, description="Steps to save; when omitted the stopped recording is used"
+    )
+    site: Optional[str] = None
+    description: str = ""
+    tags: Optional[List[str]] = None
+    script_id: Optional[str] = Field(default=None, description="Existing script to update (version bump)")
+
+
+class BrowserScriptSaveRequest(BaseModel):
+    """Edit an existing script from the recipe list."""
+
+    title: Optional[str] = None
+    steps: List[Dict[str, Any]] = Field(description="Full step list")
+    site: Optional[str] = None
+    description: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class BrowserScriptRunRequest(BaseModel):
+    """Run a saved recipe on the shared browser."""
+
+    variables: Dict[str, Any] = Field(default_factory=dict)
+    force: bool = Field(default=True, description="The human clicked Run: bypass the AI lease")
+
+
+class BrowserRecordingAnalyzeRequest(BaseModel):
+    """Analyze a stopped recording and optionally update the recipe."""
+
+    save: bool = Field(default=True, description="Persist the reviewed steps into the recipe")
+    script_id: Optional[str] = Field(
+        default=None, description="Recipe to update; defaults to the one selected when recording started"
+    )
+    use_ai: bool = Field(default=True, description="Ask the project's model to review the transcript")
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        default=None, description="Optional edited steps to use as the deterministic baseline"
+    )

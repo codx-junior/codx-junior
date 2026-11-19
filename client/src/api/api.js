@@ -16,6 +16,7 @@ import { workspacesModule } from './modules/workspaces'
 import { browsersModule } from './modules/browsers'
 import { computersModule } from './modules/computers'
 import { meetsModule } from './modules/meets'
+import { voiceModule } from './modules/voice'
 import { calendarModule } from './modules/calendar'
 import { infraModule } from './modules/infra'
 import { repoModule } from './modules/repo'
@@ -868,6 +869,18 @@ const initializeAPI = ({ project, user } = {}) => {
         API._meetsModule = meetsModule(API)
       }
       return API._meetsModule
+    },
+
+    /**
+     * Voice conversations: call lifecycle, chat switching and the optional
+     * server speech backends. The transcript itself uses the normal chat API.
+     * See api/modules/voice.js and codx/junior/api/voice.py.
+     */
+    get voice() {
+      if (!API._voiceModule) {
+        API._voiceModule = voiceModule(API)
+      }
+      return API._voiceModule
     },
 
     run: {

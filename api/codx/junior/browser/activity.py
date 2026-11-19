@@ -146,12 +146,40 @@ class BrowserActivityLog:
 _SENSITIVE_VALUE_ACTIONS = {"fill", "type", "select", "press", "insert_text", "clipboard_set"}
 
 
+def _safe_nested(value: Any, depth: int = 0) -> Any:
+    """Sanitize a nested value while keeping its JSON shape.
+
+    The recorder's ``target`` is an object.  It used to be stored as
+    ``str(dict)``, which made the audit trail unreadable for tools and made
+    recording→script conversion parse Python literals.  Keep dicts/lists as
+    data, bound the string lengths and recurse a few levels.
+    """
+    if depth > 4:
+        return str(value)[:2000]
+    if isinstance(value, dict):
+        return {
+            str(key): _safe_nested(item, depth + 1)
+            for key, item in list(value.items())[:40]
+            if key not in ("settings", "session", "tool_cache")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_nested(item, depth + 1) for item in list(value)[:100]]
+    if isinstance(value, str):
+        return value[:4000]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)[:2000]
+
+
 def _safe_params(params: Optional[Dict[str, Any]], action: str = "") -> Dict[str, Any]:
     """Trim/redact action parameters before persisting them.
 
     A password typed by the AI must never be written to ``activity.jsonl`` in
     plaintext.  For input actions the value is replaced with ``"***"`` and its
     length is kept so the audit trail still shows that something was entered.
+
+    Nested objects (the recorder ``target``) keep their shape: tools and the
+    recording→script converter need the selector, tag and element text.
     """
     if not params:
         return {}
@@ -171,12 +199,7 @@ def _safe_params(params: Optional[Dict[str, Any]], action: str = "") -> Dict[str
             if len(value) > 500:
                 safe["script_truncated"] = True
             continue
-        if isinstance(value, str):
-            safe[key] = value[:2000]
-        elif isinstance(value, (int, float, bool)) or value is None:
-            safe[key] = value
-        else:
-            safe[key] = str(value)[:2000]
+        safe[key] = _safe_nested(value)
     return safe
 
 

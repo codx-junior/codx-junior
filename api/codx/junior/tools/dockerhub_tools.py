@@ -25,6 +25,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -446,6 +447,22 @@ def _project_dir(settings) -> str:
     return os.getcwd()
 
 
+def _publish_log_path(project_dir: str) -> str:
+    """Return the per-run log file that captures one publish (build + push).
+
+    The file is written under ``<project>/.codx/logs`` so a long build can be
+    followed while it runs and inspected after the tool call returned.
+    """
+    log_dir = os.path.join(project_dir, ".codx", "logs")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError:  # pragma: no cover - read-only project, fall back to /tmp
+        log_dir = os.path.join("/tmp", "codx-junior-logs")
+        os.makedirs(log_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return os.path.join(log_dir, f"dockerhub_publish-{stamp}.log")
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -506,7 +523,7 @@ def dockerhub_publish(
     push: bool = True,
     no_cache: bool = False,
     dry_run: bool = False,
-    timeout: int = 1800,
+    timeout: Optional[int] = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -526,7 +543,9 @@ def dockerhub_publish(
         push: Push to the registry (requires ``DOCKERHUB_TOKEN``).
         no_cache: Disable the build cache.
         dry_run: Only print the docker commands.
-        timeout: Seconds before the build is killed (60-3600).
+        timeout: Optional hard limit in seconds. Omitted, ``0`` or a negative
+            value means **no timeout**, so a cold multi-arch publish is allowed
+            to run to completion. A positive value must be at least 60.
         **kwargs: settings / user injected by the engine.
 
     Returns:
@@ -535,8 +554,18 @@ def dockerhub_publish(
     settings = kwargs.get("settings")
     _bind(settings)
     try:
-        if not isinstance(timeout, int) or timeout < 60 or timeout > 3600:
-            raise ValueError("timeout must be an integer between 60-3600 seconds")
+        # A publish can legitimately take hours (cold cache, multi-arch), so the
+        # timeout is OPTIONAL: None/0/negative waits as long as the build needs.
+        if timeout is None:
+            limit = 0
+        else:
+            if not isinstance(timeout, int):
+                raise ValueError("timeout must be an integer or omitted")
+            if 0 < timeout < 60:
+                raise ValueError(
+                    "timeout must be 0 (no limit) or at least 60 seconds"
+                )
+            limit = timeout if timeout > 0 else 0
 
         project_dir = _project_dir(settings)
         script = os.path.join(project_dir, PUBLISH_SCRIPT)
@@ -594,27 +623,59 @@ def dockerhub_publish(
             env[TOKEN_NAME] = token
 
         command = ["bash", script]
-        logger.info("Publishing %s/%s tags=%s", target_namespace, repository, tag_list)
-        completed = subprocess.run(  # noqa: S603 - fixed script, no shell
-            command,
-            cwd=project_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-
         refs = [f"{target_namespace}/{repository}:{tag}" for tag in tag_list]
-        tail = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()[-4000:]
-        if completed.returncode != 0:
+        log_path = _publish_log_path(project_dir)
+        logger.info(
+            "Publishing %s/%s tags=%s limit=%s log=%s",
+            target_namespace,
+            repository,
+            tag_list,
+            limit or "none",
+            log_path,
+        )
+        # The child writes straight to its own log file instead of a pipe, so a
+        # long publish keeps making progress (and stays readable) even after the
+        # tool call is abandoned by the agent loop.
+        with open(log_path, "w", encoding="utf-8") as log_file:
+            process = subprocess.Popen(  # noqa: S603 - fixed script, no shell
+                command,
+                cwd=project_dir,
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            try:
+                returncode = process.wait(timeout=limit or None)
+            except subprocess.TimeoutExpired:
+                return ToolResponse(
+                    user_response=(
+                        f"Publish still running after {limit}s: "
+                        f"{', '.join(refs)}\n\n"
+                        "The build was NOT killed. "
+                        f"Follow it in `{log_path}`."
+                    ),
+                    llm_response=(
+                        f"dockerhub_publish is still running after {limit}s; "
+                        f"pid {process.pid}, log {log_path}. Nothing failed: "
+                        "re-run with timeout=0 (or omit it) for no limit."
+                    ),
+                )
+
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as log_file:
+                tail = log_file.read().strip()[-4000:]
+        except OSError:  # pragma: no cover - the log always exists here
+            tail = ""
+        if returncode != 0:
             return ToolResponse(
                 user_response=(
                     f"Publish failed for {', '.join(refs)} "
-                    f"(exit {completed.returncode})\n\n```\n{tail}\n```"
+                    f"(exit {returncode})\n\n```\n{tail}\n```"
                 ),
                 llm_response=(
                     f"`{' '.join(shlex.quote(part) for part in command)}` exited "
-                    f"{completed.returncode}.\nOutput:\n{tail}"
+                    f"{returncode}.\nOutput:\n{tail}"
                 ),
             )
 
@@ -916,8 +977,10 @@ DOCKERHUB_PUBLISH_TOOL_JSON = {
                 },
                 "timeout": {
                     "type": "integer",
-                    "description": "Seconds before the build is killed (60-3600).",
-                    "default": 1800
+                    "description": (
+                        "Optional hard limit in seconds. Omit it (or send 0) "
+                        "for no limit, so a long publish runs to completion."
+                    )
                 }
             },
             "required": []

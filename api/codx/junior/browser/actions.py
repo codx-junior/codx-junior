@@ -178,7 +178,10 @@ async def _wait(browser, step):
             await asyncio.sleep(0.2)
             elapsed += 0.2
         raise TimeoutError(f"URL did not contain {step['url']!r} within {timeout}ms")
-    raise ValueError("wait needs target text, selector or url")
+    # A plain wait is a bounded sleep: the AI may add it after a click that
+    # starts a slow SPA transition, where no selector is predictable yet.
+    await asyncio.sleep(timeout / 1000.0)
+    return None
 
 
 async def _extract(browser, step):

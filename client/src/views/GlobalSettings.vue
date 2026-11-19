@@ -210,9 +210,32 @@ export default {
     async saveSettings() {
       await this.$storex.api.settings.global.write(this.settings)
       await this.loadSettings()
+      this.syncCurrentUserLanguage()
       this.$projects.loadAllProjects()
       this.$projects.reloadProject()
       this.$ui.addNotification({ text: 'Settings saved successfully' })
+    },
+    /**
+     * The users tab edits the global users list, not the in-memory API.user.
+     * When an admin changes their own language there, reflect it immediately
+     * (the next voice call reads API.user.language).
+     */
+    syncCurrentUserLanguage() {
+      const current = this.$storex.api.user
+      if (!current?.username) return
+      const saved = (this.settings.users || []).find(
+        user => user.username === current.username
+      )
+      if (!saved) return
+      const language = saved.language || 'auto'
+      if (current.language === language) return
+      current.language = language
+      try {
+        localStorage.setItem('CODX_USER', JSON.stringify(current))
+      } catch (error) {
+        // Storage can be unavailable in private mode; the live object is enough.
+      }
+      this.$storex.users.bumpUserRevision()
     },
     reloadSettings() {
       this.loadSettings()

@@ -152,6 +152,17 @@ import ChatAttachment from '@/api/model/ChatAttachment.js'
               :attachments="homeMessage.attachments"
               @remove-attachment="removeHomeAttachment"
             />
+
+            <!-- Voice mode from scratch: opens the call setup without a chat.
+                 "New conversation" there creates the chat automatically. -->
+            <button
+              type="button"
+              class="mt-3 inline-flex items-center gap-2 rounded-full border border-codx-primary/30 bg-codx-primary/10 px-3 py-1.5 text-xs font-medium text-codx-primary transition-colors hover:bg-codx-primary/20"
+              @click="$voice.openSetup()"
+            >
+              <i class="fa-solid fa-phone"></i>
+              Start a voice call
+            </button>
           </div>
 
           <!-- Mobile quick starts: one tap fills the composer so a phone user

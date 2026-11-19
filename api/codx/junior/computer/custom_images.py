@@ -275,15 +275,14 @@ def _git_build_script(git_url: str, git_ref: str, image: str) -> str:
 set -euo pipefail
 
 REPO="{git_url}"
-REF="{ref}"
 IMAGE="{image}"
 
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
-git clone --depth 1 --branch "$REF" "$REPO" "$workdir/repo"
+git clone --depth 1 --branch "{ref}" "$REPO" "$workdir/repo"
 docker build -t "$IMAGE" "$workdir/repo"
-echo "Built $IMAGE from $REPO@$REF"
+echo "Built $IMAGE from $REPO@{ref}"
 """
 
 

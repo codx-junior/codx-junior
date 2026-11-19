@@ -134,7 +134,7 @@ class RearmHistoryTest(unittest.TestCase):
         self.assertGreater(_as_aware(chat.wake_at), datetime.now(dt_timezone.utc))
 
     def test_every_run_is_armed_and_never_spins(self):
-        for text in ("every 2 hours", "every day at 09:00", "every monday at 08:30"):
+        for text in ("every 2 hours", "every day at 09:00", "every weekday at 09:00"):
             with self.subTest(schedule=text):
                 chat = FakeChat(
                     status="done", wake_at=PAST, schedule=text, schedule_context="history"
@@ -155,13 +155,16 @@ class RearmCleanTest(unittest.TestCase):
             schedule_column="To Do",
         )
         manager = FakeManager([chat])
+        # The closed card is annotated with a link to the next run, so the
+        # description the clone inherits is the one it had BEFORE the re-arm.
+        expected_description = chat.description
         Harness(manager)._consume_agenda([{"id": chat.id}])
 
         self.assertEqual(len(manager.created), 1, "clean must fork exactly one card")
         clone = manager.created[0]
         self.assertNotEqual(clone.id, chat.id)
         self.assertEqual(clone.name, chat.name)
-        self.assertEqual(clone.description, chat.description)
+        self.assertEqual(clone.description, expected_description)
         self.assertEqual(clone.board, chat.board)
         self.assertEqual(clone.column, "To Do")
         self.assertEqual(clone.status, "todo")

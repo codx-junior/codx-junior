@@ -4,11 +4,14 @@ import DesktopViewer from './DesktopViewer.vue'
 import Chat from '@/components/chat/Chat.vue'
 import ConfirmDialog from '../ConfirmDialog.vue'
 import VerticalSplitter from '../layout/VerticalSplitter.vue'
+import CoworkingVolumeMappings from './CoworkingVolumeMappings.vue'
+import CoworkingFoldersBrowser from './CoworkingFoldersBrowser.vue'
+import BrowserRecorder from './BrowserRecorder.vue'
 import { SESSION_LABELS, label } from '@/utils/sessionLabels'
 
 export default {
   name: 'BrowserSessionPanel',
-  components: { BrowserViewer, DesktopViewer, Chat, ConfirmDialog, VerticalSplitter },
+  components: { BrowserViewer, DesktopViewer, Chat, ConfirmDialog, VerticalSplitter, CoworkingVolumeMappings, CoworkingFoldersBrowser, BrowserRecorder },
   props: {
     // Present when the panel is rendered inside a meeting call. It enables
     // collaborative annotations and the "share with call" action.
@@ -23,6 +26,7 @@ export default {
       browserChatId: null,
       showChatMenu: false,
       showChatPicker: false,
+      showFolders: false,
       pickerLoading: false,
       pickerChats: [],
       pickerSearch: '',
@@ -32,7 +36,16 @@ export default {
       // left wondering why a click did not open a chat.
       pickerReason: null,
       showDeleteConfirm: false,
-      deleting: false
+      deleting: false,
+      // Recording a human flow into a reusable recipe.
+      showRecorder: false,
+      recorderTab: 'record',
+      recording: null,
+      recorderPreview: null,
+      recordingPoll: null,
+      recordingClock: null,
+      recordingTick: 0,
+      recordingReviewing: false
     }
   },
   computed: {
@@ -66,6 +79,20 @@ export default {
     },
     isRemoteSession() {
       return this.selectedSession?.kind === 'remote'
+    },
+    isRecordingFlow() {
+      return !!this.recording?.active
+    },
+    recordingElapsed() {
+      if (!this.recording?.active || !this.recording?.started_at) return ''
+      // ``recordingTick`` re-evaluates the label once per second while active.
+      void this.recordingTick
+      const seconds = Math.max(
+        0,
+        Math.floor((Date.now() - new Date(this.recording.started_at).getTime()) / 1000)
+      )
+      const minutes = Math.floor(seconds / 60)
+      return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
     },
     chatLabel() {
       const chats = this.selectedSession?.chat_ids || []
@@ -152,6 +179,12 @@ export default {
         }
       }
     },
+    // Keep the per-browser chat index aligned with the ranking. It moves
+    // whenever a linked chat receives a message, so the next open of this
+    // co-desktop reads the store instead of ranking the chats again.
+    latestLinkedChatId(newId) {
+      if (newId) this.reindexLatestChat()
+    },
     selectedSessionId(newId, oldId) {
       if (newId === oldId) return
       this.showChat = false
@@ -161,6 +194,11 @@ export default {
       // A pending confirmation belongs to the session that opened it
       this.showDeleteConfirm = false
       this.browserChatId = null
+      this.recording = null
+      this.recorderPreview = null
+      this.showRecorder = false
+      this.stopRecordingPoll()
+      this.loadRecordingState()
     }
   },
   methods: {
@@ -379,13 +417,36 @@ export default {
     async resolveLatestChatId() {
       const ids = [...this.linkedChatIds]
       if (!ids.length) return null
+      // Fast path: the chats store already knows the newest chat of this
+      // co-desktop, so the pane opens without loading a single chat. The chat is
+      // still checked against the linked list, so a stale entry can never open a
+      // chat this session does not own.
+      const indexed = this.$storex.chats.latestChatIdForBrowser(this.selectedSession?.id)
+      if (indexed && ids.includes(indexed)) {
+        // The labels need the metadata; it is not worth blocking the open for it.
+        if (!this.chatMetaById(indexed)) this.loadPickerChats().catch(() => {})
+        return indexed
+      }
       // Ranking (and the switcher labels) need the metadata of every linked
       // chat. The store only holds the chats already opened here, so the index
       // is fetched once when any of them is still unknown.
       if (ids.some(id => !this.chatMetaById(id))) {
         await this.loadPickerChats()
       }
+      this.reindexLatestChat()
       return this.latestLinkedChatId
+    },
+    /**
+     * Store the winner of the ranking in the chats index, so opening this
+     * co-desktop later resolves its chat with a single map lookup.
+     */
+    reindexLatestChat() {
+      const browserId = this.selectedSession?.id
+      if (!browserId) return
+      const chats = this.linkedChatIds
+        .map(id => this.chatMetaById(id))
+        .filter(Boolean)
+      this.$storex.chats.rememberLatestBrowserChat({ browserId, chats })
     },
     /**
      * Footer "Chat": dock the pane with the chat holding the last updated
@@ -748,6 +809,17 @@ export default {
 
         this.browserChatId = chat.id
         this.showChat = true
+        // The backend connects the chat to THIS session and disconnects it from
+        // any other one (chat ↔ co-desktop is exclusive). Verify the binding that
+        // came back, so a chat still pointing at another browser is never driven
+        // silently from this pane.
+        this.warnIfChatBoundElsewhere(chat)
+        // Indexed with its OWN stamp, so opening an older chat never rewrites
+        // the winner of the ranking.
+        this.$storex.chats.rememberLatestBrowserChat({
+          browserId: this.selectedSession.id,
+          chats: [chat]
+        })
       } catch (error) {
         console.error('Failed to open browser chat:', error)
         // A linked chat that no longer exists must not be a dead end: fall back
@@ -765,6 +837,24 @@ export default {
       } finally {
         this.chatLoading = false
       }
+    },
+    /**
+     * Guard the chat ↔ co-desktop binding (0..1 : 1).
+     *
+     * Opening a chat here re-links it to this session on the backend; the chat
+     * object that comes back must therefore carry THIS session id in
+     * `meta_data.browser`. When it still names another one, the tool call would
+     * drive a browser the user is not looking at, which is dangerous: the pane
+     * says so out loud instead of failing silently.
+     */
+    warnIfChatBoundElsewhere(chat) {
+      const boundId = chat?.meta_data?.browser?.id || null
+      const sessionId = this.selectedSession?.id
+      if (!boundId || !sessionId || boundId === sessionId) return
+      this.$storex.ui.addNotification({
+        text: `This chat is still bound to another co-desktop (${String(boundId).slice(0, 8)}). Reopen it to re-link it here.`,
+        type: 'error'
+      })
     },
     selectPickerChat(chat) {
       if (!chat?.id) return
@@ -792,15 +882,185 @@ export default {
       } catch (e) {
         return value
       }
+    },
+
+    // ── Record & replay ──────────────────────────────────────────────────
+    recordingApi() {
+      return this.$storex.api.computers
+    },
+    notify(type, text) {
+      this.$storex.ui.addNotification({ text, type })
+    },
+    async loadRecordingState() {
+      const sessionId = this.selectedSession?.id
+      if (!sessionId || !this.isBrowserSession) {
+        this.recording = null
+        this.stopRecordingPoll()
+        return
+      }
+      try {
+        const response = await this.recordingApi().recording(sessionId)
+        this.recording = response?.recording || null
+        if (this.recording?.active) this.startRecordingPoll()
+        else this.stopRecordingPoll()
+      } catch (error) {
+        // Recording is an enhancement: a failure must not break the panel.
+        console.warn('[BrowserSessionPanel] Could not load recording state', error)
+      }
+    },
+    startRecordingPoll() {
+      this.stopRecordingPoll()
+      this.recordingClock = setInterval(() => { this.recordingTick += 1 }, 1000)
+      this.recordingPoll = setInterval(async () => {
+        const sessionId = this.selectedSession?.id
+        if (!sessionId || !this.recording?.active) return
+        try {
+          const response = await this.recordingApi().recording(sessionId)
+          if (response?.recording) this.recording = response.recording
+          if (!this.recording?.active) this.stopRecordingPoll()
+        } catch (error) {
+          console.warn('[BrowserSessionPanel] Recording poll failed', error)
+        }
+      }, 4000)
+    },
+    stopRecordingPoll() {
+      if (this.recordingPoll) {
+        clearInterval(this.recordingPoll)
+        this.recordingPoll = null
+      }
+      if (this.recordingClock) {
+        clearInterval(this.recordingClock)
+        this.recordingClock = null
+      }
+    },
+    openRecorder(tab = 'record') {
+      if (!this.selectedSession) return
+      this.recorderTab = tab
+      this.showRecorder = true
+      if (!this.recording && !this.recorderPreview) this.loadRecordingState()
+    },
+    closeRecorder() {
+      this.showRecorder = false
+      this.recorderTab = 'record'
+    },
+    onRecorderStarted(state) {
+      this.recording = state || this.recording
+      this.recorderPreview = null
+      this.showRecorder = false
+      this.startRecordingPoll()
+      this.notify('success', 'Recording started — use the live browser, then press Stop & review')
+    },
+    onRecorderStopped(preview) {
+      // Stop in the recorder dialog: review the trace, then show the result.
+      this.recording = preview?.recording || this.recording
+      this.stopRecordingPoll()
+      return this.analyzeStoppedRecording(preview)
+    },
+    /**
+     * Ask codx-junior to review the Selenium/Playwright-like trace.
+     *
+     * A recording started from a recipe card (script_id present) is updated
+     * automatically; a new flow gets the reviewed steps in the save dialog.
+     */
+    async analyzeStoppedRecording(preview) {
+      const sessionId = this.selectedSession?.id
+      if (!sessionId || !preview) return
+      const targetScriptId = preview?.recording?.script_id || null
+      this.recordingReviewing = true
+      try {
+        const analysis = await this.recordingApi().analyzeRecording(sessionId, {
+          save: !!targetScriptId,
+          script_id: targetScriptId,
+          use_ai: true
+        })
+        // The user may have switched sessions while the model was reviewing.
+        if (this.selectedSession?.id !== sessionId) return
+        this.recorderPreview = {
+          ...preview,
+          ...analysis,
+          recording: analysis?.recording || preview.recording
+        }
+        this.recording = this.recorderPreview.recording
+        if (analysis?.script) {
+          this.notify(
+            'success',
+            `codx-junior reviewed the trace and updated "${analysis.script.title}" to v${analysis.script.version}`
+          )
+        } else if (analysis?.analysis?.used_ai) {
+          this.notify('info', 'codx-junior reviewed the trace — save the recipe to keep it')
+        } else {
+          this.notify('warning', 'AI review unavailable; deterministic recorder steps are ready')
+        }
+      } catch (error) {
+        if (this.selectedSession?.id !== sessionId) return
+        // Keep the deterministic preview usable even if the review endpoint
+        // failed (provider outage, timeout, etc.).
+        this.recorderPreview = preview
+        this.notify('warning', error.message || 'Could not ask codx-junior to review the recording')
+      } finally {
+        this.recordingReviewing = false
+        this.showRecorder = true
+        this.recorderTab = 'record'
+      }
+    },
+    onRecorderSaved(script) {
+      this.recording = null
+      this.recorderPreview = null
+      this.showRecorder = false
+      this.recordingReviewing = false
+      this.stopRecordingPoll()
+      if (script?.title) {
+        this.notify('success', `Recipe "${script.title}" is ready for the AI to repeat`)
+      }
+    },
+    onRecorderCancelled() {
+      this.recording = null
+      this.recorderPreview = null
+      this.showRecorder = false
+      this.recordingReviewing = false
+      this.stopRecordingPoll()
+    },
+    /**
+     * Floating recording icon: stop, review with codx-junior and update the
+     * recipe if this recording targets one.
+     */
+    async finishRecordingFlow() {
+      const sessionId = this.selectedSession?.id
+      if (!sessionId || this.recordingReviewing) return
+      try {
+        const preview = await this.recordingApi().stopRecording(sessionId)
+        await this.onRecorderStopped(preview)
+      } catch (error) {
+        this.notify('error', error.message || 'Could not stop the recording')
+      }
+    },
+    async stopRecordingFromBanner() {
+      return this.finishRecordingFlow()
+    },
+    async discardRecordingFromBanner() {
+      const sessionId = this.selectedSession?.id
+      if (!sessionId) return
+      const confirmed = typeof window === 'undefined' || !window.confirm
+        || window.confirm('Discard this recording? Nothing will be saved as a recipe.')
+      if (!confirmed) return
+      try {
+        await this.recordingApi().cancelRecording(sessionId)
+        this.onRecorderCancelled()
+        this.notify('info', 'Recording discarded')
+      } catch (error) {
+        this.notify('error', error.message || 'Could not discard the recording')
+      }
     }
   },
   mounted() {
     document.addEventListener('mousedown', this.handleDocumentMousedown)
     window.addEventListener('keydown', this.handleWindowKeydown)
+    this.loadRecordingState()
   },
   beforeUnmount() {
     document.removeEventListener('mousedown', this.handleDocumentMousedown)
     window.removeEventListener('keydown', this.handleWindowKeydown)
+    this.stopRecordingPoll()
   }
 }
 </script>
@@ -835,6 +1095,10 @@ export default {
             @keyup.enter="handleSaveSession(false)"
           />
         </div>
+
+        <!-- Volume mappings: what the container sees of the project. Binds are
+             fixed at creation, so this is read-only information. -->
+        <CoworkingVolumeMappings :session="selectedSession" />
 
         <template v-if="!isRemoteSession">
           <div class="divider text-[10px] font-semibold uppercase tracking-wide opacity-50 my-1">
@@ -1030,7 +1294,7 @@ export default {
         }"
       >
         <template #left>
-          <div class="h-full min-w-0 min-h-0">
+          <div class="relative h-full min-w-0 min-h-0">
             <BrowserViewer
               v-if="isBrowserSession"
               :session="selectedSession"
@@ -1044,6 +1308,43 @@ export default {
               :session="selectedSession"
               @ask-ai="onAskAiAboutPage"
             />
+
+            <!-- Floating recording control: the human records the task here,
+                 presses this icon, and codx-junior reviews the Selenium-like
+                 trace and updates the recipe. `pointer-events-none` keeps the
+                 page usable everywhere except the buttons. -->
+            <div
+              v-if="isBrowserSession && (isRecordingFlow || recordingReviewing)"
+              class="absolute right-3 top-3 z-30 flex items-center gap-1.5 pointer-events-none"
+            >
+              <button
+                class="pointer-events-auto btn btn-sm btn-error rounded-full shadow-xl gap-2 border-2 border-base-100"
+                :disabled="recordingReviewing"
+                :title="recordingReviewing
+                  ? 'codx-junior is reviewing the recorded actions…'
+                  : 'Stop recording and let codx-junior review and update the recipe'"
+                @click.stop="finishRecordingFlow"
+              >
+                <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-70"></span>
+                  <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-white"></span>
+                </span>
+                <span class="font-mono text-xs">{{ recordingElapsed }}</span>
+                <span class="text-xs hidden sm:inline">
+                  {{ recordingReviewing ? 'codx-junior reviewing…' : `${recording?.event_count || 0} actions` }}
+                </span>
+                <span v-if="recordingReviewing" class="loading loading-spinner loading-xs"></span>
+                <i v-else class="fa-solid fa-stop"></i>
+              </button>
+              <button
+                v-if="!recordingReviewing"
+                class="pointer-events-auto btn btn-sm btn-circle btn-ghost bg-base-100/90 shadow-lg"
+                title="Discard this recording"
+                @click.stop="discardRecordingFromBanner"
+              >
+                <i class="fa-solid fa-xmark"></i>
+              </button>
+            </div>
           </div>
         </template>
 
@@ -1193,21 +1494,58 @@ export default {
         </template>
       </VerticalSplitter>
 
-      <div class="border-t border-base-content/10 px-3 py-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] opacity-70">
-        <span><i class="fa-solid fa-comments mr-1"></i>{{ chatLabel }}</span>
-        <span><i class="fa-regular fa-clock mr-1"></i>{{ formatDate(selectedSession.last_active) }}</span>
+      <!-- ONE row, never wrapping: the secondary metadata hides on narrow
+           panels instead of pushing the actions onto a second line. Only the
+           metadata is dimmed — the buttons keep full contrast. -->
+      <div class="border-t border-base-content/10 px-2 py-1 flex flex-nowrap items-center gap-1.5 overflow-x-auto overflow-y-hidden whitespace-nowrap text-[11px]">
+        <span class="flex-shrink-0 text-base-content/60" :title="chatLabel">
+          <i class="fa-solid fa-comments mr-1"></i>{{ chatLabel }}
+        </span>
+        <span class="flex-shrink-0 hidden lg:inline text-base-content/60">
+          <i class="fa-regular fa-clock mr-1"></i>{{ formatDate(selectedSession.last_active) }}
+        </span>
         <a
           v-if="selectedSession.vnc_url"
           :href="selectedSession.vnc_url"
           target="_blank"
           rel="noopener noreferrer"
-          class="link link-hover"
+          class="link link-hover flex-shrink-0 hidden xl:inline text-base-content/60"
         >
           <i class="fa-solid fa-up-right-from-square mr-1"></i>Live view
         </a>
         <span class="flex-1"></span>
         <button
-          class="btn btn-xs btn-secondary"
+          v-if="isBrowserSession"
+          class="btn btn-xs flex-shrink-0 gap-1"
+          :class="isRecordingFlow ? 'btn-error' : 'btn-outline'"
+          :title="isRecordingFlow ? 'Recording in progress — review and save' : 'Record a flow the AI can repeat'"
+          aria-haspopup="dialog"
+          @click="openRecorder('record')"
+        >
+          <i class="fa-solid fa-circle-dot" :class="isRecordingFlow ? 'animate-pulse' : ''"></i>
+          <span class="hidden md:inline">{{ isRecordingFlow ? 'Recording' : 'Record' }}</span>
+        </button>
+        <button
+          v-if="isBrowserSession"
+          class="btn btn-xs btn-ghost flex-shrink-0 gap-1"
+          title="Saved recipes and recorded flows"
+          aria-haspopup="dialog"
+          @click="openRecorder('scripts')"
+        >
+          <i class="fa-solid fa-book"></i>
+          <span class="hidden md:inline">Recipes</span>
+        </button>
+        <button
+          class="btn btn-xs btn-outline gap-1 flex-shrink-0"
+          title="Browse the folders this computer has mounted"
+          aria-haspopup="dialog"
+          @click="showFolders = true"
+        >
+          <i class="fa-solid fa-folder-open"></i>
+          <span class="hidden md:inline">Mapped folders</span>
+        </button>
+        <button
+          class="btn btn-xs btn-secondary flex-shrink-0"
           :disabled="chatLoading"
           :aria-busy="chatLoading ? 'true' : 'false'"
           :title="showChat
@@ -1217,19 +1555,58 @@ export default {
         >
           <span v-if="chatLoading" class="loading loading-spinner loading-xs"></span>
           <i v-else class="fa-regular fa-comments"></i>
-          <span>{{ showChat ? 'Focus chat' : 'Chat' }}</span>
+          <span class="hidden md:inline">{{ showChat ? 'Focus chat' : 'Chat' }}</span>
         </button>
-        <button class="btn btn-xs btn-ghost" @click="startEditingSession">
-          <i class="fa-solid fa-gear"></i> Settings
+        <button class="btn btn-xs btn-ghost flex-shrink-0" title="Session settings" @click="startEditingSession">
+          <i class="fa-solid fa-gear"></i>
+          <span class="hidden md:inline">Settings</span>
         </button>
-        <button class="btn btn-xs btn-ghost" @click="handleRestartSession">
-          <i class="fa-solid fa-rotate"></i> Restart
+        <button class="btn btn-xs btn-ghost flex-shrink-0" title="Restart the session" @click="handleRestartSession">
+          <i class="fa-solid fa-rotate"></i>
+          <span class="hidden md:inline">Restart</span>
         </button>
-        <button class="btn btn-xs btn-ghost text-error" @click="handleDeleteSession">
-          <i class="fa-solid fa-trash"></i> Delete
+        <button class="btn btn-xs btn-ghost text-error flex-shrink-0" title="Delete the session" @click="handleDeleteSession">
+          <i class="fa-solid fa-trash"></i>
+          <span class="hidden md:inline">Delete</span>
         </button>
       </div>
     </template>
+
+    <!-- Mounted folders: the binds of this computer, browsable in place.
+         Uses the global <modal>, which re-parents itself to the app root; a
+         plain div.modal stays inside this dockview panel and gets clipped. -->
+    <modal
+      v-if="showFolders"
+      close
+      title="Mapped folders"
+      @close="showFolders = false"
+    >
+      <CoworkingFoldersBrowser :session="selectedSession" />
+    </modal>
+
+    <!-- Record a flow / manage the recipe library. The generated steps are
+         the same data `run_browser_script` executes, so the AI can replay a
+         recorded flow without re-learning the page. -->
+    <modal
+      v-if="showRecorder && selectedSession"
+      close
+      title="Record a flow for the AI to repeat"
+      @close="closeRecorder"
+    >
+      <BrowserRecorder
+        :session="selectedSession"
+        :recording="recording"
+        :preview="recorderPreview"
+        :analyzing="recordingReviewing"
+        :initial-tab="recorderTab"
+        @close="closeRecorder"
+        @started="onRecorderStarted"
+        @stopped="onRecorderStopped"
+        @saved="onRecorderSaved"
+        @cancelled="onRecorderCancelled"
+        @changed="loadRecordingState"
+      />
+    </modal>
 
     <!-- Chat selector: open an existing chat or create a new one.
          Rendered with the global <modal>, which re-parents itself to the app

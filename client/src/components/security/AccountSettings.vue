@@ -53,20 +53,11 @@ import ThemeSelector from '../ThemeSelector.vue'
 
       <div class="form-control">
         <span class="font-semibold">Assistant language</span>
-        <select class="select select-bordered select-sm" v-model="user.language">
-          <option value="auto">Automatic (match my message)</option>
-          <option value="en">English</option>
-          <option value="es">Español</option>
-          <option value="pt">Português</option>
-          <option value="fr">Français</option>
-          <option value="de">Deutsch</option>
-          <option value="it">Italiano</option>
-          <option value="ca">Català</option>
-          <option value="nl">Nederlands</option>
-          <option value="ru">Русский</option>
-          <option value="ar">العربية</option>
-          <option value="zh">中文</option>
-          <option value="ja">日本語</option>
+        <select class="select select-bordered select-sm" :value="user.language || 'auto'"
+                @change="user.language = $event.target.value">
+          <option v-for="language in languageOptions" :key="language.code" :value="language.code">
+            {{ language.label }}
+          </option>
         </select>
         <span class="text-[10px] text-base-content/50 mt-1">
           The assistant answers in this language. “Automatic” follows the language
@@ -98,6 +89,8 @@ import ThemeSelector from '../ThemeSelector.vue'
   </div>
 </template>
 <script>
+import { languageLabel, USER_LANGUAGES } from '@/config/languages'
+
 export default {
   data() {
     return { 
@@ -109,6 +102,14 @@ export default {
   computed: {
     user() {
       return this.$user
+    },
+    languageOptions() {
+      const options = [...USER_LANGUAGES]
+      const current = this.user?.language
+      if (current && !options.some(option => option.code === current)) {
+        options.unshift({ code: current, label: languageLabel(current) })
+      }
+      return options
     },
     avatar () {
       return this.user.avatar

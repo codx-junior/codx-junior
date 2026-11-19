@@ -89,6 +89,9 @@ const globalMixin = {
     $media () {
       return $storex.media
     },
+    $voice () {
+      return $storex.voice
+    },
     $globalSettings() {
       return $storex.api.globalSettings
     },

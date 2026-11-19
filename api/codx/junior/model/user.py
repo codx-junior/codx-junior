@@ -344,8 +344,9 @@ class CodxUser(BaseModel):
     language: Optional[str] = Field(
         default="auto",
         description=(
-            "Preferred language for assistant messages: 'auto' detects it from "
-            "the message, or an ISO code such as 'es', 'pt-BR', 'en'."
+            "Preferred language for assistant messages and voice calls: "
+            "'auto' detects it from the message (voice calls then use the "
+            "browser language), or an ISO code such as 'es', 'pt-BR', 'en'."
         ),
     )
     workspace_mode: Optional[str] = Field(

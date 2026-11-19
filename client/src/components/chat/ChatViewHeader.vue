@@ -53,6 +53,17 @@ import ProjectDetailt from '../ProjectDetailt.vue'
           </button>
         </div>
 
+        <!-- Voice call: opens the call overlay in this chat -->
+        <button
+          class="btn btn-ghost btn-sm btn-circle shrink-0"
+          :class="isOnVoiceCall ? 'text-success animate-pulse' : 'text-codx-primary'"
+          @click="$emit('start-voice-call')"
+          title="Start a voice call"
+          aria-label="Start a voice call"
+        >
+          <i class="fa-solid fa-phone"></i>
+        </button>
+
         <!-- Details toggle -->
         <button
           class="btn btn-ghost btn-sm btn-circle shrink-0"
@@ -351,6 +362,17 @@ import ProjectDetailt from '../ProjectDetailt.vue'
         <!-- Settings Toggles + Mode Selector (Right) -->
         <div class="flex items-center gap-1.5 ml-auto shrink-0" :class="{ hidden: isChannel }">
           
+          <!-- Voice call: call codx-junior from this conversation -->
+          <button
+            @click="$emit('start-voice-call')"
+            class="tooltip tooltip-bottom rounded p-1 transition-colors duration-150 hover:bg-codx-primary/10 focus:ring-2 focus:ring-primary/50 outline-none"
+            :class="isOnVoiceCall ? 'text-success animate-pulse' : 'text-codx-primary'"
+            :data-tip="isOnVoiceCall ? 'Voice call active' : 'Voice call'"
+            aria-label="Start a voice call"
+          >
+            <i class="fa-solid fa-phone text-sm"></i>
+          </button>
+
           <!-- Template Toggle (Icon Button) -->
           <button
             @click="toggleTemplate"
@@ -435,7 +457,8 @@ export default {
     'cost-changed',
     'back',
     'show-sidebar',
-    'toggle-mobile-details'
+    'toggle-mobile-details',
+    'start-voice-call'
   ],
   data() {
     return {
@@ -450,6 +473,13 @@ export default {
     // Channel chrome switch (see `channelMode` prop)
     isChannel() {
       return this.channelMode
+    },
+    // The header shows a live call on this very chat.
+    isOnVoiceCall() {
+      return Boolean(
+        this.$voice?.session?.status === 'active' &&
+        this.$voice?.session?.chat_id === this.chat?.id
+      )
     },
     // Project this chat works against. The chat's OWN working project
     // (`project_id`) always wins over the parent-provided `targetProject` so a

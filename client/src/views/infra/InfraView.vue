@@ -379,8 +379,9 @@
 
 <script setup>
 import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import {
-  useInfra, TABS, fmtTime, fmtBytes, tone
+  useInfra, TABS, fmtTime, fmtBytes, tone, openContainer, pushToast
 } from './useInfra'
 import {
   monitoring, MONITORING_TAB, REFRESH_INTERVALS,
@@ -480,6 +481,25 @@ function toastIcon (kind) {
   }[kind] || 'fa-circle-info'
 }
 
+/* ── deep link ────────────────────────────────────────────────────────────── */
+/**
+ * Open the container named in `?container=<name|id>`.
+ *
+ * The co-desktop settings link here (`/…/infra?container=codx-browser-1a2b3c4d`)
+ * so the operator lands on the container the session runs in instead of
+ * searching the list. Unknown names are reported and ignored.
+ */
+const route = useRoute()
+async function openLinkedContainer () {
+  const wanted = route?.query?.container
+  if (!wanted) return
+  try {
+    await openContainer(String(wanted), 'overview')
+  } catch (err) {
+    pushToast({ kind: 'error', text: `Container ${wanted} not found on this host` })
+  }
+}
+
 /* ── lifecycle ────────────────────────────────────────────────────────────── */
 onMounted(async () => {
   disposeLayout = observePanelWidth(rootEl.value)
@@ -492,7 +512,9 @@ onMounted(async () => {
   await loadHosts()
   // 2. Then the host snapshot (loadAll re-uses the cached host list).
   await loadAll()
-  // 3. Start sampling. Live is ON by default (5s), and the first snapshot
+  // 3. A deep link opens its container once the host list is known.
+  await openLinkedContainer()
+  // 4. Start sampling. Live is ON by default (5s), and the first snapshot
   //    already recorded one point, so the charts have something to draw.
   startMonitoring()
 })

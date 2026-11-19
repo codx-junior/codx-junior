@@ -35,9 +35,13 @@ from codx.junior.ai.smol.constants import (
     DEFAULT_MAX_TOOL_CALLS,
     ENV_AGILE_TARGET_SECONDS,
     ENV_AGILE_WALL_CLOCK_SECONDS,
+    MAX_CONTINUATION_MAX_CALLS,
+    MAX_CONTINUATION_MAX_ITERATIONS,
+    MAX_CONTINUATIONS,
     MAX_MAX_ITERATIONS,
     MAX_MAX_TOOL_CALLS,
     MAX_MAX_TOOL_ROUNDS,
+    MAX_TARGET_SECONDS,
     MAX_TOOL_ROUNDS,
     MAX_WALL_CLOCK_SECONDS,
     TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS,
@@ -289,9 +293,11 @@ def max_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy:
     """
     Build the MAX policy (``codx-junior-max``, big/complex work).
 
-    Larger budget, the same bounded tool-limit continuation and a long ADVISORY
-    target: the turn is asked to wrap up and marked, it is never cancelled by
-    the clock.
+    MAX is a DIFFERENT method, not a resized AGILE: a waterfall run plans
+    phases, closes each one behind a gate and keeps going for hours. So it does
+    not inherit anything from the agile tier: it has its own budget, its own
+    (larger) course corrections and its own two clock checkpoints. The clock
+    stays advisory, so a long phase is marked and stressed, never cancelled.
 
     Args:
         settings: Optional overrides.
@@ -304,16 +310,18 @@ def max_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy:
         max_iterations=MAX_MAX_ITERATIONS,
         max_tool_calls=MAX_MAX_TOOL_CALLS,
         max_tool_rounds=MAX_MAX_TOOL_ROUNDS,
+        # A limit must not collapse a multi-phase plan: max gets its OWN, larger
+        # course corrections instead of agile's two.
         continue_on_tool_limit=True,
-        continuations=TOOL_LIMIT_CONTINUATIONS,
-        continuation_max_iterations=TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS,
-        continuation_max_calls=TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
+        continuations=MAX_CONTINUATIONS,
+        continuation_max_iterations=MAX_CONTINUATION_MAX_ITERATIONS,
+        continuation_max_calls=MAX_CONTINUATION_MAX_CALLS,
         wall_clock_seconds=MAX_WALL_CLOCK_SECONDS,
         validation=MAX_VALIDATION,
         tool_allowlist=None,
-        # A long ADVISORY target, exactly like agile but 3x longer: reaching it
+        # A 2 h ADVISORY target inside a 4 h first checkpoint: reaching it
         # stresses the model and marks the response, it never stops the task.
-        target_seconds=MAX_WALL_CLOCK_SECONDS,
+        target_seconds=MAX_TARGET_SECONDS,
         stop_on_wall_clock=False,
     )
     return _apply_overrides(policy, settings)

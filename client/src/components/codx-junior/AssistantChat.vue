@@ -58,6 +58,7 @@ import ProjectDetailt from '../ProjectDetailt.vue';
         :chat="chat"
         :message="message"
         v-for="message in chatMessages" :key="message.id"
+        @answer-option="onResponseOption"
       />
     </div>
     <div class="text-xs text-info" v-if="$session.lastEvent?.chat?.id === chat?.id">{{ $session.lastEvent?.text }}</div>
@@ -145,6 +146,14 @@ export default {
       this.keepOpen = true
       await this.$storex.projects.chatWihProject(this.chat)
       this.$storex.projects.saveChat(this.chat)
+    },
+    // A suggested reply in the inline assistant populates the query box and
+    // sends it through the same path as typed input.
+    onResponseOption({ option } = {}) {
+      const value = String(option?.value ?? option?.label ?? '').trim()
+      if (!value) return
+      this.query = value
+      this.sendMessage()
     },
     onOpen() {
       clearTimeout(this.tout)

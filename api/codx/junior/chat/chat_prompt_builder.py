@@ -115,6 +115,79 @@ CONVERSATION_GUARDRAIL_SYSTEM_PROMPT = (
     "and read only the specific lines you still need."
 )
 
+# Protocol that lets an answer offer clickable replies. The chat UI parses the
+# fenced block and renders one button per entry; clicking a button sends its
+# `value` as the next user message. Keep this text in sync with
+# ``client/src/utils/responseOptions.js`` (parser) and
+# ``client/src/components/chat/ChatResponseOptions.vue`` (renderer).
+_RESPONSE_OPTIONS_FENCE_LANGUAGES = (
+    r"options|suggestions|suggested[-_]replies|quick[-_]replies|choices|replies"
+)
+
+# A complete ```options ... ``` block (the protocol emitted by the model).
+_RESPONSE_OPTIONS_BLOCK_RE = re.compile(
+    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[ \t]*"
+    rf"(?:{_RESPONSE_OPTIONS_FENCE_LANGUAGES})[ \t]*\n"
+    r".*?^[ \t]{0,3}(?P=fence)[ \t]*(?:\n|\Z)",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+# A block left unterminated (a truncated answer): strip it to the end.
+_RESPONSE_OPTIONS_UNCLOSED_RE = re.compile(
+    r"^[ \t]{0,3}(`{3,}|~{3,})[ \t]*"
+    rf"(?:{_RESPONSE_OPTIONS_FENCE_LANGUAGES})[ \t]*\n"
+    r".*\Z",
+    re.IGNORECASE | re.MULTILINE | re.DOTALL,
+)
+
+
+def strip_response_options(content: str) -> str:
+    """
+    Remove suggested-replies blocks from a message.
+
+    The block is a UI protocol trailer, not prose: summaries, chat titles and
+    metadata built from assistant messages must not contain its JSON.
+    """
+    if not content:
+        return content
+    text = _RESPONSE_OPTIONS_BLOCK_RE.sub("", content)
+    text = _RESPONSE_OPTIONS_UNCLOSED_RE.sub("", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+RESPONSE_OPTIONS_SYSTEM_PROMPT = (
+    "## Suggested replies\n"
+    "When you need the user to decide or pick the next step and the possible\n"
+    "answers are a small, closed set, end your response with ONE fenced block\n"
+    "tagged `options` whose body is a JSON array. The interface turns it into\n"
+    "buttons and the user can still type any other answer.\n"
+    "\n"
+    "```options\n"
+    "[\n"
+    '  {"label": "Yes, apply it", "value": "Yes, apply the changes", '
+    '"description": "Run the migration now", "style": "primary"},\n'
+    '  {"label": "No, keep it", "value": "No, leave it as is", "style": "danger"}\n'
+    "]\n"
+    "```\n"
+    "\n"
+    "Rules:\n"
+    "- `label` is the short button text (about 6 words max). `value` is the exact\n"
+    "  user message sent when the button is clicked; write it the way the user\n"
+    "  would type it (it defaults to `label` when omitted).\n"
+    "- `description` is optional (one short line of clarification). `style` is\n"
+    "  optional: use `primary` for the recommended option and `danger` for a\n"
+    "  destructive or negative one. `icon` is optional and takes a Font Awesome\n"
+    "  class, for example `fa-solid fa-database`.\n"
+    "- Offer 2 to 6 options (at most 12). A confirmation can be a simple yes/no\n"
+    "  pair. Every option must be a complete, valid reply on its own.\n"
+    "- Put the block at the very END of the response, after all prose, and do not\n"
+    "  mention it or its JSON to the user. Never wrap it in another code fence.\n"
+    "- Do NOT add an `options` block to explanations, code, or open questions\n"
+    "  without concrete choices."
+)
+
 # ---------------------------------------------------------------------------
 # Attachment → vision content constants
 # ---------------------------------------------------------------------------

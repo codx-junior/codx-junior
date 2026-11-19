@@ -342,6 +342,37 @@ def looks_like_path(value: str) -> bool:
     return "." in last_segment
 
 
+# A secret HANDLE (``{{secret:NAME}}`` / ``{{env:NAME}}``) names a secret, it is
+# not one. Without this the gate blocks every file that documents the resolver
+# syntax -- including the design doc and the tool schemas. See
+# ``codx/junior/security/ciso/vault.py``.
+_HANDLE_ONLY_PATTERN = re.compile(
+    r"^\{\{\s*(?:secret|env)\s*:\s*[A-Za-z_][A-Za-z0-9_.:@\-]{0,127}\s*\}\}$"
+)
+
+# A key that NAMES an environment variable carries a variable NAME as its value,
+# not a credential. Without this, a constant such as the secrets-folder override
+# is reported CRITICAL only because both halves contain the word "secret".
+_ENV_NAME_KEY_PATTERN = re.compile(r"(?i)_(?:env|env_var|envvar|var|variable|name)$")
+# ...and the value must itself look like an identifier, so a real token assigned
+# to a ``*_NAME`` key is still reported.
+_ENV_NAME_VALUE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{2,127}$")
+
+
+def names_an_env_variable(key: str, value: str) -> bool:
+    """Return True when the assignment stores an env variable NAME, not a secret.
+
+    Args:
+        key: Left-hand side identifier of the assignment.
+        value: Assigned value.
+
+    Returns:
+        bool: True when the pair is a variable reference, not a credential.
+    """
+    return bool(_ENV_NAME_KEY_PATTERN.search(key or "") and
+                _ENV_NAME_VALUE_PATTERN.match((value or "").strip()))
+
+
 def is_secret_placeholder(value: str) -> bool:
     """Return True when *value* looks like a placeholder instead of a secret.
 
@@ -367,6 +398,9 @@ def is_secret_placeholder(value: str) -> bool:
     # was just cleaned still blocked, so the gate could never converge and the
     # only way out would be a permanent path allowlist.
     if REDACTED_MARKER in candidate:
+        return True
+    if _HANDLE_ONLY_PATTERN.match(candidate):
+        # A handle names a secret; a later tool call resolves it.
         return True
     if len(candidate) < 8:
         return True
@@ -615,6 +649,10 @@ def scan_text(
         if is_secret_placeholder(value):
             continue
         key = match.group("key")
+        if names_an_env_variable(key, value):
+            # The right-hand side names WHERE a value is looked up; the
+            # credential itself lives in the environment.
+            continue
         severity = SecuritySeverity.HIGH
         if (match.group("quote") == '"' or match.group("quote") == "'") and len(value) >= 16:
             severity = SecuritySeverity.CRITICAL

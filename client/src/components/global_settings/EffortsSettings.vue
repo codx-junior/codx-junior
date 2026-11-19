@@ -368,7 +368,14 @@ export default {
       this.saving = true
       this.error = null
       try {
-        this.assertOk(await api.delete(this.draft.name))
+        // The connection layer resolves the backend envelope
+        // (`{status_code, message}`) instead of throwing, so a refused delete
+        // (409: built-in or still linked to a profile) must be inspected here.
+        // A success may carry the deleted name or no body at all.
+        const deleted = await api.delete(this.draft.name)
+        if (deleted && deleted.status_code) {
+          throw new Error(deleted.message || 'The server rejected the request')
+        }
         this.draft = EMPTY_DRAFT()
         await this.load()
       } catch (error) {

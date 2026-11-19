@@ -50,9 +50,18 @@ from typing import Any, Dict, List, Optional
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.browser import tabs as browser_tabs
 from codx.junior.browser import events as browser_events
+from codx.junior.browser.scripts import BrowserScriptStore, normalize_site
 from .model import ToolResponse
 
 logger = logging.getLogger(__name__)
+
+#: Actions whose result includes a compact ``page`` summary.  This removes the
+#: usual follow-up ``browse_action(action="snapshot")`` turn: the model sees the
+#: new URL, refs and text in the same ToolResponse as the action.
+PAGE_BRIEF_ACTIONS = {
+    "navigate", "click", "execute", "back", "forward", "refresh",
+    "press", "select", "batch", "new_tab", "switch_tab", "close_tab",
+}
 
 #: Settings metadata applied to every browser tool in the ``TOOLS`` registry.
 #: Both ``async`` and ``is_async`` keys are provided for compatibility with the
@@ -147,6 +156,36 @@ def _sharing_note(session) -> str:
     return note.strip()
 
 
+def _recipe_root(settings: CODXJuniorSettings) -> str:
+    """Project folder that owns ``.codx/browser_scripts``."""
+    for value in (
+        getattr(settings, "abs_project_path", None),
+        getattr(settings, "project_path", None),
+    ):
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def _known_recipe_note(settings: CODXJuniorSettings, url: Optional[str]) -> str:
+    """List the recorded recipes for *url* so the model reuses them at once."""
+    root = _recipe_root(settings)
+    if not root:
+        return ""
+    try:
+        store = BrowserScriptStore(root)
+        entries = store.search_scripts(site=normalize_site(url), limit=5)
+        if not entries:
+            return ""
+        return (
+            "Recorded recipes for this site — prefer run_browser_script over "
+            "re-discovering the page:\n" + store.to_markdown(entries)
+        )
+    except Exception as ex:  # pragma: no cover - best effort prompt hint
+        logger.debug("Could not list recorded recipes: %s", ex)
+        return ""
+
+
 def _persist_to_chat(settings: CODXJuniorSettings, session, chat_id: Optional[str]) -> None:
     """Persist a session into its chat's meta_data (best effort)."""
     if not chat_id:
@@ -216,6 +255,9 @@ async def start_session(
                     logger.warning("Could not restart browser session %s: %s", existing.id, ex)
 
             if existing and existing.status == "running":
+                recipe_note = _known_recipe_note(
+                    settings, initial_url or existing.current_url
+                )
                 return ToolResponse(
                     user_response=(
                         f"♻️ Browser session already running.\n"
@@ -227,6 +269,7 @@ async def start_session(
                         f"Use this session_id in subsequent calls: {existing.id}. "
                         f"Live view: {existing.vnc_url}. "
                         f"{_sharing_note(existing)}"
+                        + (f"\n{recipe_note}" if recipe_note else "")
                     ),
                 )
 
@@ -249,12 +292,14 @@ async def start_session(
         except RuntimeError:
             pass
 
+        recipe_note = _known_recipe_note(settings, initial_url or session.current_url)
         llm = (
             f"Browser session '{session.name}' started. session_id: {session.id}. "
             f"Live view (same browser the user sees): {session.vnc_url}. "
             "Use browse_action/get_screenshot/get_source_code/browser_activity "
             "with this session_id. Call finish_session when done. "
             f"{_sharing_note(session)}"
+            + (f"\n{recipe_note}" if recipe_note else "")
         )
         return ToolResponse(
             user_response=(
@@ -417,7 +462,9 @@ async def browse_action(
             data = f"links ({len(links)}):\n" + "\n".join(lines)
 
         elif action in ("snapshot", "page"):
-            snapshot = await runtime.run("get_snapshot", read_only=True)
+            # Prefer the prefetched snapshot: it was captured right after the
+            # previous action, so this call avoids a CDP round-trip.
+            snapshot = await runtime.snapshot()
             data = _format_snapshot(snapshot)
 
         elif action == "back":
@@ -520,6 +567,25 @@ async def browse_action(
 
         session = getattr(runtime, "session", None) or session
         session.mark_active()
+        # The action already changed the page: return a compact page summary
+        # in the same result instead of making the model ask for a snapshot.
+        if action in PAGE_BRIEF_ACTIONS:
+            try:
+                brief = await runtime.page_brief()
+            except Exception as ex:
+                logger.debug("page_brief after '%s' failed: %s", action, ex)
+                brief = {}
+            if brief:
+                data = (
+                    f"{data}\npage: "
+                    + json.dumps(brief, ensure_ascii=False, default=str)[:4500]
+                )
+        # Landing on a site is the cheapest moment to surface its recorded
+        # recipes: the model can run one instead of exploring the page.
+        if action in ("navigate", "new_tab", "switch_tab"):
+            recipe_note = _known_recipe_note(settings, session.current_url)
+            if recipe_note:
+                data = f"{data}\n\n{recipe_note}"
         manager.log_activity(
             session,
             actor="ai",
@@ -693,7 +759,7 @@ async def get_screenshot(
     started_at = time.monotonic()
     try:
         runtime = await manager.get_runtime(session)
-        data_uri = await runtime.run("get_screenshot", full_page=full_page, read_only=True)
+        data_uri = await runtime.screenshot(full_page=full_page)
         session = getattr(runtime, "session", None) or session
         manager.log_activity(
             session,
@@ -1125,7 +1191,9 @@ BROWSE_ACTION_TOOL_JSON = {
         "description": (
             "Drive the shared browser page. Prefer action='snapshot' first: it returns "
             "interactive element refs (click/fill by ref) and the main text, much cheaper "
-            "than full HTML. Use action='batch' for several steps in one call. "
+            "than full HTML. Mutating actions (navigate/click/batch/...) already include a "
+            "compact `page` summary in their result, so do not snapshot again unless you need "
+            "more than the returned refs/text. Use action='batch' for several steps in one call. "
             "Actions: navigate (url), click/fill (ref or selector or text), execute (script), "
             "text, links, snapshot, back, forward, refresh, wait (text/selector/url, or "
             "no target to wait for the human/page to change), "
@@ -1210,7 +1278,7 @@ GET_SCREENSHOT_TOOL_JSON = {
     "type": "function",
     "function": {
         "name": "get_screenshot",
-        "description": "Capture a PNG screenshot of the current browser page.",
+        "description": "Capture a PNG screenshot of the current browser page. Viewport captures are served from a background prefetch when the page has not changed.",
         "parameters": {
             "type": "object",
             "properties": {

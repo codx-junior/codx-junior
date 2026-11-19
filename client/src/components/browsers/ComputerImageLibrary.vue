@@ -11,6 +11,7 @@
  * then falls back to screenshot-only viewing.
  */
 import { SESSION_LABELS } from '@/utils/sessionLabels'
+import CoworkingImageGallery from './CoworkingImageGallery.vue'
 
 export default {
   name: 'ComputerImageLibrary',
@@ -22,6 +23,7 @@ export default {
     embedded: { type: Boolean, default: false }
   },
   emits: ['close', 'select'],
+  components: { CoworkingImageGallery },
   data() {
     return {
       provider: String(this.modelValue || '').trim().toLowerCase().startsWith('codx-saved/')
@@ -44,7 +46,9 @@ export default {
       savedPreviewUrls: {},
       // Guards against a slow provider response overwriting a newer tab.
       loadToken: 0,
-      providerCounts: { linuxserver: 0, kasmweb: 0, saved: 0 }
+      providerCounts: { linuxserver: 0, kasmweb: 0, saved: 0 },
+      // The custom coworking gallery takes over the catalog area when open.
+      customOpen: false
     }
   },
   computed: {
@@ -334,6 +338,12 @@ export default {
       this.refresh = true
       this.loadImages()
     },
+    onCoworkingSelect(image) {
+      // The custom gallery already shaped the payload like a catalog entry.
+      this.customOpen = false
+      this.$emit('select', image)
+      this.$emit('close')
+    },
     providerIcon(provider) {
       if (provider === 'saved') return 'fa-bookmark'
       return provider === 'kasmweb' ? 'fa-cubes' : 'fa-server'
@@ -412,6 +422,16 @@ export default {
             </span>
           </button>
         </div>
+        <button
+          type="button"
+          class="btn btn-sm"
+          :class="customOpen ? 'btn-primary' : 'btn-ghost'"
+          title="Custom coworking images (.codx/coworking/images)"
+          @click="customOpen = !customOpen"
+        >
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          Custom
+        </button>
         <label class="input input-sm input-bordered flex items-center gap-2 flex-1 min-w-[12rem]">
           <i class="fa-solid fa-magnifying-glass text-base-content/40"></i>
           <input
@@ -433,7 +453,7 @@ export default {
         </button>
       </div>
 
-      <div class="flex items-center gap-1.5 flex-wrap">
+      <div v-if="!customOpen" class="flex items-center gap-1.5 flex-wrap">
         <button
           type="button"
           class="btn btn-xs"
@@ -458,8 +478,11 @@ export default {
         <i class="fa-solid fa-circle-exclamation mr-1"></i>{{ error }}
       </p>
 
-      <!-- Catalog grid -->
-      <div class="flex-1 min-h-[16rem] overflow-y-auto pr-1">
+      <!-- Catalog grid (or the custom coworking gallery) -->
+      <div v-if="customOpen" class="flex-1 min-h-[16rem] overflow-y-auto pr-1">
+        <CoworkingImageGallery @select="onCoworkingSelect" @close="customOpen = false" />
+      </div>
+      <div v-else class="flex-1 min-h-[16rem] overflow-y-auto pr-1">
         <div v-if="loading" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
           <div v-for="n in 6" :key="n" class="h-36 rounded-xl bg-base-200 animate-pulse"></div>
         </div>

@@ -13,7 +13,9 @@ import ChatAttachmentPreview from './chat/ChatAttachmentPreview.vue'
 import ChatMessageEvents from './chat/ChatMessageEvents.vue'
 import ChatTurnTimeline from './chat/ChatTurnTimeline.vue'
 import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
+import ChatResponseOptions from './chat/ChatResponseOptions.vue'
 import { formatElapsed } from '../utils/duration.js'
+import { parseResponseOptions, withResponseOptions } from '../utils/responseOptions.js'
 </script>
 
 <template>
@@ -79,6 +81,15 @@ import { formatElapsed } from '../utils/duration.js'
             class="text-[11px] tabular-nums"
             :class="isChannel ? 'text-base-content/60' : 'text-base-content/40'"
           >{{ formatDate(displayMessage.updated_at) }}</span>
+          <!-- Spoken message: it belongs to a voice conversation session. -->
+          <span
+            v-if="displayMessage.meta_data?.voice"
+            class="inline-flex items-center gap-1 rounded bg-codx-primary/10 px-1 text-[10px] text-codx-primary"
+            :title="`Spoken in voice call ${displayMessage.meta_data.voice.session_id || ''}`"
+          >
+            <i class="fa-solid fa-microphone text-[9px]" aria-hidden="true"></i>
+            voice
+          </span>
           <!-- Generation time of the AI response (`00m 12s`).
                - streaming (`!isDone`): LIVE counter — elapsed since the run
                  started (`meta_data.start_time`, or the message creation time)
@@ -501,6 +512,16 @@ import { formatElapsed } from '../utils/duration.js'
             </template>
           </Document>
 
+          <!-- Suggested replies: the model's `options` block rendered as
+               clickable answers. Shown only for the latest assistant message
+               and only in the main view (not in source/diff/file views). -->
+          <ChatResponseOptions
+            v-if="showResponseOptions && !showDiff && !srcView && !showPRView && !showFileView && !showAttachments"
+            :options="responseOptions"
+            :disabled="optionsDisabled"
+            @select="$emit('answer-option', { option: $event, message })"
+          />
+
           <!-- Error -->
           <div class="alert alert-error text-xs mt-2" v-if="displayMessage.error">
             {{ displayMessage.error }}
@@ -714,7 +735,22 @@ import { formatElapsed } from '../utils/duration.js'
 
 <script>
 export default {
-  props: ['chat', 'message', 'mentionList', 'menu-less', 'usersList', 'isNewSpeaker', 'eventsOpen', 'eventsDrawerOpen'],
+  props: [
+    'chat',
+    'message',
+    'mentionList',
+    'menu-less',
+    'usersList',
+    'isNewSpeaker',
+    'eventsOpen',
+    'eventsDrawerOpen',
+    // Suggested replies are rendered only for the latest assistant message
+    // (`options-active`) and only when the surface has a composer that can
+    // send the selected answer (`options-enabled`).
+    'optionsEnabled',
+    'optionsActive',
+    'optionsDisabled'
+  ],
   emits: [
     'generate-code',
     'reload-file',
@@ -741,7 +777,8 @@ export default {
     'show-events',
     'show-events-drawer',
     'preview-file',
-    'update-attachment'
+    'update-attachment',
+    'answer-option'
   ],
   data() {
     return {
@@ -932,8 +969,36 @@ export default {
     mediaAlignClass() {
       return this.isMyMessage ? 'items-end' : 'items-start'
     },
+    // Suggested replies are a machine-readable trailer of an assistant answer:
+    // parse them out of the markdown BEFORE the document/chapter renderer sees
+    // the content, so the raw fence never flashes as a code block.
+    parsedResponseOptions() {
+      const source = this.displayMessage?.content || ''
+      const role = this.displayMessage?.role || this.message?.role
+      if (role !== 'assistant') {
+        return {
+          options: [],
+          content: source,
+          rawBlock: '',
+          blocks: [],
+          incomplete: false,
+          invalid: false
+        }
+      }
+      return parseResponseOptions(source, { streaming: !this.isDone })
+    },
+    responseOptions() {
+      return this.parsedResponseOptions.options
+    },
+    showResponseOptions() {
+      // Undefined means "not specified by the surface that rendered me": the
+      // chat message list passes explicit values, previews opt out.
+      const enabled = this.optionsEnabled === undefined ? true : !!this.optionsEnabled
+      const active = this.optionsActive === undefined ? true : !!this.optionsActive
+      return enabled && active && this.responseOptions.length > 0
+    },
     messageContent() {
-      return this.displayMessage.content
+      return this.parsedResponseOptions.content
     },
     code_changes() {
       return this.improvementData?.code_changes
@@ -1505,7 +1570,10 @@ export default {
       this.$emit('remove')
     },
     copyMessageToClipboard() {
-      this.copyTextToClipboard(this.displayMessage.content)
+      // Copy the prose, not the `options` protocol block the UI turns into
+      // buttons. `messageContent` falls back to the raw source when the block
+      // could not be parsed.
+      this.copyTextToClipboard(this.messageContent || this.displayMessage.content)
     },
     async applyPatch(patch) {
       patch.working = true
@@ -1653,9 +1721,17 @@ export default {
       // The Document serialized the whole updated message, so identical blocks
       // in other sections are never replaced by mistake. Fall back to the old
       // text replacement only when an older caller does not provide it.
-      const updatedContent = typeof data.fullContent === 'string'
+      let updatedContent = typeof data.fullContent === 'string'
         ? data.fullContent
         : this.replaceBlockInContent(target.content, data.originalContent, data.newContent)
+
+      // The edited markdown was rendered WITHOUT the options block (it is a
+      // UI trailer, not part of the prose). Re-attach it so saving a block edit
+      // does not silently remove the reply buttons.
+      updatedContent = withResponseOptions(
+        updatedContent,
+        this.parsedResponseOptions.rawBlock
+      )
 
       if (updatedContent === target.content) return
 

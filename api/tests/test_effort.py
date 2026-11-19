@@ -121,10 +121,12 @@ def test_max_profile_resolves_to_max_tier():
 
     assert policy.name == "max"
     assert policy.continue_on_tool_limit is True
-    assert policy.continuations == constants.TOOL_LIMIT_CONTINUATIONS
-    assert policy.wall_clock_seconds == 3600.0
+    # MAX has its OWN course corrections: it inherits nothing from agile.
+    assert policy.continuations == constants.MAX_CONTINUATIONS
+    assert policy.continuations > constants.TOOL_LIMIT_CONTINUATIONS
+    assert policy.wall_clock_seconds == constants.MAX_WALL_CLOCK_SECONDS
     # A long ADVISORY target: no built-in tier stops a turn by time.
-    assert policy.target_seconds == 3600.0
+    assert policy.target_seconds == constants.MAX_TARGET_SECONDS
     assert policy.enforces_wall_clock is False
     assert policy.is_time_advisory is True
     assert policy.validation == effort.MAX_VALIDATION == "full+coverage+security"

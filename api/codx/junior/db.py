@@ -518,6 +518,33 @@ class Chat(BaseModel):
             "consumed (cleared) once a shift has handled the task."
         )
     )
+    schedule: Optional[str] = Field(
+        default=None,
+        description=(
+            "Recurrence of this task (canonical text, e.g. 'every friday at "
+            "12:00 @Europe/Madrid'). When set, the autonomy runtime re-arms "
+            "``wake_at`` to the next occurrence after every run instead of "
+            "consuming it, so a recurring task keeps running without a human. "
+            "Empty/None means a one-shot wake. See "
+            "``codx.junior.autonomy.recurrence``."
+        )
+    )
+    schedule_context: Optional[str] = Field(
+        default="history",
+        description=(
+            "How a recurring run starts: 'history' (default) keeps the task and "
+            "its conversation, so every run sees what the previous ones did; "
+            "'clean' starts every run in a brand new task card with no previous "
+            "messages."
+        )
+    )
+    schedule_column: Optional[str] = Field(
+        default=None,
+        description=(
+            "Column the task lives in while waiting for its next run. A shift "
+            "usually closes/moves the card, and a recurrence reopens it there."
+        )
+    )
     sort_index: Optional[int] = Field(
         default=None,
         description="Manual ordering index within a board column"

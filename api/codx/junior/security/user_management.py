@@ -10,7 +10,11 @@ from fastapi import Request
 
 from typing import Optional, List
 
-from codx.junior.global_settings import read_global_settings, write_global_settings
+from codx.junior.global_settings import (
+    ensure_signing_secret,
+    read_global_settings,
+    write_global_settings,
+)
 from codx.junior.model.user import (
   CodxUser,
   CodxUserLogin,
@@ -164,6 +168,7 @@ class UserSecurityManager():
             "avatar": user.avatar,
             "email": user.email,
             "role": user.role,
+            "language": getattr(user, "language", "auto") or "auto",
             "disabled": bool(user.disabled),
             "companies": [
                 membership.model_dump()
@@ -436,14 +441,23 @@ class UserSecurityManager():
         self.save_settings()
         return stored
 
+    def _signing_secret(self) -> str:
+        """JWT signing key, guaranteed to satisfy ``security.secret_key``.
+
+        ``self.global_settings`` is a snapshot taken when the manager was
+        created; :func:`ensure_signing_secret` also repairs that snapshot in
+        place, so no request can ever sign with the old short key.
+        """
+        return ensure_signing_secret(settings=self.global_settings)
+
     def get_user_token(self, user: CodxUser):
-        return jwt.encode({ "username": user.username }, self.global_settings.secret, algorithm="HS256")
+        return jwt.encode({ "username": user.username }, self._signing_secret(), algorithm="HS256")
     
     def get_user_from_token(self, token):
         if not token:
             return None
         try:
-            decoded = jwt.decode(token, self.global_settings.secret, algorithms=["HS256"])
+            decoded = jwt.decode(token, self._signing_secret(), algorithms=["HS256"])
             return CodxUserLogin(**decoded)
         except:
             return None

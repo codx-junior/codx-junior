@@ -1,0 +1,37 @@
+--- a/codx/junior/autonomy/service.py
++++ b/codx/junior/autonomy/service.py
+@@ -1154,7 +1154,7 @@
+             content=prompt,
+             board=board,
+             column=C.SHIFT_COLUMN,
+             status="doing",
+             priority="high" if agenda else "medium",
+-            profiles=[name],
++            profiles=self._shift_profiles(name),
+             tags=["actor", "shift"],
+@@ -1179,7 +1179,25 @@
+         except Exception as ex:  # pragma: no cover - metadata is best effort
+             logger.debug("actors: cannot stamp shift metadata: %s", ex)
+         return task
+ 
++    @staticmethod
++    def _shift_profiles(actor: str) -> List[str]:
++        """
++        Profiles of a shift card: the actor plus the agile harness tier.
++
++        The effort tier is selected by the profile NAMES of the turn, so a
++        card carrying only the actor resolves to the plain-chat policy (10
++        model rounds, no continuation) and the shift stops mid-increment.
++        The harness profile ``codx-junior`` selects the agile tier without
++        replacing the actor.
++        """
++        from codx.junior.ai.smol.effort import AGILE_PROFILE
++
++        names = [actor] if actor else []
++        if AGILE_PROFILE not in names:
++            names.append(AGILE_PROFILE)
++        return names
++
+     def _close_stale_shift_cards(
+         self, actor: str, board: str, max_age_seconds: Optional[int] = None
+     ) -> None:

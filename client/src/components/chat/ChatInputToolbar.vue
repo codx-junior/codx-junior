@@ -153,11 +153,25 @@ import ProjectDetailt from '../ProjectDetailt.vue'
             </li>
             <li
               class="btn btn-sm tooltip"
+              data-tip="Hands-free call: speak and hear the answers"
+              @click="$emit('start-voice-call')"
+            >
+              <a><i class="fa-solid fa-phone"></i> Voice call</a>
+            </li>
+            <li
+              class="btn btn-sm tooltip"
+              data-tip="Start a new call or continue a previous one"
+              @click="$emit('open-voice-setup')"
+            >
+              <a><i class="fa-solid fa-clock-rotate-left"></i> Voice calls…</a>
+            </li>
+            <li
+              class="btn btn-sm tooltip"
               :class="isVoiceSession && 'btn-success'"
               :data-tip="voiceLanguageLabel"
               @click="$emit('toggle-voice')"
             >
-              <a><i class="fa-solid fa-microphone-lines"></i> Voice mode</a>
+              <a><i class="fa-solid fa-microphone-lines"></i> Voice dictation</a>
             </li>
           </ul>
         </div>
@@ -275,7 +289,7 @@ export default {
   },
   emits: [
     'send', 'cancel-edit', 'model-changed',
-    'toggle-voice', 'remove-image', 'preview-image', 'profiles-selected',
+    'toggle-voice', 'start-voice-call', 'open-voice-setup', 'remove-image', 'preview-image', 'profiles-selected',
     'file-selected', 'upload-files', 'project-changed',
     'start-voice-note', 'stop-voice-note', 'cancel-voice-note'
   ],

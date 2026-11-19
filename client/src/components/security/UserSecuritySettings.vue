@@ -109,7 +109,27 @@ import UserWalletSettings from './UserWalletSettings.vue'
 
       <!-- Right column -->
       <div class="flex flex-col gap-3 w-1/2">
-        <div class="flex flex-col gap-3 p-3 bg-base-200 rounded-lg h-full">
+        <div class="flex flex-col gap-3 p-3 bg-base-200 rounded-lg">
+          <div class="text-xs font-bold uppercase tracking-widest text-secondary flex items-center gap-1">
+            <i class="fa-solid fa-language"></i> Preferences
+          </div>
+          <div class="form-control">
+            <label class="label py-1">
+              <span class="label-text text-xs">Assistant language</span>
+            </label>
+            <select class="select select-bordered select-sm" v-model="user.language">
+              <option v-for="language in languageOptions" :key="language.code" :value="language.code">
+                {{ language.label }}
+              </option>
+            </select>
+            <span class="text-[10px] text-base-content/50 mt-1">
+              Used for chat answers and voice calls. “Automatic” follows the message
+              or, in a call, the browser language.
+            </span>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-3 p-3 bg-base-200 rounded-lg flex-1">
           <div class="text-xs font-bold uppercase tracking-widest text-accent flex items-center gap-1">
             <i class="fa-solid fa-circle-nodes"></i> Integrations
           </div>
@@ -222,6 +242,8 @@ import UserWalletSettings from './UserWalletSettings.vue'
 </template>
 
 <script>
+import { languageLabel, USER_LANGUAGES } from '@/config/languages'
+
 export default {
   props: ['user', 'settings'],
   data() {
@@ -233,6 +255,14 @@ export default {
   computed: {
     allProjects() {
       return this.$storex.api.allProjects || []
+    },
+    languageOptions() {
+      const options = [...USER_LANGUAGES]
+      const current = this.user?.language
+      if (current && !options.some(option => option.code === current)) {
+        options.unshift({ code: current, label: languageLabel(current) })
+      }
+      return options
     }
   },
   methods: {

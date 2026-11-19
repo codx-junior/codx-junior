@@ -236,9 +236,21 @@ export default {
       return !!this.searchQuery.trim()
     },
 
-    // When searching, filter ALL projects
+    // When searching, filter ALL projects. Projects whose NAME matches come
+    // first (they are what the user is looking for), path-only matches after.
     searchResults() {
-      return this.allProjects.filter(p => this.matchesSearch(p))
+      const query = this.searchQuery.toLowerCase()
+      const nameMatches = []
+      const otherMatches = []
+      this.allProjects.forEach(project => {
+        if (!this.matchesSearch(project)) return
+        if ((project.project_name || '').toLowerCase().includes(query)) {
+          nameMatches.push(project)
+        } else {
+          otherMatches.push(project)
+        }
+      })
+      return nameMatches.concat(otherMatches)
     },
 
     // Ordered sections shown top down: Parent -> Children -> More (or Search Results)

@@ -21,7 +21,7 @@ stable ``data-codx-ref`` attributes instead of brittle selectors.
 from __future__ import annotations
 
 #: Version of the recorder payload.  Bump it when the JS contract changes.
-RECORDER_VERSION = 1
+RECORDER_VERSION = 3
 
 #: Maximum events kept in the page before the oldest are dropped.
 MAX_EVENTS = 300
@@ -109,9 +109,15 @@ RECORDER_SCRIPT = r"""
       const sensitive = isSensitive(el);
       let value = null;
       let valueLength = null;
-      if ('value' in el && typeof el.value === 'string') {
+      if (el.isContentEditable && !sensitive) {
+        // Rich text editors have no ``value``: the note/post body lives in the
+        // DOM. Keep a bounded copy so the recorded flow can replay it.
+        const content = (el.innerText || el.textContent || '').trim();
+        valueLength = content.length;
+        value = content.slice(0, 2000);
+      } else if ('value' in el && typeof el.value === 'string') {
         valueLength = el.value.length;
-        value = sensitive ? '***' : el.value.slice(0, 120);
+        value = sensitive ? '***' : el.value.slice(0, 2000);
       }
       return {
         tag: el.tagName ? el.tagName.toLowerCase() : null,
@@ -157,13 +163,29 @@ RECORDER_SCRIPT = r"""
         });
       }, 400);
     };
+    // Rich text editors (contenteditable) never fire ``change``. Buffer the
+    // final value per editor so a recorded note/post body can be replayed.
+    const inputTimers = new WeakMap();
+    const onInput = (event) => {
+      const el = event.target;
+      if (!el || el.nodeType !== 1 || !el.isContentEditable) return;
+      const pending = inputTimers.get(el);
+      if (pending) clearTimeout(pending);
+      inputTimers.set(el, setTimeout(() => {
+        inputTimers.delete(el);
+        push('input', el);
+      }, 600));
+    };
     const install = () => {
-      if (window.__codxRecInstalled) return;
-      window.__codxRecInstalled = true;
+      // Version-scoped guard: upgrading the contract must re-attach listeners
+      // even though an older recorder already set the legacy boolean flag.
+      if (window.__codxRecInstalled === %(version)d) return;
+      window.__codxRecInstalled = %(version)d;
       document.addEventListener('click', onClick, true);
       document.addEventListener('change', onChange, true);
       document.addEventListener('submit', onSubmit, true);
       document.addEventListener('keydown', onKeydown, true);
+      document.addEventListener('input', onInput, true);
       window.addEventListener('scroll', onScroll, { passive: true });
     };
 
@@ -262,7 +284,7 @@ SNAPSHOT_SCRIPT = r"""
       const sensitive = isSensitive(el);
       let value = null;
       if ('value' in el && typeof el.value === 'string') {
-        value = sensitive ? '***' : el.value.slice(0, 120);
+        value = sensitive ? '***' : el.value.slice(0, 2000);
       }
       return {
         ref: ref,

@@ -27,6 +27,12 @@ from codx.junior.model.model import (
 )
 # Import from top-level settings_manager to avoid conflict with settings.py package
 from codx.junior.settings_manager import GlobalSettingsManager
+from codx.junior.security.secret_key import (
+    MIN_SECRET_BYTES,
+    assess_secret,
+    generate_secret,
+    secret_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +181,13 @@ def write_global_settings(global_settings: GlobalSettings) -> None:
     logger.info("Writing all GlobalSettings sections to %s", manager.settings_dir)
 
     try:
+        # Never persist a weak signing secret: writing the sections is exactly
+        # how the old 17-byte "codx-junior-rules" default reached
+        # settings/secret.json, and a stale in-memory snapshot must not put it
+        # back after ensure_signing_secret() rotated it.
+        global_settings.secret = ensure_signing_secret(
+            settings=global_settings, persist=False
+        )
         settings_dict = global_settings.dict()
         for section, value in settings_dict.items():
             manager.write_section(section, value)
@@ -208,6 +221,128 @@ def write_settings_section(section: str, data: any) -> None:
 
     # Refresh in-memory global settings after partial update
     GLOBAL_SETTINGS = read_global_settings(refresh=True)
+
+
+# ---------------------------------------------------------------------------
+# JWT/HMAC signing secret
+# ---------------------------------------------------------------------------
+
+# Serialises the (rare) generate-and-persist sequence so the API and the
+# background worker, starting at the same time, cannot overwrite each other's
+# fresh secret.
+_SECRET_LOCK = threading.RLock()
+
+
+def ensure_signing_secret(
+    settings: Optional[GlobalSettings] = None,
+    persist: bool = True,
+    raise_on_persist_failure: bool = False,
+) -> str:
+    """
+    Return a signing secret that satisfies :mod:`codx.junior.security.secret_key`.
+
+    A missing, shipped-placeholder or too-short secret is replaced by a random
+    one and (by default) written to the ``secret`` settings section, so every
+    process signs and validates with the same key.
+
+    ``settings`` is updated in place, which keeps the function idempotent for
+    long-lived holders such as ``UserSecurityManager``, which keeps a settings
+    snapshot for the lifetime of a request.
+
+    Args:
+        settings: Settings to inspect; defaults to the cached global settings.
+        persist: Store the generated secret so all processes share it.
+        raise_on_persist_failure: Raise ``RuntimeError`` when the generated
+            secret could not be stored (an ephemeral secret invalidates every
+            token on the next restart).
+
+    Returns:
+        A secret that assesses as valid.
+
+    Raises:
+        RuntimeError: only with ``raise_on_persist_failure`` and a settings
+            store that dropped the write.
+    """
+    global _GLOBAL_SETTINGS_CACHE, _GLOBAL_SETTINGS_CACHED_AT
+
+    with _SECRET_LOCK:
+        current = settings or read_global_settings()
+        assessment = assess_secret(current.secret)
+        if assessment.ok:
+            return current.secret
+
+        new_secret = generate_secret()
+        logger.warning(
+            "JWT signing secret is not usable (%s): generating a random secret of "
+            "at least %d bytes. Tokens issued with the previous secret stop "
+            "validating, so sessions have to log in again once.",
+            assessment.describe(),
+            MIN_SECRET_BYTES,
+        )
+        current.secret = new_secret
+        if not persist:
+            return new_secret
+
+        get_manager().write_section("secret", new_secret)
+        # Drop the cache so the re-read returns what is actually on disk.
+        with _GLOBAL_SETTINGS_LOCK:
+            _GLOBAL_SETTINGS_CACHE = None
+            _GLOBAL_SETTINGS_CACHED_AT = 0.0
+
+        refreshed = read_global_settings(refresh=True)
+        if refreshed.secret == new_secret:
+            # Keep the caller's snapshot in sync with what was persisted.
+            current.secret = new_secret
+            logger.info(
+                "JWT signing secret generated and persisted (sha256:%s)",
+                secret_fingerprint(new_secret),
+            )
+            return new_secret
+
+        logger.error(
+            "JWT signing secret could not be persisted to %s: this process runs "
+            "with an ephemeral secret and tokens will not validate after a "
+            "restart.",
+            get_manager().settings_dir,
+        )
+        if raise_on_persist_failure:
+            raise RuntimeError(
+                "JWT signing secret could not be persisted to "
+                f"{get_manager().settings_dir}; refusing to run with an "
+                "ephemeral signing key (set CODX_JUNIOR_ALLOW_UNPERSISTED_SECRET=1 "
+                "to override)."
+            )
+        return new_secret
+
+
+def validate_signing_secret_at_startup() -> str:
+    """
+    Startup guard: never serve requests while signing with a weak key.
+
+    A weak secret is replaced (see :func:`ensure_signing_secret`); the process
+    refuses to start only when the replacement cannot be stored and
+    ``CODX_JUNIOR_ALLOW_UNPERSISTED_SECRET`` is not set.
+
+    Returns:
+        The validated signing secret.
+
+    Raises:
+        RuntimeError: when no valid, persisted secret can be obtained.
+    """
+    allow_unpersisted = os.environ.get(
+        "CODX_JUNIOR_ALLOW_UNPERSISTED_SECRET", ""
+    ).strip().lower() in ("1", "true", "yes", "on")
+    secret = ensure_signing_secret(
+        persist=True, raise_on_persist_failure=not allow_unpersisted
+    )
+    assessment = assess_secret(secret)
+    if not assessment.ok:  # defensive: generation cannot produce this
+        raise RuntimeError(
+            "Refusing to start: JWT signing secret is invalid "
+            f"({assessment.describe()})"
+        )
+    logger.info("JWT signing secret validated: %s", assessment.describe())
+    return secret
 
 
 def get_global_settings() -> Optional[GlobalSettings]:
@@ -499,3 +634,7 @@ def _apply_git_config(global_settings: GlobalSettings) -> None:
 # ---------------------------------------------------------------------------
 _migrate_legacy_settings()
 read_global_settings()
+# Replace a missing, placeholder or too-short signing secret before any token is
+# issued. The background worker imports this module too, so it reads the same
+# persisted value instead of generating a secret of its own.
+ensure_signing_secret()

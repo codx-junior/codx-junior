@@ -109,17 +109,26 @@ def test_agile_wall_clock_is_short_and_overridable_by_env():
 
 # ── MAX tier: the ONLY tier allowed to run unbounded (``codx-junior-max``) ───
 def test_max_budget_is_larger_than_agile():
-    assert constants.MAX_MAX_ITERATIONS == 24
-    assert constants.MAX_MAX_TOOL_CALLS == 6
-    assert constants.MAX_MAX_TOOL_ROUNDS == 40
+    assert constants.MAX_MAX_ITERATIONS == 40
+    assert constants.MAX_MAX_TOOL_CALLS == 8
+    assert constants.MAX_MAX_TOOL_ROUNDS == 80
 
     assert constants.MAX_MAX_ITERATIONS > constants.AGILE_MAX_ITERATIONS
     assert constants.MAX_MAX_TOOL_ROUNDS > constants.AGILE_MAX_TOOL_ROUNDS
+    # Its own course corrections: a phased plan is not collapsed by a limit.
+    assert constants.MAX_CONTINUATIONS == 4
+    assert constants.MAX_CONTINUATIONS > constants.TOOL_LIMIT_CONTINUATIONS
+    assert (
+        constants.MAX_CONTINUATION_MAX_ITERATIONS
+        > constants.TOOL_LIMIT_CONTINUATION_MAX_ITERATIONS
+    )
 
 
 def test_max_wall_clock_is_long():
-    assert constants.MAX_WALL_CLOCK_SECONDS == 3600.0
+    assert constants.MAX_WALL_CLOCK_SECONDS == 14400.0
+    assert constants.MAX_TARGET_SECONDS == 7200.0
     assert constants.MAX_WALL_CLOCK_SECONDS > constants.AGILE_WALL_CLOCK_SECONDS
+    assert constants.MAX_TARGET_SECONDS > constants.AGILE_TARGET_SECONDS
 
 
 # ── Shared continuation budget: reused by MAX, unchanged by this change ──────

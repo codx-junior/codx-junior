@@ -171,6 +171,7 @@ import { extractCodeBlocks } from '@/utils/codeBlockExtractor'
             @preview-file="handleFilePreview"
             @search-files="onSelectionSearchFiles"
             @update-attachment="onMessageAttachmentUpdated"
+            @answer-option="onResponseOption"
           >
             <!-- IntelliSense slot — floats above the composer -->
             <template #intellisense>
@@ -230,6 +231,8 @@ import { extractCodeBlocks } from '@/utils/codeBlockExtractor'
                 @project-changed="onMessageProjectChanged"
                 @upload-files="onUploadFiles"
                 @toggle-voice="toggleVoiceSession"
+                @start-voice-call="onStartVoiceCall"
+                @open-voice-setup="onOpenVoiceSetup"
                 @toggle-collapsed="toggleInputCollapsed"
               />
               <!-- Hidden while the composer is collapsed (reading mode) -->
@@ -325,6 +328,9 @@ export default {
   data() {
     return {
       waiting: false,
+      // Guards against a double click on a suggested reply sending the same
+      // answer twice before the turn is registered as processing.
+      responseOptionInFlight: false,
       editMessage: null,
       editMessageId: null,
       files: [],
@@ -1360,6 +1366,43 @@ export default {
         }
       }
     },
+    // A suggested reply was clicked. With an idle composer it is sent as the
+    // next user message (the point of the buttons); when the user is already
+    // composing, editing, or attached files exist, the text is placed in the
+    // composer instead so nothing is lost and it can be edited before sending.
+    async onResponseOption({ option } = {}) {
+      const value = String(option?.value ?? option?.label ?? '').trim()
+      if (!value || this.readOnly || this.responseOptionInFlight) return
+
+      const current = String(
+        this.$refs.inputBox?.getEditorText?.() ?? this.editorText ?? ''
+      )
+      const hasDraft = !!current.trim() ||
+        !!this.attachments?.length ||
+        !!this.files?.length
+
+      if (this.editMessage || this.isProcessing || this.waiting || hasDraft) {
+        const next = current.trim()
+          ? `${current.replace(/\s+$/, '')} ${value}`
+          : value
+        // The composer may be collapsed (reading mode): expand it so the
+        // inserted reply is visible and can be edited before sending.
+        this.inputCollapsed = false
+        this.setEditorText(next)
+        this.editorText = next
+        this.$nextTick(() => this.$refs.inputBox?.focusEditor?.())
+        return
+      }
+
+      this.setEditorText(value)
+      this.editorText = value
+      this.responseOptionInFlight = true
+      try {
+        await this.sendMessage()
+      } finally {
+        this.responseOptionInFlight = false
+      }
+    },
     async sendChatMessage(chat) {
       this.waiting = true
 
@@ -1575,6 +1618,16 @@ export default {
       } catch (err) {
         this.showNotebookStatus(`Error exporting notebook: ${err.message}`)
       }
+    },
+    onStartVoiceCall() {
+      // Dictation and the call both own the microphone: stop the composer
+      // dictation before opening the call.
+      if (this.isVoiceSession) this.stopVoiceSession()
+      return this.$voice.startCall({ chat: this.chat })
+    },
+    onOpenVoiceSetup() {
+      if (this.isVoiceSession) this.stopVoiceSession()
+      return this.$voice.openSetup({ chat: this.chat })
     },
     toggleVoiceSession() {
       if (this.isVoiceSession) return this.stopVoiceSession()

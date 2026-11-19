@@ -4,9 +4,10 @@ Git repository API.
 Exposes the repository management endpoints consumed by the git view:
 
 - Read: repository info, branches, commits, the commit graph, remotes,
-  worktrees (with the files changed inside each checkout), working tree status,
-  the staged changes summary, two-branch comparison (PR review), local changes
-  review, commit details and single file diff/history/content.
+  worktrees (with the files changed inside each checkout), the per-task
+  worktree registry (autonomous agent runs), working tree status, the staged
+  changes summary, two-branch comparison (PR review), local changes review,
+  commit details and single file diff/history/content.
 - Write: fetch, pull, push, create/checkout/delete branch, stage/unstage/
   discard files, commit, merge (merge commit, squash or no-commit, optionally
   removing the source worktree), remove a worktree, rebase, commit message
@@ -150,6 +151,10 @@ class CommitRequest(BaseModel):
     message: str
     stage_all: bool = True
     allow_empty: bool = False
+    # Human waiver of the CISO pre-commit gate for THIS commit only
+    # (``git commit --no-verify``): the caller has seen the findings and takes
+    # the decision. The result reports it in ``ciso_waived``.
+    skip_ciso: bool = False
 
 
 class CommitMessageRequest(BaseModel):
@@ -611,6 +616,38 @@ def api_git_repo_worktrees(
             worktree.get("branch", ""), current_branch
         )
     return {"worktrees": worktrees}
+
+
+@router.get("/git/repo/task-workspaces")
+def api_git_task_workspaces(
+    request: Request, user: CodxUser = Depends(get_authenticated_user)
+):
+    """
+    Return the per-task worktrees created for autonomous agent runs.
+
+    Each entry carries the owning task (name and chat id), the branch and the
+    checkout path, so the worktree list can label an otherwise anonymous
+    ``codx/task/...`` branch with the work that produced it. The main checkout
+    is never listed here.
+
+    This endpoint only reads the registry stored in the project data plane
+    (``.codx/task_workspaces``); the checkouts themselves are regular git
+    worktrees and are listed by ``/git/repo/worktrees``.
+    """
+    from codx.junior.task_workspace import TaskWorkspaceManager
+
+    session = getattr(request.state, "codx_junior_session", None)
+    settings = getattr(session, "settings", None)
+    if settings is None:
+        raise HTTPException(
+            status_code=400,
+            detail="codx_path is required (query string or x-codx-path header)",
+        )
+    manager = TaskWorkspaceManager(settings)
+    return {
+        "enabled": manager.enabled,
+        "workspaces": manager.list(),
+    }
 
 
 @router.post("/git/repo/worktree/remove")
@@ -1399,6 +1436,7 @@ def api_git_repo_commit(
             message=payload.message,
             stage_all=payload.stage_all,
             allow_empty=payload.allow_empty,
+            no_verify=payload.skip_ciso,
         )
     )
 

@@ -32,9 +32,11 @@ from codx.junior.chat.turn_store import (
 )
 from codx.junior.chat.chat_prompt_builder import (
     CONVERSATION_GUARDRAIL_SYSTEM_PROMPT,
+    RESPONSE_OPTIONS_SYSTEM_PROMPT,
     ChatPromptBuilder,
     concat_content,
     new_chat_message,
+    strip_response_options,
 )
 from codx.junior.context import AICodeGenerator
 from codx.junior.db import Chat, Message, ChatHistoryEntry, ChatAttachment
@@ -2098,6 +2100,11 @@ class ChatEngine:
             
             # Clean the content by removing file content markers and system prompts
             content = message.content.strip()
+
+            # Suggested replies are a UI protocol trailer; summaries and chat
+            # titles must read the prose, never the options JSON.
+            if message.role == "assistant":
+                content = strip_response_options(content)
             
             # Skip context/file markers added during processing
             if content.startswith("<project_files>") or content.startswith("## Working Files:"):
@@ -2203,7 +2210,7 @@ class ChatEngine:
                 tags="chat-summary"
             )
             
-            new_description = (
+            new_description = strip_response_options(
                 description_run.messages[-1].content.strip()
                 if description_run.messages else ""
             )
@@ -2314,7 +2321,7 @@ class ChatEngine:
                 prompt=CHAT_INIT_PROMPT,
                 tags="chat-init"
             )
-            raw = (
+            raw = strip_response_options(
                 init_run.messages[-1].content.strip()
                 if init_run.messages else ""
             )
@@ -3501,6 +3508,14 @@ class ChatEngine:
                 final_system_prompt += "\n\n" + CONVERSATION_GUARDRAIL_SYSTEM_PROMPT
             else:
                 final_system_prompt = CONVERSATION_GUARDRAIL_SYSTEM_PROMPT
+
+            # Suggested replies: teach the model the fenced `options` block the
+            # chat UI turns into clickable answers (the user can always type a
+            # different reply). Appended last so it is the most salient rule.
+            if final_system_prompt:
+                final_system_prompt += "\n\n" + RESPONSE_OPTIONS_SYSTEM_PROMPT
+            else:
+                final_system_prompt = RESPONSE_OPTIONS_SYSTEM_PROMPT
             
             ai = self.get_ai(llm_model=ai_settings.model, system=final_system_prompt)
 

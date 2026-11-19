@@ -24,6 +24,13 @@
       ]"
     >{{ task.name || 'Untitled' }}</span>
 
+    <!-- Error flag: harness failure / "Stopped by caller" / model error -->
+    <span
+      v-if="errorMessage"
+      class="badge badge-xs badge-error gap-1 shrink-0"
+      :title="errorMessage"
+    ><i class="fa-solid fa-triangle-exclamation text-[8px]"></i>error</span>
+
     <!-- Subtask count badge -->
     <span
       v-if="subtaskCount > 0"
@@ -42,6 +49,8 @@
 </template>
 
 <script>
+import { taskError } from '../../../utils/taskActivity'
+
 const STATUS_ICONS = {
   todo:     'fa-regular fa-circle text-info/50',
   doing:    'fa-solid fa-circle-half-stroke text-primary/60',
@@ -63,6 +72,9 @@ export default {
     },
     subtaskCount() {
       return this.$chats.chatChildren(this.task.id)?.length || 0
+    },
+    errorMessage() {
+      return taskError(this.task)
     }
   }
 }

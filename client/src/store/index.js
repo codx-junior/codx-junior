@@ -21,6 +21,7 @@ import * as browsers from './browsers'
 import * as meets from './meets'
 import * as calendar from './calendar'
 import * as orchestration from './orchestration'
+import * as voice from './voice'
 
 const modules = { 
   session,
@@ -39,7 +40,8 @@ const modules = {
   browsers,
   meets,
   calendar,
-  orchestration
+  orchestration,
+  voice
 }
 const storePattern = {
   state () {

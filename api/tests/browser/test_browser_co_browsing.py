@@ -209,3 +209,10 @@ def test_run_browser_script_tool_uses_the_deterministic_runtime(tmp_path, monkey
     assert "completed" in result.llm_response
     assert calls[0][0][0]["action"] == "goto"
     assert "run_script" in calls
+
+
+def test_plain_wait_is_a_bounded_sleep():
+    browser = _FakeBrowser()
+    result = asyncio.run(run_steps(browser, [{"action": "wait", "timeout_ms": 5}]))
+    assert result["ok"] is True
+    assert result["steps"][0]["action"] == "wait"

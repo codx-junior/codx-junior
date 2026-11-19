@@ -60,6 +60,26 @@ CONTROL_POLL_SECONDS = 0.15
 #: How long after an AI action a URL change is attributed to the AI.
 AI_NAVIGATION_GRACE_SECONDS = 2.5
 
+#: Prepare the next snapshot/screenshot while the model is still thinking.
+#: This is the "the browser is warm before the model asks" optimization: after
+#: every page change the runtime captures a compact snapshot (and optionally a
+#: viewport screenshot) in the background, so a later ``snapshot`` /
+#: ``get_screenshot`` tool call is served from memory instead of CDP.
+PREFETCH_QUIET_SECONDS = float(os.environ.get("CODX_BROWSER_PREFETCH_QUIET", "0.7") or 0.7)
+PREFETCH_TTL_SECONDS = float(os.environ.get("CODX_BROWSER_PREFETCH_TTL", "20") or 20)
+PREFETCH_SCREENSHOT = os.environ.get("CODX_BROWSER_PREFETCH_SCREENSHOT", "1").lower() not in (
+    "0", "false", "no", "off",
+)
+PREFETCH_DISABLED = os.environ.get("CODX_BROWSER_PREFETCH", "1").lower() in (
+    "0", "false", "no", "off",
+)
+
+#: Actions whose result is worth an inline page brief for the model.
+PAGE_BRIEF_ACTIONS = {
+    "navigate", "click", "execute", "back", "forward", "refresh",
+    "press", "select", "batch", "new_tab", "switch_tab", "close_tab",
+}
+
 
 class BrowserControlError(RuntimeError):
     """The AI is not allowed to act because the human owns the page."""
@@ -84,6 +104,11 @@ class BrowserRuntime:
         self._user_event_seq = 0
         self.user_wait_seconds = self._configured_user_wait_seconds()
         self.loop = None
+        # Prefetch cache: one snapshot + one viewport screenshot of the page as
+        # it was after the last change.  Guarded by the runtime lock.
+        self._prefetch: Dict[str, Any] = {}
+        self._prefetch_task: Optional[asyncio.Task] = None
+        self._prefetch_event: Optional[asyncio.Event] = None
 
     @staticmethod
     def _configured_user_wait_seconds() -> float:
@@ -135,10 +160,13 @@ class BrowserRuntime:
         await self.manager._ensure_keep_alive_tab(browser, self.session)
         await browser.install_recorder()
         self._start_watcher()
+        self._start_prefetch()
         return browser
 
     async def _disconnect_browser(self) -> None:
         self._stop_watcher()
+        self._stop_prefetch()
+        self._prefetch.clear()
         self._recorded_pages.clear()
         browser, self._browser = self._browser, None
         if browser is not None:
@@ -176,6 +204,153 @@ class BrowserRuntime:
             task.cancel()
         except RuntimeError:
             pass
+
+    # ------------------------------------------------------------------
+    # Prefetch: prepare the next snapshot/screenshot before the model asks
+    # ------------------------------------------------------------------
+    def _start_prefetch(self) -> None:
+        """Start the background capture task (idempotent)."""
+        if PREFETCH_DISABLED:
+            return
+        if self._prefetch_task is not None and not self._prefetch_task.done():
+            return
+        try:
+            self._prefetch_event = asyncio.Event()
+            self._prefetch_task = asyncio.get_running_loop().create_task(
+                self._prefetch_loop()
+            )
+        except RuntimeError:
+            self._prefetch_task = None
+            self._prefetch_event = None
+
+    def _stop_prefetch(self) -> None:
+        task, self._prefetch_task = self._prefetch_task, None
+        self._prefetch_event = None
+        if task is None or task.done():
+            return
+        try:
+            if task is not asyncio.current_task():
+                task.cancel()
+        except RuntimeError:
+            pass
+
+    def _schedule_prefetch(self) -> None:
+        """Ask the prefetch task for a fresh capture after the page changes."""
+        event = self._prefetch_event
+        if event is None:
+            return
+        try:
+            event.set()
+        except Exception:
+            pass
+
+    async def _prefetch_loop(self) -> None:
+        """Debounced capture after human/AI activity.
+
+        The loop waits for a short quiet gap so typing does not trigger a
+        screenshot on every keystroke, then stores one snapshot + viewport
+        screenshot.  The next tool call is served from that cache.
+        """
+        while not self._closed and self._browser is not None:
+            event = self._prefetch_event
+            if event is None:
+                break
+            try:
+                await event.wait()
+                event.clear()
+            except asyncio.CancelledError:
+                break
+            await asyncio.sleep(max(0.05, PREFETCH_QUIET_SECONDS))
+            if self._closed or self._browser is None:
+                break
+            # A human mid-keystroke has nothing stable to capture yet.
+            try:
+                if self.session.user_is_typing(quiet_seconds=PREFETCH_QUIET_SECONDS):
+                    self._schedule_prefetch()
+                    await asyncio.sleep(0.25)
+                    continue
+                async with self._lock:
+                    if self._browser is None:
+                        break
+                    await self._capture_prefetch_locked()
+            except asyncio.CancelledError:
+                break
+            except Exception as ex:
+                logger.debug("Browser prefetch failed: %s", ex)
+        self._prefetch_task = None
+
+    async def _capture_prefetch_locked(self) -> None:
+        """Capture the compact page state (called under the runtime lock)."""
+        browser = self._browser
+        if browser is None or not browser.is_alive():
+            return
+        snapshot = None
+        previous = self._prefetch or {}
+        # ``page_brief`` may have captured the snapshot milliseconds ago while
+        # the action's ToolResponse was being built. Reuse it: only the
+        # screenshot is still missing.
+        try:
+            if previous.get("snapshot") and time.monotonic() - float(previous.get("at") or 0) < 2.5:
+                snapshot = previous.get("snapshot")
+        except (TypeError, ValueError):
+            snapshot = None
+        if snapshot is None:
+            try:
+                snapshot = await asyncio.wait_for(browser.get_snapshot(), timeout=8.0)
+            except Exception as ex:
+                logger.debug("Prefetch snapshot failed: %s", ex)
+                return
+        if not isinstance(snapshot, dict):
+            return
+        screenshot = None
+        if PREFETCH_SCREENSHOT:
+            try:
+                screenshot = await asyncio.wait_for(
+                    browser.get_screenshot(full_page=False), timeout=15.0
+                )
+            except Exception as ex:
+                logger.debug("Prefetch screenshot failed: %s", ex)
+        url = (snapshot.get("url") or "").strip()
+        title = (snapshot.get("title") or "").strip()
+        self._prefetch = {
+            "snapshot": snapshot,
+            "screenshot": screenshot,
+            "url": url,
+            "title": title,
+            "at": time.monotonic(),
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _cached_prefetch(self, max_age: float = PREFETCH_TTL_SECONDS) -> Dict[str, Any]:
+        """Return the prefetch cache when it is still about the current page."""
+        data = self._prefetch
+        if not data:
+            return {}
+        try:
+            if time.monotonic() - float(data.get("at") or 0) > max_age:
+                return {}
+        except (TypeError, ValueError):
+            return {}
+        cached_url = (data.get("url") or "").strip()
+        page_url = ""
+        try:
+            page_url = (self._browser.page.url or "").strip() if self._browser and self._browser.page else ""
+        except Exception:
+            page_url = ""
+        if cached_url and page_url and cached_url != page_url:
+            return {}
+        return data
+
+    def prefetch_info(self) -> Dict[str, Any]:
+        """Cheap diagnostics for ``browser_status`` and tests."""
+        data = self._prefetch or {}
+        return {
+            "enabled": not PREFETCH_DISABLED,
+            "has_snapshot": bool(data.get("snapshot")),
+            "has_screenshot": bool(data.get("screenshot")),
+            "captured_at": data.get("captured_at"),
+            "url": data.get("url"),
+        }
 
     async def _watch(self) -> None:
         """Drain human events and disconnect an idle driver.
@@ -325,6 +500,13 @@ class BrowserRuntime:
         async with self._lock:
             browser = await self._ensure_browser()
             self._touch()
+            # A state-changing action invalidates the prefetched page: serving
+            # the old snapshot afterwards would make the model act on a stale
+            # DOM (SPA updates often keep the same URL).
+            if method not in {
+                "get_text", "get_links", "get_snapshot", "get_content", "get_screenshot"
+            }:
+                self._prefetch = {}
             await browser.set_actor("ai")
             try:
                 result = await getattr(browser, method)(*args, **kwargs)
@@ -341,6 +523,10 @@ class BrowserRuntime:
             # not attributed to the human.
             self._last_ai_action = time.monotonic()
             await self._drain_user_events_locked()
+            if method not in {
+                "get_text", "get_links", "get_snapshot", "get_content", "get_screenshot"
+            }:
+                self._schedule_prefetch()
             return result
 
     async def run_steps(
@@ -360,6 +546,8 @@ class BrowserRuntime:
         async with self._lock:
             browser = await self._ensure_browser()
             self._touch()
+            if not read_only:
+                self._prefetch = {}
             await browser.set_actor("ai")
             try:
                 result = await run_steps(
@@ -378,6 +566,7 @@ class BrowserRuntime:
             # not attributed to the human.
             self._last_ai_action = time.monotonic()
             await self._drain_user_events_locked()
+            self._schedule_prefetch()
             return result
 
     async def run_tabs(
@@ -391,6 +580,8 @@ class BrowserRuntime:
         async with self._lock:
             browser = await self._ensure_browser()
             self._touch()
+            if action in ("new_tab", "switch_tab", "close_tab"):
+                self._prefetch = {}
             await browser.set_actor("ai")
             try:
                 if action == "tabs":
@@ -404,6 +595,8 @@ class BrowserRuntime:
                 else:
                     raise ValueError(f"unknown tab action '{action}'")
                 self._last_ai_action = time.monotonic()
+                if action in ("new_tab", "switch_tab", "close_tab"):
+                    self._schedule_prefetch()
                 return result
             finally:
                 try:
@@ -510,9 +703,77 @@ class BrowserRuntime:
                 logger.debug("wait_for_change snapshot failed: %s", ex)
         return result
 
-    async def snapshot(self) -> Dict[str, Any]:
-        """Compact page snapshot (read-only, allowed while the human drives)."""
+    async def snapshot(self, prefer_cached: bool = True) -> Dict[str, Any]:
+        """Compact page snapshot (read-only, allowed while the human drives).
+
+        The background prefetch usually has a snapshot ready from just after
+        the last action, so this returns from memory instead of paying another
+        CDP round-trip.  Pass ``prefer_cached=False`` to force a fresh read.
+        """
+        if prefer_cached:
+            cached = self._cached_prefetch()
+            if cached.get("snapshot"):
+                snapshot = dict(cached["snapshot"])
+                snapshot["cached"] = True
+                return snapshot
         return await self.run("get_snapshot", read_only=True)
+
+    async def screenshot(
+        self, full_page: bool = False, prefer_cached: bool = True
+    ) -> str:
+        """Return a screenshot, using the prefetched viewport when possible."""
+        if prefer_cached and not full_page:
+            cached = self._cached_prefetch()
+            if cached.get("screenshot"):
+                return str(cached["screenshot"])
+        return await self.run("get_screenshot", full_page=full_page, read_only=True)
+
+    async def page_brief(self) -> Dict[str, Any]:
+        """Return a tiny page summary for the tool result after an action.
+
+        It costs one snapshot evaluation (or is served from the prefetch cache)
+        and saves the model a whole follow-up turn: it sees the new URL, title,
+        a bounded list of clickable refs and the beginning of the page text in
+        the same result as the action it just performed.
+        """
+        cached = self._cached_prefetch()
+        snapshot = cached.get("snapshot")
+        from_cache = bool(snapshot)
+        if not snapshot:
+            try:
+                snapshot = await self.run("get_snapshot", read_only=True)
+            except Exception as ex:
+                logger.debug("Could not build page brief: %s", ex)
+                return {}
+            # Seed the prefetch cache: the background task only needs the
+            # screenshot now, and a follow-up snapshot call is already warm.
+            if isinstance(snapshot, dict):
+                self._prefetch = {
+                    "snapshot": snapshot,
+                    "screenshot": (self._prefetch or {}).get("screenshot"),
+                    "url": (snapshot.get("url") or self.session.current_url),
+                    "title": (snapshot.get("title") or self.session.current_title),
+                    "at": time.monotonic(),
+                    "captured_at": datetime.now(timezone.utc).isoformat(),
+                }
+        if not isinstance(snapshot, dict):
+            return {}
+        interactive = []
+        for item in (snapshot.get("interactive") or [])[:30]:
+            if not isinstance(item, dict):
+                continue
+            interactive.append({
+                key: item.get(key)
+                for key in ("ref", "tag", "role", "type", "name", "text", "href", "disabled")
+                if item.get(key) not in (None, "")
+            })
+        return {
+            "url": snapshot.get("url") or self.session.current_url,
+            "title": snapshot.get("title") or self.session.current_title,
+            "interactive": interactive,
+            "text": (snapshot.get("text") or "")[:1200],
+            "cached": from_cache,
+        }
 
     async def state(self) -> Dict[str, Any]:
         """Return cheap status for the diagnostics/status tools."""
@@ -540,6 +801,7 @@ class BrowserRuntime:
             "current_url": self.session.current_url,
             "current_title": self.session.current_title,
             "tabs": tabs,
+            "prefetch": self.prefetch_info(),
             "connection_age_s": round(time.monotonic() - self._connected_at, 1) if connected else None,
             "last_used_s": round(time.monotonic() - self._last_used, 1) if self._last_used else None,
         }
@@ -565,6 +827,7 @@ class BrowserRuntime:
 
         visible = None
         all_events = []
+        captured = False
         url = ""
         title = ""
         for page in pages:
@@ -611,6 +874,7 @@ class BrowserRuntime:
                     title = browser.session.current_title or title
                     self.session.mark_user_active(seconds=10)
                     self._user_event_seq += 1
+                    captured = True
                     self.manager.log_activity(
                         self.session,
                         actor="user",
@@ -648,7 +912,9 @@ class BrowserRuntime:
                 }
             }
             if target.get("value") is not None and not target.get("sensitive"):
-                params["value"] = str(target.get("value"))[:120]
+                # Keep enough text to replay a note/post body; the activity
+                # log still truncates at a bounded length.
+                params["value"] = str(target.get("value"))[:4000]
             if target.get("value_length") is not None:
                 params["value_length"] = target.get("value_length")
             if target.get("sensitive"):
@@ -657,6 +923,7 @@ class BrowserRuntime:
                 params.update({"x": event.get("x"), "y": event.get("y")})
             self.session.mark_user_active(seconds=10)
             self._user_event_seq += 1
+            captured = True
             self.manager.log_activity(
                 self.session,
                 actor="user",
@@ -675,6 +942,7 @@ class BrowserRuntime:
         ):
             self.session.mark_user_active(seconds=10)
             self._user_event_seq += 1
+            captured = True
             self.manager.log_activity(
                 self.session,
                 actor="user",
@@ -684,5 +952,10 @@ class BrowserRuntime:
                 title=title,
             )
         self._last_url = url or self._last_url
+
+        if captured:
+            # The human changed the page: whatever we prefetched is stale.
+            self._prefetch = {}
+            self._schedule_prefetch()
 
         # ``log_activity`` already persists the session for each event.

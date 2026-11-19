@@ -45,6 +45,10 @@ When tools are enabled, agents can call:
 
 Projects can also register **MCP servers** in their settings.
 
+## Suggested replies
+
+When the AI needs a decision it can offer the likely answers as buttons at the end of its message. Clicking a button sends that answer as the next user message; the composer stays available, so the user can always write something different. See [Suggested replies](/features/suggested-replies) for the protocol and the options available to models.
+
 The agent loop has guards against runaway behaviour: a maximum number of iterations (**Global settings → Agents**), a maximum number of tool calls per provider, loop detection, and a cancel button that stops the request at once. Every call is checked against the user's [budget](/features/budget-and-analytics) before it is sent.
 
 ## Working with messages

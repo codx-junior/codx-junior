@@ -45,6 +45,8 @@ export default {
       repoTree: [],
       // Registered worktrees with the changes inside each checkout
       worktrees: [],
+      // Per-task worktrees created for autonomous agent runs (task metadata)
+      taskWorkspaces: [],
       // The worktree details (status + merge preview) are loaded separately
       // so `/info` stays fast on repositories with many checkouts.
       worktreesLoading: false,
@@ -92,6 +94,9 @@ export default {
       commitMessage: '',
       committing: false,
       generatingMessage: false,
+      // Human waiver of the CISO pre-commit gate for the NEXT commit only; reset
+      // after it succeeds so the waiver never becomes a permanent setting.
+      skipCiso: false,
       // merge
       showMerge: false,
       mergeFrom: '',
@@ -1767,6 +1772,9 @@ export default {
       const token = ++this.worktreesToken
       this.worktreesLoading = true
       this.worktreesError = null
+      // The ownership registry is small and independent: a broken registry
+      // must not hide the worktrees themselves.
+      this.loadTaskWorkspaces()
       try {
         const list = await this.api.repo.worktrees({ includeChanges: true })
         if (token !== this.worktreesToken) return
@@ -1777,6 +1785,31 @@ export default {
       } finally {
         if (token === this.worktreesToken) this.worktreesLoading = false
       }
+    },
+
+    /**
+     * Load the task-ownership registry of the per-task worktrees.
+     *
+     * Autonomous runs commit on `codx/task/...` branches; without this map the
+     * worktree list would show an opaque branch. Failures are silent: the
+     * worktrees still render, only the task label is missing.
+     */
+    async loadTaskWorkspaces() {
+      if (!this.api?.repo?.taskWorkspaces) return
+      try {
+        const payload = await this.api.repo.taskWorkspaces()
+        this.taskWorkspaces = Array.isArray(payload?.workspaces) ? payload.workspaces : []
+      } catch (ex) {
+        this.taskWorkspaces = []
+      }
+    },
+
+    /** Return the task owning *worktree*, when it is a per-task checkout. */
+    taskWorkspaceFor(worktree) {
+      if (!worktree?.path) return null
+      return (this.taskWorkspaces || []).find(
+        workspace => workspace.path && this.samePath(workspace.path, worktree.path)
+      ) || null
     },
 
     selectBranch(branch) {
@@ -2102,10 +2135,16 @@ export default {
       this.error = null
       this.notice = null
       try {
-        await this.api.repo.commit({ message, stage_all: stageAll })
+        await this.api.repo.commit({
+          message,
+          stage_all: stageAll,
+          skip_ciso: this.skipCiso
+        })
+        const waived = this.skipCiso ? ' — CISO checks skipped for this commit' : ''
         this.notice = finishingOperation
-          ? `${this.conflictOperationLabel} committed`
-          : 'Changes committed'
+          ? `${this.conflictOperationLabel} committed${waived}`
+          : `Changes committed${waived}`
+        this.skipCiso = false
         this.commitMessage = ''
         this.clearSelection()
         await this.loadRepo()
@@ -2660,6 +2699,14 @@ export default {
                 <i class="fa-solid fa-wand-magic-sparkles text-[10px]" v-else></i>
               </button>
             </div>
+            <label
+              class="flex items-center gap-1 text-[10px] cursor-pointer select-none"
+              :class="skipCiso ? 'text-warning' : 'opacity-50'"
+              title="Commit with --no-verify: the CISO pre-commit secret gate is skipped for this commit and the waiver is recorded"
+            >
+              <input type="checkbox" class="checkbox checkbox-xs" v-model="skipCiso" />
+              Skip CISO checks
+            </label>
             <button
               class="btn btn-xs btn-primary w-full gap-1"
               :disabled="committing || !canCommit"
@@ -2902,6 +2949,11 @@ export default {
                     ></i>
                     <i class="fa-solid fa-code-branch text-info text-[10px] shrink-0"></i>
                     <span class="font-mono text-[11px] truncate">{{ worktree.label }}</span>
+                    <span
+                      v-if="taskWorkspaceFor(worktree)"
+                      class="badge badge-xs badge-primary badge-outline shrink-0 max-w-32 truncate"
+                      :title="`Task workspace: ${taskWorkspaceFor(worktree).name || taskWorkspaceFor(worktree).key}`"
+                    >{{ taskWorkspaceFor(worktree).name || 'task' }}</span>
                     <span v-if="worktree.is_main" class="badge badge-xs badge-ghost shrink-0">main</span>
                     <span
                       class="badge badge-xs shrink-0"

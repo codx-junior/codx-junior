@@ -301,12 +301,27 @@ AGILE_OVERTIME_USER_MESSAGE: str = (
     "or split the task to get an answer sooner."
 )
 
+# MAX (profile ``codx-junior-max``) is NOT "agile with bigger numbers". It runs
+# a WATERFALL method: the objective is planned as phases, each phase is closed
+# with its own gate (tests, review, evidence) before the next one starts, and a
+# run is expected to last hours and to advance several workstreams in
+# parallel. That is why its budget, its course corrections and its clock are
+# declared here independently instead of being derived from the agile tier:
+# ``codx-junior-max`` inherits nothing from ``codx-junior``.
 MAX_MAX_ITERATIONS: int = 24
 MAX_MAX_TOOL_CALLS: int = 6
-MAX_MAX_TOOL_ROUNDS: int = 40
-# ADVISORY target of a max turn (1 h), NOT a deadline: the turn is told to wrap
-# up and the response is marked, but only the user stops it.
-MAX_WALL_CLOCK_SECONDS: float = 3600.0
+MAX_MAX_TOOL_ROUNDS: int = 80
+# A limit must not collapse a multi-phase plan, so max grants MORE course
+# corrections than agile (4 instead of 2) and each one renews a bigger budget.
+MAX_CONTINUATIONS: int = 4
+MAX_CONTINUATION_MAX_ITERATIONS: int = 12
+MAX_CONTINUATION_MAX_CALLS: int = 6
+# ADVISORY target of a max turn (2 h) inside a first checkpoint at 4 h, NOT a
+# deadline: a waterfall run is expected to be long. Past the target the turn is
+# told to close the current phase and the response is marked, but only the user
+# stops it.
+MAX_TARGET_SECONDS: float = 7200.0
+MAX_WALL_CLOCK_SECONDS: float = 14400.0
 
 # ── Tool usage summary (generated only when the tool loop breaks) ─────────────
 # When LoopGuard stops a run, the tool conversation (the results the model saw)

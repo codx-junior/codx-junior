@@ -110,6 +110,8 @@ import FindReplaceBox from './FindReplaceBox.vue'
         @cancel-edit="$emit('cancel-edit')"
         @model-changed="$emit('model-changed', $event)"
         @toggle-voice="$emit('toggle-voice')"
+        @start-voice-call="$emit('start-voice-call')"
+        @open-voice-setup="$emit('open-voice-setup')"
         @remove-image="$emit('remove-image', $event)"
         @preview-image="$emit('preview-image', $event)"
         @profiles-selected="$emit('profiles-selected', $event)"
@@ -156,7 +158,7 @@ export default {
   },
   emits: [
     'send', 'add-message', 'cancel-edit', 'model-changed',
-    'toggle-voice', 'remove-image', 'preview-image', 'keydown', 'paste',
+    'toggle-voice', 'start-voice-call', 'open-voice-setup', 'remove-image', 'preview-image', 'keydown', 'paste',
     'drop', 'profiles-selected', 'project-changed', 'upload-files',
     'focus', 'blur', 'toggle-collapsed', 'update:cursor-word'
   ],

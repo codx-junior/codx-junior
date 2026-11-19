@@ -1,60 +1,55 @@
 <template>
   <div class="flex flex-col h-full bg-base-100 overflow-hidden">
     <!-- Header -->
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
-      <div class="flex items-center gap-2 min-w-0 flex-1">
-        <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
-          <span
-            v-if="isRunning"
-            class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-60"
-          ></span>
-          <span
-            class="relative inline-flex rounded-full h-2.5 w-2.5"
-            :class="isRunning ? 'bg-success' : 'bg-base-content/30'"
-          ></span>
-        </span>
-        <h3 class="font-semibold truncate">{{ activeSession?.name || 'Browser session' }}</h3>
-        <span class="badge badge-xs" :class="isRunning ? 'badge-success' : 'badge-warning'">
-          {{ liveBadge }}
-        </span>
+    <!-- Header: ONE row. Status, navigation and the few actions used while
+         browsing stay visible; everything else moved to the overflow menu, so the
+         live page keeps the height instead of paying for a second toolbar. -->
+    <div class="flex items-center gap-1 px-2 py-1.5 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
+      <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
         <span
-          class="badge badge-xs gap-1"
-          :class="isUserController || userActive ? 'badge-warning' : 'badge-info badge-outline'"
-          :title="controller === 'user' ? 'The human is driving; the AI is paused' : 'The AI may drive the page'"
-        >
-          <i :class="isUserController ? 'fa-solid fa-hand' : 'fa-solid fa-robot'"></i>
-          {{ controllerLabel }}
-        </span>
-        <span class="text-[11px] opacity-50 truncate hidden sm:inline">{{ activeSessionId?.slice(0, 8) }}</span>
-      </div>
+          v-if="isRunning"
+          class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-60"
+        ></span>
+        <span
+          class="relative inline-flex rounded-full h-2.5 w-2.5"
+          :class="isRunning ? 'bg-success' : 'bg-base-content/30'"
+        ></span>
+      </span>
+      <h3 class="font-semibold truncate max-w-[10rem]">{{ activeSession?.name || 'Browser session' }}</h3>
+      <span class="badge badge-xs flex-shrink-0" :class="isRunning ? 'badge-success' : 'badge-warning'">
+        {{ liveBadge }}
+      </span>
+      <span
+        class="badge badge-xs badge-outline flex-shrink-0"
+        :class="isUserController || userActive ? 'badge-warning' : 'badge-info'"
+        :title="controller === 'user' ? 'The human is driving; the AI is paused' : 'The AI may drive the page'"
+      >
+        <i :class="isUserController ? 'fa-solid fa-hand' : 'fa-solid fa-robot'"></i>
+      </span>
 
-      <button
-        v-if="isUserController"
-        class="btn btn-xs btn-primary"
-        :disabled="isControlling"
-        title="Give control back to the AI"
-        @click="giveBackControl"
-      >
-        <i class="fa-solid fa-robot"></i>
-        <span class="hidden sm:inline">Give back</span>
+      <!-- Navigation: the buttons used constantly stay in the row -->
+      <button class="btn btn-xs btn-ghost" title="Back" :disabled="!isRunning" @click="runPageAction('back')">
+        <i class="fa-solid fa-arrow-left"></i>
       </button>
-      <button
-        v-else
-        class="btn btn-xs btn-outline"
-        :disabled="isControlling || !isRunning"
-        title="Pause the AI and take control"
-        @click="takeControl"
-      >
-        <i class="fa-solid fa-hand"></i>
-        <span class="hidden sm:inline">Take control</span>
+      <button class="btn btn-xs btn-ghost" title="Forward" :disabled="!isRunning" @click="runPageAction('forward')">
+        <i class="fa-solid fa-arrow-right"></i>
       </button>
-      <button
-        class="btn btn-xs btn-ghost"
-        title="Reload live view"
-        @click="reloadLiveView"
-      >
-        <i class="fa-solid fa-rotate"></i>
+      <button class="btn btn-xs btn-ghost" title="Refresh page" :disabled="!isRunning" @click="runPageAction('refresh')">
+        <i class="fa-solid fa-arrows-rotate"></i>
       </button>
+      <form class="flex-1 flex items-center gap-1 min-w-[6rem]" @submit.prevent="goToAddress">
+        <input
+          v-model="address"
+          type="text"
+          class="input input-xs input-bordered flex-1 min-w-0"
+          placeholder="https://..."
+          :disabled="!isRunning"
+        />
+        <button class="btn btn-xs btn-primary" type="submit" :disabled="!isRunning || navigating">
+          <span v-if="navigating" class="loading loading-spinner loading-xs"></span>
+          <i v-else class="fa-solid fa-arrow-right"></i>
+        </button>
+      </form>
       <button
         class="btn btn-xs btn-ghost"
         title="Open live view in a new tab"
@@ -79,6 +74,70 @@
       >
         <i class="fa-solid fa-play"></i>
       </button>
+
+      <!-- The rest of the actions live here: one row of chrome, the page wins -->
+      <details ref="overflow" class="dropdown dropdown-end">
+        <summary class="btn btn-xs btn-ghost" title="More actions" aria-label="More actions">
+          <i class="fa-solid fa-ellipsis-vertical"></i>
+        </summary>
+        <ul class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-content/10 w-60 p-1 z-40">
+          <li>
+            <button
+              class="flex items-center gap-2"
+              @click="closeOverflow(); isUserController ? giveBackControl() : takeControl()"
+            >
+              <i :class="isUserController ? 'fa-solid fa-robot' : 'fa-solid fa-hand'"></i>
+              <span>{{ isUserController ? 'Give control back to the AI' : 'Take control' }}</span>
+            </button>
+          </li>
+          <li>
+            <button class="flex items-center gap-2" @click="closeOverflow(); reloadLiveView()">
+              <i class="fa-solid fa-rotate"></i>
+              <span>Reload live view</span>
+            </button>
+          </li>
+          <li>
+            <button
+              class="flex items-center gap-2"
+              :class="annotating && 'active'"
+              :disabled="!isRunning"
+              @click="closeOverflow(); toggleAnnotation()"
+            >
+              <i class="fa-solid fa-pen-ruler"></i>
+              <span>Draw on the page<span v-if="annotationCount"> ({{ annotationCount }})</span></span>
+            </button>
+          </li>
+          <li v-if="meetId">
+            <button class="flex items-center gap-2" :disabled="!isRunning" @click="closeOverflow(); shareWithMeet()">
+              <i class="fa-solid fa-users"></i>
+              <span>Share with the call</span>
+            </button>
+          </li>
+          <li>
+            <button
+              class="flex items-center gap-2"
+              :disabled="!isRunning || screenshotLoading"
+              @click="closeOverflow(); takeScreenshot()"
+            >
+              <span v-if="screenshotLoading" class="loading loading-spinner loading-xs"></span>
+              <i v-else class="fa-solid fa-camera"></i>
+              <span>Screenshot</span>
+            </button>
+          </li>
+          <li>
+            <button class="flex items-center gap-2" :disabled="!isRunning" @click="closeOverflow(); askAiAboutPage()">
+              <i class="fa-solid fa-comment-dots"></i>
+              <span>Ask the AI about this page</span>
+            </button>
+          </li>
+          <li>
+            <button class="flex items-center gap-2" @click="closeOverflow(); refreshSessionData()">
+              <i class="fa-solid fa-rotate-right"></i>
+              <span>Refresh activity + cost</span>
+            </button>
+          </li>
+        </ul>
+      </details>
     </div>
 
     <!-- Handoff banner: the AI paused and the human must complete something -->
@@ -93,72 +152,6 @@
       </span>
       <button class="btn btn-xs btn-warning" :disabled="isControlling" @click="giveBackControl">
         I'm done — give back to AI
-      </button>
-    </div>
-
-    <!-- Navigation toolbar -->
-    <div class="flex items-center gap-1 px-3 py-2 border-b border-base-content/10 flex-shrink-0">
-      <button class="btn btn-xs btn-ghost" title="Back" :disabled="!isRunning" @click="runPageAction('back')">
-        <i class="fa-solid fa-arrow-left"></i>
-      </button>
-      <button class="btn btn-xs btn-ghost" title="Forward" :disabled="!isRunning" @click="runPageAction('forward')">
-        <i class="fa-solid fa-arrow-right"></i>
-      </button>
-      <button class="btn btn-xs btn-ghost" title="Refresh page" :disabled="!isRunning" @click="runPageAction('refresh')">
-        <i class="fa-solid fa-arrows-rotate"></i>
-      </button>
-      <form class="flex-1 flex items-center gap-1 min-w-0" @submit.prevent="goToAddress">
-        <input
-          v-model="address"
-          type="text"
-          class="input input-xs input-bordered flex-1 min-w-0"
-          placeholder="https://..."
-          :disabled="!isRunning"
-        />
-        <button class="btn btn-xs btn-primary" type="submit" :disabled="!isRunning || navigating">
-          <span v-if="navigating" class="loading loading-spinner loading-xs"></span>
-          <i v-else class="fa-solid fa-arrow-right"></i>
-        </button>
-      </form>
-      <button
-        class="btn btn-xs btn-ghost"
-        :class="annotating && 'btn-active text-primary'"
-        title="Draw on the page and send the marks to the AI"
-        :disabled="!isRunning"
-        :aria-pressed="annotating ? 'true' : 'false'"
-        @click="toggleAnnotation"
-      >
-        <i class="fa-solid fa-pen-ruler"></i>
-        <span v-if="annotationCount" class="badge badge-xs badge-primary">{{ annotationCount }}</span>
-      </button>
-      <button
-        v-if="meetId"
-        class="btn btn-xs btn-ghost"
-        title="Share this browser session with the call"
-        :disabled="!isRunning"
-        @click="shareWithMeet"
-      >
-        <i class="fa-solid fa-users"></i>
-      </button>
-      <button
-        class="btn btn-xs btn-ghost"
-        title="AI/user screenshot"
-        :disabled="!isRunning || screenshotLoading"
-        @click="takeScreenshot"
-      >
-        <span v-if="screenshotLoading" class="loading loading-spinner loading-xs"></span>
-        <i v-else class="fa-solid fa-camera"></i>
-      </button>
-      <button
-        class="btn btn-xs btn-ghost"
-        title="Ask the AI about this page / selection"
-        :disabled="!isRunning"
-        @click="askAiAboutPage"
-      >
-        <i class="fa-solid fa-comment-dots"></i>
-      </button>
-      <button class="btn btn-xs btn-ghost" title="Refresh activity + cost" @click="refreshSessionData()">
-        <i class="fa-solid fa-rotate-right"></i>
       </button>
     </div>
 
@@ -534,6 +527,11 @@ export default {
     }
   },
   methods: {
+    /** Close the header overflow menu (the native `details` stays open otherwise). */
+    closeOverflow() {
+      const menu = this.$refs.overflow
+      if (menu) menu.open = false
+    },
     activityDetail(entry) {
       const target = entry?.params?.target
       if (!target) return ''

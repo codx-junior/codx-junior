@@ -40,13 +40,15 @@ Usage: ./up.sh [options]
                       (openai | deepseek | gemini | openrouter | mistral | groq | ollama | custom)
   --key <api-key>     API key of the provider (also read from CODX_JUNIOR_AI_API_KEY)
   --list-providers    Show every provider preset with the models it configures, then exit
-  --url <base-url>    OpenAI-compatible endpoint (required for `custom`)
+  --url <base-url>    OpenAI-compatible endpoint (required for custom)
   --model <model-id>  Override the default chat model of the provider
   --port <port>       Web port (default 19981)
   --projects <path>   Host folder that holds your projects (default ./projects)
+  --ref <tag>         Pull a pinned release instead of the rolling demo tag
+                      (e.g. --ref v1.2.3); same as CODX_JUNIOR_REF
   --build             Build the image from source instead of pulling it
   --dev               Developer flavour: build from this checkout as
-                      `codxjunior/codx-junior:dev`, with the whole repository
+                      codxjunior/codx-junior:dev, with the whole repository
                       (control plane included) mounted on top of the image, so
                       nothing has to be baked in. Implies --build.
   --no-wait           Do not wait for the health check
@@ -57,18 +59,59 @@ Usage: ./up.sh [options]
 USAGE
 }
 
+# Printer for --list-providers. Rows mirror the preset table of README.md section 1;
+# nothing is invented here. It is handled by the parser below, so it exits
+# before the docker checks: listing the presets must work on a host where Docker
+# is not installed yet. The heredoc is unquoted, so keep "$" out of it.
+usage_providers() {
+    cat <<PROVIDERS
+Provider presets. --provider <name> fills in the base URL, the chat model, the
+wiki model and the embeddings model; you only supply the key.
+
+  openai      chat     gpt-4.1-mini (gpt-4.1 for the wiki)
+              base URL https://api.openai.com/v1
+              embed    text-embedding-3-small (1536)
+  deepseek    chat     deepseek-chat
+              base URL https://api.deepseek.com/v1
+              embed    none - knowledge/RAG stays disabled
+  gemini      chat     gemini-2.0-flash
+              base URL https://generativelanguage.googleapis.com/v1beta/openai
+              embed    text-embedding-004 (768)
+  openrouter  chat     openai/gpt-4o-mini
+              base URL https://openrouter.ai/api/v1
+              embed    none - knowledge/RAG stays disabled
+  mistral     chat     mistral-large-latest
+              base URL https://api.mistral.ai/v1
+              embed    mistral-embed (1024)
+  groq        chat     llama-3.3-70b-versatile
+              base URL https://api.groq.com/openai/v1
+              embed    none - knowledge/RAG stays disabled
+  ollama      chat     llama3.1
+              base URL http://localhost:11434/v1
+              embed    nomic-embed-text (768), no key needed
+  custom      chat     CODX_JUNIOR_AI_MODEL
+              base URL CODX_JUNIOR_AI_API_URL
+              embed    CODX_JUNIOR_AI_EMBEDDINGS_MODEL
+
+Presets without an embeddings endpoint keep knowledge/RAG search disabled; the
+rest of the app works. Example: ./up.sh --provider deepseek --key sk-xxxxxxxx
+PROVIDERS
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --provider) PROVIDER="${2:-}"; shift 2 ;;
         --key)      API_KEY="${2:-}"; shift 2 ;;
         --url)      CODX_JUNIOR_AI_API_URL="${2:-}"; shift 2 ;;
         --model)    MODEL="${2:-}"; shift 2 ;;
+        --ref)      CODX_JUNIOR_REF="${2:-}"; shift 2 ;;
         --port)     PORT="${2:-}"; shift 2 ;;
         --projects) PROJECTS="${2:-}"; shift 2 ;;
         --build)    DO_BUILD=1; shift ;;
         --dev)      DO_DEV=1; DO_BUILD=1; shift ;;
         --no-wait)  NO_WAIT=1; shift ;;
         --non-interactive|--yes|-y) NON_INTERACTIVE=1; shift ;;
+        --list-providers) usage_providers; exit 0 ;;
         -h|--help)  usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac

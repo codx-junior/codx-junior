@@ -274,7 +274,59 @@ class BrowserManager:
         """
         if not chat_id:
             return None
-        return next((s for s in self.list_sessions() if s.has_chat(chat_id)), None)
+        matches = [s for s in self.list_sessions() if s.has_chat(chat_id)]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            # Legacy records could connect one chat to several sessions, which
+            # makes this lookup order-dependent and can drive the WRONG browser.
+            # Deterministic winner: the session holding the control lease, then
+            # the most recently active one.
+            logger.warning(
+                "Chat %s is connected to %d sessions (%s): keeping the most recent one",
+                chat_id,
+                len(matches),
+                ", ".join(m.id[:8] for m in matches),
+            )
+            matches.sort(
+                key=lambda s: (
+                    1 if s.controller_chat_id == chat_id else 0,
+                    s.last_action_at or s.created_at or "",
+                ),
+                reverse=True,
+            )
+        return matches[0]
+
+    def _detach_chat_from_other_sessions(
+        self, chat_id: str, keep_session_id: Optional[str] = None
+    ) -> None:
+        """
+        Keep the chat ↔ session relation exclusive (0..1 : 1).
+
+        A chat drives exactly one browser/desktop. When it is connected to a
+        session, every other session that still lists it is cleaned up, so
+        ``get_session_for_chat`` can never resolve a stale connection and the
+        AI cannot act on a browser the user is not looking at.
+
+        Args:
+            chat_id: Chat that is being connected.
+            keep_session_id: Session that keeps (or gains) the chat.
+        """
+        if not chat_id:
+            return
+        for other in self.list_sessions():
+            if other.id == keep_session_id or not other.has_chat(chat_id):
+                continue
+            other.remove_chat(chat_id)
+            if other.controller_chat_id == chat_id:
+                other.controller_chat_id = None
+            self._save_session_file(other)
+            logger.info(
+                "Disconnected chat %s from session %s (moved to %s)",
+                chat_id,
+                other.id[:8],
+                (keep_session_id or "-")[:8],
+            )
 
     def create_session(
         self,
@@ -690,6 +742,8 @@ class BrowserManager:
         if not session:
             logger.warning("connect_chat: session not found: %s", session_id)
             return None
+        # A chat belongs to exactly one session: move it instead of sharing it.
+        self._detach_chat_from_other_sessions(chat_id, keep_session_id=session.id)
         session.add_chat(chat_id)
         self._save_session_file(session)
         logger.info("Connected chat %s to session %s", chat_id, session.id[:8])
@@ -885,8 +939,13 @@ class BrowserManager:
         if getattr(chat, "meta_data", None) is None:
             chat.meta_data = {}
 
-        # Register this chat as a consumer of the shared session
+        # Register this chat as the consumer of this session. The relation is
+        # exclusive: a chat drives one browser/desktop at a time, so every other
+        # session that still listed it is disconnected here.
         if getattr(chat, "id", None):
+            self._detach_chat_from_other_sessions(
+                chat.id, keep_session_id=session.id
+            )
             session.add_chat(chat.id)
             self._save_session_file(session)
 

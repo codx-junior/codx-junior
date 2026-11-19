@@ -1,5 +1,7 @@
 <script setup>
 import ChatIcon from '@/components/chat/ChatIcon.vue'
+import { countUnreadMessages } from '@/utils/chatUnread'
+import { bucketTime, lastMessageCreatedAt } from '@/utils/taskActivity'
 </script>
 
 <template>
@@ -186,8 +188,9 @@ import ChatIcon from '@/components/chat/ChatIcon.vue'
           <label class="flex flex-col gap-1">
             <span class="text-[10px] uppercase tracking-wider text-base-content/40">Sort</span>
             <select v-model="sortBy" class="select select-sm select-bordered text-xs">
-              <option value="updated_at">Last update</option>
+              <option value="last_message">Last message</option>
               <option value="created_at">Created</option>
+              <option value="updated_at">Last update</option>
               <option value="name">Name</option>
               <option value="board">Board</option>
               <option value="column">Column</option>
@@ -249,9 +252,12 @@ import ChatIcon from '@/components/chat/ChatIcon.vue'
             v-for="task in pageTasks"
             :key="task.id"
             class="cursor-pointer transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-            :class="selectedTaskId === task.id
-              ? 'bg-primary/10'
-              : 'hover:bg-base-200 focus-visible:bg-base-200'"
+            :class="[
+              selectedTaskId === task.id
+                ? 'bg-primary/10'
+                : 'hover:bg-base-200 focus-visible:bg-base-200'
+            ]"
+            :style="{ opacity: selectedTaskId === task.id ? 1 : taskAgeOpacity(task) }"
             tabindex="0"
             :aria-label="`Open task ${task.name || 'untitled'}`"
             @click="$emit('open-task', task)"
@@ -262,8 +268,23 @@ import ChatIcon from '@/components/chat/ChatIcon.vue'
               <div class="flex items-start gap-2 min-w-0">
                 <ChatIcon :mode="task.mode" class="text-xs shrink-0 mt-1" />
                 <div class="min-w-0">
-                  <div class="text-sm font-medium truncate" :title="task.name">
-                    {{ task.name || 'Untitled task' }}
+                  <div class="flex items-center gap-1.5 min-w-0">
+                    <span class="text-sm font-medium truncate" :title="task.name">
+                      {{ task.name || 'Untitled task' }}
+                    </span>
+
+                    <!-- Unread replies for the current user: a badge with the
+                         count, and NOTHING at all when there is no unread
+                         message (no placeholder, no zero). -->
+                    <span
+                      v-if="taskUnreadCount(task) > 0"
+                      class="badge badge-sm badge-error badge-outline gap-1 shrink-0 font-bold"
+                      :title="taskUnreadTitle(task)"
+                      :aria-label="taskUnreadTitle(task)"
+                    >
+                      <i class="fa-solid fa-comment-dots text-[9px]" aria-hidden="true"></i>
+                      {{ taskUnreadCount(task) > 99 ? '99+' : taskUnreadCount(task) }}
+                    </span>
                   </div>
 
                   <!-- Last message excerpt: sender avatar + up to 200 chars (2 lines) -->
@@ -603,7 +624,9 @@ export default {
       mineOnly: false,
       pinnedOnly: false,
       hideSubtasks: false,
-      sortBy: 'updated_at',
+      // Default: the last message CREATION date, bucketed in 10 minute slices.
+      // Sorting on `updated_at` made the rows flip on every streamed message.
+      sortBy: 'last_message',
       sortDir: 'desc',
       page: 1,
       headers: HEADERS,
@@ -783,9 +806,15 @@ export default {
           case 'project': return (this.taskProject(task).label || '').toLowerCase()
           case 'due_date': return task.due_date || '9999-12-31'
           case 'created_at': return task.created_at || this.taskTimestamp(task) || ''
+          // Last message CREATION date, bucketed: tasks touched inside the same
+          // 10 minute slice compare equal and keep their previous order, so the
+          // list no longer reshuffles while a task is being answered.
+          case 'last_message': return bucketTime(lastMessageCreatedAt(task)) ?? -Infinity
           case 'profiles': return (task.profiles || []).join(',').toLowerCase()
           case 'users': return this.taskUsers(task).join(',').toLowerCase()
-          default: return this.taskTimestamp(task) || ''
+          // "Last update" (explicit choice of the user): still bucketed so a
+          // streaming task does not reorder the rows on every chunk.
+          default: return bucketTime(this.taskTimestamp(task)) ?? -Infinity
         }
       }
       return [...this.filteredTasks].sort((a, b) => {
@@ -1222,6 +1251,42 @@ export default {
       const days = Math.floor(hours / 24)
       if (days < 7) return `${days}d ago`
       return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    },
+    // ── Age dimming ──
+    // A row fades as its LAST UPDATE gets older: full contrast under 3h, then
+    // one step every couple of hours (3h · 5h · 8h · 1d), a further step at
+    // 1 day and the darkest level from 5 days on, kept identical forever after.
+    // The value is applied as an inline opacity (a utility class can be lost to
+    // a purge/build step) and the selected row always stays at full contrast.
+    // Age is never signalled by colour alone — the Last update column keeps
+    // printing the exact age and date.
+    taskAgeOpacity(task) {
+      const ts = this.taskTimestamp(task)
+      const date = ts ? new Date(ts) : null
+      if (!date || Number.isNaN(date.getTime())) return 0.35
+
+      const ageHours = (Date.now() - date.getTime()) / 3600000
+      if (ageHours < 3) return 1
+      if (ageHours < 5) return 0.85
+      if (ageHours < 8) return 0.7
+      if (ageHours < 24) return 0.55
+      if (ageHours < 120) return 0.4
+      return 0.25
+    },
+    // ── Unread replies ──
+    // Same shared rule as the sprint cards and the activity wall
+    // (src/utils/chatUnread.js): assistant replies not authored/read by the
+    // current user. A lightweight chat summary may only carry `unread_count`,
+    // so that is used as the fallback.
+    taskUnreadCount(task) {
+      const fromMessages = countUnreadMessages(task?.messages, this.$user?.username)
+      if (fromMessages > 0) return fromMessages
+      const stored = Number(task?.unread_count || 0)
+      return Number.isFinite(stored) && stored > 0 ? stored : 0
+    },
+    taskUnreadTitle(task) {
+      const count = this.taskUnreadCount(task)
+      return `${count} unread message${count === 1 ? '' : 's'}`
     },
     // Due badge: colour + icon + label (never colour alone)
     dueState(task) {

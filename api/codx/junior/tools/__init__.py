@@ -74,6 +74,10 @@ from .schedule_task_tool import (
     schedule_task,
     SCHEDULE_TASK_TOOL_JSON,
 )
+from .voice_tools import (
+    voice_switch_chat,
+    VOICE_SWITCH_CHAT_TOOL_JSON,
+)
 from .process_task_tool import process_task, PROCESS_TASK_TOOL_JSON
 from .orchestration_tools import (
     orchestrator,
@@ -92,6 +96,8 @@ from .git_tools import (
 from .repository_tools import (
     repository_overview,
     repository_status,
+    repository_stage,
+    repository_commit,
     repository_branches,
     repository_log,
     repository_compare,
@@ -241,12 +247,16 @@ from .ciso_tools import (
     security_check_command,
     security_redact,
     security_policy,
+    secrets_list,
+    secrets_request,
     SECURITY_AUDIT_TOOL_JSON,
     SECURITY_SCAN_CONTENT_TOOL_JSON,
     SECURITY_REVIEW_CHANGES_TOOL_JSON,
     SECURITY_CHECK_COMMAND_TOOL_JSON,
     SECURITY_REDACT_TOOL_JSON,
     SECURITY_POLICY_TOOL_JSON,
+    SECRETS_LIST_TOOL_JSON,
+    SECRETS_REQUEST_TOOL_JSON,
 )
 from .qa_tools import (
     qa_plan,
@@ -380,6 +390,8 @@ __all__ = [
     "restore_changes",
     "repository_overview",
     "repository_status",
+    "repository_stage",
+    "repository_commit",
     "repository_branches",
     "repository_log",
     "repository_compare",
@@ -793,6 +805,17 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
         "tags": ["task-management", "schedule", "wake_at", "after-hours", "workflow"],
         "tool_call": schedule_task
+    },
+    {
+        "tool_json": VOICE_SWITCH_CHAT_TOOL_JSON,
+        "settings": ToolSettings(
+            project_settings=True,
+            session=True,
+            dual_response=True,
+            scope="global",
+        ).dict(),
+        "tags": ["voice", "conversation", "switch", "chat"],
+        "tool_call": voice_switch_chat
     },
     {
         "tool_json": PROCESS_TASK_TOOL_JSON,
@@ -1417,6 +1440,80 @@ TOOLS = [
         "tool_json": {
             "type": "function",
             "function": {
+                "name": "repository_stage",
+                "description": (
+                    "Stage files so the next commit includes them. Takes explicit paths "
+                    "only: there is no 'stage everything' switch, so changes nobody named "
+                    "are never picked up. The composed git command is checked by the CISO "
+                    "security gate before anything is staged."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Files or folders to stage (repository relative or absolute)."
+                            )
+                        }
+                    },
+                    "required": ["paths"]
+                }
+            }
+        },
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["git", "repository", "staging", "add", "commit"],
+        "tool_call": repository_stage
+    },
+    {
+        "tool_json": {
+            "type": "function",
+            "function": {
+                "name": "repository_commit",
+                "description": (
+                    "Commit changes with a message that follows the 50/72 rule. Without "
+                    "'paths' it commits what is already staged; with 'paths' it stages only "
+                    "those files first, so unnamed changes are never swept in. No free-form "
+                    "command can be expressed and the composed git command is checked by the "
+                    "CISO security gate."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "message": {
+                            "type": "string",
+                            "description": (
+                                "Commit message: subject of at most 50 characters and body "
+                                "lines of at most 72 (see repository_commit_message)."
+                            )
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional files to stage before committing; omit it to commit "
+                                "what is already staged."
+                            )
+                        },
+                        "allow_empty": {
+                            "type": "boolean",
+                            "description": "Allow a commit with no content changes.",
+                            "default": False
+                        }
+                    },
+                    "required": ["message"]
+                }
+            }
+        },
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["git", "repository", "commit", "staging"],
+        "tool_call": repository_commit
+    },
+    {
+        "tool_json": {
+            "type": "function",
+            "function": {
                 "name": "repository_branches",
                 "description": (
                     "List the repository branches (local and remote) with their tip commit, "
@@ -1843,6 +1940,18 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
         "tags": ["security", "ciso", "redaction", "secrets", "logs"],
         "tool_call": security_redact
+    },
+    {
+        "tool_json": SECRETS_LIST_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "secrets", "vault", "handle"],
+        "tool_call": secrets_list
+    },
+    {
+        "tool_json": SECRETS_REQUEST_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["security", "ciso", "secrets", "vault", "request"],
+        "tool_call": secrets_request
     },
     {
         "tool_json": SECURITY_POLICY_TOOL_JSON,

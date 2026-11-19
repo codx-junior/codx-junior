@@ -351,7 +351,19 @@ class GlobalSettings(BaseModel):
 
     users: Optional[List[CodxUser]] = Field(default=[CodxUser(username="admin", role="admin", avatar="/only_icon.png")])
     user_logins: Optional[List[CodxUserLogin]] = Field(default=[])
-    secret: Optional[str] = Field(description="Encription secret", default="codx-junior-rules")
+    # JWT/HMAC signing secret. Deliberately empty: the previous default
+    # ("codx-junior-rules") was a 17-byte constant published in the source tree,
+    # shared by every installation and below the 32 bytes RFC 7518 requires for
+    # HS256. ``codx.junior.global_settings.ensure_signing_secret()`` generates a
+    # random >= 32-byte secret and persists it on first use / at startup.
+    secret: Optional[str] = Field(
+        default="",
+        description=(
+            "JWT/HMAC signing secret, at least "
+            "codx.junior.security.secret_key.MIN_SECRET_BYTES bytes; "
+            "auto-generated when empty or too short"
+        ),
+    )
 
     workspaces: Optional[List[Workspace]] = Field(default=[DEFAULT_WORKSPACE])
     workspace_start_port: Optional[int] = Field(default=16000)

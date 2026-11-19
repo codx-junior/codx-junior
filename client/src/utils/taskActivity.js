@@ -32,6 +32,39 @@ export function compareActivity(a, b) {
   return aTs > bTs ? -1 : 1
 }
 
+// Creation time of the task's newest message — the STABLE activity signal.
+//
+// A message is created ONCE, while its `updated_at` (and the chat's) moves on
+// every streamed chunk. Sorting on the creation date therefore keeps the list
+// still while an answer is being generated, instead of reshuffling it per token.
+export function lastMessageCreatedAt(task) {
+  if (!task) return null
+
+  const messages = Array.isArray(task.messages) ? task.messages : []
+  let newest = null
+  let newestTime = 0
+  messages.forEach((message) => {
+    // `created_at` / `timestamp` only: `updated_at` moves while streaming.
+    const candidate = message?.created_at || message?.timestamp || null
+    if (!candidate) return
+    const time = new Date(candidate).getTime()
+    if (!Number.isNaN(time) && time > newestTime) {
+      newestTime = time
+      newest = candidate
+    }
+  })
+  if (newest) return newest
+
+  // Chat summary without its messages loaded: the store's own bookkeeping.
+  return task.lastMessageAt || task.created_at || null
+}
+
+// Bucketed last-message activity of a task: `null` when the task has none.
+// Sorting on this value is what keeps the task lists from flickering.
+export function taskActivityTime(task) {
+  return bucketTime(lastMessageCreatedAt(task))
+}
+
 // Harness / generation states that mean the task did NOT finish cleanly.
 const ERROR_HARNESS_STATUSES = ['failed', 'stale', 'error']
 

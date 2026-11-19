@@ -62,6 +62,15 @@ is_true() {
   esac
 }
 
+# True when the docker CLI already holds a credential for the registry in its
+# config store (a previous `docker login`). Pushing then works without the
+# token being exported in the environment.
+has_stored_credentials() {
+  local cfg="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
+  [[ -f "$cfg" ]] || return 1
+  grep -q '"auth"' "$cfg"
+}
+
 run() {
   if is_true "$DRY_RUN"; then
     printf '[%s] (dry-run) %s\n' "$LOG_TAG" "$*"
@@ -138,8 +147,9 @@ PLATFORM_COUNT=$(awk -F',' '{print NF}' <<< "$PLATFORMS")
 MULTI_ARCH="false"
 [[ "$PLATFORM_COUNT" -gt 1 ]] && MULTI_ARCH="true"
 
-if is_true "$PUSH" && [[ -z "$DOCKERHUB_TOKEN" ]]; then
-  die "DOCKERHUB_TOKEN is required to push (or pass --no-push)"
+# A dry run only prints the docker commands, so it must not require the token.
+if is_true "$PUSH" && ! is_true "$DRY_RUN" && [[ -z "$DOCKERHUB_TOKEN" ]] && ! has_stored_credentials; then
+  die "DOCKERHUB_TOKEN is required to push (or pass --no-push / use DRY_RUN=true)"
 fi
 
 # buildx is required for --platform and for multi-arch manifests.
@@ -152,7 +162,11 @@ fi
 # ---------------------------------------------------------------------------
 login() {
   if [[ -z "$DOCKERHUB_TOKEN" ]]; then
-    warn "no DOCKERHUB_TOKEN set, skipping login (public pulls only)"
+    if has_stored_credentials; then
+      log "no DOCKERHUB_TOKEN set: using the existing docker credential store"
+    else
+      warn "no DOCKERHUB_TOKEN set, skipping login (public pulls only)"
+    fi
     return 0
   fi
   log "logging in to ${DOCKERHUB_REGISTRY} as ${DOCKERHUB_USER}"

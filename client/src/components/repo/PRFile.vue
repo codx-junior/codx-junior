@@ -109,7 +109,12 @@ import VerticalSplitter from '@/components/layout/VerticalSplitter.vue'
               v-if="fileContent" />
 
             <!-- Review message display -->
-            <ChatEntry :chat="file.chat" :message="review" v-if="showChat && review" />
+            <ChatEntry
+              :chat="file.chat"
+              :message="review"
+              :options-enabled="false"
+              v-if="showChat && review"
+            />
           </div>
         </div>
       </template>

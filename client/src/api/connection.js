@@ -117,6 +117,19 @@ export class CodxJuniorConnection {
       .finally(() => this.liveRequests--);
   }
 
+  /** POST a JSON request and receive a binary body (audio, images...). */
+  postBlob(url, data) {
+    this.createConnection()
+    this.liveRequests++;
+    const request = this.axiosInstance.post(this.prepareUrl(url), data, {
+      headers: this.headers,
+      responseType: 'blob'
+    })
+    return this.trackLocalCall('POST', url, request)
+      .then((response) => response?.data)
+      .finally(() => this.liveRequests--);
+  }
+
   put(url, data) {
     this.createConnection()
     this.liveRequests++;

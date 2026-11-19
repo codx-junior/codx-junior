@@ -35,6 +35,11 @@ from datetime import timedelta, timezone as dt_timezone
 from typing import TYPE_CHECKING, Any, List, Optional
 
 from codx.junior.autonomy.models import parse_when, timezone_for, utcnow
+from codx.junior.autonomy.recurrence import (
+    next_occurrence,
+    parse_context,
+    parse_schedule,
+)
 from codx.junior.task_manager import TaskManager, to_profile_names
 from .model import ToolResponse
 from .project_manager_tools import _resolve_settings, validate_task_destination
@@ -212,6 +217,16 @@ SCHEDULE_TASK_TOOL_JSON = {
                         "'2026-04-03' or an ISO instant."
                     ),
                 },
+                "context": {
+                    "type": "string",
+                    "enum": ["history", "clean"],
+                    "description": (
+                        "Only for a recurring 'when': 'history' (default) keeps "
+                        "the task and its conversation so every run sees the "
+                        "previous ones; 'clean' starts every run in a brand new "
+                        "task card with no previous messages."
+                    ),
+                },
                 "task_id": {
                     "type": "string",
                     "description": "Id of the task to reschedule.",
@@ -260,6 +275,15 @@ SCHEDULE_TASK_TOOL_JSON = {
                         "e.g. 'Europe/Madrid'."
                     ),
                 },
+                "context": {
+                    "type": "string",
+                    "enum": ["history", "clean"],
+                    "description": (
+                        "How each recurring run starts: 'history' (default, same "
+                        "card, the run sees the previous ones) or 'clean' (a new "
+                        "card per run with no previous messages)."
+                    ),
+                },
                 "clear": {
                     "type": "boolean",
                     "description": (
@@ -284,6 +308,7 @@ async def schedule_task(
     column: Optional[str] = None,
     profiles: Optional[List[str]] = None,
     timezone: Optional[str] = None,
+    context: Optional[str] = None,
     clear: bool = False,
     settings: Optional["CODXJuniorSettings"] = None,
     session: Any = None,
@@ -326,8 +351,16 @@ async def schedule_task(
         ...     timezone="Europe/Madrid",
         ... )
     """
+    # A recurrence ("every friday at noon") owns the alarm clock: the task is
+    # armed to its next occurrence and the autonomy runtime re-arms it after
+    # every run instead of consuming the wake.
+    rule = None
     if not clear:
-        resolved = _resolve_when(when, timezone_name=timezone)
+        rule = parse_schedule(when, timezone_name=timezone)
+        if rule is not None:
+            resolved = next_occurrence(rule)
+        else:
+            resolved = _resolve_when(when, timezone_name=timezone)
     else:
         resolved = ""
 
@@ -384,10 +417,29 @@ async def schedule_task(
                 parent_chat=getattr(session, "_current_chat", None),
             )
             stored = chat_manager.find_by_id(chat_id=created.id) or created
+            if rule is not None:
+                stored = chat_manager.update_chat_metadata(
+                    chat=stored,
+                    metadata={
+                        "schedule": rule.text(),
+                        "schedule_context": parse_context(context),
+                        "schedule_column": getattr(stored, "column", None),
+                        "wake_at": resolved,
+                    },
+                )
+                stored = chat_manager.find_by_id(chat_id=stored.id) or stored
             action = "created+scheduled"
         else:
             stored = _find_task(chat_manager, task_id, task)
             metadata = {"wake_at": resolved}
+            if rule is not None:
+                metadata["schedule"] = rule.text()
+                metadata["schedule_context"] = parse_context(context)
+                metadata["schedule_column"] = getattr(stored, "column", None)
+            else:
+                # A one-shot (or a clear) ends an existing series.
+                metadata["schedule"] = None
+                metadata["schedule_column"] = None
             merged = _merge_profiles(stored.profiles, profiles)
             if merged:
                 metadata["profiles"] = merged

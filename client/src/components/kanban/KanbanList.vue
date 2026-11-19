@@ -333,6 +333,8 @@ import moment from 'moment'
 </template>
 
 <script>
+import { compareActivity } from '../../utils/taskActivity'
+
 // Task priorities, same vocabulary the task table (TaskTableView) uses
 const PRIORITIES = [
   { value: 'high', label: 'High' },
@@ -510,12 +512,10 @@ export default {
     sortedBoards() {
       return this.filteredBoards
         .filter(b => !b.bookmark)
-        .sort((a, b) => {
-          // Sort by latest task activity first, fallback to board last_update
-          const aTs = this.boardLastActivity(a) || ''
-          const bTs = this.boardLastActivity(b) || ''
-          return aTs > bTs ? -1 : aTs < bTs ? 1 : 0
-        })
+        // Latest task activity first, fallback to board last_update. Bucketed in
+        // 10 minute slices so the grid does not reshuffle on every streamed
+        // message (see utils/taskActivity).
+        .sort((a, b) => compareActivity(this.boardLastActivity(a), this.boardLastActivity(b)))
     }
   },
   methods: {

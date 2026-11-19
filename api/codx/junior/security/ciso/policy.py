@@ -27,6 +27,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from codx.junior.security.ciso.models import (
     CisoPolicy,
+    SecretPolicy,
     SecurityAction,
     SecurityCategory,
     SecurityDomain,
@@ -140,6 +141,21 @@ def policy_from_dict(data: Optional[Dict[str, Any]]) -> CisoPolicy:
             coerced = _coerce_enum_values([data[field]], enum_cls)
             if coerced:
                 setattr(policy, field, coerced[0])
+
+    # Nested block: unknown keys are dropped instead of raising, so a settings
+    # file written for a newer version still loads.
+    secrets_data = data.get("secrets")
+    if isinstance(secrets_data, dict):
+        try:
+            policy.secrets = SecretPolicy(
+                **{
+                    key: value
+                    for key, value in secrets_data.items()
+                    if key in SecretPolicy.__dataclass_fields__
+                }
+            )
+        except Exception as ex:
+            logger.warning("CISO policy: ignoring invalid 'secrets' block: %s", ex)
 
     return policy
 

@@ -179,6 +179,70 @@ import ProfileSelector from '../profile/ProfileSelector.vue'
             <p class="mt-1 text-[10px] text-base-content/40">
               When the agent picks this task up on its own. Use an after-hours time (e.g. 01:00) so it can change code while nobody is working.
             </p>
+
+            <!-- Repeat: a recurrence turns the task into a series. The rule is
+                 stored canonical and `wake_at` is armed to the next occurrence;
+                 the autonomy runtime re-arms it after every run. -->
+            <div class="mt-3 rounded-lg border border-base-300/60 bg-base-200/30 p-2 space-y-2">
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] font-medium text-base-content/60">Repeat</span>
+                <span
+                  v-if="taskData.schedule"
+                  class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-primary/40 bg-primary/10 text-primary text-[10px] font-medium"
+                  :title="taskData.schedule"
+                >
+                  <i class="fa-solid fa-rotate text-[9px]" aria-hidden="true"></i>
+                  {{ taskData.schedule }}
+                </span>
+                <div class="grow"></div>
+                <button
+                  v-if="taskData.schedule"
+                  type="button"
+                  class="btn btn-xs btn-ghost gap-1"
+                  title="Stop repeating"
+                  @click="clearRepeat"
+                >
+                  <i class="fa-solid fa-xmark text-[10px]" aria-hidden="true"></i> Clear
+                </button>
+              </div>
+
+              <input
+                v-model="repeatText"
+                type="text"
+                placeholder="every friday at noon"
+                class="input input-sm input-bordered w-full bg-base-100 focus:border-primary/50 focus:ring-2 focus:ring-primary/40"
+                @keyup.enter="applyRepeat()"
+              />
+
+              <div class="flex flex-wrap gap-1">
+                <button
+                  v-for="preset in repeatPresets"
+                  :key="preset"
+                  type="button"
+                  class="btn btn-xs btn-outline"
+                  @click="applyRepeat(preset)"
+                >
+                  {{ preset }}
+                </button>
+              </div>
+
+              <label class="flex items-center gap-2 text-[11px] text-base-content/60">
+                <span>Each run</span>
+                <select
+                  v-model="repeatContext"
+                  class="select select-xs select-bordered bg-base-100"
+                >
+                  <option value="history">sees the previous runs (same card)</option>
+                  <option value="clean">starts clean (new card)</option>
+                </select>
+              </label>
+
+              <p v-if="repeatError" class="text-[10px] text-error">{{ repeatError }}</p>
+              <p v-else-if="repeatInfo" class="text-[10px] text-success">{{ repeatInfo }}</p>
+              <p v-else-if="taskData.schedule && taskData.wake_at" class="text-[10px] text-base-content/40">
+                Next run: {{ wakeAtLabel }}
+              </p>
+            </div>
           </div>
         </div>
       </section>
@@ -320,6 +384,17 @@ export default {
         { label: 'Tomorrow 01:00', hour: 1, days: 1, hint: 'Tomorrow at 01:00 local time' },
         { label: '+2 days 01:00', hour: 1, days: 2, hint: 'In two days at 01:00 local time' }
       ],
+      // Recurrence presets: the text is parsed by the API and stored canonical.
+      repeatPresets: [
+        'every friday at noon',
+        'every monday at 09:00',
+        'every day at 09:00',
+        'every weekday at 09:00'
+      ],
+      repeatText: '',
+      repeatContext: 'history',
+      repeatError: '',
+      repeatInfo: '',
       // Snapshot of the editable fields, to tell the user there is nothing to save
       snapshot: null
     }
@@ -502,6 +577,54 @@ export default {
     },
     clearWakeAt() {
       this.taskData.wake_at = null
+    },
+
+    // ── Repeat (recurrence) ──────────────────────────────────────────────
+    // A recurrence is NOT part of the metadata save: it must arm `wake_at` and
+    // remember the home column, so it goes through /api/chats/schedule, which
+    // returns the canonical rule and the next run.
+    applyRepeat(text) {
+      const value = String(text === undefined ? this.repeatText : text || '').trim()
+      if (!value) return
+      return this.sendSchedule(value)
+    },
+    clearRepeat() {
+      return this.sendSchedule('')
+    },
+    async sendSchedule(schedule) {
+      const chatId = this.taskData && this.taskData.id
+      if (!chatId) return
+      this.repeatError = ''
+      this.repeatInfo = ''
+      try {
+        const result = await this.$chats.scheduleChat({
+          chat_id: chatId,
+          schedule,
+          context: this.repeatContext,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        })
+        if (result && result.error) {
+          this.repeatError = result.error
+          return
+        }
+        this.taskData.schedule = result.schedule || null
+        this.taskData.schedule_context = result.context || this.repeatContext
+        this.taskData.wake_at = result.wake_at || null
+        this.repeatInfo = result.next_run
+          ? `Repeats ${result.schedule} — next run ${this.formatInstant(result.next_run)}`
+          : 'Repeat cleared'
+        this.repeatText = ''
+        this.snapshot = this.fieldsSnapshot()
+      } catch (error) {
+        this.repeatError = (error && error.message) || 'Could not save the repeat rule'
+      }
+    },
+    formatInstant(iso) {
+      const date = new Date(iso)
+      if (Number.isNaN(date.getTime())) return iso
+      return date.toLocaleString(undefined, {
+        weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+      })
     }
   }
 }

@@ -371,6 +371,96 @@ Use xml envelope per file with the changes like in the example:
 """
 
 
+# Secrets are part of the global system instructions on purpose: a model that
+# does not know the handle syntax asks the user for the credential instead, and
+# the value ends up in the transcript. See
+# ``codx/junior/security/ciso/vault.py`` for the resolver.
+SECRETS_SYSTEM_RULES = """
+### SECRETS — never ask for, type or print a credential
+The runtime holds the credentials; you only NAME them with a handle:
+
+  {{secret:NAME}}   a value stored in the project or the global vault
+  {{env:NAME}}      a value already present in the runtime environment
+
+Rules:
+ * Never ask the user to paste a credential in a message: it would be stored in
+   the transcript, the index and the provider logs. Never print, log, summarise
+   or write a resolved value anywhere.
+ * Call `secrets_list` to learn which names exist. Never guess a name: an
+   unknown handle fails the tool call.
+ * A handle is accepted ONLY as the WHOLE value of the `env` map or of the
+   `stdin` argument of a command tool. Anywhere else — inside a command string,
+   a URL, a file, a description — the call is refused with `denied_sink`,
+   because that is exactly how a value escapes.
+ * Correct: {"command": "docker login --password-stdin registry.local",
+             "stdin": "{{secret:REGISTRY_PASSWORD}}"}
+ * Correct: {"command": "aws s3 ls",
+             "env": {"AWS_SECRET_ACCESS_KEY": "{{secret:AWS_KEY}}"}}
+ * Wrong:   {"command": "docker login -p {{secret:REGISTRY_PASSWORD}} host"}
+ * Wrong:   {"url": "https://user:{{secret:TOKEN}}@host/"}
+ * The child process expands the value itself (`$AWS_SECRET_ACCESS_KEY` inside
+   the command is plain shell, not a handle). Write the option that reads the
+   value from stdin or the environment, never one that takes it as an argument.
+ * A missing secret is requested with `secrets_request(name, reason)`. The
+   operator provides it out of band and `secrets_list` then reports it `ready`.
+ * If a call fails with `denied_tool`, the allow list of that secret does not
+   include the tool: report it, do not look for a workaround.
+"""
+
+
+def _build_secrets_instructions(settings: Any = None) -> str:
+    """
+    Return the secrets block of the system prompt: the rules plus the inventory.
+
+    The inventory is value-free (names, availability and allow list only, see
+    :func:`codx.junior.security.ciso.vault.dashboard_entries`) and is read fresh
+    on every turn, so a secret added from the settings UI is usable immediately
+    without the model calling ``secrets_list`` first.
+
+    Args:
+        settings: Project settings, used to locate the vault and the policy.
+
+    Returns:
+        The instructions to append, or an empty string when secrets are disabled
+        by policy.
+    """
+    parts: List[str] = []
+    try:
+        from codx.junior.security.ciso import vault as secret_vault
+
+        if not secret_vault.vault_for(settings).secret_policy.enabled:
+            return ""
+        entries = secret_vault.dashboard_entries(settings)
+    except Exception as ex:
+        logger.warning("SmolAgent: could not read the secret inventory: %s", ex)
+        entries = None
+
+    parts.append(SECRETS_SYSTEM_RULES)
+    if entries is None:
+        return "\n".join(parts)
+
+    if not entries:
+        parts.append(
+            "### SECRETS — available now\n"
+            "No secret is declared for this project or globally. Call "
+            "`secrets_request(name, reason)` when the task needs one."
+        )
+        return "\n".join(parts)
+
+    lines = ["### SECRETS — handles available now (names only, never values)"]
+    for entry in entries:
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        allowed = ", ".join(entry.get("allow_tools") or []) or "any tool"
+        status = str(entry.get("status") or "ready")
+        lines.append(f" * {{{{secret:{name}}}}} — {status}; allowed tools: {allowed}")
+    lines.append(
+        "Use one only as the WHOLE value of `env.<NAME>` or `stdin`."
+    )
+    parts.append("\n".join(lines))
+    return "\n".join(parts)
+
 
 def _iso_utc(epoch_seconds: float) -> str:
     """
@@ -780,6 +870,14 @@ class SmolAgent:
         global_instructions = _load_chat_global_instructions()
         if global_instructions:
             parts.append(global_instructions)
+
+        # 2b. Secrets: the handle syntax plus the value-free inventory of what
+        #     the runtime can actually resolve, so the model does not have to
+        #     call secrets_list before its first command and never asks the user
+        #     to paste a credential.
+        secrets_instructions = _build_secrets_instructions(self.settings)
+        if secrets_instructions:
+            parts.append(secrets_instructions)
 
         # 3. Extra system instructions
         if self.extra_system:
@@ -3723,6 +3821,35 @@ class SmolAgent:
                 logger.warning("SmolAgent: %s", error_message)
                 return error_message
 
+            # SECRETS: resolve {{secret:NAME}} / {{env:NAME}} handles now, one
+            # moment before the tool runs and AFTER TOOL_START was emitted with
+            # the unresolved arguments -- so the event stream, the logs and the
+            # cache key only ever hold handles. The value is injected into a
+            # closed set of sinks (env/stdin); a handle anywhere else is refused
+            # and the tool is not executed. See
+            # codx/junior/security/ciso/vault.py
+            secret_resolution = None
+            try:
+                from codx.junior.security.ciso import vault as secret_vault
+                secret_resolution = secret_vault.resolve_for_tool(
+                    params,
+                    func_name,
+                    step_id=str(tool_call_id or ""),
+                    settings=self.settings,
+                )
+                if secret_resolution.error:
+                    success = False
+                    error_message = secret_resolution.error
+                    logger.warning("SmolAgent: %s", error_message)
+                    return error_message
+                if secret_resolution.redactions:
+                    params = secret_resolution.params
+            except Exception as ex:
+                # Never break a call that carries no handle. A failure here
+                # leaves the handles unresolved (inert text), so it can leak
+                # nothing; it is reported so it can be fixed.
+                logger.warning("SmolAgent: secret resolution skipped: %s", ex)
+
             tool_settings: Dict[str, Any] = tool.get(
                 "settings", {"project_settings": False, "async": False}
             )
@@ -3791,6 +3918,14 @@ class SmolAgent:
                 timeout_seconds=tool_timeout_seconds,
                 func_name=func_name,
             )
+
+            # Redaction net (belt and braces): a tool echoes its environment, a
+            # URL it called or an error message. Mask every resolved value
+            # BEFORE the preview, the cache write, the events and the model see
+            # it. The control is that the value never got into a string at all;
+            # this is the net for the tool's own output.
+            if secret_resolution is not None and secret_resolution.redactions:
+                result = secret_vault.redact_result(result, secret_resolution.redactions)
 
             # Build result_preview for the TOOL_END event payload.
             if isinstance(result, ToolResponse):

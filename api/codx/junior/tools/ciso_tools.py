@@ -31,6 +31,7 @@ from codx.junior.security.ciso import (
     scan_project,
 )
 from codx.junior.security.ciso import secrets as ciso_secrets
+from codx.junior.security.ciso import vault as ciso_vault
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +342,99 @@ def security_redact(text: str, **kwargs) -> ToolResponse:
     )
 
 
+def secrets_list(**kwargs) -> ToolResponse:
+    """List the secrets the runtime can resolve — never their values.
+
+    Use the returned names in a handle (``{{secret:NAME}}`` or ``{{env:NAME}}``)
+    as the WHOLE value of the ``env`` map or of the ``stdin`` argument. A handle
+    anywhere else (inside a command, a URL or a description) is refused.
+
+    Args:
+        **kwargs: Runtime injected settings.
+
+    Returns:
+        ToolResponse: The declared secrets with their availability.
+
+    Example:
+        >>> secrets_list()  # doctest: +SKIP
+    """
+    settings = _settings_of(kwargs)
+    vault = ciso_vault.vault_for(settings)
+    entries = vault.list()
+    if not entries:
+        return ToolResponse(
+            user_response="No secret is declared for this project.",
+            llm_response="secrets_list: no secret declared. Declare one with secrets_request.",
+            logs=["CISO secrets: 0 declared"],
+        )
+    rows = [
+        "| Name | Source | Status | Allowed tools | Description |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for meta in entries:
+        tools = ", ".join(meta.allow_tools) or "-"
+        rows.append(
+            f"| `{meta.name}` | {meta.source} | {meta.status} | {tools} | "
+            f"{meta.description or '-'} |"
+        )
+    rows.append("")
+    rows.append(
+        "A handle must be the WHOLE value of `env.<NAME>` or `stdin`, e.g. "
+        '`{"command": "docker login --password-stdin registry.local", '
+        '"stdin": "{{secret:NAME}}"}`. A handle inside `command` is rejected.'
+    )
+    return ToolResponse(
+        user_response="\n".join(rows),
+        llm_response="\n".join(
+            f"- {meta.name} [{meta.source}] {meta.status}" for meta in entries
+        ),
+        logs=[f"CISO secrets: {len(entries)} declared"],
+    )
+
+
+def secrets_request(name: str, reason: str = "", **kwargs) -> ToolResponse:
+    """Declare that a secret is needed so the operator can provide it out of band.
+
+    The value must never be typed into the chat: it would land in the message
+    history, the index and the provider's logs. This creates a ``pending`` entry;
+    ``secrets_list`` reports ``ready`` once the operator has stored it.
+
+    Args:
+        name: Secret name (identifier, e.g. ``REGISTRY_PASSWORD``).
+        reason: Why the task needs it (shown to the operator).
+        **kwargs: Runtime injected settings.
+
+    Returns:
+        ToolResponse: Instructions for the operator.
+
+    Example:
+        >>> secrets_request("REGISTRY_PASSWORD")  # doctest: +SKIP
+    """
+    settings = _settings_of(kwargs)
+    vault = ciso_vault.vault_for(settings)
+    meta = vault.request(name, chat_id=str(kwargs.get("chat_id") or ""), reason=reason)
+    return ToolResponse(
+        user_response=(
+            f"### Secret `{meta.name}` requested\n\n"
+            "Ask the operator to provide it **outside the chat**:\n\n"
+            "```bash\n"
+            "export CODX_JUNIOR_VAULT_KEY=...   # once, from: ... vault keygen\n"
+            f"python -m codx.junior.security.ciso.vault add {meta.name} "
+            "--tools execute_command\n"
+            "```\n\n"
+            "Never paste the value in a message. `secrets_list` reports `ready` "
+            "once it is stored."
+        ),
+        llm_response=(
+            f"secrets_request: '{meta.name}' is pending. No value is stored yet. Values "
+            "reach the vault only out of band (CLI or the secrets screen), because chat "
+            "content is persisted, indexed and forwarded to the model provider. "
+            "secrets_list reports 'ready' once the entry is available."
+        ),
+        logs=[f"CISO secrets: request '{meta.name}'"],
+    )
+
+
 def security_policy(action: str = "show", changes: Optional[Dict[str, Any]] = None, **kwargs) -> ToolResponse:
     """Show or adjust the CISO policy of the project.
 
@@ -604,6 +698,46 @@ SECURITY_POLICY_TOOL_JSON = {
                 }
             },
             "required": []
+        }
+    }
+}
+
+SECRETS_LIST_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "secrets_list",
+        "description": (
+            "List the secrets the runtime can resolve (names and availability only; "
+            "values are never shown). Use a name as a handle: {{secret:NAME}} or "
+            "{{env:NAME}}, placed as the WHOLE value of the 'env' map or of the "
+            "'stdin' argument of a command tool."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []}
+    }
+}
+
+SECRETS_REQUEST_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "secrets_request",
+        "description": (
+            "Declare that a secret is needed so the operator can provide it out of "
+            "band (never in the chat). The secret becomes 'pending' and is reported "
+            "'ready' by secrets_list once stored."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Secret name, e.g. REGISTRY_PASSWORD."
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the task needs this secret."
+                }
+            },
+            "required": ["name"]
         }
     }
 }

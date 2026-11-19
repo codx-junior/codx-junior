@@ -13,9 +13,33 @@ codx-junior. It is pull-only (nothing is compiled on their machine), it does not
 run Milvus, Traefik, LocalAI, a second API container, an init container or a
 Node server, and restarting it installs nothing.
 
-> Until `codxjunior/codx-junior:demo` is published to Docker Hub, `up.sh` warns and
-> falls back to a local build (a few minutes). Pass `--build` to make that explicit.
+> `up.sh` pulls `codxjunior/codx-junior:demo`, or `:vX.Y.Z` when you pin
+> `--ref vX.Y.Z`. A failed pull is **fatal**: there is no silent fallback to a
+> build, pass `--build` to compile from source on purpose.
 > How to deploy the other tiers: [`../README.md`](../README.md).
+
+### Developer flavour: `./up.sh --dev`
+
+A developer wants the *real* control plane of the checkout being worked on
+(tasks, boards, profiles, chat turns) and wants it live, without rebuilding the
+image each time one of those files changes. `--dev` does exactly that:
+
+```bash
+./up.sh --dev        # builds codxjunior/codx-junior:dev from this checkout
+```
+
+* it builds the image locally (`:dev`) instead of pulling a release artifact;
+* it adds `docker-compose.dev.yaml`, which mounts the **whole `<repo>/.codx`**
+  over the container's control plane, read/write;
+* `up.sh` fills `CODX_JUNIOR_BUILD_*` from `git describe`, so the dev image also
+  reports a real `version`/`ref`/`commit` on `/api/health`.
+
+Nothing is removed from the repository and nothing is untracked: the tracked
+control plane stays in git. Only the *generated* data plane (`.codx/db`,
+`.codx/atlas`, `.codx/chat_turns`, browser sessions, logs…) is ignored by git and
+kept out of the **release** image build context: it is runtime state, it is
+large, and the release image recreates it at first boot inside the
+`codx-junior-settings` volume. `--dev` still sees all of it, through the mount.
 
 ### On a remote / cloud server
 
@@ -108,8 +132,8 @@ It is **idempotent and non-destructive**: an installation already configured
 from the UI is never touched. To re-apply (e.g. after rotating a key):
 
 ```bash
-docker exec codx-junior curl -fsS -X POST http://127.0.0.1:19980/api/bootstrap/apply
-docker exec codx-junior curl -fsS http://127.0.0.1:19980/api/bootstrap   # inspect
+docker exec codx-junior-demo curl -fsS -X POST http://127.0.0.1:19980/api/bootstrap/apply
+docker exec codx-junior-demo curl -fsS http://127.0.0.1:19980/api/bootstrap   # inspect
 ```
 
 `CODX_JUNIOR_AI_FORCE=1` makes every start re-apply it;
@@ -187,6 +211,9 @@ Ports and volumes:
 The health check is `GET /api/health`. `docker compose ps` shows `healthy` when
 the API answers.
 
+Container names, network aliases and the WebSocket/headers the workspace preview
+needs: [`ENVIRONMENT.md`](ENVIRONMENT.md).
+
 ---
 
 ## 5. Development deployment (unchanged)
@@ -212,7 +239,7 @@ Two knobs make the source deployment behave like this one:
 
 | Symptom | Cause / fix |
 |---|---|
-| UI loads, chat answers "no model configured" | the bootstrap did not run: check `docker exec codx-junior curl -s localhost:19980/api/bootstrap` and that `CODX_JUNIOR_AI_API_KEY` is set in `.env`. |
+| UI loads, chat answers "no model configured" | the bootstrap did not run: check `docker exec codx-junior-demo curl -s localhost:19980/api/bootstrap` and that `CODX_JUNIOR_AI_API_KEY` is set in `.env`. |
 | `401` / `invalid api key` in the logs | wrong key, or `CODX_JUNIOR_AI_API_URL` missing `/v1`. |
 | Chat works, "knowledge search" finds nothing | check the embeddings model for the preset (see §3): `deepseek`, `openrouter` and `groq` have none, so search stays lexical |
 | Container is `unhealthy` | `docker compose logs --tail 100 codx-junior`; the API log is `api.log` inside `$CODX_SUPERVISOR_LOG_FOLDER`. |

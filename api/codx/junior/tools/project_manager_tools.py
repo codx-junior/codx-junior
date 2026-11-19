@@ -467,6 +467,8 @@ def _task_dict(chat: Chat, include_messages: bool = False) -> Dict[str, Any]:
         "priority": chat.priority,
         "due_date": chat.due_date,
         "wake_at": chat.wake_at,
+        "schedule": chat.schedule,
+        "schedule_context": chat.schedule_context,
         "progress": chat.progress,
         "assignees": list(chat.assignees or []),
         "profiles": list(chat.profiles or []),
@@ -2295,6 +2297,65 @@ def _action_restore_task(
     )
 
 
+def _apply_recurrence(
+    chat_manager,
+    chat: Chat,
+    schedule: Optional[str],
+    context: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Build the metadata that arms (or clears) the recurrence of a task.
+
+    ``schedule`` is a recurrence expression understood by
+    :mod:`codx.junior.autonomy.recurrence` (``"every friday at 12:00"``,
+    ``"every day at 09:00"``, ``"every weekday at 09:00"``,
+    ``"every 2 hours"``). Each run is delivered by the autonomy worker, which
+    re-arms the task to the next occurrence once the run is closed; ``context``
+    decides whether the next run continues on the same card (``history``) or on
+    a brand new one (``clean``). An empty ``schedule`` clears the series.
+
+    Args:
+        chat_manager: The project ChatManager (unused, kept for symmetry).
+        chat: The task whose recurrence is being set.
+        schedule: Recurrence text, or a falsy value to clear it.
+        context: ``"history"`` (default) or ``"clean"``.
+
+    Returns:
+        Metadata to pass to ``ChatManager.update_chat_metadata``.
+
+    Raises:
+        ValueError: When the recurrence cannot be understood.
+    """
+    from codx.junior.autonomy.recurrence import (
+        next_occurrence,
+        parse_context,
+        parse_schedule,
+    )
+
+    wanted_context = parse_context(context)
+    text = str(schedule or "").strip()
+    if not text:
+        return {
+            "schedule": None,
+            "schedule_column": None,
+            "schedule_context": wanted_context,
+        }
+
+    rule = parse_schedule(text)
+    if rule is None:
+        raise ValueError(
+            f"cannot understand schedule '{schedule}'. Try 'every friday at "
+            "12:00', 'every day at 09:00', 'every weekday at 09:00' or "
+            "'every 2 hours'"
+        )
+    return {
+        "schedule": rule.text(),
+        "schedule_context": wanted_context,
+        "schedule_column": getattr(chat, "column", None),
+        "wake_at": next_occurrence(rule),
+    }
+
+
 def _action_create_task(
     chat_manager,
     event_manager,
@@ -2318,6 +2379,8 @@ def _action_create_task(
     tags: Any,
     parent_id: Optional[str],
     username: Optional[str],
+    schedule: Optional[str] = None,
+    schedule_context: Optional[str] = None,
 ) -> ToolResponse:
     """
     Create a new task chat associated to a board, column and sprint(s).
@@ -2423,6 +2486,14 @@ def _action_create_task(
         user=username,
     )
 
+    if schedule is not None:
+        saved_task = chat_manager.update_chat_metadata(
+            chat=saved_task,
+            metadata=_apply_recurrence(
+                chat_manager, saved_task, schedule, schedule_context
+            ),
+        )
+
     user_lines = [
         f"✅ Task created: **{saved_task.name}**",
         f"- ID: `{saved_task.id}`",
@@ -2434,6 +2505,12 @@ def _action_create_task(
         user_lines.append(
             f"- Wake at: `{saved_task.wake_at}` "
             "(the autonomy worker delivers it when due)"
+        )
+    if getattr(saved_task, "schedule", None):
+        user_lines.append(
+            f"- Repeats: `{saved_task.schedule}` "
+            f"({saved_task.schedule_context or 'history'}) — the next run is "
+            "armed automatically after every closed execution"
         )
     user_lines.append(
         "\nUse action='request_changes' to process this task through the engine."
@@ -2464,6 +2541,8 @@ def _action_update_task(
     progress: Optional[int],
     assignees: Any,
     tags: Any,
+    schedule: Optional[str] = None,
+    schedule_context: Optional[str] = None,
 ) -> ToolResponse:
     """
     Update a task's status and/or move it between boards, columns and sprints.
@@ -2556,6 +2635,12 @@ def _action_update_task(
 
     if sprints_changed and new_sprints != list(chat.sprints or []):
         metadata["sprints"] = new_sprints
+    if schedule is not None:
+        # Recurrence: setting it arms the next occurrence, an empty value
+        # clears the series without moving the task off its board.
+        metadata.update(
+            _apply_recurrence(chat_manager, chat, schedule, schedule_context)
+        )
 
     if not metadata:
         raise ValueError(
@@ -2858,6 +2943,8 @@ async def project_manager(
     priority: Optional[str] = None,
     due_date: Optional[str] = None,
     wake_at: Optional[str] = None,
+    schedule: Optional[str] = None,
+    schedule_context: Optional[str] = None,
     progress: Optional[int] = None,
     assignees: Optional[List[str]] = None,
     profiles: Optional[List[str]] = None,
@@ -2930,6 +3017,14 @@ async def project_manager(
             clock read by the autonomy worker, not a deadline). Accepts
             ``"+2d"``, ``"6 hours"``, ``"2026-04-03"`` or an ISO instant; on
             update an empty value clears the schedule.
+        schedule: Recurrence of the task, e.g. ``"every friday at 12:00"``,
+            ``"every day at 09:00"``, ``"every weekday at 09:00"`` or
+            ``"every 2 hours"``. The task is armed to the next occurrence and
+            the autonomy worker re-arms it after every closed run; an empty
+            value clears the series (the task stays on its board).
+        schedule_context: How each run starts: ``history`` (default, same card,
+            the run sees what the previous ones did) or ``clean`` (a new card per
+            run, no previous messages).
         progress: Completion percentage (0-100).
         assignees: Assigned usernames (replaces on update).
         profiles: Profiles/roles for the task/comment (parameter only).
@@ -3103,6 +3198,8 @@ async def project_manager(
                 tags=tags,
                 parent_id=parent_id,
                 username=_username(**kwargs),
+                schedule=schedule,
+                schedule_context=schedule_context,
             )
 
         if resolved_action == "update_task":
@@ -3123,6 +3220,8 @@ async def project_manager(
                 progress=progress,
                 assignees=assignees,
                 tags=tags,
+                schedule=schedule,
+                schedule_context=schedule_context,
             )
 
         if resolved_action == "request_changes":
@@ -3340,6 +3439,25 @@ PROJECT_MANAGER_TOOL_JSON = {
                 "due_date": {
                     "type": "string",
                     "description": "Task due date in ISO format (YYYY-MM-DD)."
+                },
+                "schedule": {
+                    "type": "string",
+                    "description": (
+                        "Recurrence of the task, e.g. 'every friday at 12:00', "
+                        "'every day at 09:00', 'every weekday at 09:00' or "
+                        "'every 2 hours'. The autonomy worker re-arms the task "
+                        "to the next occurrence after every closed run. An empty "
+                        "value clears the series."
+                    )
+                },
+                "schedule_context": {
+                    "type": "string",
+                    "enum": ["history", "clean"],
+                    "description": (
+                        "How each recurring run starts: 'history' (default, same "
+                        "card, the run sees the previous ones) or 'clean' (a new "
+                        "card per run with no previous messages)."
+                    )
                 },
                 "wake_at": {
                     "type": "string",

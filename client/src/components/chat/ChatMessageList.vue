@@ -108,7 +108,15 @@ import { formatGenerationTime } from '@/utils/duration.js'
     <!-- Main Chat Column (right side or full width) -->
     <!-- Named container: chat panels can be any width (mobile, split view, dockview),
          so layout reacts to the panel width instead of the viewport. -->
-    <div class="flex-1 h-full flex flex-col overflow-hidden @container/panel">
+    <div class="flex-1 h-full flex flex-col overflow-hidden @container/panel relative">
+
+      <!-- Find in this chat: occurrence counter, jump between matches and the
+           highlight over the rendered messages (modifiers: case, word, regex). -->
+      <ChatFindBar
+        :messages="messages"
+        :container="scrollContainerEl"
+        class="absolute top-2 right-3 z-20"
+      />
 
       <!-- Scrollable Messages Container + MiniMap side by side -->
       <div class="flex-1 flex overflow-hidden min-h-0">
@@ -133,6 +141,7 @@ import { formatGenerationTime } from '@/utils/duration.js'
             <template v-for="(message, ix) in messages" :key="message.doc_id || message.id">
               <div
                 :ref="el => setMessageRef(el, ix, message)"
+                :data-message-ix="ix"
                 :class="[
                   'group/block relative rounded-lg transition-all duration-150',
                   isNewSpeaker(message, ix) ? 'mt-4 @lg/panel:mt-6' : 'mt-0.5',
@@ -153,6 +162,9 @@ import { formatGenerationTime } from '@/utils/duration.js'
                   :isNewSpeaker="isNewSpeaker(message, ix)"
                   :events-open="eventsOpenKey === (message.doc_id || message.id)"
                   :events-drawer-open="showEventsPanel && activeEventsMessageKey === (message.doc_id || message.id)"
+                  :options-active="ix === messages.length - 1"
+                  :options-disabled="!!processing || !!readOnly"
+                  @answer-option="$emit('answer-option', $event)"
                   @edited="$emit('edited', $event)"
                   @enhance="$emit('enhance', message)"
                   @remove="$emit('remove', message)"
@@ -302,6 +314,7 @@ export default {
     'search-files',
     'preview-file',
     'update-attachment',
+    'answer-option',
     'messages-activated',
   ],
   data() {

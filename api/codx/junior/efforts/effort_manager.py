@@ -135,13 +135,26 @@ class EffortManager:
 
     def ensure_builtins(self) -> None:
         """
-        Seed the built-in efforts (``agile``, ``max``, ``default``) once.
+        Seed the built-in efforts (``agile``, ``max``, ``default``).
 
         The values come from the runtime tier policies, so seeding is never a
         behaviour change: it only turns hardcoded numbers into editable data.
+
+        A built-in is OWNED by codx-junior: when :data:`BUILTIN_REVISION` is
+        bumped its definition is refreshed from the current tier and its
+        description is rewritten, so a new method (the waterfall ``max`` tier)
+        reaches an existing installation instead of staying baked into the file
+        written by its first run. Clone a built-in to keep a customized copy.
         """
+        from codx.junior.model.effort import BUILTIN_REVISION
+
         for name in BUILTIN_EFFORTS:
-            if os.path.isfile(self.definition_path(name)):
+            existing = (
+                self._read_raw(name)
+                if os.path.isfile(self.definition_path(name))
+                else None
+            )
+            if existing and existing.revision >= BUILTIN_REVISION:
                 continue
             factory = _TIER_FACTORIES[name]
             definition = EffortDefinition(
@@ -150,10 +163,18 @@ class EffortManager:
                 tier=name,
                 values=self._values_from_policy(factory()),
                 builtin=True,
+                revision=BUILTIN_REVISION,
             )
             definition.stamp_created()
+            if existing and existing.created_at:
+                definition.created_at = existing.created_at
             self._write(definition)
-            logger.info("Seeded built-in effort '%s'", name)
+            logger.info(
+                "%s built-in effort '%s' (revision %s)",
+                "Refreshed" if existing else "Seeded",
+                name,
+                BUILTIN_REVISION,
+            )
 
     # ── Read ─────────────────────────────────────────────────────────────────
 
@@ -272,6 +293,9 @@ class EffortManager:
             definition.name in BUILTIN_EFFORTS
         )
         definition.created_at = (existing.created_at if existing else "") or _now()
+        definition.revision = (
+            existing.revision if existing else definition.revision
+        )
         definition.stamp_updated()
         definition.profiles = []
 
@@ -427,12 +451,19 @@ class EffortManager:
         Return the documentation of every value the editor can set.
 
         Returns:
-            ``{"groups": [...], "fields": [...], "tiers": [...]}``.
+            ``{"groups": [...], "fields": [...], "tiers": [...], "types": [...]}``.
         """
+        from codx.junior.model.effort import EFFORT_TYPE_DOCS, EFFORT_TYPES
+
         return {
             "groups": list(EFFORT_FIELD_GROUPS),
             "fields": EFFORT_FIELD_DOCS,
             "tiers": list(EFFORT_TIERS),
+            # The effort TYPES a new installation is seeded with, and the method
+            # each one implies. The advanced editor offers them to create a new
+            # effort pre-filled; nothing in the runtime reads a constant for them.
+            "types": list(EFFORT_TYPES),
+            "type_docs": EFFORT_TYPE_DOCS,
         }
 
 

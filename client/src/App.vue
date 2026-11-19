@@ -8,6 +8,7 @@ import DesktopSidebar from './components/layout/DesktopSidebar.vue'
 import NewProject from './components/project/NewProject.vue'
 import MobileShell from './components/mobile/MobileShell.vue'
 import NewTaskDialog from './components/kanban/NewTaskDialog.vue'
+import VoiceCallOverlay from './components/voice/VoiceCallOverlay.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -118,6 +119,11 @@ onMounted(() => {
       </div>
 
       <Toast />
+
+      <!-- Voice conversation mode: global because a call survives navigation
+           between chats/panels (and can move the conversation to another chat
+           while it keeps running). -->
+      <VoiceCallOverlay />
 
       <!-- Global "New task" dialog, opened from the single-mode "New" entry
            (see components/kanban/NewTaskDialog.vue). -->

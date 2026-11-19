@@ -1420,6 +1420,113 @@ async def api_update_chat_metadata(request: Request):
         return {"error": f"Failed to update chat metadata: {str(ex)}"}
 
 
+@router.post("/chats/schedule")
+async def api_schedule_chat(request: Request):
+    """
+    Add, change or clear the recurrence of a task.
+
+    Expected JSON payload:
+        {
+            "chat_id": "<chat UUID>",
+            "schedule": "every friday at 12:00",   # empty clears it
+            "context": "history" | "clean",        # how each run starts
+            "timezone": "Europe/Madrid"            # zone of the clock time
+        }
+
+    ``schedule`` accepts the recurrence forms understood by
+    :mod:`codx.junior.autonomy.recurrence` ("every day at 09:00", "every friday
+    at noon", "every weekday at 09:00", "every 2 hours"). The task is armed to
+    the next occurrence and the autonomy runtime re-arms it after every run.
+
+    Returns:
+        The stored ``schedule``, its ``context`` and the ``wake_at``/``next_run``
+        instant, or ``{"error": ...}`` when the request cannot be applied.
+    """
+    from codx.junior.autonomy.models import is_due
+    from codx.junior.autonomy.recurrence import (
+        next_occurrence,
+        parse_context,
+        parse_schedule,
+    )
+
+    try:
+        data = await request.json()
+        codx_junior_session = request.state.codx_junior_session
+        chat_manager = await run_in_threadpool(
+            codx_junior_session.get_chat_manager
+        )
+
+        chat_id = (data or {}).get("chat_id")
+        if not chat_id:
+            logger.error("api_schedule_chat: missing chat_id")
+            return {"error": "missing chat_id"}
+
+        chat = chat_manager.find_by_id(chat_id=chat_id)
+        if not chat:
+            return {"error": f"chat '{chat_id}' not found"}
+
+        text = str((data or {}).get("schedule") or "").strip()
+        context = parse_context((data or {}).get("context"))
+        timezone_name = str((data or {}).get("timezone") or "").strip() or None
+
+        if not text:
+            # Clearing the recurrence makes the task one-shot again: a wake still
+            # in the future is kept (it was explicitly scheduled), a due one is
+            # dropped so a finished task cannot wake again.
+            metadata = {
+                "schedule": None,
+                "schedule_column": None,
+                "schedule_context": context,
+            }
+            if is_due(getattr(chat, "wake_at", "")):
+                metadata["wake_at"] = ""
+            updated = chat_manager.update_chat_metadata(chat=chat, metadata=metadata)
+            return {
+                "chat_id": getattr(updated, "id", chat_id),
+                "name": getattr(updated, "name", None),
+                "board": getattr(updated, "board", None),
+                "column": getattr(updated, "column", None),
+                "schedule": None,
+                "context": getattr(updated, "schedule_context", None),
+                "wake_at": getattr(updated, "wake_at", None),
+                "next_run": None,
+            }
+
+        rule = parse_schedule(text, timezone_name=timezone_name)
+        if rule is None:
+            return {
+                "error": (
+                    f"cannot understand schedule '{text}'. Try 'every friday at "
+                    "12:00', 'every day at 09:00', 'every weekday at 09:00' or "
+                    "'every 2 hours'"
+                )
+            }
+
+        wake_at = next_occurrence(rule)
+        updated = chat_manager.update_chat_metadata(
+            chat=chat,
+            metadata={
+                "schedule": rule.text(),
+                "schedule_context": context,
+                "schedule_column": getattr(chat, "column", None),
+                "wake_at": wake_at,
+            },
+        )
+        return {
+            "chat_id": getattr(updated, "id", chat_id),
+            "name": getattr(updated, "name", None),
+            "board": getattr(updated, "board", None),
+            "column": getattr(updated, "column", None),
+            "schedule": getattr(updated, "schedule", None),
+            "context": getattr(updated, "schedule_context", None),
+            "wake_at": getattr(updated, "wake_at", None),
+            "next_run": wake_at,
+        }
+    except Exception as ex:
+        logger.error("api_schedule_chat: unexpected error: %s", ex)
+        return {"error": f"Failed to schedule chat: {str(ex)}"}
+
+
 @router.get("/chats")
 def api_list_chats(request: Request):
     """

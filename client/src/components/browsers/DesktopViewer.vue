@@ -45,6 +45,7 @@ export default {
       command: '',
       showOcr: false,
       showKeys: false,
+      showShell: false,
       showSaveModal: false,
       lastAction: null,
       pollTimer: null,
@@ -154,6 +155,11 @@ export default {
     this.restoreKasmPath()
   },
   methods: {
+    /** Close the header overflow menu (the native `details` stays open otherwise). */
+    closeOverflow() {
+      const menu = this.$refs.overflow
+      if (menu) menu.open = false
+    },
     resetForSession() {
       this.stopPolling()
       this.vncPath = null
@@ -391,25 +397,29 @@ export default {
 
 <template>
   <div class="flex flex-col h-full bg-base-100 overflow-hidden">
-    <!-- Header -->
-    <div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
-      <div class="flex items-center gap-2 min-w-0 flex-1">
-        <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
-          <span v-if="isRunning" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-60"></span>
-          <span class="relative inline-flex rounded-full h-2.5 w-2.5" :class="isRunning ? 'bg-success' : 'bg-base-content/30'"></span>
-        </span>
-        <i :class="kindIcon" class="text-base-content/60" aria-hidden="true"></i>
-        <h3 class="font-semibold truncate">{{ activeSession?.name || sessionLabels.untitled }}</h3>
-        <span class="badge badge-xs badge-outline">{{ kindLabel }}</span>
-        <span class="badge badge-xs" :class="isRunning ? 'badge-success' : 'badge-warning'">
-          {{ isRunning ? 'running' : (activeSession?.status || 'stopped') }}
-        </span>
-        <span class="badge badge-xs gap-1" :class="control === 'user' || userActive ? 'badge-warning' : 'badge-info badge-outline'">
-          <i :class="control === 'user' ? 'fa-solid fa-hand' : 'fa-solid fa-robot'"></i>
-          {{ controllerLabel }}
-        </span>
-        <span class="text-[11px] opacity-50 truncate hidden sm:inline">{{ statusText }}</span>
-      </div>
+    <!-- Header: ONE row. The status and the primary control (take / give back)
+         stay; save, screenshot, open-in-tab and the KasmVNC credentials moved
+         into the overflow menu, so the desktop keeps the height. -->
+    <div class="flex items-center gap-1.5 px-2 py-1.5 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
+      <span class="relative flex h-2.5 w-2.5 flex-shrink-0">
+        <span v-if="isRunning" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-60"></span>
+        <span class="relative inline-flex rounded-full h-2.5 w-2.5" :class="isRunning ? 'bg-success' : 'bg-base-content/30'"></span>
+      </span>
+      <i :class="kindIcon" class="text-base-content/60" aria-hidden="true"></i>
+      <h3 class="font-semibold truncate max-w-[10rem]">{{ activeSession?.name || sessionLabels.untitled }}</h3>
+      <span class="badge badge-xs badge-outline flex-shrink-0">{{ kindLabel }}</span>
+      <span class="badge badge-xs flex-shrink-0" :class="isRunning ? 'badge-success' : 'badge-warning'">
+        {{ isRunning ? 'running' : (activeSession?.status || 'stopped') }}
+      </span>
+      <span
+        class="badge badge-xs badge-outline flex-shrink-0"
+        :class="control === 'user' || userActive ? 'badge-warning' : 'badge-info'"
+        :title="statusText"
+      >
+        <i :class="control === 'user' ? 'fa-solid fa-hand' : 'fa-solid fa-robot'"></i>
+      </span>
+
+      <span class="flex-1"></span>
 
       <button v-if="control === 'user'" class="btn btn-xs btn-primary" @click="giveBack">
         <i class="fa-solid fa-robot"></i><span class="hidden sm:inline">Give back</span>
@@ -417,43 +427,56 @@ export default {
       <button v-else class="btn btn-xs btn-outline" :disabled="!isRunning" @click="takeControl">
         <i class="fa-solid fa-hand"></i><span class="hidden sm:inline">Take control</span>
       </button>
-      <button
-        v-if="isLinux && isRunning"
-        class="btn btn-xs btn-ghost"
-        title="Save this computer to the library"
-        @click="showSaveModal = true"
-      >
-        <i class="fa-solid fa-floppy-disk"></i>
-      </button>
-      <button class="btn btn-xs btn-ghost" title="Screenshot" :disabled="!isRunning || loadingShot" @click="takeScreenshot()">
-        <span v-if="loadingShot" class="loading loading-spinner loading-xs"></span>
-        <i v-else class="fa-solid fa-camera"></i>
-      </button>
-      <button v-if="activeSession?.vnc_public_url || (isLinux && vncEmbedUrl)" class="btn btn-xs btn-ghost" title="Open live view in a new tab" @click="openExternal">
-        <i class="fa-solid fa-up-right-from-square"></i>
-      </button>
-    </div>
 
-    <!-- Handoff banner -->
+      <!-- Secondary actions and the KasmVNC login: they cost no height here -->
+      <details ref="overflow" class="dropdown dropdown-end">
+        <summary class="btn btn-xs btn-ghost" title="More actions" aria-label="More actions">
+          <i class="fa-solid fa-ellipsis-vertical"></i>
+        </summary>
+        <div class="dropdown-content bg-base-100 rounded-box shadow-lg border border-base-content/10 w-64 p-1 z-40">
+          <ul class="menu menu-xs p-0">
+            <li v-if="isLinux && isRunning">
+              <button class="flex items-center gap-2" @click="closeOverflow(); showSaveModal = true">
+                <i class="fa-solid fa-floppy-disk"></i><span>Save this computer to the library</span>
+              </button>
+            </li>
+            <li>
+              <button
+                class="flex items-center gap-2"
+                :disabled="!isRunning || loadingShot"
+                @click="closeOverflow(); takeScreenshot()"
+              >
+                <span v-if="loadingShot" class="loading loading-spinner loading-xs"></span>
+                <i v-else class="fa-solid fa-camera"></i><span>Screenshot</span>
+              </button>
+            </li>
+            <li v-if="activeSession?.vnc_public_url || (isLinux && vncEmbedUrl)">
+              <button class="flex items-center gap-2" @click="closeOverflow(); openExternal()">
+                <i class="fa-solid fa-up-right-from-square"></i><span>Open live view in a new tab</span>
+              </button>
+            </li>
+          </ul>
+          <div v-if="isKasm" class="border-t border-base-content/10 mt-1 pt-1 px-1 pb-1 text-[11px]">
+            <p class="flex items-center gap-1 text-base-content/60 mb-1">
+              <i class="fa-solid fa-key"></i> KasmVNC login
+            </p>
+            <div class="flex items-center gap-1">
+              <code class="font-mono truncate">{{ viewerUser || 'kasm_user' }}</code>
+              <span class="text-base-content/30">/</span>
+              <code class="font-mono truncate">{{ viewerPassword || '…' }}</code>
+              <button class="btn btn-ghost btn-xs" :disabled="!viewerPassword" @click="closeOverflow(); copyViewerCredentials()">
+                <i class="fa-regular fa-copy"></i>
+              </button>
+            </div>
+            <p class="text-base-content/40 mt-1">Injected automatically for this session</p>
+          </div>
+        </div>
+      </details>
+    </div>
     <div v-if="activeSession?.handoff_reason" class="flex items-center gap-2 px-3 py-2 border-b border-warning/30 bg-warning/10 text-xs flex-shrink-0">
       <i class="fa-solid fa-hand text-warning"></i>
       <span class="flex-1 min-w-0"><strong>The AI needs you:</strong> <span class="opacity-80">{{ activeSession.handoff_reason }}</span></span>
       <button class="btn btn-xs btn-warning" @click="giveBack">I'm done — give back to AI</button>
-    </div>
-
-    <div
-      v-if="isKasm"
-      class="flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-base-content/10 bg-base-200/50 text-[11px] flex-shrink-0"
-    >
-      <i class="fa-solid fa-key text-base-content/40"></i>
-      <span class="text-base-content/60">KasmVNC login</span>
-      <code class="font-mono">{{ viewerUser || 'kasm_user' }}</code>
-      <span class="text-base-content/30">/</span>
-      <code class="font-mono">{{ viewerPassword || '…' }}</code>
-      <button class="btn btn-ghost btn-xs" :disabled="!viewerPassword" @click="copyViewerCredentials">
-        <i class="fa-regular fa-copy"></i> Copy
-      </button>
-      <span class="ml-auto text-base-content/40">Injected automatically for this session</span>
     </div>
 
     <!-- Live view -->
@@ -498,9 +521,10 @@ export default {
       </p>
     </div>
 
-    <!-- Action bar -->
+    <!-- Action bar: ONE row. The shell prompt is a tool, not chrome: it appears
+         only when it is asked for, so the bar never wraps into a second row. -->
     <div class="border-t border-base-content/10 bg-base-200/60 flex-shrink-0">
-      <div class="flex items-center gap-1.5 px-2 py-1.5 flex-wrap">
+      <div class="flex items-center gap-1.5 px-2 py-1.5">
         <div class="flex items-center gap-1">
           <button class="btn btn-xs btn-ghost" title="Click the screen to click the desktop" @click="showKeys = !showKeys">
             <i class="fa-regular fa-keyboard"></i>
@@ -513,7 +537,7 @@ export default {
           </button>
         </div>
 
-        <div class="flex items-center gap-1 flex-1 min-w-[14rem]">
+        <div class="flex items-center gap-1 flex-1 min-w-0">
           <input
             v-model="typedText"
             type="text"
@@ -525,19 +549,30 @@ export default {
           <button class="btn btn-xs btn-primary" :disabled="!isRunning || !typedText" @click="sendType">Type</button>
         </div>
 
-        <div v-if="hasShell" class="flex items-center gap-1 flex-1 min-w-[16rem]">
-          <input
-            v-model="command"
-            type="text"
-            class="input input-xs input-bordered flex-1 min-w-0 font-mono"
-            placeholder="Run a shell command…"
-            :disabled="!isRunning"
-            @keyup.enter="runCommand"
-          />
-          <button class="btn btn-xs" :disabled="!isRunning || !command.trim()" @click="runCommand">
-            <i class="fa-solid fa-terminal"></i>
-          </button>
-        </div>
+        <button
+          v-if="hasShell"
+          class="btn btn-xs btn-ghost"
+          :class="showShell && 'btn-active'"
+          title="Run a shell command on the computer"
+          :aria-pressed="showShell ? 'true' : 'false'"
+          @click="showShell = !showShell"
+        >
+          <i class="fa-solid fa-terminal"></i>
+        </button>
+      </div>
+
+      <div v-if="hasShell && showShell" class="flex items-center gap-1 px-2 pb-1.5">
+        <input
+          v-model="command"
+          type="text"
+          class="input input-xs input-bordered flex-1 min-w-0 font-mono"
+          placeholder="Run a shell command…"
+          :disabled="!isRunning"
+          @keyup.enter="runCommand"
+        />
+        <button class="btn btn-xs" :disabled="!isRunning || !command.trim()" @click="runCommand">
+          <i class="fa-solid fa-terminal"></i>
+        </button>
       </div>
 
       <div v-if="showKeys" class="flex items-center gap-1 px-2 pb-1.5 flex-wrap">

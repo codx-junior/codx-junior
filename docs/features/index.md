@@ -9,6 +9,8 @@ context and stay in budget. This section documents every feature in detail.
 | Feature | Summary |
 | --- | --- |
 | [Chats and agents](/features/chats-and-agents) | Project-aware chats with modes, sub-chats, attachments and a tool-using agent loop. |
+| [Suggested replies](/features/suggested-replies) | The model offers its likely answers as buttons; the user clicks one or writes their own. |
+| [Voice conversation](/features/voice-conversation) | Call codx-junior: speak instructions, hear the answers, and keep every turn in the chat. |
 | [Kanban and tasks](/features/kanban) | Boards and columns where every card is a chat with sub-tasks, checklists and assignees. |
 | [Profiles](/features/profiles) | Reusable instructions that set the model, tools and coding standards. |
 | [Autonomous agents](/features/autonomous-agents) | Actors: profiles with initiative that take their own shifts, schedule their own follow-ups and work only inside a weekly availability window. |

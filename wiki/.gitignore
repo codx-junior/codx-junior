@@ -1,4 +1,35 @@
-node_modules
-.vitepress/.temp
-.vitepress/dist
+# ---------------------------------------------------------------------------
+# This project's own control plane — local runtime state, never tracked.
+#
+# `wiki/.codx` holds the task bodies, chat turns, harness journal,
+# orchestration and board state of THIS project. It must not reach git: one
+# tool output that prints a token would otherwise be committed forever.
+#
+# Measured on 2026-11-19 (repo `codx-junior-platform`, this project `wiki/`):
+#   git check-ignore -v wiki/.codx                 -> exit 1 (NOT ignored)
+#   git status --porcelain wiki/.codx              -> `A` entries (staged!) and
+#                                                     `MM` on state.json/audit.jsonl
+#
+# The repo-root .gitignore only covers the ROOT `.codx` data plane: its
+# patterns (`.codx/autonomy/`, `.codx/harness/`, `.codx/logs/`, ...) contain a
+# slash and are therefore anchored to the root directory, so they never match a
+# nested `wiki/.codx/...`. A nested project needs its own rule.
+#
+# Tracked vs generated inside a root `.codx` is a deliberate split owned by the
+# platform (`api/codx/junior/runtime.py: DATA_PLANE_ENTRIES`, mirrored by
+# `api/tests/security/ciso_repo_check.py` and by the root .gitignore). This file
+# does not touch that split: it only keeps this project's control plane out of
+# the working tree of the repository that contains it.
+# ---------------------------------------------------------------------------
+.codx/
+
+# ---------------------------------------------------------------------------
+# Generated test output — recreated by every run, must not enter a diff.
+#
+# `pytest.ini` forces `--cov-report=xml:coverage.xml`, so every pytest run
+# writes this file next to `server.py`. Measured on 2026-11-19: it was the only
+# untracked path in the project (`project_changes` -> `? untracked
+# coverage.xml`), i.e. it showed up as change noise on the QA/CISO gates while
+# carrying nothing but regenerated numbers.
+# ---------------------------------------------------------------------------
 coverage.xml

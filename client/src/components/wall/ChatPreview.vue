@@ -28,6 +28,7 @@ import Document from '../document/Document.vue';
       <ChatEntry
         class="rounded-b-lg overflow-auto opacity-60 h-60 group-hover:opacity-100" 
         :menu-less="true" 
+        :options-enabled="false"
         :message="chat.messages[0]" :chat="chat"
         v-if="chat.messages[0]"
         />

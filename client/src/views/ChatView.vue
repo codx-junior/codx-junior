@@ -123,6 +123,7 @@ import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
         @select-project="setChatProject"
         @back="onBack"
         @show-sidebar="toggleMobileSidebar"
+        @start-voice-call="onStartVoiceCall"
       />
 
       <!-- LONG-RUNNING TASK (orchestration run) -------------------------
@@ -507,6 +508,12 @@ export default {
     }
   },
   methods: {
+    onStartVoiceCall() {
+      // The header phone starts the conversation immediately; the call panel
+      // opens at once and the setup/history remains available from the
+      // composer's "Voice calls…" item and the home screen.
+      return this.$voice.startCall({ chat: this.theChat })
+    },
     async init() {
       const sourceChat = this.chat || this.params?.params?.chat || {}
       if (!sourceChat?.id) throw new Error('No chat id to load')

@@ -10,8 +10,8 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
 <template>
   <div class="w-full h-full flex flex-col gap-2 p-2 overflow-hidden bg-base-300">
     <!-- Toolbar: breadcrumb + actions -->
-    <div class="flex items-center gap-2">
-      <div class="breadcrumbs text-sm py-0 flex-1 overflow-x-auto">
+    <div class="flex items-center gap-2 min-w-0">
+      <div class="breadcrumbs text-sm py-0 flex-1 min-w-0 overflow-x-auto">
         <ul>
           <li>
             <a class="gap-1" @click="goToRoot">
@@ -28,7 +28,7 @@ import ConfirmDialog from '@/components/ConfirmDialog.vue'
         </ul>
       </div>
 
-      <div class="input input-sm input-bordered flex items-center gap-2 flex-1">
+      <div class="input input-sm input-bordered flex items-center gap-2 flex-1 min-w-0">
         <!-- Search mode dropdown -->
         <div tabindex="0" class="btn btn-ghost btn-xs px-2 h-auto" 
           title="Select search mode"

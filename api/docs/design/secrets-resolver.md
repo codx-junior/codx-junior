@@ -1,6 +1,8 @@
 # Secrets resolver — handles the model can name, values it can never see
 
-Status: **design** (no code yet)
+Status: **increment 1 implemented** (`codx/junior/security/ciso/vault.py`,
+`secrets_list` / `secrets_request`, the `_execute_tool` hook). Increments 2-4
+remain design only.
 Scope: `codx/junior/security/ciso/*`, `codx/junior/tools/*`, tool dispatch in
 `codx/junior/ai/smol/smol_agent.py`
 

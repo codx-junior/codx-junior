@@ -1,6 +1,7 @@
 import { getterTree, mutationTree, actionTree } from 'typed-vuex'
 import { $storex } from '.'
 import { v4 as uuidv4 } from 'uuid'
+import { compareActivity } from '../utils/taskActivity'
 
 export const namespaced = true
 
@@ -357,7 +358,10 @@ function sortColumnTasks(a, b) {
   const ao = a.sort_index ?? Number.MAX_SAFE_INTEGER
   const bo = b.sort_index ?? Number.MAX_SAFE_INTEGER
   if (ao !== bo) return ao - bo
-  return (a.updated_at || '') < (b.updated_at || '') ? 1 : -1
+  // `updated_at` moves on every streamed message: comparing it in 10 minute
+  // slices keeps a running task from flipping places with its neighbour while
+  // it is being answered (see utils/taskActivity).
+  return compareActivity(a.updated_at, b.updated_at)
 }
 
 // ─── Getters ─────────────────────────────────────────────────────────────────

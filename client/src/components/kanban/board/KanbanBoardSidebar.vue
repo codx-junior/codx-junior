@@ -246,6 +246,8 @@ import KanbanBoardTaskRow from './KanbanBoardTaskRow.vue'
 </template>
 
 <script>
+import { compareActivity } from '../../../utils/taskActivity'
+
 const PAGE_SIZE = 40
 
 export default {
@@ -283,13 +285,16 @@ export default {
       })
       return map
     },
-    // Boards sorted by latest task activity descending
+    // Boards sorted by latest task activity descending.
+    //
+    // Timestamps are bucketed in 10 minute slices (utils/taskActivity): while a
+    // task streams, `updated_at` moves on every message and the board list
+    // would otherwise jump on every token.
     sortedBoards() {
-      return [...this.boards].sort((a, b) => {
-        const aTs = this.boardActivityMap[a.id] || a.last_update || ''
-        const bTs = this.boardActivityMap[b.id] || b.last_update || ''
-        return aTs > bTs ? -1 : aTs < bTs ? 1 : 0
-      })
+      return [...this.boards].sort((a, b) => compareActivity(
+        this.boardActivityMap[a.id] || a.last_update,
+        this.boardActivityMap[b.id] || b.last_update
+      ))
     },
     groupedTasks() {
       // Only group when showing ALL columns with no search

@@ -59,6 +59,13 @@ from .models import (
     utcnow_iso,
 )
 from .store import AutonomyStore
+from .recurrence import (
+    CONTEXT_CLEAN,
+    CONTEXT_HISTORY,
+    next_occurrence,
+    parse_context,
+    parse_schedule,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1294,12 +1301,125 @@ class ActorService:
             if not self._is_closed(chat):
                 # Still open: keep the wake so the next shift can finish it.
                 continue
+            schedule = str(getattr(chat, "schedule", "") or "").strip()
+            if schedule:
+                # Recurring task: the run happened, arm the next occurrence
+                # instead of consuming the alarm clock.
+                self._rearm(chat, schedule)
+                continue
             try:
                 chat.wake_at = ""
                 self._manager().save_chat(chat=chat)
                 logger.info("actors: consumed wake of closed task '%s'", chat_id)
             except Exception as ex:  # pragma: no cover - defensive
                 logger.warning("actors: cannot consume wake of '%s': %s", chat_id, ex)
+
+    def _rearm(self, chat: Any, schedule: str) -> None:
+        """
+        Arm the next run of a recurring task after a shift delivered it.
+
+        The task is always rescheduled to the next occurrence of its recurrence
+        (never to an instant in the past, which would make the worker spin) and
+        prepared according to ``schedule_context``:
+
+        * ``history`` (default): the same task is reopened (status back to do,
+          progress 0, column reset to ``schedule_column``) so the next run sees
+          what the previous ones did.
+        * ``clean``: a new card is created for the next run with the same name,
+          description, board, profiles, files and tags but no messages and no
+          parent; the finished card keeps its history and stops recurring.
+
+        Args:
+            chat: The closed task the shift just delivered.
+            schedule: Its recurrence text.
+        """
+        from codx.junior.kanban.model import DEFAULT_BOARD, DEFAULT_COLUMN
+
+        chat_id = str(getattr(chat, "id", "") or "")
+        manager = self._manager()
+        rule = parse_schedule(schedule)
+        if rule is None:
+            logger.warning(
+                "actors: task '%s' has an unreadable schedule '%s': wake consumed",
+                chat_id,
+                schedule,
+            )
+            try:
+                chat.wake_at = ""
+                manager.save_chat(chat=chat)
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning("actors: cannot clear wake of '%s': %s", chat_id, ex)
+            return
+
+        wake_at = next_occurrence(rule)
+        context = parse_context(getattr(chat, "schedule_context", None))
+        home_column = (
+            str(getattr(chat, "schedule_column", "") or "").strip()
+            or str(getattr(chat, "column", "") or "").strip()
+            or DEFAULT_COLUMN
+        )
+        try:
+            if context != CONTEXT_CLEAN:
+                chat.wake_at = wake_at
+                chat.status = "todo"
+                chat.progress = 0
+                chat.column = home_column
+                manager.save_chat(chat=chat)
+                logger.info(
+                    "actors: recurring task '%s' armed for %s (%s)",
+                    chat_id,
+                    wake_at,
+                    rule.text(),
+                )
+                return
+
+            from codx.junior.db import Chat as ChatModel, Message
+
+            clone = ChatModel(
+                name=getattr(chat, "name", "") or "",
+                description=getattr(chat, "description", "") or "",
+                board=getattr(chat, "board", "") or DEFAULT_BOARD,
+                column=home_column,
+                status="todo",
+                priority=getattr(chat, "priority", None),
+                wake_at=wake_at,
+                progress=0,
+                schedule=rule.text(),
+                schedule_context=CONTEXT_CLEAN,
+                schedule_column=home_column,
+                profiles=list(getattr(chat, "profiles", []) or []),
+                file_list=list(getattr(chat, "file_list", []) or []),
+                tags=list(getattr(chat, "tags", []) or []),
+                sprints=list(getattr(chat, "sprints", []) or []),
+                project_id=getattr(chat, "project_id", None),
+                owner_project_id=getattr(chat, "owner_project_id", None),
+            )
+            clone.messages.append(
+                Message(
+                    role="user",
+                    content=(clone.description or clone.name or "").strip(),
+                    profiles=clone.profiles,
+                    files=clone.file_list,
+                )
+            )
+            created = manager.save_chat(chat=clone)
+            chat.schedule = None
+            chat.wake_at = ""
+            chat.description = (
+                f"{getattr(chat, 'description', '') or ''}\n\n**Recurring:** the "
+                f"next run is task `{getattr(created, 'id', '')}`"
+            )[:8000]
+            manager.save_chat(chat=chat)
+            logger.info(
+                "actors: recurring task '%s' (%s) continued as '%s'",
+                chat_id,
+                rule.text(),
+                getattr(created, "id", ""),
+            )
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning(
+                "actors: cannot re-arm recurring task '%s': %s", chat_id, ex
+            )
 
     # -- helpers ----------------------------------------------------------
 

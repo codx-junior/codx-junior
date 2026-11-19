@@ -213,6 +213,21 @@ def clear() -> None:
     default_registry.clear()
 
 
+def default_voice_registry() -> ProviderRegistry:
+    """Registry with the built in voice providers.
+
+    The browser is the zero-configuration fallback and lives in the client, so
+    the server registry only contains optional remote providers. An empty
+    registry is a valid state: the voice API answers 503 and the client speaks
+    with ``SpeechSynthesis`` instead.
+    """
+    from codx.junior.media.providers.voice_openai import OpenAIVoiceProvider
+
+    registry = ProviderRegistry()
+    registry.register(OpenAIVoiceProvider())
+    return registry
+
+
 def default_image_registry() -> ProviderRegistry:
     """Registry with the built in image providers.
 

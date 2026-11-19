@@ -23,6 +23,9 @@ there is one page, one history, one cookie jar and one live view.
 - Keep the browser profile (cookies, logins, local storage) across restarts.
 - Save and replay per-site scripts in one tool call instead of one LLM turn per
   step.
+- **Record a flow in the coworking screen** — do "Create a post" once, stop the
+  recording, and the generated steps become a recipe the AI can replay. Record
+  over an existing recipe to update it (the old version is archived).
 
 ## Architecture
 
@@ -81,6 +84,11 @@ then select it. The live browser is embedded in the panel:
   chat linked to the session;
 - the session list on the left can be collapsed with the chevron on its edge,
   giving the live browser and chat more room (the state is remembered);
+- **Record** starts a named recording of your clicks/typing. While recording,
+  a floating red control shows the elapsed time and captured action count.
+  Pressing it stops the recording and asks codx-junior to review the trace.
+  **Recipes** lists every saved flow for the site with **Record**, **Run**,
+  **Edit** and **Delete**;
 - **Chat** at the bottom opens the chat picker: choose an existing chat,
   open one of the chats already linked to the session, or click **New chat** to
   create one. The chat gets the `browser` profile and shares the page with the
@@ -108,11 +116,77 @@ Browser tools are available to the agent by default (`browser` tools):
 The running chat id is injected automatically into these tools, so a session
 started by the AI is linked to the chat the user is looking at.
 
+## Record a flow once, replay it forever
+
+The coworking screen already captures the human's clicks, edits, submits,
+Enter keys and tab switches (that is what powers the shared activity trail).
+The recorder turns that same stream into a deterministic baseline, then asks
+codx-junior to review it like a Selenium/Playwright trace:
+
+1. Open **Recipes**, find the flow (for example `Create a post`) and press
+   **Record** on its card. The dialog closes and a floating red recording
+   control appears over the live browser.
+2. Do the task once in the live view.
+3. Press the floating recording control. codx-junior receives the ordered
+   transcript (selector, tag, label, value, URL, redacted secrets) plus the
+   existing recipe and the current page context.
+4. The model removes recorder noise (focus clicks, duplicate clicks, scrolls),
+   merges click+edit into fills, improves selectors it can justify and returns
+   the final steps. The recipe is updated in place: the previous body is
+   archived under `versions/` and the version is bumped.
+5. The result dialog shows what the AI changed, any warnings and the final
+   steps. Close it, edit a selector, or run the recipe immediately.
+
+Recording a **new** flow uses the same **Record** button in the footer: choose
+the title/site first, then the floating control; the reviewed steps land in the
+save dialog instead of updating an existing recipe.
+
+If the AI provider is unavailable or returns unusable JSON, the deterministic
+recorder steps are used and the dialog says so explicitly. The fallback never
+loses a recording.
+
+Recording conversion rules:
+
+| Recorded activity | Generated step |
+| --- | --- |
+| navigation | `{"action": "navigate", "url": "..."}` |
+| click | `{"action": "click", "selector": "..."}` |
+| text edit / contenteditable input | `{"action": "fill", "selector": "...", "value": "..."}` |
+| `<select>` change | `{"action": "select", "selector": "...", "value": "..."}` |
+| Enter | `{"action": "press", "selector": "...", "key": "Enter", "optional": true}` |
+| scroll / tab switch / submit | intentionally ignored (noisy or implied by the click) |
+
+A password or token field is redacted by the recorder before it leaves the page;
+its step becomes a `{{value}}` placeholder you pass at replay time.
+Other text you typed is stored in the recipe (that is what makes it replayable),
+so do not record flows that contain secrets.
+
+### Managing recipes
+
+- **Run** executes every step on the shared session in one backend call (no LLM
+  turn per step).
+- **Edit** loads the steps into the same editor, so a broken selector can be
+  fixed without re-recording the whole flow.
+- **Delete** is soft: the folder moves to `.codx/browser_scripts/.trash`.
+
+From the API the equivalent routes are
+`POST /api/browsers/{id}/recording/start`, `POST /api/browsers/{id}/recording/stop`,
+`POST /api/browsers/{id}/recording/analyze` (ask codx-junior to review and
+optionally update the recipe), `POST /api/browsers/{id}/recording/save`,
+`GET|PUT|DELETE /api/browsers/{id}/scripts` and
+`POST /api/browsers/{id}/scripts/{script_id}/run` (mirrored under
+`/api/computers`).
+
 ## Configuration
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
 | `CODX_BROWSER_IMAGE` | `lscr.io/linuxserver/chromium:latest` | Browser container image. |
+| `CODX_BROWSER_PREFETCH` | `1` | Capture the next snapshot/screenshot in the background. |
+| `CODX_BROWSER_PREFETCH_QUIET` | `0.7` | Seconds of quiet after the last action before prefetching. |
+| `CODX_BROWSER_PREFETCH_TTL` | `20` | Seconds a prefetched snapshot remains valid. |
+| `CODX_BROWSER_PREFETCH_SCREENSHOT` | `1` | Also prefetch a viewport screenshot. |
+| `CODX_BROWSER_RECORD_AI` | `1` | Ask the project's model to review a recording and clean up the recipe steps. |
 | `CODX_BROWSER_NETWORK` | `codx-junior_default` | Docker network shared with the API. |
 | `CODX_BROWSER_AUTO_PULL` | `1` | Pull the image when it is missing. |
 | `CODX_BROWSER_PUBLIC_BASE_URL` | — | Override the public live-view base URL (e.g. behind a different proxy). |
@@ -136,6 +210,11 @@ The API process needs access to the Docker socket, as it does for workspaces.
 | `GET` | `/api/browsers/{id}/source` | Page HTML. |
 | `GET` | `/api/browsers/{id}/activity` | User/AI audit trail. |
 | `GET` | `/api/browsers/{id}/cost` | SmolAgent cost and token summary for linked chats. |
+| `GET/POST/DELETE` | `/api/browsers/{id}/recording` | Read, start, stop, save or discard a recording. |
+| `POST` | `/api/browsers/{id}/recording/analyze` | Review the trace with codx-junior and optionally update the recipe. |
+| `GET` | `/api/browsers/{id}/scripts` | Recipes for the session's site. |
+| `GET/PUT/DELETE` | `/api/browsers/{id}/scripts/{script_id}` | Read, edit or soft-delete a recipe. |
+| `POST` | `/api/browsers/{id}/scripts/{script_id}/run` | Run the whole recipe on the shared browser. |
 | `POST` | `/api/browsers/{id}/chat` | Reuse/create the chat linked to the session (browser profile active). |
 | `POST` | `/api/browsers/{id}/restart` | Restart the container (profile preserved). |
 | `POST` | `/api/browsers/{id}/stop` | Stop the container (kept for restart). |
@@ -182,6 +261,18 @@ user_control --"I'm done" / Give back--> ai_driving
 - One Playwright connection per session removes the old ~0.45–0.55 s
   connect/disconnect cost per tool call (measured; subsequent actions are
   ~10–20 ms of overhead).
+- **Prefetch while the model thinks.** After every page change the runtime
+  captures a compact snapshot and (by default) a viewport screenshot in the
+  background. `snapshot`, a viewport `get_screenshot`, the annotation board
+  and `wait_for_change` serve those from memory when the page has not moved. The
+  first action still pays the CDP cost; the follow-up reads do not.
+- **Inline page brief.** `browse_action` results for navigate/click/batch/…
+  include a bounded `page` summary (URL, title, refs, text). The model sees the
+  new page in the same tool result, which removes the usual extra
+  `browse_action(action="snapshot")` turn.
+- `start_session` lists the recorded recipes for the initial URL, and a
+  `navigate` result lists them for the destination site, so the model can call
+  `run_browser_script` on its first turn instead of exploring.
 - `run_browser_script` executes a 20-step recipe in one LLM turn and one
   connection.
 - Session create/stop/delete run off the API event loop; delete uses

@@ -85,11 +85,16 @@ export const effortsModule = (API) => ({
   /**
    * Delete an effort. The server refuses built-in efforts and any effort still
    * linked to a profile (409 with the list of profiles).
+   *
+   * Unlike `profiles.delete` this does **not** swallow the response: the
+   * connection layer resolves the backend envelope (`{status_code, message}`)
+   * instead of throwing, so the caller needs the value to surface a refused
+   * delete (409) to the user.
    * @param {string} name - Effort name.
-   * @returns {Promise<void>}
+   * @returns {Promise<Object|void>} Backend response or its error envelope.
    */
-  async delete(name) {
-    await API.delete(effortPath(name))
+  delete(name) {
+    return API.delete(effortPath(name))
   }
 })
 

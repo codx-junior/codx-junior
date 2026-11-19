@@ -54,9 +54,20 @@ from codx.junior.api.browser import (
     get_source,
     list_sessions,
     open_session_chat,
+    recording_analyze,
+    recording_cancel,
+    recording_save,
+    recording_start,
+    recording_state,
+    recording_stop,
     restart_session,
+    delete_session_script,
+    get_session_script,
+    list_session_scripts,
+    run_session_script,
     stop_session,
     update_session,
+    update_session_script,
 )
 from codx.junior.api.browser_files import get_shared_files
 from codx.junior.api.browser_models import (
@@ -76,6 +87,12 @@ from codx.junior.api.browser_models import (
     ComputerScreenshotRequest,
     ComputerVncTicketResponse,
     ComputerViewerCredentialsResponse,
+    BrowserRecordingStartRequest,
+    BrowserRecordingStopResponse,
+    BrowserRecordingSaveRequest,
+    BrowserRecordingAnalyzeRequest,
+    BrowserScriptSaveRequest,
+    BrowserScriptRunRequest,
 )
 from codx.junior.computer.images import (
     ComputerImageListResponse,
@@ -750,6 +767,80 @@ async def restart_computer(request: Request, session_id: str):
 async def stop_computer(request: Request, session_id: str):
     """Stop the machine but keep it for restart."""
     return await stop_session(request, session_id)
+
+
+# ---------------------------------------------------------------------------
+# Record a browser flow and turn it into a reusable recipe.
+# The implementations live in ``api/browser.py``: the legacy /api/browsers
+# routes and the canonical /api/computers routes share one code path.
+# ---------------------------------------------------------------------------
+router.add_api_route(
+    "/{session_id}/recording",
+    recording_state,
+    methods=["GET"],
+    summary="Get the recording state",
+)
+router.add_api_route(
+    "/{session_id}/recording/start",
+    recording_start,
+    methods=["POST"],
+    summary="Start recording the human's actions",
+)
+router.add_api_route(
+    "/{session_id}/recording/stop",
+    recording_stop,
+    methods=["POST"],
+    response_model=BrowserRecordingStopResponse,
+    summary="Stop recording and preview the steps",
+)
+router.add_api_route(
+    "/{session_id}/recording/save",
+    recording_save,
+    methods=["POST"],
+    summary="Save the recorded flow as a reusable script",
+)
+router.add_api_route(
+    "/{session_id}/recording/analyze",
+    recording_analyze,
+    methods=["POST"],
+    summary="Review the recording with codx-junior and update the recipe",
+)
+router.add_api_route(
+    "/{session_id}/recording",
+    recording_cancel,
+    methods=["DELETE"],
+    summary="Discard the current recording",
+)
+router.add_api_route(
+    "/{session_id}/scripts",
+    list_session_scripts,
+    methods=["GET"],
+    summary="List recipes for the session's site",
+)
+router.add_api_route(
+    "/{session_id}/scripts/{script_id}",
+    get_session_script,
+    methods=["GET"],
+    summary="Read one recipe",
+)
+router.add_api_route(
+    "/{session_id}/scripts/{script_id}",
+    update_session_script,
+    methods=["PUT"],
+    summary="Edit a recipe",
+)
+router.add_api_route(
+    "/{session_id}/scripts/{script_id}",
+    delete_session_script,
+    methods=["DELETE"],
+    summary="Delete a recipe",
+)
+router.add_api_route(
+    "/{session_id}/scripts/{script_id}/run",
+    run_session_script,
+    methods=["POST"],
+    summary="Run a recipe on the shared browser",
+)
 
 
 @router.post(

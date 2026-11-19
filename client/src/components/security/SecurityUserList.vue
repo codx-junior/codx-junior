@@ -56,7 +56,13 @@ import UserSecuritySettings from './UserSecuritySettings.vue'
                 </div>
                 <div>
                   <div class="font-bold text-sm">{{ user.username }}</div>
-                  <div class="badge badge-ghost badge-xs font-mono mt-0.5">{{ user.role }}</div>
+                  <div class="flex items-center gap-1 mt-0.5">
+                    <div class="badge badge-ghost badge-xs font-mono">{{ user.role }}</div>
+                    <div class="badge badge-ghost badge-xs" :title="languageLabel(user.language || 'auto')">
+                      <i class="fa-solid fa-language mr-1 text-[9px]"></i>
+                      {{ user.language || 'auto' }}
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -151,6 +157,8 @@ import UserSecuritySettings from './UserSecuritySettings.vue'
 </template>
 
 <script>
+import { languageLabel } from '@/config/languages'
+
 export default {
   name: 'SecurityUserList',
   props: {
@@ -172,13 +180,15 @@ export default {
     }
   },
   methods: {
+    languageLabel,
     openUserDetail(user) {
-      this.userSelected = { ...user }
+      this.userSelected = { language: 'auto', ...user }
       this.userSelectedIx = this.users.findIndex(u => u === user)
     },
     addNewUser() {
       this.userSelected = {
         role: 'user',
+        language: 'auto',
         avatar: 'https://gravatar.com/avatar/baa8db8ab2afb7ababc235269e762662?s=400&d=robohash&r=analyst'
       }
       this.userSelectedIx = -1

@@ -1,0 +1,112 @@
+Atlas: stop the dirty-tree rebuild storm (root cause of the 120 s discovery timeouts)
+
+Status: NOT APPLIED — produced by shift 6 of software_developer, 2026-11-19.
+Apply with:  git apply docs/patches/003-atlas-dirty-tree-rebuild-storm.patch
+
+MEASURED CHAIN (card d8534b12)
+1. `project_changes(scope="all")` in this very session: **172 files** dirty vs HEAD
+   (the `.codx` control plane alone accounts for most of them: `.codx/autonomy/state.json`,
+   `.codx/harness/audit.jsonl` (+1084 lines during one shift), `.codx/chat_turns/*.json`,
+   `.codx/tasks/**/*.json`).
+2. `codx/junior/atlas/indexer.py:46` — `MAX_INCREMENTAL_FILES = 40`.
+3. `codx/junior/atlas/indexer.py:218-229` — any dirty set larger than that cap does not
+   patch the index, it calls `_build_full()`.
+4. `project_health()` reports the cost of one `_build_full()`: **built in 36.01 s**
+   (671 files, 10185 symbols, 21423 edges, 25.8 MB db).
+5. `constants.py:42` `DEFAULT_TTL_SECONDS = 5` and `query.py:164`
+   `getattr(settings, "project_atlas_ttl_seconds", 5)` make the freshness proof
+   (indexer.py:206) expire after 5 s, so consecutive discovery calls each re-run
+   `git status --porcelain` + two `git ls-files` (indexer.py:218-219).
+6. `indexer.py:1088-1098` `_watermark()` = HEAD + `.git/index` identity, i.e. **content
+   changes that are not staged do not change it**. So the fast path (indexer.py:198-204)
+   can also serve a stale index for up to `scan_seconds` (60 s) and then pay the rebuild
+   in whichever call lands after the window.
+7. Result: `project_locate` exceeded the 120 s tool cap **in this session**
+   (reproduced: `project_locate(query="shared_atlas", limit=2)` -> "timed out after 120s").
+   `project_health` survives only because it is a single `ensure()` returning stats
+   (~36-40 s), just under the cap.
+
+WHY IT HITS AUTONOMOUS SHIFTS HARDER
+Every card comment, chat turn and audit line rewrites **tracked** `.codx` files, so the
+dirty set can never fall back under 40 while an actor is working. The atlas stays in a
+rebuild loop for the whole shift.
+
+HUNKS
+Hunk 1 (the fix that matters): raise the incremental cap so the observed 172-file dirty
+  tree patches instead of rebuilding. 400 < the 5000-file index cap, so nothing overflows.
+Hunk 2 + 3: give the freshness proof a realistic lifetime (5 s -> 30 s) so a burst of
+  discovery calls in one turn shares one scan.
+Hunk 4 (optional): expose `project_atlas_scan_seconds`. `query.py:165-168` already reads
+  it, but `CODXJuniorSettings` (settings.py:143-154) defines only `project_atlas_enabled`,
+  `project_atlas_max_files` and `project_atlas_ttl_seconds`, so today the attribute never
+  exists and the window is pinned at `DEFAULT_SCAN_SECONDS = 60`.
+
+TRADE-OFF / KNOWN GAP
+Raising the cap makes the first scan cheap; it does not bound a real mass change (branch
+switch, generated tree) — that still rebuilds, correctly. Because `_watermark()` ignores
+unstaged content, a larger `scan_seconds` also means a longer window in which newly
+written files are not yet visible to discovery; 60 s (unchanged default) is the existing
+behaviour, so hunk 4 does not widen it unless an operator sets it.
+
+ZERO-CODE OVERRIDE (partial, no patch needed)
+`query.py:163-168` reads from project settings, and `settings.py:151-154` really does
+define `project_atlas_ttl_seconds`, so an operator can raise **that one** knob (e.g. 60)
+without patching. The scan window is NOT configurable until hunk 4 lands. Cost of the
+override: the index may be up to TTL seconds stale.
+
+NOT VERIFIED FROM THIS SHIFT
+How many `_build_full()` calls one `project_locate` triggers (no shell/profiler tool). If
+it is one, the timeout is simply the rebuild being slower than the 36 s recorded in the
+health meta (the index has grown since); if it is several, hunks 2-3 are what remove the
+repetition.
+
+--- a/codx/junior/atlas/indexer.py
++++ b/codx/junior/atlas/indexer.py
+@@ -43,7 +43,10 @@
+ 
+ MAX_FILE_BYTES = 2 * 1024 * 1024
+ MAX_BODY_CHARS = 120_000
+-MAX_INCREMENTAL_FILES = 40
++# Above this a dirty tree is rebuilt instead of patched. 40 was too low for a
++# repository whose tracked ``.codx`` control plane is rewritten by every task,
++# chat and audit write: 172 dirty files -> one 36 s full rebuild per call.
++MAX_INCREMENTAL_FILES = 400
+ MAX_CALL_EDGES = 20_000
+ 
+ CODE_EXT = {
+--- a/codx/junior/atlas/constants.py
++++ b/codx/junior/atlas/constants.py
+@@ -39,7 +39,9 @@
+ #: Default cap. Above this the atlas reports ``truncated`` in its health output.
+ DEFAULT_MAX_FILES = 5000
+ #: How long a freshness check is reused within one process.
+-DEFAULT_TTL_SECONDS = 5
++#: 5 s expired between two tool calls of the same turn, so every discovery call
++#: paid for its own freshness scan (and, on a dirty tree, its own rebuild).
++DEFAULT_TTL_SECONDS = 30
+ #: How long a git-free watermark match (HEAD + .git/index unchanged) is trusted
+ #: before a real ``git status`` scan runs again. Between two scans the atlas is
+ #: served straight from the index with no subprocess at all.
+--- a/codx/junior/atlas/query.py
++++ b/codx/junior/atlas/query.py
+@@ -161,7 +161,7 @@
+             codx_path=self.codx_path,
+             project_name=getattr(settings, "project_name", "") or os.path.basename(self.root),
+             max_files=int(getattr(settings, "project_atlas_max_files", 5000) or 5000),
+-            ttl_seconds=int(getattr(settings, "project_atlas_ttl_seconds", 5) or 5),
++            ttl_seconds=int(getattr(settings, "project_atlas_ttl_seconds", 30) or 30),
+             scan_seconds=int(
+                 getattr(settings, "project_atlas_scan_seconds", 0)
+                 or DEFAULT_SCAN_SECONDS
+--- a/codx/junior/settings.py
++++ b/codx/junior/settings.py
+@@ -151,6 +151,10 @@
+     project_atlas_ttl_seconds: Optional[int] = Field(
+         default=5,
+         description="Reuse the freshness check for this many seconds",
+     )
++    project_atlas_scan_seconds: Optional[int] = Field(
++        default=60,
++        description="How long a watermark match is trusted before a real git scan",
++    )
+ 

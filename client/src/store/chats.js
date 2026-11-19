@@ -43,6 +43,67 @@ const reloadsInFlight = {}
 // each streamed chunk.
 const updatingTimeouts = {}
 
+// ─── Browser chat index ───────────────────────────────────────────────────────
+// A co-desktop (browser/computer session) has a list of linked chats and the one
+// that matters is the chat with the last UPDATED message. Ranking that list needs
+// the metadata — often the messages — of every linked chat, which is exactly what
+// a cold start does not have: the user waits for a list request before the chat
+// pane can open.
+//
+// The index keeps the answer: `browserId → { chatId, at }`. Opening the co-desktop
+// reads it and docks the chat immediately, then the ranking refreshes it in the
+// background. It is persisted so the speed survives a page reload, and it is only
+// ever a HINT: the panel still checks the chat is linked to the session.
+const BROWSER_INDEX_KEY = 'codx-junior.browserChatIndex'
+
+/** Read the persisted index; a broken/absent entry degrades to an empty map. */
+function loadBrowserChatIndex() {
+  if (typeof window === 'undefined' || !window.localStorage) return {}
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(BROWSER_INDEX_KEY) || 'null')
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch (error) {
+    return {}
+  }
+}
+
+/** Best-effort persistence: a full/disabled storage never breaks the store. */
+function persistBrowserChatIndex(index) {
+  if (typeof window === 'undefined' || !window.localStorage) return
+  try {
+    window.localStorage.setItem(BROWSER_INDEX_KEY, JSON.stringify(index))
+  } catch (error) {
+    // Kept in memory only.
+  }
+}
+
+/**
+ * Stamp of the chat's last updated message — the same rule the browser panel
+ * ranks with, so the index and the switcher never disagree.
+ *
+ * @param {Object} chat - Full chat or list summary (last message only).
+ * @returns {{ time: number, stamp: string|null }} Sortable time and the raw stamp.
+ */
+function browserChatStamp(chat) {
+  if (!chat) return { time: 0, stamp: null }
+  const messages = Array.isArray(chat.messages) ? chat.messages : []
+  let stamp = null
+  let time = 0
+  messages.forEach((message) => {
+    const candidate = message?.updated_at || message?.timestamp || message?.created_at
+    const candidateTime = candidate ? new Date(candidate).getTime() : 0
+    if (!Number.isNaN(candidateTime) && candidateTime > time) {
+      time = candidateTime
+      stamp = candidate
+    }
+  })
+  if (stamp) return { time, stamp }
+  // Chat without messages loaded: fall back to its own bookkeeping fields.
+  const fallback = chat.lastMessageAt || chat.updated_at || chat.created_at || null
+  const fallbackTime = fallback ? new Date(fallback).getTime() : 0
+  return { time: Number.isNaN(fallbackTime) ? 0 : fallbackTime, stamp: fallback }
+}
+
 export const state = () => ({
   chats: {},
   activeChatId: null,
@@ -66,6 +127,9 @@ export const state = () => ({
   // `revision` is a monotonic counter: consumers WATCH it and compare numbers,
   // they never diff the chat list or the event log themselves.
   chatActivity: { revision: 0, chatId: null, kind: null, at: null },
+  // Latest chat of every co-desktop session: `{ [browserId]: { chatId, at } }`,
+  // so opening a coworking session does not have to rank its chats first.
+  browserChatIndex: loadBrowserChatIndex(),
 })
 
 // Same values, same order. The API answers with brand-new arrays on every read,
@@ -463,6 +527,20 @@ export const getters = getterTree(state, {
   // "changed"/"done" chat event and on every local chat write. Components that
   // must refresh when a chat/ticket changes watch this number.
   activityRevision: state => state.chatActivity.revision,
+
+  // ─── Browser chat index ───────────────────────────────────────────────────
+  // O(1) answer to "which chat should this co-desktop open?", straight from the
+  // index: no chat metadata and no message scan involved.
+  latestChatIdForBrowser: state => (browserId) => {
+    if (!browserId) return null
+    return state.browserChatIndex?.[browserId]?.chatId || null
+  },
+
+  /** Whole index entry of a co-desktop (`{ chatId, at }`) or null. */
+  browserChatEntry: state => (browserId) => {
+    if (!browserId) return null
+    return state.browserChatIndex?.[browserId] || null
+  },
   lastActivity: state => state.chatActivity,
 
   // ─── Status helpers ────────────────────────────────────────────────────────
@@ -622,6 +700,38 @@ export const mutations = mutationTree(state, {
     if (state.chats[chatId]) {
       state.chats[chatId].lastMessageAt = timestamp
     }
+  },
+
+  /**
+   * Point the index of a co-desktop at one of its chats.
+   *
+   * A late write never rewinds the index: if the stored entry is newer than the
+   * incoming stamp the store keeps the newer one, so opening an old chat (or a
+   * slow response landing after a fast one) cannot promote it.
+   */
+  indexBrowserChat(state, { browserId, chatId, at = null }) {
+    if (!browserId || !chatId) return
+    const stamp = at || new Date().toISOString()
+    const stampTime = new Date(stamp).getTime() || 0
+    const current = state.browserChatIndex[browserId]
+    if (current?.chatId && current.chatId !== chatId) {
+      const currentTime = new Date(current.at || 0).getTime() || 0
+      if (currentTime > stampTime) return
+    }
+    state.browserChatIndex = {
+      ...state.browserChatIndex,
+      [browserId]: { chatId, at: stamp }
+    }
+    persistBrowserChatIndex(state.browserChatIndex)
+  },
+
+  /** Drop the index entry of a co-desktop (session deleted, chat unlinked). */
+  forgetBrowserChat(state, { browserId } = {}) {
+    if (!browserId || !state.browserChatIndex[browserId]) return
+    const next = { ...state.browserChatIndex }
+    delete next[browserId]
+    state.browserChatIndex = next
+    persistBrowserChatIndex(next)
   }
 })
 
@@ -1139,6 +1249,53 @@ export const actions = actionTree(
       // A deleted ticket is a change too: feeds must drop the row.
       $storex.chats.setChatActivity({ chatId: chat.id, kind: 'deleted' })
     },
+    /**
+     * Remember which chat a co-desktop must open.
+     *
+     * @param {Object} payload - Payload.
+     * @param {string} payload.browserId - Browser/computer session id.
+     * @param {string} payload.chatId - Chat to open for that session.
+     * @param {string} [payload.at] - Stamp of its last updated message.
+     * @returns {string|null} The indexed chat id.
+     */
+    rememberBrowserChat({ commit }, { browserId, chatId, at = null } = {}) {
+      if (!browserId || !chatId) return null
+      commit('indexBrowserChat', { browserId, chatId, at })
+      return chatId
+    },
+
+    /**
+     * Rank the chats of a co-desktop and remember the one with the last updated
+     * message. `chats` may mix full chats and summaries: the newest known stamp
+     * wins, and an empty list leaves the index untouched.
+     *
+     * @param {Object} payload - Payload.
+     * @param {string} payload.browserId - Browser/computer session id.
+     * @param {Array<Object>} payload.chats - Linked chats (full or summary).
+     * @returns {string|null} The indexed chat id.
+     */
+    rememberLatestBrowserChat({ commit }, { browserId, chats = [] } = {}) {
+      if (!browserId || !Array.isArray(chats) || !chats.length) return null
+      let best = null
+      chats.forEach((chat) => {
+        if (!chat?.id) return
+        const { time, stamp } = browserChatStamp(chat)
+        if (!best || time > best.time) best = { chatId: chat.id, time, stamp }
+      })
+      if (!best) return null
+      commit('indexBrowserChat', {
+        browserId,
+        chatId: best.chatId,
+        at: best.stamp || new Date().toISOString()
+      })
+      return best.chatId
+    },
+
+    /** Forget the chat a co-desktop remembered (deleted session or chat). */
+    forgetBrowserChat({ commit }, { browserId } = {}) {
+      commit('forgetBrowserChat', { browserId })
+    },
+
     async setActiveChat({ state }, activeChat) {
       const { id, project_id, owner_project_id, name } = activeChat || {}
 

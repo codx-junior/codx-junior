@@ -145,6 +145,71 @@ export const browsersModule = (API) => ({
     return API.get(`/api/browsers/${sessionId}/source`)
   },
 
+  // ── Recording + reusable recipes ───────────────────────────────────────
+
+  async recording(sessionId) {
+    return API.get(`/api/browsers/${sessionId}/recording`)
+  },
+
+  async startRecording(sessionId, payload = {}) {
+    return API.post(`/api/browsers/${sessionId}/recording/start`, payload)
+  },
+
+  async stopRecording(sessionId) {
+    return API.post(`/api/browsers/${sessionId}/recording/stop`, {})
+  },
+
+  async saveRecording(sessionId, payload) {
+    return API.post(`/api/browsers/${sessionId}/recording/save`, payload)
+  },
+
+  async cancelRecording(sessionId) {
+    return API.delete(`/api/browsers/${sessionId}/recording`)
+  },
+
+  /**
+   * Review the stopped recording with codx-junior and convert it into steps.
+   *
+   * `save=true` updates the targeted recipe in place (or creates one). The
+   * deterministic recorder steps are the fallback when the AI is unavailable.
+   */
+  async analyzeRecording(sessionId, payload = {}) {
+    return API.post(`/api/browsers/${sessionId}/recording/analyze`, {
+      save: true,
+      use_ai: true,
+      ...payload
+    })
+  },
+
+  async scripts(sessionId, { site = null, query = null, limit = 50 } = {}) {
+    const params = new URLSearchParams()
+    if (site) params.set('site', site)
+    if (query) params.set('query', query)
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString()
+    return API.get(`/api/browsers/${sessionId}/scripts${qs ? `?${qs}` : ''}`)
+  },
+
+  async script(sessionId, scriptId) {
+    return API.get(`/api/browsers/${sessionId}/scripts/${scriptId}`)
+  },
+
+  async updateScript(sessionId, scriptId, payload) {
+    return API.put(`/api/browsers/${sessionId}/scripts/${scriptId}`, payload)
+  },
+
+  async deleteScript(sessionId, scriptId, hard = false) {
+    const qs = hard ? '?hard=true' : ''
+    return API.delete(`/api/browsers/${sessionId}/scripts/${scriptId}${qs}`)
+  },
+
+  async runScript(sessionId, scriptId, variables = {}) {
+    return API.post(`/api/browsers/${sessionId}/scripts/${scriptId}/run`, {
+      variables,
+      force: true
+    })
+  },
+
   // ── Co-browsing audit + cost ────────────────────────────────────────────
 
   async activity(sessionId, limit = 100, { since = null, actor = null } = {}) {

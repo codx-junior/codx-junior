@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import { useCompanyI18n } from './i18n'
 import { memberAvatar } from './companyMeta'
 
 /**
@@ -9,6 +10,8 @@ import { memberAvatar } from './companyMeta'
  * AI is on duty. Hiring and invitation flows live in the assistant (or the
  * team builder), never in a cold settings table.
  */
+const { t } = useCompanyI18n()
+
 const props = defineProps({
   snapshot: { type: Object, default: null },
   actors: { type: Array, default: () => [] },
@@ -81,17 +84,17 @@ function ask(prompt) {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-info">People</p>
-        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">Your company</h1>
+        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">{{ t('people.title') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Humans and AI teammates with clear roles. The owner is always in control of access, money and final decisions.
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button v-if="canManage" class="btn btn-sm gap-1.5 rounded-xl border-base-content/15" @click="ask('I need a team')">
-          <i class="fa-solid fa-robot"></i> Hire AI teammate
+          <i class="fa-solid fa-robot"></i> {{ t('people.hire') }}
         </button>
         <button v-if="canAdmin" class="btn btn-primary btn-sm gap-1.5 rounded-xl shadow-lg shadow-primary/20" @click="ask('Add a person')">
-          <i class="fa-solid fa-user-plus"></i> Add person
+          <i class="fa-solid fa-user-plus"></i> {{ t('people.add') }}
         </button>
       </div>
     </header>

@@ -30,6 +30,7 @@ Made with ❤️ by codx-junior
 import re
 from typing import List, Optional, Tuple
 
+from codx.junior.security.ciso import context as ciso_context
 from codx.junior.security.ciso.models import (
     CisoPolicy,
     SecurityCategory,
@@ -63,7 +64,7 @@ _RULES: List[Tuple[str, str, SecuritySeverity, SecurityCategory, "re.Pattern", s
      "Pass an argument list and keep `shell=False`; interpolated input into a shell is a command injection."),
     ("dangerous.os-system", "Shell command built by string", SecuritySeverity.HIGH,
      SecurityCategory.MALICIOUS,
-     re.compile(r"\bos\s*\.\s*(?:system|popen|execv?[lpe]*)\s*\(|(?<![\w.])system\s*\("),
+     re.compile(r"\bos\s*\.\s*(?:system|popen|execv?[lpe]*)\s*\(|(?<![\w.])system\s*\(\s*(?=['\"$])|(?<![\w.])system\("),
      "Use `subprocess.run([...])` with an argument list instead of a shell string."),
     ("dangerous.node-child-process", "Node child process execution", SecuritySeverity.HIGH,
      SecurityCategory.MALICIOUS,
@@ -141,7 +142,7 @@ _RULES: List[Tuple[str, str, SecuritySeverity, SecurityCategory, "re.Pattern", s
      "Application code must not read `.env` files at runtime: inject settings instead."),
     ("exfiltration.credential-harvest", "Harvesting credentials into a request", SecuritySeverity.CRITICAL,
      SecurityCategory.DATA_EXFILTRATION,
-     re.compile(r"(?:requests|httpx|axios|fetch|urllib|curl|wget)[^\n]{0,200}(?:\.env|id_rsa|\.aws/credentials|/etc/passwd|AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID)", re.IGNORECASE),
+     re.compile(r"\b(?:requests|httpx|axios|fetch|urllib|curl|wget)\b[^\n]{0,200}(?:\.env\b|id_rsa\b|\.aws/credentials\b|/etc/passwd\b|AWS_SECRET_ACCESS_KEY\b|AWS_ACCESS_KEY_ID\b)", re.IGNORECASE),
      "Never send local credential material over the network: delete the code and rotate the keys."),
     ("exfiltration.paste-or-tunnel", "Transfer to a public paste/tunnel host", SecuritySeverity.CRITICAL,
      SecurityCategory.DATA_EXFILTRATION,
@@ -334,12 +335,76 @@ def _add_finding(
     """Append a redacted finding to *findings*."""
     if policy.ignores_rule(rule_id):
         return
+    effective = severity
+    reason = f"Pattern matched: {title.lower()}"
+    is_injection = category == SecurityCategory.INJECTION
+    if rule_id == "supply_chain.curl-pipe-shell":
+        line = ciso_context.line_text(payload, start).lstrip()
+        if line.upper().startswith("RUN "):
+            # A Dockerfile has its own, more precise rule
+            # (``supply_chain.docker-curl-bash``); reporting both is noise.
+            return
+    documentation = ciso_context.is_documentation_position(payload, start, path)
+    if is_injection and ciso_context.is_prose_path(path):
+        # Prose can carry an actual instruction; only a nearby description
+        # marker ("for example", "fixture") excuses it.
+        documentation = False
+    if is_injection and ciso_context.is_test_path(path):
+        # A test suite stores attack strings as fixtures; it does not send
+        # them to a model.
+        documentation = True
+    descriptive = ciso_context.is_description_context(payload, start)
+    if documentation or descriptive:
+        # A rule table, a docstring or a comment: the match is a
+        # quotation/signature, never an executed line. It stays visible as low
+        # so a real defect written into a docstring is still reviewed.
+        effective = SecuritySeverity.LOW
+        reason = f"{reason} (documentation/detector context)"
+    elif rule_id == "exfiltration.ssh-keys":
+        window = payload[max(0, start - 120):min(len(payload), end + 120)]
+        if not re.search(
+            r"(?i)\b(?:open|read|read_text|readFile|readFileSync|cat|less|more|"
+            r"head|tail|cp|scp|rsync|tar|zip|curl|wget|requests|httpx|fetch|"
+            r"upload|send|base64|ssh-add|ssh-keygen|ssh-copy-id)\b",
+            window,
+        ):
+            # A path in a settings object or a UI hint is not exfiltration.
+            effective = SecuritySeverity.LOW
+            reason = f"{reason} (path referenced, no read/transfer operation)"
+    elif rule_id == "dangerous.eval" and "__builtins__" in payload[start:start + 160]:
+        # ``eval(expression, {"__builtins__": {}}, context)`` is still an eval,
+        # but it is a deliberately restricted expression evaluator, not an
+        # arbitrary-code sink. It warns instead of blocking.
+        effective = SecuritySeverity.MEDIUM
+        reason = f"{reason} (restricted builtins)"
+    elif rule_id == "destructive.drop-database":
+        window = payload[max(0, start - 120):min(len(payload), end + 200)]
+        sql_context = (path or "").lower().endswith((".sql", ".ddl")) or bool(re.search(
+            r"(?i)\b(?:execute|executemany|executescript|cursor|psql|sqlite3|"
+            r"mysql|mariadb|postgres|db\.|drop_all|dropdatabase)\b",
+            window,
+        ))
+        statement = payload[start:start + 80].upper()
+        if not sql_context:
+            # The detector's own comparison (``if "DROP TABLE IF EXISTS" in
+            # statement``) is not a SQL operation. A real statement reaches a
+            # database API, a SQL file or a SQL client, all of which are in the
+            # context above.
+            effective = SecuritySeverity.LOW
+            reason = f"{reason} (DROP TABLE outside a SQL execution context)"
+        elif "DROP TABLE IF EXISTS" in statement and "DROP DATABASE" not in statement \
+                and "DROP SCHEMA" not in statement:
+            # Schema initialisation and idempotent migrations use this form;
+            # ``DROP DATABASE``/``DROP SCHEMA`` and a plain ``DROP TABLE`` keep
+            # the higher severity.
+            effective = SecuritySeverity.MEDIUM
+            reason = f"{reason} (idempotent DROP TABLE IF EXISTS)"
     findings.append(SecurityFinding(
         rule_id=rule_id,
         title=title,
-        severity=severity,
+        severity=effective,
         category=category,
-        reason=f"Pattern matched: {title.lower()}",
+        reason=reason,
         path=path,
         line=_line_of(payload, start),
         excerpt=_excerpt(payload, start, end, policy.max_excerpt_chars),

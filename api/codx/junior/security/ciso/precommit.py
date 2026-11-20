@@ -1,4 +1,4 @@
-"""Pre-commit secret gate.
+"""Pre-commit security gate.
 
 Run it from a git hook::
 
@@ -6,7 +6,7 @@ Run it from a git hook::
 
 Exit codes
     0   the staged diff is clean (or has nothing to scan),
-    1   a credential was found: the commit must be stopped,
+    1   a protected finding was found: the commit must be stopped,
     3   the scanner could not run (missing dependencies, no git): the hook
         decides whether that is fatal (``CISO_PRECOMMIT_STRICT=1``).
 
@@ -19,16 +19,19 @@ Runs anywhere
     break; ``tests/security/ciso_import_check.py`` locks that property in.
 
 What may block
-    A credential and nothing else: the blob *is* the leak, wherever it lands.
-    A commit stores content and executes nothing, and a human is reading the
-    diff, so destructive or exfiltrating *content* is reported without blocking.
-    Blocking on it would turn the hook into an obstacle — the project's own
-    installer pipes a download into ``bash`` — and an obstacle is what teaches
-    ``--no-verify``, which disables the check for the one finding that matters.
+    The families a push must not carry: credentials and keys, malicious or
+    exfiltrating code, destructive/supply-chain payloads and stored instructions
+    aimed at the next agent. Only findings at ``high``/``critical`` block; a
+    documentation example or a medium entropy warning is reported but never
+    stops the commit. The one-commit ``--approve`` waiver is the escape hatch
+    for a reviewed exception, and the project ``ignore_rules`` setting is
+    deliberately NOT honoured here: a rule silenced in the UI must not silently
+    disable the commit gate.
 
 Approving one commit
     A finding is sometimes content that must be committed: a quotation inside a
-    task card, a fixture, a documented example. There is deliberately NO path
+    task card, a fixture, a documented example. Apart from the security-fixture
+    folder (which must contain attack strings), there is deliberately NO path
     allowlist: an allowlist grants a file permission forever, so a card that
     later gains a real token would be committed silently. ``--approve`` instead
     fingerprints the staged content (mode and blob sha of every flagged file),
@@ -54,7 +57,7 @@ import os
 import subprocess
 import sys
 import time
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 #: Exit code when the staged changes are clean.
 EXIT_OK = 0
@@ -97,6 +100,35 @@ PROSE_SUFFIXES = (
     ".csv",
     ".log",
 )
+
+
+def staged_content(path: str) -> Optional[str]:
+    """Return the staged blob of *path*, or ``None`` when it is not readable.
+
+    The pre-commit diff uses ``--unified=0``, so a changed line inside a
+    multi-line docstring or a comment arrives without the delimiter that proves
+    it is documentation. The scanner uses this full staged content only for
+    context; findings still come from added lines.
+
+    Args:
+        path: Repository-relative path.
+
+    Returns:
+        Optional[str]: Staged text, or ``None`` for a missing/binary/odd path.
+    """
+    if not path or ":" in path:
+        # The ``:<path>`` rev syntax is ambiguous for paths containing a colon.
+        return None
+    try:
+        completed = subprocess.run(
+            ["git", "show", f":{path}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return completed.stdout
 
 
 def staged_diff() -> str:
@@ -327,15 +359,14 @@ def package_prefix() -> str:
 def excluded_prefixes() -> tuple:
     """Return the repo-relative folders this gate does not scan.
 
-    Two folders must CONTAIN the patterns the detectors look for:
+    Only ``<api>/tests/security`` is excluded: it holds fixtures with fake AWS
+    keys, a reverse shell, ``rm -rf /`` and ``ignore previous instructions``,
+    and a security suite must be able to commit its own fixtures.
 
-    * the CISO package itself — rule tables and their documentation,
-    * ``<api>/tests/security`` — fixtures with fake AWS keys, a reverse shell,
-      ``rm -rf /`` and ``ignore previous instructions``.
-
-    Every secret scanner needs such an allowlist: without it the gate blocks
-    its own maintenance, and people learn to reach for ``--no-verify``, which
-    disables the protection everywhere.
+    The CISO package itself is **not** excluded. ``context.py`` lowers rule
+    tables, docstrings and comments to ``low``, so editing the detector does
+    not block, while a real credential or an executable malicious line added
+    to the package still does.
 
     Returns:
         tuple: Path prefixes (with trailing slash) to skip.
@@ -344,7 +375,7 @@ def excluded_prefixes() -> tuple:
     if not package:
         return ()
     api_root = package.split("/", 1)[0]
-    return (package, f"{api_root}/tests/security/")
+    return (f"{api_root}/tests/security/",)
 
 
 def relevant_findings(findings: List) -> List:
@@ -369,15 +400,46 @@ def relevant_findings(findings: List) -> List:
     ]
 
 
-def blocking_findings(findings: List, categories: Any) -> List:
-    """Return the findings allowed to block the commit: credentials only.
+#: Categories that may stop a commit. This is the CISO control the hook
+#: exists for: a credential, malicious/exfiltrating code, a supply-chain
+#: payload or a stored instruction that would attack the next agent. A
+#: configuration finding (a ``.env`` file name) stays advisory.
+BLOCKING_CATEGORY_NAMES = (
+    "SECRET",
+    "MALICIOUS",
+    "DATA_EXFILTRATION",
+    "SUPPLY_CHAIN",
+    "INJECTION",
+    "DANGEROUS_OPERATION",
+)
 
-    The gate has exactly one job — no credential may become a git object — so
-    a credential blocks wherever it lands, and everything else is reported
-    without blocking. Destructive or exfiltrating *content* cannot leak a
-    secret, a human is reading the diff, and blocking on it turns the hook into
-    an obstacle: the project's own installer pipes a download into ``bash``, and
-    a gate that refuses to commit it is a gate people run with ``--no-verify``.
+#: Only findings at or above this severity block. The policy ladder still
+#: decides the final action; this floor keeps a medium entropy warning and a
+#: low documentation example out of the commit path.
+BLOCKING_MIN_SEVERITY = "high"
+
+_SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+
+
+def _severity_value(finding: Any) -> str:
+    """Return the finding severity as a lower-case string."""
+    severity = getattr(finding, "severity", "")
+    return str(getattr(severity, "value", severity) or "").lower()
+
+
+def blocking_findings(findings: List, categories: Any) -> List:
+    """Return the findings allowed to block the commit.
+
+    The gate blocks the four families a push must not carry: secrets and keys,
+    malicious/exfiltrating/destructive code, supply-chain payloads and stored
+    instructions aimed at an agent. Everything below ``high`` is reported but
+    does not block, and the one-commit ``--approve`` waiver still exists for a
+    reviewed exception.
+
+    The check deliberately does **not** read the project ``ciso_policy``
+    ``ignore_rules``: a rule silenced in the UI must not silently disable the
+    commit gate. The pre-commit hook is the protection floor; the project
+    policy still applies to every other gate.
 
     Args:
         findings: Findings produced by :func:`guard_diff`, already filtered.
@@ -386,10 +448,17 @@ def blocking_findings(findings: List, categories: Any) -> List:
     Returns:
         List: Findings that decide the verdict.
     """
+    allowed = {
+        getattr(categories, name)
+        for name in BLOCKING_CATEGORY_NAMES
+        if hasattr(categories, name)
+    }
+    floor = _SEVERITY_ORDER[BLOCKING_MIN_SEVERITY]
     return [
         finding
         for finding in findings
-        if getattr(finding, "category", None) == categories.SECRET
+        if getattr(finding, "category", None) in allowed
+        and _SEVERITY_ORDER.get(_severity_value(finding), 0) >= floor
     ]
 
 
@@ -460,7 +529,14 @@ def main(argv: Optional[list] = None) -> int:
             print("CISO: nothing is staged; there is nothing to approve.")
         return EXIT_OK
 
-    scanned = gate.guard_diff(patch)
+    context_cache: Dict[str, Optional[str]] = {}
+
+    def context_for(path: str) -> Optional[str]:
+        if path not in context_cache:
+            context_cache[path] = staged_content(path)
+        return context_cache[path]
+
+    scanned = gate.guard_diff(patch, context_provider=context_for)
     findings = relevant_findings(scanned.findings)
     if not findings:
         if "--approve" in args:
@@ -473,8 +549,8 @@ def main(argv: Optional[list] = None) -> int:
     others = len(findings) - len(blocking)
     if not blocking:
         print(
-            f"CISO: {len(findings)} finding(s) in the staged diff, none of them "
-            "a credential; nothing blocks."
+            f"CISO: {len(findings)} finding(s) in the staged diff, none at "
+            f"blocking severity in a protected family; nothing blocks."
         )
         return EXIT_OK
 
@@ -487,7 +563,7 @@ def main(argv: Optional[list] = None) -> int:
     if "--approve" in args:
         record = record_approval(blocking, fingerprint, _parse_ttl(args))
         print(
-            f"CISO: approved {record['findings']} credential finding(s) for ONE commit."
+            f"CISO: approved {record['findings']} blocking finding(s) for ONE commit."
             "\n  rules: " + ", ".join(record["rules"])
             + "\n  files: " + ", ".join(record["paths"])
             + f"\n  fingerprint: {fingerprint[:16]}…"
@@ -515,8 +591,8 @@ def main(argv: Optional[list] = None) -> int:
 
     if others:
         print(
-            f"CISO: {others} further finding(s) are not credentials and are "
-            "reported, not blocking (a commit leaks only what it stores)."
+            f"CISO: {others} further finding(s) are below the blocking floor "
+            "or outside the protected families; they are reported, not blocking."
         )
     print(
         ciso_policy.render_report(
@@ -527,11 +603,12 @@ def main(argv: Optional[list] = None) -> int:
     )
     if verdict.blocked:
         print(
-            "\nCISO: commit blocked. Remove the credential, rotate it (assume it "
-            "is disclosed) and stage the fix.\n"
+            "\nCISO: commit blocked. Remove the credential or malicious "
+            "content, rotate any disclosed key and stage the fix.\n"
             "Inspect the staged changes with: git diff --cached\n"
-            "If the finding is a quotation or a fixture that must be committed, "
-            "approve THIS content for one commit (no path is ever exempt):\n"
+            "If the finding is a reviewed quotation, fixture or justified "
+            "exception, approve THIS content for one commit (no path is ever "
+            "exempt):\n"
             "  PYTHONPATH=api python3 -m codx.junior.security.ciso.precommit --approve\n"
             "Any later edit to the same file changes the fingerprint and is "
             "reviewed again.",

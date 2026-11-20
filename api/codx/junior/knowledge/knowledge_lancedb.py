@@ -91,6 +91,7 @@ from slugify import slugify
 from langchain_core.documents import Document
 
 from codx.junior.settings import CODXJuniorSettings
+from codx.junior.knowledge.ciso_gate import screen_documents
 from codx.junior.knowledge.embeddings import (
     DEFAULT_EMBEDDINGS_MODEL,
     get_local_embeddings_model,
@@ -1092,6 +1093,10 @@ class KnowledgeDBLanceDB:
         Args:
             documents: LangChain Document objects to index.
         """
+        documents = screen_documents(documents, self.settings)
+        if not documents:
+            logger.warning("No documents to index after CISO screening.")
+            return
         table = self.get_table()
         if table is None:
             logger.warning(

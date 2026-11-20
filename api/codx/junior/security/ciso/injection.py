@@ -27,6 +27,7 @@ import re
 import unicodedata
 from typing import List, Optional, Tuple
 
+from codx.junior.security.ciso import context as ciso_context
 from codx.junior.security.ciso.models import (
     CisoPolicy,
     SecurityCategory,
@@ -41,17 +42,38 @@ _OVERRIDE_PATTERNS: List[Tuple["re.Pattern", str]] = [
      "instruction override"),
     (re.compile(r"disregard\s+(?:all\s+)?(?:the\s+)?(?:previous|prior|above|system)\b", re.IGNORECASE),
      "instruction override"),
-    (re.compile(r"forget\s+(?:all\s+)?(?:your|the)\s+(?:rules?|instructions?|guidelines?|system\s+prompt)", re.IGNORECASE),
+    (re.compile(r"forget\s+(?:all\s+)?your\s+(?:rules?|instructions?|guidelines?|system\s+prompt)", re.IGNORECASE),
+     "instruction override"),
+    (re.compile(r"forget\s+(?:all\s+)?the\s+(?:rules?|instructions?|guidelines?)\s*(?:[.!]|$)", re.IGNORECASE | re.MULTILINE),
      "instruction override"),
     (re.compile(r"you\s+are\s+now\s+(?:a|an|the|DAN|unrestricted|unfiltered|root|admin)", re.IGNORECASE),
      "role reassignment"),
     (re.compile(r"(?:new|updated|real)\s+(?:system\s+)?(?:instructions?|prompt)\s*:", re.IGNORECASE),
      "instruction injection"),
-    (re.compile(r"^\s*(?:system|assistant|developer)\s*:\s*", re.IGNORECASE | re.MULTILINE),
+    # A chat role is only suspicious when it introduces an instruction. A plain
+    # `system: Optional[str]` annotation is not a role, and a role line without
+    # a directive is not an attack: both filled the gate with false positives.
+    (re.compile(
+        r"(?m)^[ \t]*(?:system|assistant|developer)[ \t]*:[ \t]*"
+        r"(?!"
+        r"(?:Optional\b|str\b|int\b|bool\b|float\b|list\b|dict\b|Any\b|"
+        r"None\b|Field\b|=\s*None\b|[\w.]+\s*[\[\](),=:]|[\w.]+\s*$)"
+        r")"
+        r"(?=[^\n]{0,240}(?:\b(?:ignore|disregard|forget|you\s+are|you\s+must|"
+        r"do\s+not|never|please|respond|answer|follow|execute|run|send|reveal|"
+        r"write|delete|override|bypass|act\s+as)\b))",
+        re.IGNORECASE,
+    ),
      "fake chat role"),
     (re.compile(r"<\|\s*(?:im_start|im_end|system|endoftext)\s*\|>|\[/?INST\]|<<\s*SYS\s*>>|###\s*(?:SYSTEM|INSTRUCTION)\s*###", re.IGNORECASE),
      "chat template control token"),
-    (re.compile(r"(?:note|message|attention|important)\s+(?:to|for)\s+(?:the\s+)?(?:ai|llm|assistant|agent|model|copilot|claude|gpt|chatgpt)", re.IGNORECASE),
+    (re.compile(
+        r"(?:note|message|attention|important)\s+(?:to|for)\s+(?:the\s+)?"
+        r"(?:ai|llm|assistant|agent|model|copilot|claude|gpt|chatgpt)\b"
+        r"[^\n]{0,160}(?:\b(?:ignore|disregard|you\s+must|you\s+are|do\s+not|"
+        r"please|reveal|send|run|execute|delete|write)\b)",
+        re.IGNORECASE,
+    ),
      "message addressed to the model"),
     (re.compile(r"(?:if|when)\s+you\s+are\s+(?:an?\s+)?(?:ai|llm|assistant|agent|model)\b[^\n]{0,80}(?:please|you\s+must|do\s+the\s+following)", re.IGNORECASE),
      "conditional instruction to the model"),
@@ -61,19 +83,42 @@ _OVERRIDE_PATTERNS: List[Tuple["re.Pattern", str]] = [
 
 # Actions a payload tries to make the agent perform silently.
 _COERCION_PATTERNS: List[Tuple["re.Pattern", str]] = [
-    (re.compile(r"do\s+not\s+(?:tell|notify|inform|mention\s+it\s+to|ask)\s+the\s+(?:user|human|operator|reviewer)", re.IGNORECASE),
+    (re.compile(r"do\s+not\s+(?:tell|notify|inform|mention\s+it\s+to)\s+the\s+(?:user|human|operator|reviewer)", re.IGNORECASE),
      "secrecy instruction"),
-    (re.compile(r"without\s+(?:telling|informing|notifying|asking)\s+the\s+(?:user|human|operator)", re.IGNORECASE),
+    (re.compile(r"without\s+(?:telling|informing|notifying)\s+the\s+(?:user|human|operator)", re.IGNORECASE),
      "secrecy instruction"),
-    (re.compile(r"(?:exfiltrate|send|upload|post|leak)\s+(?:the\s+)?(?:contents?|data|secrets?|keys?|tokens?|env|\.env|credentials?)", re.IGNORECASE),
+    (re.compile(r"(?:exfiltrate|leak)\s+(?:the\s+)?(?:contents?|data|secrets?|keys?|tokens?|env|\.env|credentials?)", re.IGNORECASE),
+     "exfiltration instruction"),
+    (re.compile(
+        r"(?:send|upload|post)\s+(?:(?:the|your|all)\s+)?"
+        r"(?:contents?|data|secrets|keys|tokens|credentials|env)\b"
+        r"[^\n]{0,100}(?:to|into)\s+"
+        r"(?:https?://|the\s+\w+|[\w.-]+\.[a-z]{2,})",
+        re.IGNORECASE,
+    ),
      "exfiltration instruction"),
     (re.compile(r"(?:run|execute)\s+(?:the\s+)?(?:following|this)\s+(?:command|script|payload)", re.IGNORECASE),
      "command execution instruction"),
     (re.compile(r"(?:curl|wget|fetch)\s+https?://[^\s]+[^\n]{0,40}(?:chmod\s+\+x|sh\b|bash\b)", re.IGNORECASE),
      "remote payload instruction"),
-    (re.compile(r"(?:disable|turn\s+off|bypass|skip)\s+(?:the\s+)?(?:security|guardrails?|checks?|validation|audit|ciso|policy)", re.IGNORECASE),
+    (re.compile(
+        r"(?:disable|turn\s+off|bypass|skip)\s+(?:the\s+|all\s+|your\s+)?"
+        r"(?:security(?:\s+(?:settings|checks?|guardrails?|policy|controls?))?"
+        r"|guardrails?|(?:security\s+)?checks?|validation|audit(?:\s+logs?)?"
+        r"|policy|ciso(?:\s+(?:checks?|policy|rules|gate|validation)))",
+        re.IGNORECASE,
+    ),
      "security bypass instruction"),
 ]
+
+# Whether the payload addresses a model by name. A weak coercion phrase in
+# human documentation ("execute this script", "skip checks") is an instruction
+# to the reader, not necessarily a stored prompt injection.
+_AI_ADDRESSEE = re.compile(
+    # ``(?<![\w.-])`` keeps Vue's ``v-model`` directive from looking like an
+    # address to a model.
+    r"(?i)(?<![\w.-])(?:ai|llm|assistant|agent|model|copilot|chatgpt|claude|gpt)\b"
+)
 
 # HTML comments are the classic hiding place in Markdown/HTML artifacts.
 _HTML_COMMENT_PATTERN = re.compile(r"<!--(?P<body>.*?)-->", re.DOTALL)
@@ -85,11 +130,25 @@ _INVISIBLE_CHARACTERS = {
     "\u2066", "\u2067", "\u2068", "\u2069",
 }
 
-# Imperative verbs that make an HTML comment look like an instruction.
-_IMPERATIVE = re.compile(
-    r"\b(?:ignore|run|execute|delete|remove|send|post|upload|curl|wget|install|"
-    r"modify|edit|create|write|reveal|output|disable|bypass|append|overwrite)\b",
-    re.IGNORECASE,
+# A hidden HTML comment is suspicious only when it addresses the model or
+# carries an attack verb with its object. Ordinary UI comments ("<!-- Create
+# branch modal -->", "<!-- Delete confirmation -->") are not injections, and
+# treating every imperative as one filled the gate with ~90 false positives.
+_HIDDEN_INSTRUCTION = re.compile(
+    r"(?i)(?:"
+    r"\b(?:ai|llm|assistant|agent|model|copilot|chatgpt|claude)\b[^\n]{0,100}"
+    r"\b(?:ignore|disregard|forget|run|execute|send|reveal|delete|disable|"
+    r"bypass|upload|post|print|output)\b"
+    r"|\b(?:ignore|disregard|forget)\b[^\n]{0,100}"
+    r"\b(?:previous|prior|above|instructions?|rules?|prompt)\b"
+    r"|\b(?:do not|don't|never)\s+(?:tell|notify|inform|mention)\b"
+    r"|\b(?:reveal|print|output|disclose)\b[^\n]{0,100}"
+    r"\b(?:system prompt|instructions?|credentials?|keys?|tokens?)\b"
+    r"|\b(?:run|execute)\s+(?:the\s+)?(?:following|this)\s+"
+    r"(?:command|script|payload)\b"
+    r"|\b(?:exfiltrate|send|upload|post)\b[^\n]{0,100}"
+    r"\b(?:secrets?|keys?|tokens?|credentials?|\.env)\b"
+    r")"
 )
 
 
@@ -168,12 +227,49 @@ def scan_text(
              start: int, end: int) -> None:
         if policy.ignores_rule(rule_id):
             return
+        effective = severity
+        reason = f"Artifact contains an {message}"
+        # A negated imperative is a safety rule, not a bypass instruction:
+        # "Do not disable security settings" must not be read as "disable
+        # security". This was the single most common profile false positive.
+        if rule_id in (
+            "injection.instruction-override", "injection.coercion"
+        ) and ciso_context.is_negated(payload, start):
+            return
+        # A weak coercion phrase in human documentation or source code is an
+        # instruction to the reader ("execute this script", "skip checks"), not
+        # necessarily a stored prompt injection. If no model is addressed and
+        # the file is prose/source, it stays visible as low. The strong
+        # override patterns above remain high.
+        human_instruction = (
+            rule_id == "injection.coercion"
+            and (ciso_context.is_prose_path(path)
+                 or ciso_context.is_source_code_path(path))
+            and not _AI_ADDRESSEE.search(
+                 payload[max(0, start - 200): min(len(payload), end + 200)]
+             )
+        )
+        # Prose is *not* automatically documentation: a README or a task card
+        # can carry an actual instruction. Only a nearby marker ("for
+        # example", "fixture", ...) or a code comment/docstring makes a match
+        # descriptive. This keeps a real stored injection in Markdown at full
+        # severity while a rule catalogue stays quiet.
+        code_documentation = (
+            not ciso_context.is_knowledge_path(path)
+            and not ciso_context.is_prose_path(path)
+            and ciso_context.is_documentation_position(payload, start, path)
+        )
+        if human_instruction or code_documentation or \
+                ciso_context.is_test_path(path) or \
+                ciso_context.is_description_context(payload, start):
+            effective = SecuritySeverity.LOW
+            reason = f"{reason} (documentation/detector context)"
         findings.append(SecurityFinding(
             rule_id=rule_id,
             title="Stored prompt injection",
-            severity=severity,
+            severity=effective,
             category=SecurityCategory.INJECTION,
-            reason=f"Artifact contains an {message}",
+            reason=reason,
             path=path,
             line=_line_of(payload, start),
             excerpt=_excerpt(payload, start, end, policy.max_excerpt_chars),
@@ -203,7 +299,7 @@ def scan_text(
     # artifact, fully visible to the model.
     for match in _HTML_COMMENT_PATTERN.finditer(payload):
         body = match.group("body") or ""
-        if _IMPERATIVE.search(body) and len(body) > 12:
+        if _HIDDEN_INSTRUCTION.search(body) and len(body) > 12:
             _add("injection.hidden-html-comment", "instruction hidden in an HTML comment",
                  SecuritySeverity.HIGH, match.start(), match.end())
             break

@@ -169,6 +169,10 @@ export default {
   },
   created() {
     this.collapsed = this.readCollapsed()
+    const requestedTab = String(this.$route?.query?.tab || '')
+    if (requestedTab) {
+      this.activeTab = requestedTab === 'ai_models' ? 'ai' : requestedTab
+    }
     this.loadSettings()
   },
   methods: {

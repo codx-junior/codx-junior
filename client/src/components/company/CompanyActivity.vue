@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { EVENT_META, formatDate, formatDateTime, relativeTime } from './companyMeta'
+import { useCompanyI18n } from './i18n'
 
 /**
  * Activity — the company's memory.
@@ -12,7 +13,9 @@ const props = defineProps({
   snapshot: { type: Object, default: null }
 })
 
-const emit = defineEmits(['assistant', 'open-work'])
+const emit = defineEmits(['assistant', 'open-work', 'open-chat', 'new-task'])
+
+const { t } = useCompanyI18n()
 
 const filter = ref('all')
 const query = ref('')
@@ -21,13 +24,13 @@ const journal = computed(() => (props.snapshot?.journal || []).slice().reverse()
 const missions = computed(() => props.snapshot?.missions || [])
 const completed = computed(() => missions.value.filter(mission => ['done', 'cancelled'].includes(mission.status)).slice(0, 6))
 
-const filters = [
-  { id: 'all', label: 'Everything' },
-  { id: 'work', label: 'Work' },
-  { id: 'team', label: 'Teams' },
-  { id: 'company', label: 'Company' },
-  { id: 'people', label: 'People' }
-]
+const filters = computed(() => [
+  { id: 'all', label: t('activity.all') },
+  { id: 'work', label: t('activity.work') },
+  { id: 'team', label: t('activity.team') },
+  { id: 'company', label: t('activity.company') },
+  { id: 'people', label: t('activity.people') }
+])
 
 function groupOf(event) {
   const type = String(event.type || '')
@@ -77,6 +80,14 @@ function ask(prompt) {
 function openMission(mission) {
   emit('open-work', mission.id)
 }
+
+function openEvent(event) {
+  emit('open-chat', event)
+}
+
+function createTask() {
+  emit('new-task')
+}
 </script>
 
 <template>
@@ -84,14 +95,17 @@ function openMission(mission) {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-info">Audit &amp; review</p>
-        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">Activity</h1>
+        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">{{ t('activity.title') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
-          Everything the company did, in plain language. Review deliveries, decisions and changes — and ask the assistant for the story behind them.
+          {{ t('activity.subtitle') }}
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
+        <button class="cp-chip" @click="createTask">
+          <i class="fa-solid fa-plus text-[9px]"></i> {{ t('activity.newTask') }}
+        </button>
         <button class="btn btn-sm gap-1.5 rounded-xl border-base-content/15" @click="ask('Write a weekly review of the company: what was delivered, what is blocked, what we learned and what to do next.')">
-          <i class="fa-solid fa-wand-magic-sparkles"></i> Weekly review
+          <i class="fa-solid fa-wand-magic-sparkles"></i> {{ t('activity.weeklyReview') }}
         </button>
       </div>
     </header>
@@ -101,7 +115,7 @@ function openMission(mission) {
         <div>
           <h2 class="flex items-center gap-2 text-sm font-black">
             <span class="grid h-7 w-7 place-items-center rounded-lg bg-success/15 text-success"><i class="fa-solid fa-circle-check text-[11px]"></i></span>
-            Delivered work
+            {{ t('activity.delivered') }}
           </h2>
           <p class="mt-1 text-[11px] text-base-content/45">What the team shipped and the result the company recorded.</p>
         </div>
@@ -131,13 +145,13 @@ function openMission(mission) {
         </div>
         <label class="input input-sm input-bordered flex items-center gap-2 rounded-xl">
           <i class="fa-solid fa-magnifying-glass text-[10px] text-base-content/35"></i>
-          <input v-model="query" type="text" class="grow bg-transparent text-xs" placeholder="Search activity…" />
+          <input v-model="query" type="text" class="grow bg-transparent text-xs" :placeholder="t('activity.search')" />
         </label>
       </div>
 
       <div v-if="!grouped.length" class="mt-6 rounded-xl border border-dashed border-base-content/15 p-8 text-center">
         <i class="fa-solid fa-wave-square text-2xl text-base-content/20"></i>
-        <p class="mt-2 text-sm font-bold">Nothing here yet.</p>
+        <p class="mt-2 text-sm font-bold">{{ t('activity.empty') }}</p>
         <p class="text-[11px] text-base-content/45">Activity appears as the team works: goals, decisions, deliveries and changes.</p>
       </div>
 
@@ -149,7 +163,14 @@ function openMission(mission) {
             <div class="h-px flex-1 bg-base-content/5"></div>
           </div>
           <div class="space-y-1.5">
-            <div v-for="event in group.events" :key="event.id" class="flex items-start gap-2.5 rounded-xl p-2 transition hover:bg-base-200/40">
+            <button
+              v-for="event in group.events"
+              :key="event.id"
+              type="button"
+              class="flex w-full items-start gap-2.5 rounded-xl p-2 text-left transition hover:bg-base-200/40"
+              :title="t('activity.openChat')"
+              @click="openEvent(event)"
+            >
               <span class="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-base-200/70" :class="meta(event).tone">
                 <i :class="meta(event).icon" class="text-[10px]"></i>
               </span>
@@ -164,7 +185,8 @@ function openMission(mission) {
                 </p>
               </div>
               <span class="hidden shrink-0 text-[9px] text-base-content/25 sm:block">{{ formatDateTime(event.at) }}</span>
-            </div>
+              <i class="fa-regular fa-comments mt-1 shrink-0 text-[9px] text-base-content/25"></i>
+            </button>
           </div>
         </div>
       </div>

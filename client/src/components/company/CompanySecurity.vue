@@ -16,7 +16,8 @@ import { API } from '@/api/api'
 import { formatDate, formatAge, severityClass } from '@/components/ciso/format'
 
 const props = defineProps({
-  companyId: { type: String, default: '' }
+  companyId: { type: String, default: '' },
+  projectId: { type: String, default: '' }
 })
 
 const api = API.companies
@@ -50,14 +51,14 @@ function cisoUrl(row, extra = '') {
 }
 
 async function load() {
-  if (!props.companyId) {
+  if (!props.companyId || !props.projectId) {
     payload.value = null
     return
   }
   loading.value = true
   error.value = ''
   try {
-    payload.value = await api.security(props.companyId)
+    payload.value = await api.security(props.companyId, { projectId: props.projectId })
   } catch (ex) {
     error.value = `Could not load company security: ${errorMessage(ex)}`
   } finally {
@@ -108,7 +109,7 @@ function schedulePoll(attempts = 5) {
   pollTimer = setTimeout(tick, 4000)
 }
 
-watch(() => props.companyId, () => load())
+watch(() => [props.companyId, props.projectId], () => load())
 onMounted(load)
 onUnmounted(() => {
   if (pollTimer) clearTimeout(pollTimer)
@@ -123,8 +124,8 @@ onUnmounted(() => {
           <i class="fa-solid fa-shield-halved text-primary"></i> Security
         </h2>
         <p class="text-xs text-base-content/50">
-          CISO posture of the company's linked projects. One row per project; open
-          the project CISO to review findings, rules and scans.
+          CISO posture of the current project and its child projects. Sibling
+          projects linked to the company are intentionally ignored here.
         </p>
       </div>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
@@ -172,8 +173,8 @@ onUnmounted(() => {
 
     <div v-else-if="!hasRows" class="rounded-2xl border border-dashed border-base-content/20 p-8 text-center">
       <i class="fa-solid fa-cubes text-3xl text-base-content/20 block mb-2"></i>
-      <p class="text-sm text-base-content/50">No projects are linked to this company yet.</p>
-      <p class="mt-1 text-xs text-base-content/40">Link a project in <strong>Work → Projects</strong> to see its CISO posture.</p>
+      <p class="text-sm text-base-content/50">No current project security data.</p>
+      <p class="mt-1 text-xs text-base-content/40">Open a company project to see its CISO posture and its children.</p>
     </div>
 
     <div v-else class="grid gap-3 md:grid-cols-2">
@@ -224,7 +225,7 @@ onUnmounted(() => {
           </button>
           <button
             class="btn btn-xs btn-outline"
-            :disabled="!row.available || !!scanning"
+            :disabled="!row.available || row.linked === false || !!scanning"
             @click="scan(row, 'project')"
           >
             <span v-if="scanning === row.project_id" class="loading loading-spinner loading-xs"></span>
@@ -232,7 +233,7 @@ onUnmounted(() => {
           </button>
           <button
             class="btn btn-xs btn-ghost"
-            :disabled="!row.available || !!scanning"
+            :disabled="!row.available || row.linked === false || !!scanning"
             @click="scan(row, 'changes')"
           >
             <i class="fa-solid fa-code-compare"></i> Scan changes

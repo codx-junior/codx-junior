@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useCompanyI18n } from './i18n'
 import {
   formatDate,
   memberAvatar,
@@ -13,6 +14,8 @@ import {
  * purpose, a budget and a body of work. The drawer is the team room lobby:
  * open the conversation, assign a goal, ask the lead or inspect the roster.
  */
+const { t } = useCompanyI18n()
+
 const props = defineProps({
   snapshot: { type: Object, default: null },
   actors: { type: Array, default: () => [] },
@@ -120,7 +123,7 @@ function projectName(project) {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-secondary">Organization</p>
-        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">Teams</h1>
+        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">{{ t('nav.team') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Independent teams with a lead, a purpose and their own work. Humans and AI share the same board and the same accountability.
         </p>
@@ -133,7 +136,7 @@ function projectName(project) {
           <span><strong class="text-primary">{{ totalOpen }}</strong> open</span>
         </div>
         <button v-if="canManage" class="btn btn-primary btn-sm gap-1.5 rounded-xl shadow-lg shadow-primary/20" @click="emit('new-team')">
-          <i class="fa-solid fa-plus"></i> Build a team
+          <i class="fa-solid fa-plus"></i> {{ t('teams.build') }}
         </button>
       </div>
     </header>

@@ -21,7 +21,10 @@ const props = defineProps({
   snapshot: { type: Object, default: null },
   actors: { type: Array, default: () => [] },
   // Docked panel on desktop; drawer/floating on phones.
-  docked: { type: Boolean, default: false }
+  docked: { type: Boolean, default: false },
+  // The company shell opens the assistant from its Ask bar, so the floating
+  // launcher is optional.
+  showLauncher: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['refresh', 'navigate', 'deleted'])
@@ -632,7 +635,7 @@ watch(() => props.companyId, companyId => {
   </aside>
 
   <!-- Floating launcher (drawer mode) -->
-  <button v-if="!docked && !mobileOpen"
+  <button v-if="!docked && !mobileOpen && showLauncher"
           class="fixed bottom-[calc(env(safe-area-inset-bottom)+4.5rem)] right-3 z-40 grid h-12 w-12 place-items-center rounded-full bg-[var(--cp-cta-bg,#111419)] text-[var(--cp-cta-ink,#fff)] shadow-xl ring-1 ring-black/5 transition hover:scale-105 active:scale-95"
           aria-label="Open the codx-junior assistant" @click="expand">
     <i class="fa-solid fa-wand-magic-sparkles"></i>

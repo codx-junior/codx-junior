@@ -617,7 +617,7 @@
       "linked_chat_ids": []
     },
     {
-      "doc_id": null,
+      "doc_id": "729f4e88-698c-4243-b06b-96b1c857fc34",
       "role": "assistant",
       "task_item": "",
       "content": "**PM shift #42 (2026-11-19 02:02Z) \u2014 LIVE RE-PROOF that this P1 is NOT fixed.** The card description says the whitelist fix was \"verified at runtime\", but it still fails at the tool layer today:\n\n```\nError executing tool 'create_task': create_task() got an unexpected keyword argument 'wake_at'\n```\n\nSequence that produced it: top-level `create_task` tool called with `board`, `column`, `name`, `description`, `profiles`, `tags`, `wake_at=\"+1d\"`. Rejected before any write. The identical call **without** `wake_at` succeeded, and `project_manager update_task` with `wake_at` also succeeds \u2014 so `wake_at` is accepted on update but **still missing from the `create_task` accepted-kwargs whitelist**.\n\nConsequence observed this shift: the PM cannot schedule a follow-up at creation time, only by a two-step create-then-update workaround (used to schedule checkpoint `76c29c75`). That workaround is the only reason this shift did not lose its follow-up.\n\nAsk for the owner: extend the `create_task` whitelist to include `wake_at` (and validate it against the full tool schema), add the regression test, and paste the run line. This is due 2026-11-19. Do not mark done until `create_task(..., wake_at=...)` is proven to succeed end-to-end.",
@@ -648,10 +648,548 @@
       "error": null,
       "reply_to": null,
       "linked_chat_ids": []
+    },
+    {
+      "doc_id": "dfa90519-b0e7-4649-a3b8-6a92cf3b3300",
+      "role": "assistant",
+      "task_item": "",
+      "content": "**PM shift #43 (2026-11-19 18:01Z) \u2014 new evidence that narrows the defect. Use it, do not start from scratch.**\n\n| Call | Result |\n|---|---|\n| top-level `create_task` tool with `wake_at` | \u274c `create_task() got an unexpected keyword argument 'wake_at'` |\n| `project_manager` tool, `action=create_task` with `wake_at=\"+2d\"` | \u2705 **accepted**, stored `wake_at = 2026-11-21T18:03:23Z` on task `0c724ac3` (proven live this shift) |\n| `project_manager` tool, `action=update_task(wake_at=\u2026)` | \u2705 accepted |\n\nSo `TaskManager.create_task` already accepts the field: the defect is in the **binding / accepted-kwargs whitelist of the standalone `create_task` tool**, the same place the `estimation_cost` failure came from. Look there, not in the storage layer.\n\nAcceptance unchanged: top-level `create_task(name=\u2026, wake_at=\"+1h\")` succeeds end-to-end, is read back with the alarm stored, and a regression test covers every field the tool schema exposes. Still **due today (2026-11-19)** and still unproven \u2014 do not mark done without the read-back.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-19 18:04:26.862359",
+      "updated_at": "2026-11-19 18:04:26.862382",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "6574318e-10c5-4027-b1f4-05b6b45e22f7",
+      "role": "user",
+      "task_item": "",
+      "content": "**Work order \u2014 PM shift #44, 2026-11-20 02:05Z. Narrowed scope. Start from the diagnosis below, do not re-investigate from zero.**\n\nProfile: **software_developer** (code fix + regression test). This is not a `codx-junior`-profile task: it is a plain Python binding defect with a test.\n\n**What is already proven (shift #43, live):**\n\n| Call | Result |\n|---|---|\n| standalone `create_task` tool with `wake_at` | \u274c `create_task() got an unexpected keyword argument 'wake_at'` |\n| `project_manager` tool, `action=create_task`, `wake_at=\"+2d\"` | \u2705 accepted, persisted `wake_at = 2026-11-21T18:03:23Z` on `0c724ac3` |\n| `project_manager` tool, `action=update_task(wake_at=\u2026)` | \u2705 accepted |\n\nSo `TaskManager.create_task` **already accepts and stores** the field. The defect is **only** in the standalone tool's binding / accepted-kwargs whitelist \u2014 the same layer where `estimation_cost` failed. Look there, not in storage and not in the autonomy worker.\n\n**Steps:**\n1. Find the tool binding for the standalone `create_task` and the accepted-kwargs whitelist (search for `_supported_task_kwargs`, `estimation_cost`, and the `create_task` tool schema in the orchestration/agent tool definitions). `ff87e657` added a defensive whitelist in `orchestration/board.py` that is evidently incomplete: extend it, do not rewrite it.\n2. Make the field list **derive from the tool schema** instead of being hand-maintained, so this class of bug cannot recur per field. If that is not possible, extend the whitelist and make the unknown-kwarg error name the offending field AND list the accepted ones.\n3. Regression test: call `create_task` with every field the tool schema exposes (at minimum `wake_at`, `due_date`, `priority`, `sprints`, `assignees`, `tags`, `progress`, `files`, `profiles`) and assert no `TypeError`.\n\n**Acceptance \u2014 all three, with pasted output:**\n- `create_task(name=\u2026, wake_at=\"+1h\")` through the **standalone tool** succeeds end-to-end.\n- Reading that task back shows the alarm stored (paste the `wake_at` value).\n- The regression test runs green; paste the test command and the summary line.\n\n**Not in scope:** what `wake_at` means, the UI of scheduling, and the stored-task schema.\n\n**Note on priority (PM correction):** the *blocking* part of this card is over \u2014 follow-ups can be scheduled today via `project_manager create_task`. This is now a correctness/consistency defect, not a delivery stopper. Fix it properly in one pass; do not hot-patch the single field.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-20 02:05:14.292407",
+      "updated_at": "2026-11-20 02:05:14.292431",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "46c40ab9-1282-4c51-922b-19f764b958d5",
+      "role": "assistant",
+      "task_item": "",
+      "content": "**PM shift #42 (2026-11-19 02:02Z) \u2014 LIVE RE-PROOF that this P1 is NOT fixed.** The card description says the whitelist fix was \"verified at runtime\", but it still fails at the tool layer today:\n\n```\nError executing tool 'create_task': create_task() got an unexpected keyword argument 'wake_at'\n```\n\nSequence that produced it: top-level `create_task` tool called with `board`, `column`, `name`, `description`, `profiles`, `tags`, `wake_at=\"+1d\"`. Rejected before any write. The identical call **without** `wake_at` succeeded, and `project_manager update_task` with `wake_at` also succeeds \u2014 so `wake_at` is accepted on update but **still missing from the `create_task` accepted-kwargs whitelist**.\n\nConsequence observed this shift: the PM cannot schedule a follow-up at creation time, only by a two-step create-then-update workaround (used to schedule checkpoint `76c29c75`). That workaround is the only reason this shift did not lose its follow-up.\n\nAsk for the owner: extend the `create_task` whitelist to include `wake_at` (and validate it against the full tool schema), add the regression test, and paste the run line. This is due 2026-11-19. Do not mark done until `create_task(..., wake_at=...)` is proven to succeed end-to-end.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-19 02:03:58.677311",
+      "updated_at": "2026-11-19 02:03:58.677330",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "9158bcd9-7df2-4307-96f2-623197c2d288",
+      "role": "assistant",
+      "task_item": "",
+      "content": "**PM shift #43 (2026-11-19 18:01Z) \u2014 new evidence that narrows the defect. Use it, do not start from scratch.**\n\n| Call | Result |\n|---|---|\n| top-level `create_task` tool with `wake_at` | \u274c `create_task() got an unexpected keyword argument 'wake_at'` |\n| `project_manager` tool, `action=create_task` with `wake_at=\"+2d\"` | \u2705 **accepted**, stored `wake_at = 2026-11-21T18:03:23Z` on task `0c724ac3` (proven live this shift) |\n| `project_manager` tool, `action=update_task(wake_at=\u2026)` | \u2705 accepted |\n\nSo `TaskManager.create_task` already accepts the field: the defect is in the **binding / accepted-kwargs whitelist of the standalone `create_task` tool**, the same place the `estimation_cost` failure came from. Look there, not in the storage layer.\n\nAcceptance unchanged: top-level `create_task(name=\u2026, wake_at=\"+1h\")` succeeds end-to-end, is read back with the alarm stored, and a regression test covers every field the tool schema exposes. Still **due today (2026-11-19)** and still unproven \u2014 do not mark done without the read-back.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-19 18:04:26.862359",
+      "updated_at": "2026-11-19 18:04:26.862382",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "b181dc24-6c53-4cbe-8e4a-9b728728a56c",
+      "role": "user",
+      "task_item": "",
+      "content": "**Work order \u2014 PM shift #44, 2026-11-20 02:05Z. Narrowed scope. Start from the diagnosis below, do not re-investigate from zero.**\n\nProfile: **software_developer** (code fix + regression test). This is not a `codx-junior`-profile task: it is a plain Python binding defect with a test.\n\n**What is already proven (shift #43, live):**\n\n| Call | Result |\n|---|---|\n| standalone `create_task` tool with `wake_at` | \u274c `create_task() got an unexpected keyword argument 'wake_at'` |\n| `project_manager` tool, `action=create_task`, `wake_at=\"+2d\"` | \u2705 accepted, persisted `wake_at = 2026-11-21T18:03:23Z` on `0c724ac3` |\n| `project_manager` tool, `action=update_task(wake_at=\u2026)` | \u2705 accepted |\n\nSo `TaskManager.create_task` **already accepts and stores** the field. The defect is **only** in the standalone tool's binding / accepted-kwargs whitelist \u2014 the same layer where `estimation_cost` failed. Look there, not in storage and not in the autonomy worker.\n\n**Steps:**\n1. Find the tool binding for the standalone `create_task` and the accepted-kwargs whitelist (search for `_supported_task_kwargs`, `estimation_cost`, and the `create_task` tool schema in the orchestration/agent tool definitions). `ff87e657` added a defensive whitelist in `orchestration/board.py` that is evidently incomplete: extend it, do not rewrite it.\n2. Make the field list **derive from the tool schema** instead of being hand-maintained, so this class of bug cannot recur per field. If that is not possible, extend the whitelist and make the unknown-kwarg error name the offending field AND list the accepted ones.\n3. Regression test: call `create_task` with every field the tool schema exposes (at minimum `wake_at`, `due_date`, `priority`, `sprints`, `assignees`, `tags`, `progress`, `files`, `profiles`) and assert no `TypeError`.\n\n**Acceptance \u2014 all three, with pasted output:**\n- `create_task(name=\u2026, wake_at=\"+1h\")` through the **standalone tool** succeeds end-to-end.\n- Reading that task back shows the alarm stored (paste the `wake_at` value).\n- The regression test runs green; paste the test command and the summary line.\n\n**Not in scope:** what `wake_at` means, the UI of scheduling, and the stored-task schema.\n\n**Note on priority (PM correction):** the *blocking* part of this card is over \u2014 follow-ups can be scheduled today via `project_manager create_task`. This is now a correctness/consistency defect, not a delivery stopper. Fix it properly in one pass; do not hot-patch the single field.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-20 02:05:14.292407",
+      "updated_at": "2026-11-20 02:05:14.292431",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "2b573de0-9fa5-47af-b46d-b3ac8b09bd29",
+      "role": "assistant",
+      "task_item": "",
+      "content": "I'll start from the diagnosis rather than re-investigating, and probe the standalone tool to get fresh shift-#44 evidence.Defect reproduced fresh (shift #44). Now the scope question \u2014 is the gap only `wake_at`, or the whole scheduling trio?`schedule` is rejected too \u2014 the gap is the whole scheduling group, not one field. Let me find the owning card to record this.Owning card identified: `4a1cf260`. Recording the fresh evidence there.",
+      "think": "* Processing request, please wait...\n",
+      "reasoning_content": null,
+      "hide": true,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-20 02:05:28.280610",
+      "updated_at": "2026-11-20T02:08:32.740767",
+      "attachments": [],
+      "files": [],
+      "project_id": "d4e4b4a9-2281-4970-bff1-f845b4d98456",
+      "meta_data": {
+        "start_time": 1795140322.122337,
+        "turn_id": "13dbe1ca-26bf-49fa-84bf-afc10f31252e",
+        "turn_attempt": 0,
+        "cancellation_token_id": "8a0db0af-81b6-4494-901a-b473c8f3196d",
+        "tool_memory": {
+          "calls": 226,
+          "entries": 211,
+          "rendered": 17,
+          "files": 46,
+          "chars": 11790
+        },
+        "model": "deepseek-flash",
+        "interrupted": true,
+        "interrupted_at": "2026-11-20T02:08:32.740720+00:00"
+      },
+      "tool_events": [
+        {
+          "tool": "create_task",
+          "tool_call_id": "call_00_8jUJEuq8iMLKqZGw8Tbf6961",
+          "status": "error",
+          "request": {
+            "name": "PROBE-shift44 wake_at via standalone create_task (expect rejection)",
+            "description": "Throwaway probe: verifies whether the standalone create_task tool accepts wake_at in this running build. Expected outcome (per shift #43 evidence): TypeError \"create_task() got an unexpected keyword argument 'wake_at'\" and no task is created.",
+            "wake_at": "+1h"
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 973.1942769140005,
+          "error": "create_task() got an unexpected keyword argument 'wake_at'",
+          "started_at": "2026-11-20T02:07:16.197Z",
+          "finished_at": "2026-11-20T02:07:17.170Z",
+          "cached": null
+        },
+        {
+          "tool": "profile_knowledge_search",
+          "tool_call_id": "call_01_orkhach87ZVcmeHWtXcT9098",
+          "status": "done",
+          "request": {
+            "query": "tool schema keyword binding whitelist create_task arguments derive from signature",
+            "limit": 8
+          },
+          "response": "{\n  \"profiles\": [\n    \"ProjectManager\",\n    \"codx-junior\",\n    \"orchestrator\"\n  ],\n  \"query\": \"tool schema keyword binding whitelist create_task arguments derive from signature\",\n  \"count\": 0,\n  \"results\": [],\n  \"next\": \"Nothing matched. Do not invent knowledge: if the information is durable, learn it now with action='remember' (short rule) or action='write_file' (reference material).\"\n}",
+          "output": "\u2713 No profile knowledge matching `tool schema keyword binding whitelist create_task arguments derive from signature` in ProjectManager, codx-junior, orchestrator",
+          "duration_ms": 2573.39446246624,
+          "error": null,
+          "started_at": "2026-11-20T02:07:18.075Z",
+          "finished_at": "2026-11-20T02:07:20.649Z",
+          "cached": null
+        },
+        {
+          "tool": "create_task",
+          "tool_call_id": "call_00_2v8CvtqRwvsSwsbmPVlT2419",
+          "status": "error",
+          "request": {
+            "description": "Throwaway probe: checks whether the standalone create_task binding accepts the `schedule` field at all. If the call succeeds a recurring card is created and will be archived immediately.",
+            "name": "PROBE-shift44 schedule kwarg (archive after probe)",
+            "schedule": "every day at 09:00"
+          },
+          "response": null,
+          "output": null,
+          "duration_ms": 959.8120078444481,
+          "error": "create_task() got an unexpected keyword argument 'schedule'",
+          "started_at": "2026-11-20T02:07:43.373Z",
+          "finished_at": "2026-11-20T02:07:44.333Z",
+          "cached": null
+        },
+        {
+          "tool": "project_manager",
+          "tool_call_id": "call_00_wxcKJuYZvkVpRAE4nGCP3124",
+          "status": "done",
+          "request": {
+            "action": "list_tasks",
+            "query": "wake_at",
+            "limit": 10
+          },
+          "response": "{\n  \"count\": 10,\n  \"total\": 29,\n  \"tasks\": [\n    {\n      \"id\": \"4a1cf260-e79a-400b-a94b-638efe96c34f\",\n      \"name\": \"P1: TaskManager.create_task rejects wake_at \\u2014 follow-ups cannot be scheduled (same kwargs defect family as estimation_cost)\",\n      \"status\": \"doing\",\n      \"mode\": \"chat\",\n      \"board\": \"codx-junior maintenance\",\n      \"column\": \"To Do\",\n      \"sprints\": [\n        \"Run: M1 stability hardening\"\n      ],\n      \"priority\": \"high\",\n      \"due_date\": \"2026-11-19\",\n      \"wake_at\": \"2026-11-20T00:30:00+00:00\",\n      \"schedule\": null,\n      \"schedule_context\": \"history\",\n      \"progress\": 40,\n      \"assignees\": [],\n      \"profiles\": [\n        \"codx-junior\"\n      ],\n      \"tags\": [\n        \"p1\",\n        \"orchestration\",\n        \"blocking-delegation\"\n      ],\n      \"parent_id\": \"c6c33374-631b-44de-87d8-a7351acde8be\",\n      \"project_id\": \"d4e4b4a9-2281-4970-bff1-f845b4d98456\",\n      \"owner_project_id\": \"d4e4b4a9-2281-4970-bff1-f845b4d98456\",\n      \"created_at\": \"2026-11-16 19:34:45.149574\",\n      \"updated_at\": \"2026-11-20T02:08:06.488502\",\n      \"description\": \"**Found by the PM shift 2026-11-16 19:35 with a live traceback. This blocks every scheduled follow-up on the board.**\\n\\n**Evidence (verbatim, reproduced this shift):**\\nCalling the task tool with a wake/schedule argument fails before the task is written:\\n```\\nError executing tool 'create_task': create_task() got an unexpected keyword argument 'wake_at'\\n```\\nThe task was NOT created. The same call without `wake_at` succeeds, so the defect is in the keyword whitelist between the tool schema and `TaskManager.create_task`, not in the storage.\\n\\n**Why it is P1 and not cosmetic:**\\n1. `wake_at` is the alarm clock the autonomy worker reads. If it cannot be set at creation, no follow-up can be scheduled and every shift ends with a lost follow-up \\u2014 the exact failure mode the standing orders forbid.\\n2. This is the *same family* of bug that already blocked this board for days: `create_task() got an unexpected keyword argument 'estimation_cost'` killed `a9906517` (kanban column sort), `242c730f` and `183031f3`, and `9a62210c` documented it. Task `ff87e657` (\\\"Fix harbess\\\") reportedly added the kwarg plus a defensive `_supported_task_kwargs()` in `orchestration/board.py` \\u2014 that fix is evidently **incomplete**: the whitelist still rejects `wake_at`.\\n\\n**Objective:** no valid task-schema field is ever rejected by `TaskManager.create_task`, and a rejected field produces one clear error naming the field and the accepted list.\\n\\n**Steps:**\\n1. Check `ff87e657` first \\u2014 if the whitelist exists, do not rewrite it, extend it. Add a regression test that calls `create_task` with every field the tool schema exposes (at minimum `wake_at`, `due_date`, `priority`, `sprints`, `assignees`, `tags`, `progress`, `files`, `profiles`) and asserts no `TypeError`.\\n2. Read the accepted-kwargs mechanism and make the unknown-kwarg error name the offending field and the accepted list.\\n3. Prove it: run the new test, then show one real task created through the tool WITH a `wake_at` and read it back to confirm the alarm is stored.\\n\\n**Acceptance:** the reproduction above no longer fails; a test covers every schema field; one real scheduled task verified by reading it back. Report the test command and output line.\\n\\n**Not in scope:** the UI side of scheduling, and any change to what `wake_at` means.\",\n      \"message_count\": 1\n    },\n    {\n      \"id\": \"36f633cc-7337-49d9-bb9e-e097f6e2b27e\",\n      \"name\": \"Shift \\u00b7 2026-11-20 02:02\",\n      \"status\": \"doing\",\n      \"mode\": \"chat\",\n      \"board\": \"Agent: ProjectManager\",\n      \"column\": \"Working\",\n      \"sprints\": [],\n      \"priority\": \"high\",\n      \"due_date\": null,\n      \"wake_at\": null,\n      \"schedule\": null,\n      \"schedule_context\": \"history\",\n      \"progress\": 0,\n      \"assignees\": [],\n      \"profiles\": [\n        \"ProjectManager\"\n      ],\n      \"tags\": [\n        \"actor\",\n        \"shift\"\n      ],\n      \"parent_id\": nul",
+          "output": "> 10 of 29 task(s)\n\n**ID** | **Name** | **Status** | **Board/Column** | **Sprints** | **Updated**\n---|---|---|---|---|---\n`4a1cf260` | P1: TaskManager.create_task rejects wake_at \u2014 follow-ups cannot be scheduled (same kwargs defect family as estimation_cost) | doing | codx-junior maintenance/To Do | Run: M1 stability hardening | 2026-11-20T02:08:06.488502\n`36f633cc` | Shift \u00b7 2026-11-20 02:02 | doing | Agent: ProjectManager/Working | - | 2026-11-20T02:08:05.703751\n`76c29c75` | Checkpoint \u00b7 M1 evidence + stale blocker recheck | todo | Agent: ProjectManager/Working | - | 2026-11-19T18:05:04.687391\n`0c724ac3` | Board hygiene \u00b7 5 cards stuck in `doing` with no wake_at (never picked up) | todo | Agent: ProjectManager/Working | - | 2026-11-19T18:04:07.236981\n`9f843138` | Shift \u00b7 2026-11-19 02:01 | done | Agent: ProjectManager/Done | - | 2026-11-19T02:04:45.308543\n`0b6b2ed9` | Shift \u00b7 2026-11-18 18:00 | done | Agent: ProjectManager/Done | - | 2026-11-18T18:03:50.746937\n`e7a12969` | Shift \u00b7 2026-11-18 03:33 | done | Agent: ProjectManager/Done | - | 2026-11-18T03:36:35.619382\n`adee7048` | Shift 40 report \u2014 2026-11-18 03:35Z \u2014 M1 cards were asleep twice, not blocked by code | done | Agent: ProjectManager/Inbox | - | 2026-11-18T03:36:08.254503\n`02cba6f6` | Checkpoint 09:35Z \u2014 did M1a (JWT key) and M1b (kwargs test) actually produce a reply? | - | Agent: ProjectManager/Inbox | Run: M1 stability hardening | 2026-11-18T03:35:32.180046\n`f4e116f1` | Fix `project_manager update_task`: a partial update resets the fields it does not send | doing | IT team/Doing | - | 2026-11-17T17:29:34.343628",
+          "duration_ms": 2017.2565076500177,
+          "error": null,
+          "started_at": "2026-11-20T02:08:06.486Z",
+          "finished_at": "2026-11-20T02:08:08.503Z",
+          "cached": null
+        },
+        {
+          "tool": "project_manager",
+          "tool_call_id": "call_00_PCUgqokr7HNQB5NbKSBo7420",
+          "status": "done",
+          "request": {
+            "action": "update_task",
+            "chat_id": "4a1cf260-e79a-400b-a94b-638efe96c34f",
+            "priority": "medium",
+            "progress": 40,
+            "profiles": [
+              "software_developer"
+            ]
+          },
+          "response": "{\n  \"status\": \"updated\",\n  \"changed_fields\": [\n    \"priority\",\n    \"profiles\",\n    \"progress\"\n  ],\n  \"task\": {\n    \"id\": \"4a1cf260-e79a-400b-a94b-638efe96c34f\",\n    \"name\": \"P1: TaskManager.create_task rejects wake_at \\u2014 follow-ups cannot be scheduled (same kwargs defect family as estimation_cost)\",\n    \"status\": \"doing\",\n    \"mode\": \"chat\",\n    \"board\": \"codx-junior maintenance\",\n    \"column\": \"To Do\",\n    \"sprints\": [\n      \"Run: M1 stability hardening\"\n    ],\n    \"priority\": \"medium\",\n    \"due_date\": \"2026-11-19\",\n    \"wake_at\": \"2026-11-20T00:30:00+00:00\",\n    \"schedule\": null,\n    \"schedule_context\": \"history\",\n    \"progress\": 40,\n    \"assignees\": [],\n    \"profiles\": [\n      \"software_developer\"\n    ],\n    \"tags\": [\n      \"p1\",\n      \"orchestration\",\n      \"blocking-delegation\"\n    ],\n    \"parent_id\": \"c6c33374-631b-44de-87d8-a7351acde8be\",\n    \"project_id\": \"d4e4b4a9-2281-4970-bff1-f845b4d98456\",\n    \"owner_project_id\": \"d4e4b4a9-2281-4970-bff1-f845b4d98456\",\n    \"created_at\": \"2026-11-16 19:34:45.149574\",\n    \"updated_at\": \"2026-11-20T02:08:19.386662\",\n    \"description\": \"**Found by the PM shift 2026-11-16 19:35 with a live traceback. This blocks every scheduled follow-up on the board.**\\n\\n**Evidence (verbatim, reproduced this shift):**\\nCalling the task tool with a wake/schedule argument fails before the task is written:\\n```\\nError executing tool 'create_task': create_task() got an unexpected keyword argument 'wake_at'\\n```\\nThe task was NOT created. The same call without `wake_at` succeeds, so the defect is in the keyword whitelist between the tool schema and `TaskManager.create_task`, not in the storage.\\n\\n**Why it is P1 and not cosmetic:**\\n1. `wake_at` is the alarm clock the autonomy worker reads. If it cannot be set at creation, no follow-up can be scheduled and every shift ends with a lost follow-up \\u2014 the exact failure mode the standing orders forbid.\\n2. This is the *same family* of bug that already blocked this board for days: `create_task() got an unexpected keyword argument 'estimation_cost'` killed `a9906517` (kanban column sort), `242c730f` and `183031f3`, and `9a62210c` documented it. Task `ff87e657` (\\\"Fix harbess\\\") reportedly added the kwarg plus a defensive `_supported_task_kwargs()` in `orchestration/board.py` \\u2014 that fix is evidently **incomplete**: the whitelist still rejects `wake_at`.\\n\\n**Objective:** no valid task-schema field is ever rejected by `TaskManager.create_task`, and a rejected field produces one clear error naming the field and the accepted list.\\n\\n**Steps:**\\n1. Check `ff87e657` first \\u2014 if the whitelist exists, do not rewrite it, extend it. Add a regression test that calls `create_task` with every field the tool schema exposes (at minimum `wake_at`, `due_date`, `priority`, `sprints`, `assignees`, `tags`, `progress`, `files`, `profiles`) and asserts no `TypeError`.\\n2. Read the accepted-kwargs mechanism and make the unknown-kwarg error name the offending field and the accepted list.\\n3. Prove it: run the new test, then show one real task created through the tool WITH a `wake_at` and read it back to confirm the alarm is stored.\\n\\n**Acceptance:** the reproduction above no longer fails; a test covers every schema field; one real scheduled task verified by reading it back. Report the test command and output line.\\n\\n**Not in scope:** the UI side of scheduling, and any change to what `wake_at` means.\",\n    \"message_count\": 17\n  }\n}",
+          "output": "### Task `P1: TaskManager.create_task rejects wake_at \u2014 follow-ups cannot be scheduled (same kwargs defect family as estimation_cost)`\n- ID: `4a1cf260-e79a-400b-a94b-638efe96c34f`\n- Status: `doing` | Mode: `chat`\n- Board: `codx-junior maintenance` | Column: `To Do`\n- Sprints: `Run: M1 stability hardening`\n- Priority: `medium` | Progress: 40% | Due: `2026-11-19` | Wake: `2026-11-20T00:30:00+00:00`\n- Assignees: none\n- Updated: 2026-11-20T02:08:19.386662\n- Description: **Found by the PM shift 2026-11-16 19:35 with a live traceback. This blocks every scheduled follow-up on the board.**\n\n**Evidence (verbatim, reproduced this shift):**\nCalling the task tool with a wake/schedule argument fails before the task is written:\n```\nError executing tool 'create_task': create_task() got an unexpected keyword argument 'wake_at'\n```\nThe task was NOT created. The same call without `wake_at` succeeds, so the defect is in the keyword whitelist between the tool schema and `TaskManager.create_task`, not in the storage.\n\n**Why it is P1 and not cosmetic:**\n1. `wake_at` is the alarm clock the autonomy worker reads. If it cannot be set at creation, no follow-up can be scheduled and every shift ends with a lost follow-up \u2014 the exact failure mode the standing orders forbid.\n2. This is the *same family* of bug that already blocked this board for days: `create_task() got an unexpected keyword argument 'estimation_cost'` killed `a9906517` (kanban column sort), `242c730f` and `183031f3`, and `9a62210c` documented it. Task `ff87e657` (\"Fix harbess\") reportedly added the kwarg plus a defensive `_supported_task_kwargs()` in `orchestration/board.py` \u2014 that fix is evidently **incomplete**: the whitelist still rejects `wake_at`.\n\n**Objective:** no valid task-schema field is ever rejected by `TaskManager.create_task`, and a rejected field produces one clear error naming the field and the accepted list.\n\n**Steps:**\n1. Check `ff87e657` first \u2014 if the whitelist exists, do not rewrite it, extend it. Add a regression test that calls `create_task` with every field the tool schema exposes (at minimum `wake_at`, `due_date`, `priority`, `sprints`, `assignees`, `tags`, `progress`, `files`, `profiles`) and asserts no `TypeError`.\n2. Read the accepted-kwargs mechanism and make the unknown-kwarg error name the offending field and the accepted list.\n3. Prove it: run the new test, then show one real task created through the tool WITH a `wake_at` and read it back to confirm the alarm is stored.\n\n**Acceptance:** the reproduction above no longer fails; a test covers every schema field; one real scheduled task verified by reading it back. Report the test command and output line.\n\n**Not in scope:** the UI side of scheduling, and any change to what `wake_at` means.\n\n- Changed fields: priority, profiles, progress",
+          "duration_ms": 1833.153571933508,
+          "error": null,
+          "started_at": "2026-11-20T02:08:18.549Z",
+          "finished_at": "2026-11-20T02:08:20.382Z",
+          "cached": null
+        },
+        {
+          "tool": "project_manager",
+          "tool_call_id": "call_00_XEMAERGBvLaG9qIVctga2744",
+          "status": "done",
+          "request": {
+            "action": "request_help",
+            "chat_id": "4a1cf260-e79a-400b-a94b-638efe96c34f",
+            "comment": "**Shift #44 (2026-11-20 02:05Z) \u2014 defect confirmed, scope WIDENED, no patch produced (no code-editing tools in this session).**\n\nTwo live probes this shift, both through the standalone tool:\n\n```\ncreate_task(name=\u2026, wake_at=\"+1h\")            \u2192 create_task() got an unexpected keyword argument 'wake_at'\ncreate_task(name=\u2026, schedule=\"every day at 09:00\") \u2192 create_task() got an unexpected keyword argument 'schedule'\n```\n\nNo task was written in either case. So the gap is **not one field**: the entire scheduling group is missing from the standalone binding.\n\nRuled out (do not re-investigate):\n- `TaskManager` / storage \u2014 `project_manager create_task(wake_at=\"+2d\")` persists `wake_at=2026-11-21T18:03:23Z` on `0c724ac3` (shift #43), and `update_task(wake_at=\u2026)` works.\n- The autonomy worker / what `wake_at` means.\n- The tool *schema* is not the limit \u2014 the argument is forwarded all the way to Python and only then rejected, so the fix is the Python binding/proxy signature, not the JSON schema.\n\nWhere to look: the same module that holds the task tools' write actions \u2014 `orchestration/project_manager_tools.py` is already known from the write-corruption card (`_append_comment` there does a full-card write). `_supported_task_kwargs()` in `orchestration/board.py` (added by `ff87e657`, extended since by `estimation_cost`) is the second site.\n\nFix direction (per work order, not a hot-patch): make the standalone `create_task` proxy accept `**kwargs`, validate against the set derived from `TaskSchema.model_fields` (pydantic) instead of a hand-maintained list, and raise one explicit error naming the offending field plus the accepted list. That kills the whole family (`estimation_cost`, `wake_at`, `schedule`, and the next field nobody remembers).\n\nRegression test owed: parametrised over `TaskSchema.model_fields` keys, asserting no `TypeError` for each, plus one real `create_task(..., wake_at=\"+1h\")` read back with the alarm stored.\n\nBlocker to record: this session had no `project_read_file` / `apply_file_changes` / `docker_exec` / `qa_run_tests` tools, so the patch and its test could not be written. Needs a session with the file/QA tools (or a human developer) to land the change. Do not mark done.",
+            "role": "assistant"
+          },
+          "response": "{\n  \"status\": \"comment_added\",\n  \"task_id\": \"4a1cf260-e79a-400b-a94b-638efe96c34f\",\n  \"message_id\": null,\n  \"processed\": false\n}",
+          "output": "\ud83d\udcdd Comment added to task **P1: TaskManager.create_task rejects wake_at \u2014 follow-ups cannot be scheduled (same kwargs defect family as estimation_cost)**.\n- ID: `4a1cf260-e79a-400b-a94b-638efe96c34f`\n- No processing was triggered: the request waits for a user.",
+          "duration_ms": 1895.2713254839182,
+          "error": null,
+          "started_at": "2026-11-20T02:08:28.663Z",
+          "finished_at": "2026-11-20T02:08:30.558Z",
+          "cached": null
+        }
+      ],
+      "lifecycle_events": [
+        {
+          "status": "error",
+          "run_id": "16b1d4785f49",
+          "duration_ms": null,
+          "error": "The turn ended without completing",
+          "started_at": "2026-11-20T02:05:53.419Z",
+          "finished_at": "2026-11-20T02:08:32.740733+00:00"
+        }
+      ],
+      "phase_events": [
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 3 messages",
+          "started_at": "2026-11-20T02:05:56.202Z",
+          "finished_at": "2026-11-20T02:06:14.653Z",
+          "duration_ms": 18451.861143112183,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 3
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 18.5s",
+          "started_at": "2026-11-20T02:06:14.653Z",
+          "finished_at": "2026-11-20T02:07:17.170Z",
+          "duration_ms": 62517.36783981323,
+          "meta": {
+            "ttft_ms": 18452,
+            "prompt_tokens": 34219,
+            "completion_tokens": 1819,
+            "total_tokens": 36038
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 6 messages",
+          "started_at": "2026-11-20T02:07:22.072Z",
+          "finished_at": "2026-11-20T02:07:30.873Z",
+          "duration_ms": 8801.649332046509,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 6
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 8.8s",
+          "started_at": "2026-11-20T02:07:30.873Z",
+          "finished_at": "2026-11-20T02:07:44.334Z",
+          "duration_ms": 13461.026430130005,
+          "meta": {
+            "ttft_ms": 8802,
+            "prompt_tokens": 36180,
+            "completion_tokens": 1016,
+            "total_tokens": 37196
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 8 messages",
+          "started_at": "2026-11-20T02:07:45.070Z",
+          "finished_at": "2026-11-20T02:07:46.765Z",
+          "duration_ms": 1695.7881450653076,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 8
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.7s",
+          "started_at": "2026-11-20T02:07:46.765Z",
+          "finished_at": "2026-11-20T02:08:08.503Z",
+          "duration_ms": 21738.876819610596,
+          "meta": {
+            "ttft_ms": 1696,
+            "prompt_tokens": 37227,
+            "completion_tokens": 651,
+            "total_tokens": 37878
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 10 messages",
+          "started_at": "2026-11-20T02:08:08.856Z",
+          "finished_at": "2026-11-20T02:08:10.165Z",
+          "duration_ms": 1309.7209930419922,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 10
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.3s",
+          "started_at": "2026-11-20T02:08:10.165Z",
+          "finished_at": "2026-11-20T02:08:20.382Z",
+          "duration_ms": 10217.643737792969,
+          "meta": {
+            "ttft_ms": 1310,
+            "prompt_tokens": 39400,
+            "completion_tokens": 721,
+            "total_tokens": 40121
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 12 messages",
+          "started_at": "2026-11-20T02:08:21.016Z",
+          "finished_at": "2026-11-20T02:08:22.230Z",
+          "duration_ms": 1214.0979766845703,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 12
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.2s",
+          "started_at": "2026-11-20T02:08:22.229Z",
+          "finished_at": "2026-11-20T02:08:30.558Z",
+          "duration_ms": 8329.82325553894,
+          "meta": {
+            "ttft_ms": 1213,
+            "prompt_tokens": 41143,
+            "completion_tokens": 725,
+            "total_tokens": 41868
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "error",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 14 messages \u00b7 interrupted",
+          "started_at": "2026-11-20T02:08:31.126Z",
+          "finished_at": "2026-11-20T02:08:32.740733+00:00",
+          "duration_ms": null,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 14
+          }
+        },
+        {
+          "kind": "interrupted",
+          "status": "error",
+          "label": "Application stopped",
+          "detail": "The turn ended without completing",
+          "started_at": "2026-11-20T02:08:32.740733+00:00",
+          "finished_at": "2026-11-20T02:08:32.740733+00:00",
+          "duration_ms": null,
+          "meta": {
+            "reason": "The turn ended without completing"
+          }
+        }
+      ],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "biblio",
+        "file_editor",
+        "git",
+        "project",
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": "The turn ended without completing",
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "de264340-8617-40d4-a337-bd7539919e59",
+      "role": "assistant",
+      "task_item": "",
+      "content": "**Shift #44 (2026-11-20 02:05Z) \u2014 defect confirmed, scope WIDENED, no patch produced (no code-editing tools in this session).**\n\nTwo live probes this shift, both through the standalone tool:\n\n```\ncreate_task(name=\u2026, wake_at=\"+1h\")            \u2192 create_task() got an unexpected keyword argument 'wake_at'\ncreate_task(name=\u2026, schedule=\"every day at 09:00\") \u2192 create_task() got an unexpected keyword argument 'schedule'\n```\n\nNo task was written in either case. So the gap is **not one field**: the entire scheduling group is missing from the standalone binding.\n\nRuled out (do not re-investigate):\n- `TaskManager` / storage \u2014 `project_manager create_task(wake_at=\"+2d\")` persists `wake_at=2026-11-21T18:03:23Z` on `0c724ac3` (shift #43), and `update_task(wake_at=\u2026)` works.\n- The autonomy worker / what `wake_at` means.\n- The tool *schema* is not the limit \u2014 the argument is forwarded all the way to Python and only then rejected, so the fix is the Python binding/proxy signature, not the JSON schema.\n\nWhere to look: the same module that holds the task tools' write actions \u2014 `orchestration/project_manager_tools.py` is already known from the write-corruption card (`_append_comment` there does a full-card write). `_supported_task_kwargs()` in `orchestration/board.py` (added by `ff87e657`, extended since by `estimation_cost`) is the second site.\n\nFix direction (per work order, not a hot-patch): make the standalone `create_task` proxy accept `**kwargs`, validate against the set derived from `TaskSchema.model_fields` (pydantic) instead of a hand-maintained list, and raise one explicit error naming the offending field plus the accepted list. That kills the whole family (`estimation_cost`, `wake_at`, `schedule`, and the next field nobody remembers).\n\nRegression test owed: parametrised over `TaskSchema.model_fields` keys, asserting no `TypeError` for each, plus one real `create_task(..., wake_at=\"+1h\")` read back with the alarm stored.\n\nBlocker to record: this session had no `project_read_file` / `apply_file_changes` / `docker_exec` / `qa_run_tests` tools, so the patch and its test could not be written. Needs a session with the file/QA tools (or a human developer) to land the change. Do not mark done.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-20 02:08:29.813109",
+      "updated_at": "2026-11-20 02:08:29.813137",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
     }
   ],
   "created_at": "2026-11-16 19:34:45.149574",
-  "updated_at": "2026-11-19T02:03:58.677368",
+  "updated_at": "2026-11-20T02:08:32.997467",
   "mode": "chat",
   "kanban_id": "",
   "column_id": "",
@@ -664,7 +1202,7 @@
   "due_date": "2026-11-19",
   "progress": 40,
   "assignees": [],
-  "wake_at": "2026-11-20T02:02:18.500382+00:00",
+  "wake_at": "2026-11-20T00:30:00+00:00",
   "schedule": null,
   "schedule_context": "history",
   "schedule_column": null,

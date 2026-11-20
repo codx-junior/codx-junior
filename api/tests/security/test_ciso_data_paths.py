@@ -29,7 +29,7 @@ from codx.junior.security.ciso.scanner import (
 )
 
 DATA_PATH = "api/.codx/tasks/Agent: ciso/Done/shift.json"
-CODE_PATH = "api/codx/junior/security/ciso/gate.py"
+CODE_PATH = "api/codx/junior/app.py"
 DOC_PATH = "docs/features/ciso.md"
 
 

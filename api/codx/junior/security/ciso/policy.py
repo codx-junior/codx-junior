@@ -299,12 +299,20 @@ def evaluate(
     ranking = severity_rank(severity)
     strict = domain in policy.strict_domains
     has_secret = any(f.category == SecurityCategory.SECRET for f in findings)
-    # A finding that blocks in ANY domain: the severity the policy declares as
-    # blocking, for a category that is not a secret (secrets have their own
-    # treatment, because they can be neutralised instead of refused).
+    # A finding that blocks in ANY domain: either a severity the policy always
+    # blocks, or a category it declares blocking once the finding reaches
+    # ``block_above``. ``block_categories`` used to be documented but never
+    # evaluated, so a HIGH malicious finding outside a strict domain only asked
+    # for approval. Secrets have their own treatment (redact instead of refuse).
     hard_non_secret = any(
-        f.severity in policy.block_severities
-        and f.category != SecurityCategory.SECRET
+        f.category != SecurityCategory.SECRET
+        and (
+            f.severity in policy.block_severities
+            or (
+                f.category in (policy.block_categories or [])
+                and severity_rank(f.severity) >= severity_rank(policy.block_above)
+            )
+        )
         for f in findings
     )
     # 1. Strict domains (commit, file write, command, container, deploy) block

@@ -1,22 +1,22 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { API } from '@/api/api'
 import { $storex } from '@/store'
 
 import CompanyHome from '@/components/company/CompanyHome.vue'
 import CompanyWork from '@/components/company/CompanyWork.vue'
-import CompanyTeams from '@/components/company/CompanyTeams.vue'
-import CompanyPeople from '@/components/company/CompanyPeople.vue'
+import CompanyTeam from '@/components/company/CompanyTeam.vue'
 import CompanyBusiness from '@/components/company/CompanyBusiness.vue'
 import CompanyActivity from '@/components/company/CompanyActivity.vue'
 import CompanySecurity from '@/components/company/CompanySecurity.vue'
 import CompanySettings from '@/components/company/CompanySettings.vue'
 import CompanyAssistant from '@/components/company/CompanyAssistant.vue'
+import CompanyWorkplace from '@/components/company/CompanyWorkplace.vue'
 import CompanyChatPanel from '@/components/company/CompanyChatPanel.vue'
 import CompanyGoalDialog from '@/components/company/CompanyGoalDialog.vue'
 import GenerateTeamDialog from '@/components/teams/GenerateTeamDialog.vue'
-import { COMPANY_TEMPLATES } from '@/components/company/companyMeta'
+import { useCompanyI18n, setCompanyLanguage } from '@/components/company/i18n'
 import '@/assets/company.css'
 
 /**
@@ -45,17 +45,17 @@ const busy = ref(false)
 const companies = ref([])
 const activeId = ref('')
 const snapshot = ref(null)
-const references = ref({ projects: [], users: [], profiles: [], templates: [] })
 const companyActors = ref({ actors: [], counts: {} })
+const companyChats = ref([])
 const section = ref('home')
 const navOpen = ref(false)
 const exitOpen = ref(false)
+const userMenuOpen = ref(false)
 const askText = ref('')
 
-const createOpen = ref(false)
-const createAdvanced = ref(false)
 const chatsOpen = ref(false)
 const chatTeamId = ref('')
+const chatInitialId = ref('')
 const generateOpen = ref(false)
 const goalOpen = ref(false)
 const goalTeamId = ref('')
@@ -79,6 +79,7 @@ function initialTheme() {
 
 const companyTheme = ref(initialTheme())
 const isDarkTheme = computed(() => companyTheme.value === 'dark')
+const { t, locale, languages, setLanguage } = useCompanyI18n()
 const sidebarCollapsed = ref(false)
 try { sidebarCollapsed.value = localStorage.getItem(SIDEBAR_KEY) === '1' } catch { /* noop */ }
 
@@ -98,14 +99,6 @@ const userLabel = computed(() => currentUser.value?.name || currentUser.value?.u
 const userInitials = computed(() => initials(userLabel.value))
 const userAvatar = computed(() => currentUser.value?.avatar || '')
 
-const createForm = reactive({
-  name: '',
-  description: '',
-  mission: '',
-  template: 'blank',
-  project_ids: []
-})
-
 const company = computed(() => snapshot.value?.company || null)
 const counts = computed(() => snapshot.value?.counts || {})
 const attention = computed(() => snapshot.value?.attention || [])
@@ -114,20 +107,28 @@ const activeActors = computed(() => (companyActors.value.actors || []).filter(ac
 const aiCount = computed(() => counts.value.ai || 0)
 
 const SECTIONS = [
-  { id: 'home', label: 'Overview', icon: 'fa-solid fa-border-all', hint: 'The state of the company' },
-  { id: 'work', label: 'Goals & work', icon: 'fa-solid fa-flag', hint: 'Goals, delivery, review' },
-  { id: 'teams', label: 'Teams', icon: 'fa-solid fa-people-group', hint: 'Independent units' },
-  { id: 'people', label: 'People', icon: 'fa-solid fa-user-group', hint: 'Humans & AI' },
-  { id: 'business', label: 'Business', icon: 'fa-solid fa-chart-line', hint: 'Revenue, margin, pipeline' },
-  { id: 'activity', label: 'Activity', icon: 'fa-solid fa-wave-square', hint: 'What happened' },
-  { id: 'security', label: 'Security', icon: 'fa-solid fa-shield-halved', hint: 'CISO posture' },
-  { id: 'settings', label: 'Settings', icon: 'fa-solid fa-sliders', hint: 'Company & controls' }
+  { id: 'home', labelKey: 'nav.overview', icon: 'fa-solid fa-border-all', hintKey: 'The state of the company' },
+  { id: 'work', labelKey: 'nav.work', icon: 'fa-solid fa-flag', hintKey: 'Goals, delivery, review' },
+  { id: 'team', labelKey: 'nav.team', icon: 'fa-solid fa-people-group', hintKey: 'Teams and people' },
+  { id: 'business', labelKey: 'nav.business', icon: 'fa-solid fa-chart-line', hintKey: 'Revenue, margin, pipeline' },
+  { id: 'activity', labelKey: 'nav.activity', icon: 'fa-solid fa-wave-square', hintKey: 'What happened' },
+  { id: 'security', labelKey: 'nav.security', icon: 'fa-solid fa-shield-halved', hintKey: 'CISO posture' },
+  { id: 'settings', labelKey: 'nav.settings', icon: 'fa-solid fa-sliders', hintKey: 'Company & controls' },
+  { id: 'meet', labelKey: 'nav.meet', icon: 'fa-solid fa-video', hintKey: 'Meet', workplace: true },
+  { id: 'coworking', labelKey: 'nav.coworking', icon: 'fa-regular fa-window-maximize', hintKey: 'CoWorking', workplace: true },
+  { id: 'calendar', labelKey: 'nav.calendar', icon: 'fa-regular fa-calendar-days', hintKey: 'Calendar', workplace: true }
 ]
 
 const NAV_GROUPS = [
-  { id: 'workspace', label: 'Workspace', ids: ['home', 'work', 'teams', 'people'] },
-  { id: 'business', label: 'Business', ids: ['business', 'activity'] },
-  { id: 'governance', label: 'Governance', ids: ['security', 'settings'] }
+  { id: 'workspace', labelKey: 'group.workspace', ids: ['home', 'work', 'team'] },
+  { id: 'business', labelKey: 'group.business', ids: ['business', 'activity'] },
+  { id: 'governance', labelKey: 'group.governance', ids: ['security', 'settings'] }
+]
+
+const WORKPLACE_LINKS = [
+  { id: 'meet', labelKey: 'nav.meet', icon: 'fa-solid fa-video' },
+  { id: 'coworking', labelKey: 'nav.coworking', icon: 'fa-regular fa-window-maximize' },
+  { id: 'calendar', labelKey: 'nav.calendar', icon: 'fa-regular fa-calendar-days' }
 ]
 
 const activeSection = computed(() => SECTIONS.find(item => item.id === section.value) || SECTIONS[0])
@@ -143,9 +144,9 @@ const ownerMember = computed(() => (snapshot.value?.members || []).find(member =
 const ownerLabel = computed(() => ownerMember.value?.title || company.value?.owner || 'Owner')
 const ownerAvatar = computed(() => ownerMember.value?.avatar || userAvatar.value)
 const roleLabel = computed(() => {
-  if (canAdmin.value) return 'Owner'
-  if (myCompanyRole.value === 'manager') return 'Manager'
-  return 'Member'
+  if (canAdmin.value) return t('shell.owner')
+  if (myCompanyRole.value === 'manager') return t('shell.manager')
+  return t('shell.member')
 })
 const workingProject = computed(() => $storex.projects.activeProject || null)
 const companyInitials = computed(() => initials(company.value?.name || 'Company'))
@@ -163,20 +164,41 @@ function hideBrokenImage(event) {
   if (event?.target) event.target.style.display = 'none'
 }
 
-const navItems = computed(() => SECTIONS.map(item => ({
+const navItems = computed(() => SECTIONS.filter(item => !item.workplace).map(item => ({
   ...item,
+  label: t(item.labelKey),
+  hint: item.hintKey,
   badge: item.id === 'work'
     ? attention.value.length
-    : item.id === 'teams'
+    : item.id === 'team'
       ? counts.value.teams || 0
-      : item.id === 'people'
-        ? (counts.value.human || counts.value.humans || 0) + aiCount.value
-        : ''
+      : ''
 })))
 
 const navGroups = computed(() => NAV_GROUPS
-  .map(group => ({ ...group, items: navItems.value.filter(item => group.ids.includes(item.id)) }))
+  .map(group => ({
+    ...group,
+    label: t(group.labelKey),
+    items: navItems.value.filter(item => group.ids.includes(item.id))
+  }))
   .filter(group => group.items.length))
+
+const workplaceLinks = computed(() => WORKPLACE_LINKS.map(item => ({
+  ...item,
+  label: t(item.labelKey)
+})))
+
+const recentChats = computed(() => [...companyChats.value]
+  .sort((a, b) => String(chatUpdatedAt(b)).localeCompare(String(chatUpdatedAt(a))))
+  .slice(0, 3))
+
+function chatUpdatedAt(chat) {
+  return chat.chat?.updated_at || chat.updated_at || ''
+}
+
+function chatName(chat) {
+  return chat.name || chat.chat?.name || chat.chat_id
+}
 
 function notify(text, type = 'info') {
   try { $storex.ui.addNotification({ text, type }) } catch { /* best effort */ }
@@ -207,14 +229,6 @@ async function loadCompanies() {
   await selectCompany(candidate.id, { skipList: true })
 }
 
-async function loadReferences() {
-  try {
-    references.value = await api.references()
-  } catch (error) {
-    notifyError(error)
-  }
-}
-
 async function loadCompanyActors(companyId) {
   if (!companyId) {
     companyActors.value = { actors: [], counts: {} }
@@ -233,6 +247,7 @@ async function refreshSnapshot() {
   try {
     snapshot.value = await api.snapshot(activeId.value)
     await loadCompanyActors(activeId.value)
+    await loadCompanyChats()
   } catch (error) {
     notifyError(error)
   }
@@ -247,6 +262,7 @@ async function selectCompany(companyId, { skipList = false } = {}) {
     if (!skipList) companies.value = await api.list()
     snapshot.value = await api.snapshot(companyId)
     await loadCompanyActors(companyId)
+    await loadCompanyChats()
   } catch (error) {
     notifyError(error)
   } finally {
@@ -279,9 +295,82 @@ function sendAsk() {
   askAssistant(text)
 }
 
-function openChat(teamId = '') {
+async function loadCompanyChats() {
+  if (!activeId.value) {
+    companyChats.value = []
+    return
+  }
+  try {
+    companyChats.value = await api.listChats(activeId.value)
+  } catch {
+    companyChats.value = []
+  }
+}
+
+function openChat(teamId = '', chatId = '') {
   chatTeamId.value = teamId || ''
+  chatInitialId.value = chatId || ''
   chatsOpen.value = true
+}
+
+function openChatChannel(chat) {
+  openChat(chat.team_id || '', chat.chat_id || '')
+}
+
+async function onChatsChanged() {
+  await loadCompanyChats()
+  await refreshSnapshot()
+}
+
+function openActivityChat(event) {
+  const data = event?.data || {}
+  openChat(data.team_id || '', data.chat_id || data.chatId || '')
+}
+
+function openWorkplace(kind) {
+  setSection(kind)
+  navOpen.value = false
+}
+
+async function openNewTask() {
+  const linked = (snapshot.value?.projects || []).find(project => project.available)
+  let project = $storex.projects.activeProject
+  if (!project && linked) {
+    project = ($storex.projects.allProjects || []).find(item => item.project_id === linked.project_id)
+  }
+  if (!project) {
+    notify('Link a project to the company before creating a task.', 'error')
+    return
+  }
+  if ($storex.projects.activeProject?.project_id !== project.project_id) {
+    try {
+      await $storex.projects.activeProjectChanged(project)
+    } catch {
+      // The global task dialog can still open with the project metadata.
+    }
+  }
+  $storex.ui.showNewTask(true)
+}
+
+async function changeLanguage(code) {
+  const next = setLanguage(code)
+  userMenuOpen.value = false
+  try {
+    await $storex.users.saveUser({ ...$storex.api.user, language: next })
+  } catch {
+    // Keep the local company language even if the profile cannot be saved.
+  }
+}
+
+function openUserSettings() {
+  userMenuOpen.value = false
+  navOpen.value = false
+  setSection('settings')
+}
+
+async function logoutCompany() {
+  userMenuOpen.value = false
+  await $storex.users.logout()
 }
 
 function openGoal(teamId = '', mission = null) {
@@ -302,58 +391,11 @@ function onWorkFocus(id) {
 
 function onTeamFocus(id) {
   teamFocusId.value = id || ''
-  setSection('teams')
+  setSection('team')
 }
 
 function openAssistantFor(prompt) {
   askAssistant(prompt)
-}
-
-// ── Company onboarding ─────────────────────────────────────────────────────
-
-function openCreate() {
-  Object.assign(createForm, {
-    name: '',
-    description: '',
-    mission: '',
-    template: 'blank',
-    project_ids: []
-  })
-  createAdvanced.value = false
-  createOpen.value = true
-}
-
-function toggleCreateProject(projectId) {
-  const index = createForm.project_ids.indexOf(projectId)
-  if (index === -1) createForm.project_ids.push(projectId)
-  else createForm.project_ids.splice(index, 1)
-}
-
-async function submitCreate() {
-  if (!createForm.name.trim()) {
-    notify('Please give the company a name', 'error')
-    return
-  }
-  busy.value = true
-  try {
-    const created = await api.create({
-      name: createForm.name.trim(),
-      description: createForm.description,
-      mission: createForm.mission,
-      template: createForm.template,
-      project_ids: createForm.project_ids
-    })
-    createOpen.value = false
-    companies.value = await api.list()
-    await selectCompany(created.id, { skipList: true })
-    setSection('home')
-    notify(`Company "${created.name}" created ✓`, 'success')
-    nextTick(() => askAssistant('What should we do first to get this company moving?'))
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    busy.value = false
-  }
 }
 
 async function onCompanyDeleted() {
@@ -385,8 +427,9 @@ async function leaveCompany(mode) {
 onMounted(async () => {
   loading.value = true
   try {
-    await loadReferences()
     await loadCompanies()
+    const preferredLanguage = $storex.api.user?.language
+    if (preferredLanguage && preferredLanguage !== 'auto') setCompanyLanguage(preferredLanguage)
   } catch (error) {
     notifyError(error)
   } finally {
@@ -406,14 +449,18 @@ onMounted(async () => {
 
 function legacySection(value) {
   const map = {
-    teams: 'teams',
-    people: 'people',
-    organization: 'teams',
+    teams: 'team',
+    people: 'team',
+    organization: 'team',
     projects: 'home',
     activity: 'activity',
     missions: 'work',
     overview: 'home',
     work: 'work',
+    team: 'team',
+    meet: 'meet',
+    coworking: 'coworking',
+    calendar: 'calendar',
     business: 'business',
     settings: 'settings',
     home: 'home'
@@ -456,15 +503,6 @@ watch(() => route.query.assistant, value => {
             <p class="truncate text-[13px] font-extrabold leading-tight tracking-tight">{{ company?.name || 'Your company' }}</p>
             <p class="mt-0.5 truncate text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">AI company OS</p>
           </div>
-          <button
-            v-if="!sidebarCollapsed"
-            class="cp-icon-btn !h-7 !w-7"
-            title="New company"
-            aria-label="New company"
-            @click="openCreate"
-          >
-            <i class="fa-solid fa-plus text-[10px]"></i>
-          </button>
         </div>
 
         <div v-if="companies.length > 1 && !sidebarCollapsed" class="px-3 pb-1.5">
@@ -514,6 +552,54 @@ watch(() => route.query.assistant, value => {
               </span>
             </button>
           </template>
+
+          <p
+            v-if="!sidebarCollapsed"
+            class="px-2 pb-1.5 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]"
+          >{{ t('group.workplace') }}</p>
+          <div v-else class="mx-2 my-2 border-t border-[var(--cp-border)]"></div>
+          <button
+            v-for="link in workplaceLinks"
+            :key="link.id"
+            type="button"
+            class="cp-nav-item mb-0.5"
+            :class="[section === link.id ? 'is-active' : '', sidebarCollapsed ? 'justify-center' : '']"
+            :title="link.label"
+            @click="openWorkplace(link.id)"
+          >
+            <span class="cp-nav-icon"><i :class="link.icon" class="text-[11px]"></i></span>
+            <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate">{{ link.label }}</span>
+          </button>
+
+          <template v-if="recentChats.length">
+            <p
+              v-if="!sidebarCollapsed"
+              class="px-2 pb-1.5 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]"
+            >{{ t('group.channels') }}</p>
+            <div v-else class="mx-2 my-2 border-t border-[var(--cp-border)]"></div>
+            <button
+              v-for="chat in recentChats"
+              :key="chat.chat_id"
+              type="button"
+              class="cp-nav-item mb-0.5"
+              :class="sidebarCollapsed ? 'justify-center' : ''"
+              :title="chatName(chat)"
+              @click="openChatChannel(chat)"
+            >
+              <span class="cp-nav-icon"><i class="fa-solid fa-hashtag text-[10px]"></i></span>
+              <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate">{{ chatName(chat) }}</span>
+            </button>
+            <button
+              type="button"
+              class="cp-nav-item mb-0.5"
+              :class="sidebarCollapsed ? 'justify-center' : ''"
+              :title="t('nav.allChannels')"
+              @click="openChat()"
+            >
+              <span class="cp-nav-icon"><i class="fa-solid fa-ellipsis text-[10px]"></i></span>
+              <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate text-[10px]">{{ t('nav.allChannels') }}</span>
+            </button>
+          </template>
         </nav>
 
         <div class="mt-auto space-y-2 px-2.5 pb-3 pt-2">
@@ -546,23 +632,12 @@ watch(() => route.query.assistant, value => {
             type="button"
             class="cp-nav-item !py-1.5"
             :class="sidebarCollapsed ? 'justify-center' : ''"
-            :title="sidebarCollapsed ? 'Exit company' : 'Exit company'"
+            :title="t('shell.exitCompany')"
             @click="exitOpen = true"
           >
             <i class="fa-solid fa-arrow-right-from-bracket w-4 text-center text-[10px]"></i>
-            <span v-if="!sidebarCollapsed" class="text-[10px]">Exit company</span>
+            <span v-if="!sidebarCollapsed" class="text-[10px]">{{ t('shell.exitCompany') }}</span>
           </button>
-
-          <div class="flex items-center gap-2 rounded-xl px-1 py-1">
-            <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)]">
-              <span class="absolute inset-0 grid place-items-center text-[9px] font-extrabold text-[var(--cp-accent-ink)]">{{ initials(ownerLabel) }}</span>
-              <img v-if="ownerAvatar" :src="ownerAvatar" :alt="ownerLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
-            </span>
-            <div v-if="!sidebarCollapsed" class="min-w-0 flex-1">
-              <p class="truncate text-[10.5px] font-bold leading-tight">{{ ownerLabel }}</p>
-              <p class="mt-0.5 text-[8.5px] text-[var(--cp-muted-soft)]">{{ roleLabel }} · full control</p>
-            </div>
-          </div>
 
           <button
             type="button"
@@ -618,22 +693,50 @@ watch(() => route.query.assistant, value => {
                 <span v-if="item.badge" class="cp-nav-badge">{{ item.badge }}</span>
               </button>
             </template>
+            <p class="px-2 pb-1 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">{{ t('group.workplace') }}</p>
+            <div class="grid grid-cols-3 gap-1 px-1">
+              <button v-for="link in workplaceLinks" :key="link.id" type="button" class="cp-chip !h-8 justify-center !px-1 !text-[8.5px]" :class="section === link.id ? '!border-transparent !bg-[var(--cp-lime)] !text-[var(--cp-lime-ink)]' : ''" @click="openWorkplace(link.id); navOpen = false">
+                <i :class="link.icon" class="text-[8px]"></i>
+                <span class="truncate">{{ link.label }}</span>
+              </button>
+            </div>
+            <template v-if="recentChats.length">
+              <p class="px-2 pb-1 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">{{ t('group.channels') }}</p>
+              <button v-for="chat in recentChats" :key="chat.chat_id" type="button" class="cp-nav-item mb-0.5" @click="openChatChannel(chat); navOpen = false">
+                <span class="cp-nav-icon"><i class="fa-solid fa-hashtag text-[10px]"></i></span>
+                <span class="flex-1 truncate text-[12px]">{{ chatName(chat) }}</span>
+              </button>
+            </template>
           </nav>
           <div class="mt-2 space-y-1 border-t border-[var(--cp-border)] pt-3">
-            <button type="button" class="cp-nav-item" @click="toggleCompanyTheme">
-              <span class="cp-nav-icon"><i :class="isDarkTheme ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-[11px]"></i></span>
-              <span class="flex-1 text-[12px]">{{ isDarkTheme ? 'Light mode' : 'Dark mode' }}</span>
-            </button>
+            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2">
+              <div class="flex items-center gap-2">
+                <span class="relative grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)]">
+                  <span class="absolute inset-0 grid place-items-center text-[8px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
+                  <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
+                </span>
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-[10.5px] font-bold">{{ userLabel }}</p>
+                  <p class="truncate text-[8px] cp-muted-soft">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
+                </div>
+                <button class="cp-icon-btn !h-7 !w-7" :aria-label="isDarkTheme ? 'Light mode' : 'Dark mode'" @click="toggleCompanyTheme">
+                  <i :class="isDarkTheme ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-[10px]"></i>
+                </button>
+              </div>
+              <label class="cp-field mt-2">
+                <span>{{ t('shell.language') }}</span>
+                <select class="cp-select" :value="locale" @change="changeLanguage($event.target.value)">
+                  <option v-for="language in languages" :key="language.code" :value="language.code">{{ language.label }}</option>
+                </select>
+              </label>
+              <div class="mt-1.5 flex gap-1.5">
+                <button class="cp-chip flex-1 justify-center !h-7 !text-[8.5px]" @click="openUserSettings">{{ t('shell.settings') }}</button>
+                <button class="cp-chip flex-1 justify-center !h-7 !text-[8.5px] !text-[var(--cp-error-ink)]" @click="logoutCompany">{{ t('shell.logout') }}</button>
+              </div>
+            </div>
             <button type="button" class="cp-nav-item" @click="exitOpen = true; navOpen = false">
               <span class="cp-nav-icon"><i class="fa-solid fa-arrow-right-from-bracket text-[11px]"></i></span>
-              <span class="flex-1 text-[12px]">Exit company</span>
-            </button>
-            <button type="button" class="cp-nav-item" @click="navOpen = false; openCreate()">
-              <span class="cp-nav-icon"><i class="fa-solid fa-plus text-[11px]"></i></span>
-              <span class="flex-1 text-[12px]">New company</span>
-            </button>
-            <button type="button" class="cp-cta-dark mt-2 w-full" @click="askAssistant('Give me today\'s executive brief')">
-              <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i> Ask codx-junior
+              <span class="flex-1 text-[12px]">{{ t('shell.exitCompany') }}</span>
             </button>
           </div>
         </aside>
@@ -648,12 +751,13 @@ watch(() => route.query.assistant, value => {
             </button>
             <div class="flex min-w-0 flex-1 items-center">
               <label class="cp-search w-full" :class="isMobile ? 'max-w-none' : 'max-w-[360px]'">
-                <i class="fa-solid fa-magnifying-glass text-[10px]"></i>
+                <i class="fa-solid fa-wand-magic-sparkles text-[10px] text-[var(--cp-accent-ink)]"></i>
                 <input
                   v-model="askText"
                   type="text"
-                  :placeholder="isMobile ? 'Ask AI…' : 'Quick search or ask anything…'"
-                  aria-label="Search or ask the company assistant"
+                  :placeholder="t('shell.ask')"
+                  aria-label="Ask codx-junior"
+                  @click="askAssistant()"
                   @keydown.enter="sendAsk"
                 />
                 <span v-if="!isMobile" class="cp-kbd">⌘K</span>
@@ -662,6 +766,7 @@ watch(() => route.query.assistant, value => {
 
             <div class="flex shrink-0 items-center gap-0.5 md:gap-1">
               <button
+                v-if="!isMobile"
                 class="cp-icon-btn"
                 :title="isDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'"
                 :aria-label="isDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'"
@@ -693,20 +798,59 @@ watch(() => route.query.assistant, value => {
                 </button>
               </span>
 
-              <div v-if="!isMobile" class="mx-1.5 flex items-center gap-2">
-                <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)] ring-2 ring-[var(--cp-surface)]">
-                  <span class="absolute inset-0 grid place-items-center text-[9px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
-                  <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
-                </span>
-                <div class="min-w-0">
-                  <p class="max-w-[110px] truncate text-[10.5px] font-bold leading-tight">{{ userLabel }}</p>
-                  <p class="max-w-[110px] truncate text-[8.5px] text-[var(--cp-muted-soft)]">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
+              <div v-if="!isMobile" class="relative ml-0.5">
+                <button
+                  type="button"
+                  class="flex items-center gap-1 rounded-full p-0.5 transition hover:bg-[var(--cp-surface-soft)]"
+                  :title="userLabel"
+                  aria-label="User menu"
+                  :aria-expanded="userMenuOpen"
+                  @click.stop="userMenuOpen = !userMenuOpen"
+                >
+                  <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)] ring-2 ring-[var(--cp-surface)]">
+                    <span class="absolute inset-0 grid place-items-center text-[9px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
+                    <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
+                  </span>
+                  <i class="fa-solid fa-chevron-down pr-1 text-[7px] cp-muted-soft"></i>
+                </button>
+                <div v-if="userMenuOpen" class="fixed inset-0 z-40" @click="userMenuOpen = false"></div>
+                <div v-if="userMenuOpen" class="absolute right-0 top-full z-50 mt-2 w-[242px] rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] p-1.5 shadow-2xl" role="menu">
+                  <div class="flex items-center gap-2 rounded-xl bg-[var(--cp-surface-soft)] p-2">
+                    <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)]">
+                      <span class="absolute inset-0 grid place-items-center text-[9px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
+                      <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
+                    </span>
+                    <div class="min-w-0">
+                      <p class="truncate text-[11px] font-bold">{{ userLabel }}</p>
+                      <p class="truncate text-[8.5px] cp-muted-soft">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
+                    </div>
+                  </div>
+                  <p class="px-2 pb-1 pt-2 cp-eyebrow !text-[7.5px]">{{ t('shell.language') }}</p>
+                  <div class="grid grid-cols-2 gap-1">
+                    <button
+                      v-for="language in languages"
+                      :key="language.code"
+                      class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-[10px] transition hover:bg-[var(--cp-surface-soft)]"
+                      :class="locale === language.code ? 'bg-[var(--cp-lime-soft)] font-bold text-[var(--cp-accent-ink)]' : 'text-[var(--cp-text)]'"
+                      @click="changeLanguage(language.code)"
+                    >
+                      {{ language.label }}
+                      <i v-if="locale === language.code" class="fa-solid fa-check text-[8px]"></i>
+                    </button>
+                  </div>
+                  <div class="my-1 border-t border-[var(--cp-border)]"></div>
+                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold transition hover:bg-[var(--cp-surface-soft)]" @click="openUserSettings">
+                    <i class="fa-solid fa-sliders w-4 text-center text-[10px] cp-muted"></i>{{ t('shell.settings') }}
+                  </button>
+                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold text-[var(--cp-error-ink)] transition hover:bg-[var(--cp-red-soft)]" @click="logoutCompany">
+                    <i class="fa-solid fa-arrow-right-from-bracket w-4 text-center text-[10px]"></i>{{ t('shell.logout') }}
+                  </button>
                 </div>
               </div>
 
               <button v-if="canManage" class="cp-cta-dark ml-1" aria-label="New goal" @click="openGoal()">
                 <i class="fa-solid fa-plus text-[10px]"></i>
-                <span v-if="!isMobile">New goal</span>
+                <span v-if="!isMobile">{{ t('shell.newGoal') }}</span>
               </button>
             </div>
           </div>
@@ -739,12 +883,12 @@ watch(() => route.query.assistant, value => {
                 <div class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[var(--cp-lime)] text-[var(--cp-lime-ink)] shadow-lg shadow-[0_12px_28px_rgba(204,0,153,0.30)]">
                   <i class="fa-solid fa-building-columns text-xl"></i>
                 </div>
-                <h2 class="mt-4 text-xl font-extrabold tracking-tight">Build your AI company</h2>
+                <h2 class="mt-4 text-xl font-extrabold tracking-tight">{{ t('shell.noCompany') }}</h2>
                 <p class="mx-auto mt-2 max-w-sm text-[12px] leading-relaxed text-[var(--cp-muted)]">
-                  A company where human judgment and AI execution work together. Start with a name; the assistant will help with the org, the teams, the goals and the money.
+                  {{ t('shell.createWorkspace') }}
                 </p>
-                <button class="cp-cta mx-auto mt-5 h-10 px-4" @click="openCreate">
-                  <i class="fa-solid fa-plus text-[10px]"></i> Create my company
+                <button class="cp-cta mx-auto mt-5 h-10 px-4" @click="exitOpen = true">
+                  <i class="fa-solid fa-arrow-right-from-bracket text-[10px]"></i> {{ t('shell.exitCompany') }}
                 </button>
               </div>
             </div>
@@ -764,6 +908,7 @@ watch(() => route.query.assistant, value => {
                     @open-business="setSection('business')"
                     @open-activity="setSection('activity')"
                     @open-settings="setSection('settings')"
+                    @open-calendar="openWorkplace('calendar')"
                     @new-goal="openGoal()"
                     @open-chat="openChat()"
                   />
@@ -778,24 +923,16 @@ watch(() => route.query.assistant, value => {
                     @edit-goal="(mission) => openGoal('', mission)"
                     @refresh="refreshSnapshot"
                   />
-                  <CompanyTeams
-                    v-else-if="section === 'teams'"
-                    :snapshot="snapshot"
-                    :actors="companyActors.actors"
-                    :can-manage="canManage"
-                    :focus-id="teamFocusId"
-                    @assistant="openAssistantFor"
-                    @open-chat="openChat"
-                    @new-goal="(teamId) => openGoal(teamId)"
-                    @new-team="generateOpen = true"
-                  />
-                  <CompanyPeople
-                    v-else-if="section === 'people'"
+                  <CompanyTeam
+                    v-else-if="section === 'team'"
                     :snapshot="snapshot"
                     :actors="companyActors.actors"
                     :can-manage="canManage"
                     :can-admin="canAdmin"
+                    :focus-id="teamFocusId"
                     @assistant="openAssistantFor"
+                    @open-chat="openChat"
+                    @new-goal="(teamId) => openGoal(teamId)"
                     @new-team="generateOpen = true"
                   />
                   <CompanyBusiness
@@ -811,10 +948,18 @@ watch(() => route.query.assistant, value => {
                     :snapshot="snapshot"
                     @assistant="openAssistantFor"
                     @open-work="onWorkFocus"
+                    @open-chat="openActivityChat"
+                    @new-task="openNewTask"
+                  />
+                  <CompanyWorkplace
+                    v-else-if="['meet', 'coworking', 'calendar'].includes(section)"
+                    :kind="section"
+                    @close="setSection('home')"
                   />
                   <CompanySecurity
                     v-else-if="section === 'security'"
                     :company-id="activeId"
+                    :project-id="workingProject?.project_id || snapshot?.projects?.find(project => project.available)?.project_id || ''"
                   />
                   <CompanySettings
                     v-else-if="section === 'settings'"
@@ -845,6 +990,7 @@ watch(() => route.query.assistant, value => {
       :snapshot="snapshot"
       :actors="companyActors.actors"
       :docked="false"
+      :show-launcher="false"
       @refresh="refreshSnapshot"
       @deleted="onCompanyDeleted"
     />
@@ -876,8 +1022,9 @@ watch(() => route.query.assistant, value => {
       :snapshot="snapshot"
       :can-manage="canManage"
       :team-id="chatTeamId"
-      @close="chatsOpen = false; chatTeamId = ''"
-      @changed="refreshSnapshot"
+      :chat-id="chatInitialId"
+      @close="chatsOpen = false; chatTeamId = ''; chatInitialId = ''"
+      @changed="onChatsChanged"
     />
 
     <!-- ── Exit company ─────────────────────────────────────────────────── -->
@@ -885,9 +1032,9 @@ watch(() => route.query.assistant, value => {
       <div class="cp-card w-full max-w-[390px] p-4 md:p-5">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <p class="cp-eyebrow">Leave company</p>
-            <h2 class="mt-1 text-base font-extrabold">Where do you want to go?</h2>
-            <p class="mt-1 text-[10px] leading-relaxed cp-muted">The company keeps running. You can come back from the workspace picker.</p>
+            <p class="cp-eyebrow">{{ t('shell.exitCompany') }}</p>
+            <h2 class="mt-1 text-base font-extrabold">{{ t('shell.leaveTitle') }}</h2>
+            <p class="mt-1 text-[10px] leading-relaxed cp-muted">{{ t('shell.leaveHint') }}</p>
           </div>
           <button class="cp-icon-btn !h-7 !w-7" aria-label="Close" @click="exitOpen = false"><i class="fa-solid fa-xmark text-[11px]"></i></button>
         </div>
@@ -895,100 +1042,24 @@ watch(() => route.query.assistant, value => {
           <button class="flex items-start gap-3 rounded-xl border border-[var(--cp-border)] p-3 text-left transition hover:border-[var(--cp-border-strong)] hover:bg-[var(--cp-surface-soft)]" @click="leaveCompany('simple')">
             <span class="cp-icon-tile cp-icon-tile--lime !h-8 !w-8"><i class="fa-solid fa-rocket text-[10px]"></i></span>
             <span class="min-w-0">
-              <span class="block text-[11px] font-bold">Simple mode</span>
-              <span class="mt-0.5 block text-[9px] cp-muted">One screen. Chat, tasks and approvals.</span>
+              <span class="block text-[11px] font-bold">{{ t('shell.simpleMode') }}</span>
+              <span class="mt-0.5 block text-[9px] cp-muted">{{ t('shell.simpleHint') }}</span>
             </span>
             <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[9px] cp-muted-soft"></i>
           </button>
           <button class="flex items-start gap-3 rounded-xl border border-[var(--cp-border)] p-3 text-left transition hover:border-[var(--cp-border-strong)] hover:bg-[var(--cp-surface-soft)]" @click="leaveCompany('desktop')">
             <span class="cp-icon-tile !h-8 !w-8"><i class="fa-solid fa-desktop text-[10px]"></i></span>
             <span class="min-w-0">
-              <span class="block text-[11px] font-bold">Desktop workspace</span>
-              <span class="mt-0.5 block text-[9px] cp-muted">The full project workspace and tools.</span>
+              <span class="block text-[11px] font-bold">{{ t('shell.desktop') }}</span>
+              <span class="mt-0.5 block text-[9px] cp-muted">{{ t('shell.desktopHint') }}</span>
             </span>
             <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[9px] cp-muted-soft"></i>
           </button>
         </div>
-        <button class="cp-chip mt-3 w-full justify-center" @click="exitOpen = false">Stay in the company</button>
+        <button class="cp-chip mt-3 w-full justify-center" @click="exitOpen = false">{{ t('shell.stay') }}</button>
       </div>
     </div>
 
-    <!-- ── Create company ────────────────────────────────────────────────── -->
-    <div v-if="createOpen" class="modal modal-open z-[90]" role="dialog" aria-modal="true">
-      <div class="modal-box max-w-lg overflow-hidden border border-[var(--cp-border)] bg-[var(--cp-surface)] p-0">
-        <div class="border-b border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-5 py-4">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-3">
-              <span class="grid h-9 w-9 place-items-center rounded-[10px] bg-[var(--cp-lime)] text-[var(--cp-lime-ink)]">
-                <i class="fa-solid fa-building-columns text-[13px]"></i>
-              </span>
-              <div>
-                <h3 class="text-base font-extrabold tracking-tight">Create your company</h3>
-                <p class="text-[11px] text-[var(--cp-muted)]">You can change everything later just by asking.</p>
-              </div>
-            </div>
-            <button class="cp-icon-btn" aria-label="Close" @click="createOpen = false"><i class="fa-solid fa-xmark text-[13px]"></i></button>
-          </div>
-        </div>
-        <div class="max-h-[68vh] overflow-y-auto p-5">
-          <label class="form-control">
-            <span class="label-text text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--cp-muted)]">Company name</span>
-            <input v-model="createForm.name" class="input input-bordered mt-1" placeholder="For example: Acme Studio" autofocus @keyup.enter="submitCreate" />
-          </label>
-          <label class="form-control mt-3">
-            <span class="label-text text-[10px] font-bold uppercase tracking-[0.1em] text-[var(--cp-muted)]">What does it do? <span class="font-normal text-[var(--cp-muted-soft)]">(optional)</span></span>
-            <textarea v-model="createForm.description" class="textarea textarea-bordered mt-1" rows="2" placeholder="We design and sell furniture online"></textarea>
-          </label>
-
-          <details class="mt-3 rounded-xl border border-[var(--cp-border)] p-3" :open="createAdvanced" @toggle="createAdvanced = $event.target.open">
-            <summary class="cursor-pointer text-xs font-semibold text-[var(--cp-accent-ink)]">More options</summary>
-            <div class="mt-3 flex flex-col gap-3">
-              <label class="form-control">
-                <span class="label-text text-[10px] uppercase text-[var(--cp-muted)]">Mission — why it exists?</span>
-                <textarea v-model="createForm.mission" class="textarea textarea-sm textarea-bordered mt-1" rows="2"></textarea>
-              </label>
-              <div>
-                <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--cp-muted)]">Start with a template</div>
-                <div class="mt-1 flex flex-col gap-1.5">
-                  <label v-for="template in COMPANY_TEMPLATES" :key="template.id"
-                         class="flex cursor-pointer items-start gap-2 rounded-lg border border-[var(--cp-border)] p-2"
-                         :class="createForm.template === template.id ? 'border-[var(--cp-lime-deep)] bg-[var(--cp-lime-soft)]' : ''">
-                    <input v-model="createForm.template" type="radio" class="radio radio-xs radio-primary mt-0.5" :value="template.id" />
-                    <span>
-                      <span class="block text-[11px] font-semibold">{{ template.label }}</span>
-                      <span class="block text-[10px] text-[var(--cp-muted)]">{{ template.hint }}</span>
-                    </span>
-                  </label>
-                </div>
-              </div>
-              <div>
-                <div class="text-[10px] font-bold uppercase tracking-wide text-[var(--cp-muted)]">Link projects</div>
-                <div class="mt-1 flex flex-wrap gap-1.5">
-                  <label v-for="project in (references.projects || [])" :key="project.project_id"
-                         class="flex cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--cp-border)] px-2 py-1 text-[10px]">
-                    <input type="checkbox" class="checkbox checkbox-xs checkbox-primary"
-                           :checked="createForm.project_ids.includes(project.project_id)"
-                           @change="toggleCreateProject(project.project_id)" />
-                    <span class="max-w-40 truncate">{{ project.project_name }}</span>
-                  </label>
-                  <span v-if="!(references.projects || []).length" class="text-[10px] text-[var(--cp-muted-soft)]">No projects found — add them later.</span>
-                </div>
-              </div>
-            </div>
-          </details>
-        </div>
-        <div class="flex items-center justify-between border-t border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-5 py-3">
-          <p class="text-[10px] text-[var(--cp-muted-soft)]"><i class="fa-solid fa-lock mr-1"></i>You are the owner.</p>
-          <div class="flex gap-2">
-            <button class="cp-chip !h-8" @click="createOpen = false">Cancel</button>
-            <button class="cp-cta h-8" :disabled="busy || !createForm.name.trim()" @click="submitCreate">
-              <i class="fa-solid fa-arrow-right text-[9px]"></i> Create company
-            </button>
-          </div>
-        </div>
-      </div>
-      <div class="modal-backdrop" @click="createOpen = false"></div>
-    </div>
   </div>
 </template>
 

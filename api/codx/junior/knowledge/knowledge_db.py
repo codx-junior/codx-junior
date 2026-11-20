@@ -29,6 +29,7 @@ from codx.junior.model.model import CodxUser
 
 from codx.junior.ai import AI
 from codx.junior.settings import CODXJuniorSettings
+from codx.junior.knowledge.ciso_gate import screen_documents
 from codx.junior.knowledge.embeddings import (
     LocalEmbeddingsModel,
     HybridEmbeddingsModel,
@@ -729,6 +730,10 @@ class KnowledgeDB:
         Args:
             documents: LangChain Document objects to index.
         """
+        documents = screen_documents(documents, self.settings)
+        if not documents:
+            logger.warning("No documents to index after CISO screening.")
+            return
         data_search: List[Dict[str, Any]] = []
         page_contents: List[str] = []
         prepared_docs: List[Dict[str, Any]] = []

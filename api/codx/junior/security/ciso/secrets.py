@@ -27,6 +27,7 @@ import threading
 from collections import Counter, OrderedDict
 from typing import Iterable, List, Optional, Set, Tuple
 
+from codx.junior.security.ciso import context as ciso_context
 from codx.junior.security.ciso.models import (
     CisoPolicy,
     SecurityCategory,
@@ -151,6 +152,7 @@ _PLACEHOLDER_PATTERNS: List[re.Pattern] = [
     re.compile(r"^(?:x{3,}|\*{3,}|\.{3,}|-{3,})$", re.IGNORECASE),
     re.compile(r"^(?:your|my|the)[_\- ]?(?:api|secret|access|private)?[_\- ]?(?:key|token|password|secret|here)", re.IGNORECASE),
     re.compile(r"^(?:changeme|change_me|replace_me|placeholder|dummy|example|sample|test|todo|fixme|none|null|nil|undefined|true|false|password|passwd|secret|token|apikey|api_key)$", re.IGNORECASE),
+    re.compile(r"(?i)(?:^|[-_])replace[-_]?me(?:[-_].*)?$"),
     re.compile(r"<[^>]+>"),                       # <YOUR_TOKEN>
     re.compile(r"\{\{?[^}]+\}?\}"),               # {{token}} / {token}
     re.compile(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?"),  # ${VAR} / $VAR
@@ -164,7 +166,42 @@ _PLACEHOLDER_PATTERNS: List[re.Pattern] = [
     re.compile(r"^(?:sk-llmfactory|sk-local|sk-dummy|sk-test)$", re.IGNORECASE),
     re.compile(r"^[a-z]+(?:_[a-z]+){2,}$"),       # snake_case identifier, not a value
     re.compile(r"^[A-Z][a-z]+(?:[A-Z][a-z]+){1,}$"),  # CamelCase identifier
+    # A mask is a run of one repeated character: ``••••••••``, ``********``,
+    # ``xxxxxxxx``. The project settings and the log helpers are full of them.
+    re.compile(r"^(.)\1{3,}$", re.DOTALL),
 ]
+
+#: Deliberately synthetic values used in documentation, fixtures and tests.
+#: Applied to the generic assignment and entropy rules only -- never to a
+#: known provider shape, because a real ``sk-...`` token is not a placeholder
+#: just because a docs example happens to contain a familiar run.
+_SYNTHETIC_VALUE_PATTERNS: List[re.Pattern] = [
+    re.compile(
+        r"(?i)(?:hunter2|1234567890|abcdefghijklmnop|qwertyuiop|deadbeef|"
+        r"s3cr3t[-_](?:value|password|token|secret))"
+    ),
+]
+
+
+def is_synthetic_example(value: str) -> bool:
+    """Return True for a value that is an obvious documentation/fixture sample.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        bool: True for ``hunter2-hunter2-hunter2``, ``ghp_1234567890abcdef``.
+
+    Example:
+        >>> is_synthetic_example("hunter2-hunter2-hunter2")
+        True
+        >>> is_synthetic_example("aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0fI")
+        False
+    """
+    candidate = (value or "").strip()
+    if not candidate:
+        return False
+    return any(pattern.search(candidate) for pattern in _SYNTHETIC_VALUE_PATTERNS)
 
 # File names that are expected to hold secrets: flagging them is noise unless
 # the policy asks for it. `is_secret_file` lets a caller decide.
@@ -337,9 +374,18 @@ def looks_like_path(value: str) -> bool:
     if "/" not in candidate and "\\" not in candidate:
         return False
     normalised = candidate.replace("\\", "/")
-    last_segment = normalised.rsplit("/", 1)[-1]
-    # ``docs/readme.md`` or ``codx/junior/app.py``: a dotted final segment.
-    return "." in last_segment
+    segments = [segment for segment in normalised.split("/") if segment]
+    if len(segments) < 2:
+        return False
+    # A ``.gitignore`` entry such as
+    # ``codx-junior-installer/codx-junior/workspaces/default/config`` has no
+    # dotted final segment, so requiring one let every long ignore path through
+    # to the entropy detector. A base64 token that contains ``/`` usually also
+    # contains ``+`` or ``=``; reject those as paths so the token is still
+    # scored.
+    if any("+" in segment or "=" in segment for segment in segments):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9._~%:@-]+(?:/[A-Za-z0-9._~%:@-]+)+", normalised))
 
 
 # -----------------------------------------------------------------------------
@@ -361,6 +407,17 @@ _NON_CREDENTIAL_VALUE_PATTERNS: List[re.Pattern] = [
     # Dotted lowercase names: modules, packages, domains. Case-sensitive on
     # purpose: a JWT also has dot-separated segments but carries uppercase.
     re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+){2,}$"),
+    # Lower-case kebab-case names: ``x-access-token`` is the Git username, not
+    # the token. Values with digits or symbols (``s3cr3t-pw``) are not excused.
+    re.compile(r"^[a-z]+(?:-[a-z]+)+$"),
+    # A config key or header name: ``http.extraheader=``.
+    re.compile(r"^[a-z][a-z0-9_.-]*=$"),
+    # A mask made of one repeated character.
+    re.compile(r"^(.)\1{3,}$", re.DOTALL),
+    # A camelCase variable/property (``graphRefreshToken``), not a literal.
+    re.compile(r"^[a-z][a-z0-9]*(?:[A-Z][a-z]+){2,}$"),
+    # A fixture label with a numeric suffix (``session-1``, ``user_2``).
+    re.compile(r"^[a-z][a-z0-9]*[-_]\d{1,6}$"),
     # A plain endpoint carries no credential; ``user:pass@`` is the URL rule's job.
     re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://[^@\s]*$"),
     re.compile(
@@ -498,8 +555,15 @@ def in_documentation_context(
     Returns:
         bool: True when the value is a documentation example.
     """
+    if ciso_context.is_test_path(path):
+        # Test fixtures and examples are documentation-shaped by definition.
+        # A real credential pasted into a test is still reported, as low.
+        return True
     if not _PROSE_PATH_PATTERN.search((path or "").replace("\\", "/")):
-        return False
+        # Source code can document a credential too: a docstring, a comment, a
+        # doctest or a detector table. Those are not executed, so the value is
+        # reported as ``low`` (see the caller) instead of blocking a commit.
+        return ciso_context.is_documentation_position(payload, start, path)
     before = payload[max(0, start - _DOC_CONTEXT_WINDOW):start]
     after = payload[end:end + _DOC_CONTEXT_WINDOW]
     if _XML_SAMPLE_OPEN_PATTERN.search(before) and _XML_SAMPLE_CLOSE_PATTERN.match(after):
@@ -532,6 +596,11 @@ _ENV_NAME_VALUE_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{2,127}$")
 # contains the word "token" or "session", so the assignment rule reported every
 # one of them as a hardcoded credential.
 _IDENTIFIER_KEY_PATTERN = re.compile(r"(?i)(?:^|[_\-.])(?:ids?|uuid|hash|digest)$")
+#: camelCase identifier keys: ``sessionId``, ``toolCallId``. The separator
+#: pattern above does not see them, so they were reported as credentials.
+_CAMEL_IDENTIFIER_KEY_PATTERN = re.compile(
+    r"(?:[a-z0-9])(?:Id|ID|Uuid|UUID|Hash|HASH|Digest|DIGEST)$"
+)
 
 # Key/value pair of an identifier field, used to locate the exact span of the
 # value so the entropy rule can skip it without re-parsing the payload.
@@ -549,7 +618,11 @@ def names_an_identifier(key: str) -> bool:
     Returns:
         bool: True for `chat_id`, `tool_call_id`, `request_id`, `doc_uuid`.
     """
-    return bool(_IDENTIFIER_KEY_PATTERN.search((key or "").strip()))
+    candidate = (key or "").strip()
+    return bool(
+        _IDENTIFIER_KEY_PATTERN.search(candidate)
+        or _CAMEL_IDENTIFIER_KEY_PATTERN.search(candidate)
+    )
 
 
 def identifier_value_spans(payload: str) -> Set[Tuple[int, int]]:
@@ -743,8 +816,8 @@ def redact_text(text: str, policy: Optional[CisoPolicy] = None) -> Tuple[str, in
         original string is returned unchanged and replacements is ``0``.
 
     Example:
-        >>> redact_text('password = "s3cr3t-value-1234"')[0]
-        'password = "s3cr…'
+        >>> redact_text('password = "S3cr3tP@ssw0rd!"')[0]
+        'password = "S3cr[REDACTED](15 chars)"'
     """
     payload = text or ""
     if not payload:
@@ -841,6 +914,31 @@ def _redact_text_scan(text: str, policy: Optional[CisoPolicy]) -> Tuple[str, int
         return match.group(0).replace(f":{password}@", f":{_redact(password)}@", 1)
 
     result = _URL_CREDENTIALS_PATTERN.sub(_replace_url, result)
+
+    # The entropy detector reports unknown token shapes, so the redactor must
+    # be able to neutralise them too. Otherwise the gate says ``redact`` while
+    # the payload still carries the value -- a report that promises a fix it
+    # did not make, and a knowledge/chat sink that stores the raw token.
+    entropy_threshold = policy.entropy_threshold if policy is not None else 4.2
+    min_length = policy.min_secret_length if policy is not None else 20
+
+    def _replace_entropy(match: re.Match) -> str:
+        nonlocal replacements
+        token = match.group(0)
+        if len(token) < min_length:
+            return token
+        if is_secret_placeholder(token) or looks_like_identifier(token):
+            return token
+        if is_synthetic_example(token):
+            return token
+        if ciso_context.is_url_value_without_userinfo(result, match.start()):
+            return token
+        if shannon_entropy(token) < entropy_threshold:
+            return token
+        replacements += 1
+        return _redact(token)
+
+    result = _ENTROPY_CANDIDATE_PATTERN.sub(_replace_entropy, result)
     return result, replacements
 
 
@@ -903,6 +1001,9 @@ def scan_text(
         ))
 
     token_spans: List[Tuple[int, int]] = []
+    # Every span already reported by a *precise* rule. The entropy heuristic is
+    # the last resort; reporting the same value twice was pure noise.
+    reported_spans: List[Tuple[int, int]] = []
     for rule_id, title, severity, pattern in _TOKEN_PATTERNS:
         for match in pattern.finditer(payload):
             # Same guard as `redact_text` and the rules below: a value the
@@ -915,6 +1016,7 @@ def scan_text(
                 payload, match.start(), match.end(), path
             )
             token_spans.append(match.span())
+            reported_spans.append(match.span())
             _add(
                 rule_id=rule_id,
                 title=title,
@@ -939,9 +1041,12 @@ def scan_text(
 
     for match in _ASSIGNMENT_PATTERN.finditer(payload):
         value = match.group("value")
-        if is_secret_placeholder(value):
+        if is_secret_placeholder(value) or is_synthetic_example(value):
             continue
         key = match.group("key")
+        if ciso_context.is_token_metadata_key(key):
+            # ``tokenize = 'unicode61'``: the key contains "token" by accident.
+            continue
         if names_an_identifier(key):
             # `session_id`, `cancellation_token_id`: the key carries a secret
             # word but the value identifies a request.
@@ -950,10 +1055,19 @@ def scan_text(
             # The right-hand side names WHERE a value is looked up; the
             # credential itself lives in the environment.
             continue
+        if ciso_context.is_metadata_key(key) and ciso_context.is_label_value(value):
+            # ``TOKEN_ARG_PREFIX = "http.extraheader="`` /
+            # ``DEFAULT_TOKEN_USERNAME = "x-access-token"`` /
+            # ``secret_source = "settings"``: metadata, not a credential.
+            continue
         if not looks_like_credential_value(value):
             # The key names a credential but the value is a sentence, a code
             # fragment or a module path: ``ERROR_INVALID_PASSWORD =
             # "Invalid password"`` is not a leak.
+            continue
+        key_words = [word for word in re.split(r"[_\-.\s]+", str(key).lower()) if word]
+        if value.strip().lower() in key_words:
+            # ``PERSONAL_TOKEN = "personal"``: a label taken from its own key.
             continue
         if any(
             start <= match.start("value") and match.end("value") <= end
@@ -961,14 +1075,22 @@ def scan_text(
         ):
             # Already reported by a provider rule: one value, one finding.
             continue
+        documented = in_documentation_context(
+            payload, match.start(), match.end(), path
+        )
         severity = SecuritySeverity.HIGH
         if (match.group("quote") == '"' or match.group("quote") == "'") and len(value) >= 16:
             severity = SecuritySeverity.CRITICAL
+        if documented:
+            # An example in a docstring, a comment or a task card: still
+            # reported, but never at blocking severity.
+            severity = SecuritySeverity.LOW
         if is_public_search_key(payload, match.start("value"), match.end("value")):
             # A DocSearch/Algolia search-only key is published in the browser
             # bundle by design: same shape as a provider key, so the value is
             # still reported, but never blocks. A real key has no such context.
             severity = SecuritySeverity.LOW
+        reported_spans.append(match.span("value"))
         _add(
             rule_id="secret.hardcoded-credential",
             title=f"Hardcoded credential in '{key}'",
@@ -987,10 +1109,16 @@ def scan_text(
         password = match.group("password")
         if is_secret_placeholder(password):
             continue
+        documented = in_documentation_context(
+            payload, match.start(), match.end(), path
+        )
+        reported_spans.append(match.span("password"))
         _add(
             rule_id="secret.url-embedded-credentials",
             title="Credentials embedded in a URL",
-            severity=SecuritySeverity.CRITICAL,
+            severity=(
+                SecuritySeverity.LOW if documented else SecuritySeverity.CRITICAL
+            ),
             category=SecurityCategory.SECRET,
             start=match.start("password"),
             end=match.end("password"),
@@ -1001,7 +1129,13 @@ def scan_text(
             ),
         )
 
-    if policy.entropy_threshold > 0:
+    entropy_suppressed = (
+        ciso_context.is_lock_file(path)
+        or ciso_context.is_test_path(path)
+        or ciso_context.is_asset_path(path)
+        or ciso_context.is_generated_path(path)
+    )
+    if policy.entropy_threshold > 0 and not entropy_suppressed:
         identifier_spans = identifier_value_spans(payload)
         for match in _ENTROPY_CANDIDATE_PATTERN.finditer(payload):
             token = match.group(0)
@@ -1011,6 +1145,21 @@ def scan_text(
                 # The value of a `*_id` field addresses an object; it does not
                 # authenticate anything.
                 continue
+            if any(
+                start <= match.start() and match.end() <= end
+                for start, end in reported_spans
+            ):
+                # Already reported by a known provider, assignment or URL rule:
+                # one span, one finding. Without this the same GitHub token was
+                # reported twice (provider + entropy) in every docstring that
+                # quoted it, and every unassigned random token twice more.
+                continue
+            if ciso_context.is_url_value_without_userinfo(payload, match.start()):
+                # A thumbnail id or a package hash inside an HTTP URL is not a
+                # credential; a URL with ``user:pass@`` is not excused.
+                continue
+            if is_synthetic_example(token):
+                continue
             if is_secret_placeholder(token) or looks_like_identifier(token):
                 continue
             # A long run of the same character class is usually an identifier,
@@ -1019,10 +1168,15 @@ def scan_text(
                 continue
             if shannon_entropy(token) < policy.entropy_threshold:
                 continue
+            documented = in_documentation_context(
+                payload, match.start(), match.end(), path
+            )
             _add(
                 rule_id="secret.high-entropy-token",
                 title="High entropy string (possible unknown token format)",
-                severity=SecuritySeverity.MEDIUM,
+                severity=(
+                    SecuritySeverity.LOW if documented else SecuritySeverity.MEDIUM
+                ),
                 category=SecurityCategory.SECRET,
                 start=match.start(),
                 end=match.end(),

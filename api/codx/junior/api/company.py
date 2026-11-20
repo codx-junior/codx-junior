@@ -75,6 +75,7 @@ from __future__ import annotations
 
 import logging
 import os
+from types import SimpleNamespace
 from datetime import datetime, timezone
 
 from typing import Any, Dict, List, Optional
@@ -711,15 +712,18 @@ def _company_security_row(linked: Any, catalog: Dict[str, Dict[str, Any]]) -> Di
 @router.get("/companies/{company_id}/security")
 def api_company_security(
     company_id: str,
+    project_id: Optional[str] = Query(
+        default=None,
+        description="Limit the view to this project and its child projects",
+    ),
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
     """
-    CISO posture of every project linked to the company.
+    CISO posture of the current project and its children.
 
-    This is the cross-project security view of the company shell: one row per
-    linked project with its latest score, severity counters, scan and gate
-    activity. Each project is read independently; one broken project is shown
-    as unavailable instead of failing the whole panel.
+    The company shell is focused on the project the owner is working in. Linked
+    sibling projects are intentionally excluded; when no project is supplied
+    the endpoint keeps the legacy company-wide behaviour for API consumers.
     """
     manager = _manager()
     company = _run(lambda: manager.get_company(company_id))
@@ -727,11 +731,36 @@ def api_company_security(
         project["project_id"]: project
         for project in _run(manager.references)["projects"]
     }
-    rows = [_company_security_row(linked, catalog) for linked in company.projects]
+    linked_by_id = {linked.project_id: linked for linked in company.projects}
+    if project_id:
+        reference = catalog.get(project_id) or {}
+        current = linked_by_id.get(project_id) or SimpleNamespace(
+            project_id=project_id,
+            name=reference.get("project_name") or project_id,
+        )
+        children = [
+            child
+            for child in _run(lambda: manager.child_projects(company))
+            if child.get("parent_project_id") == project_id
+        ]
+        scoped = [current] + [
+            SimpleNamespace(
+                project_id=child.get("project_id"),
+                name=child.get("project_name") or child.get("project_id"),
+            )
+            for child in children
+        ]
+    else:
+        scoped = list(company.projects)
+    rows = [_company_security_row(linked, catalog) for linked in scoped]
+    for row in rows:
+        row["linked"] = row.get("project_id") in linked_by_id
+        row["parent_project_id"] = project_id if project_id and not row["linked"] else ""
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "company_id": company.id,
         "company_name": company.name,
+        "scope_project_id": project_id or "",
         "projects": rows,
         "totals": {
             "projects": len(rows),

@@ -87,8 +87,8 @@ export const companiesModule = (API) => ({
    * Cross-project CISO posture: one row per linked project (score, severity
    * counters, latest scan and gate activity).
    */
-  security(companyId) {
-    return API.get(`${BASE}/${encodeURIComponent(companyId)}/security`)
+  security(companyId, { projectId = '' } = {}) {
+    return API.get(`${BASE}/${encodeURIComponent(companyId)}/security${toQuery({ project_id: projectId })}`)
   },
 
   /** Start a CISO scan for one linked project (company admin/manager). */

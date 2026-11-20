@@ -1,5 +1,6 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
+import { useCompanyI18n } from './i18n'
 import { API } from '@/api/api'
 import { $storex } from '@/store'
 import { DEAL_STAGES, dealStageMeta, formatDate, formatMoney } from './companyMeta'
@@ -12,6 +13,8 @@ import { DEAL_STAGES, dealStageMeta, formatDate, formatMoney } from './companyMe
  * has a next step and a probability, and the assistant can turn the gap into a
  * plan.
  */
+const { t } = useCompanyI18n()
+
 const props = defineProps({
   companyId: { type: String, required: true },
   snapshot: { type: Object, default: null },
@@ -261,17 +264,17 @@ function metricProgress(metric) {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="cp-eyebrow">Commercial</p>
-        <h1 class="mt-1 text-2xl font-extrabold tracking-tight md:text-3xl">Business</h1>
+        <h1 class="mt-1 text-2xl font-extrabold tracking-tight md:text-3xl">{{ t('nav.business') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Revenue, margin and pipeline in one place. Ask the assistant to turn the gap into a plan the team can execute.
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="cp-chip" :disabled="saving" @click="openTarget">
-          <i class="fa-solid fa-bullseye text-[9px]"></i> Edit numbers
+          <i class="fa-solid fa-bullseye text-[9px]"></i> {{ t('business.edit') }}
         </button>
         <button v-if="canManage" class="cp-cta" @click="openDeal()">
-          <i class="fa-solid fa-handshake text-[9px]"></i> Add opportunity
+          <i class="fa-solid fa-handshake text-[9px]"></i> {{ t('business.add') }}
         </button>
       </div>
     </header>

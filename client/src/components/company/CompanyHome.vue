@@ -1,5 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
+import CompanyCalendar from './CompanyCalendar.vue'
+import { useCompanyI18n } from './i18n'
 import {
   attentionLabel,
   companyHealth,
@@ -29,9 +31,11 @@ const props = defineProps({
   canAdmin: { type: Boolean, default: false }
 })
 
+const { t } = useCompanyI18n()
+
 const emit = defineEmits([
   'assistant', 'open-work', 'open-team', 'open-business', 'open-activity',
-  'open-settings', 'new-goal', 'open-chat'
+  'open-settings', 'open-calendar', 'new-goal', 'open-chat'
 ])
 
 const company = computed(() => props.snapshot?.company || {})
@@ -47,7 +51,6 @@ const currency = computed(() => business.value.currency || 'EUR')
 
 const hoverBar = ref(-1)
 
-const periodShort = computed(() => ({ month: 'Month', quarter: 'Quarter', year: 'Year' }[business.value.period] || 'Month'))
 
 // ── Money ──────────────────────────────────────────────────────────────────
 
@@ -68,27 +71,27 @@ const openDealCount = computed(() => (business.value.pipeline || []).filter(deal
 const kpis = computed(() => [
   {
     id: 'target',
-    label: 'Revenue target',
+    label: t('home.revenueTarget'),
     value: formatMoney(revenueTarget.value, currency.value),
-    hint: `${Math.min(999, revenueProgress.value)}% attained`,
+    hint: t('home.attained', { value: Math.min(999, revenueProgress.value) }),
     icon: 'fa-solid fa-bullseye',
     color: 'var(--cp-lime)',
     tone: 'var(--cp-success-ink)'
   },
   {
     id: 'costs',
-    label: 'Total expenses',
+    label: t('home.totalExpenses'),
     value: formatMoney(costs.value, currency.value),
-    hint: `${costRatio.value}% of revenue`,
+    hint: t('home.ofRevenue', { value: costRatio.value }),
     icon: 'fa-solid fa-arrow-trend-down',
     color: 'var(--cp-yellow)',
     tone: 'var(--cp-warning-ink)'
   },
   {
     id: 'saved',
-    label: 'Gross profit',
+    label: t('home.grossProfit'),
     value: formatMoney(grossProfit.value, currency.value),
-    hint: `${margin.value}% gross margin`,
+    hint: t('home.grossMargin', { value: margin.value }),
     icon: grossProfit.value >= 0 ? 'fa-solid fa-arrow-trend-up' : 'fa-solid fa-arrow-trend-down',
     color: 'var(--cp-green)',
     tone: grossProfit.value >= 0 ? 'var(--cp-success-ink)' : 'var(--cp-error-ink)'
@@ -149,11 +152,11 @@ const roster = computed(() => {
 })
 
 const quickActions = [
-  { id: 'brief', label: 'Brief', icon: 'fa-solid fa-wand-magic-sparkles', run: () => ask("Give me today's executive brief") },
-  { id: 'goal', label: 'New goal', icon: 'fa-solid fa-flag', run: () => emit('new-goal') },
-  { id: 'teams', label: 'Teams', icon: 'fa-solid fa-people-group', run: () => emit('open-team') },
-  { id: 'chat', label: 'Chat', icon: 'fa-regular fa-comments', run: () => emit('open-chat') },
-  { id: 'activity', label: 'Activity', icon: 'fa-solid fa-wave-square', run: () => emit('open-activity') }
+  { id: 'brief', labelKey: 'home.brief', icon: 'fa-solid fa-wand-magic-sparkles', run: () => ask("Give me today's executive brief") },
+  { id: 'goal', labelKey: 'shell.newGoal', icon: 'fa-solid fa-flag', run: () => emit('new-goal') },
+  { id: 'teams', labelKey: 'nav.team', icon: 'fa-solid fa-people-group', run: () => emit('open-team') },
+  { id: 'chat', labelKey: 'nav.channels', icon: 'fa-regular fa-comments', run: () => emit('open-chat') },
+  { id: 'activity', labelKey: 'nav.activity', icon: 'fa-solid fa-wave-square', run: () => emit('open-activity') }
 ]
 const visibleQuickActions = computed(() => quickActions.filter(action => action.id !== 'goal' || props.canManage))
 
@@ -163,9 +166,9 @@ const visibleQuickActions = computed(() => quickActions.filter(action => action.
 // operating activity of the last seven days (never random demo data).
 
 const legend = [
-  { id: 'done', label: 'Delivered', color: 'var(--cp-lime)' },
-  { id: 'active', label: 'In motion', color: 'var(--cp-yellow)' },
-  { id: 'attention', label: 'Needs attention', color: 'var(--cp-peach)' }
+  { id: 'done', labelKey: 'home.delivered', color: 'var(--cp-lime)' },
+  { id: 'active', labelKey: 'home.inMotion', color: 'var(--cp-yellow)' },
+  { id: 'attention', labelKey: 'home.attention', color: 'var(--cp-peach)' }
 ]
 
 const weekBars = computed(() => {
@@ -253,7 +256,7 @@ const limitSubtitle = computed(() => hasDailyLimit.value
   ? 'Autopilot checks this budget on every cycle.'
   : projectBudget.value > 0
     ? 'Shared budget across the linked projects.'
-    : 'No limit configured — ask the assistant to set one.')
+    : t('home.noLimitConfigured'))
 const remainingBudget = computed(() => Math.max(0, budgetLimit.value - budgetSpent.value))
 const resetLabel = computed(() => {
   const now = new Date()
@@ -453,14 +456,14 @@ function openEvent(event) {
           <section class="cp-card cp-card-pad flex flex-col md:col-span-8" aria-label="Company activity">
             <header class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
-                <p class="cp-eyebrow">Company activity</p>
-                <p class="cp-display mt-2">{{ weekTotal }}<span class="ml-1.5 text-[13px] font-bold cp-muted">{{ weekTotal === 1 ? 'event' : 'events' }}</span></p>
+                <p class="cp-eyebrow">{{ t('home.companyActivity') }}</p>
+                <p class="cp-display mt-2">{{ weekTotal }}<span class="ml-1.5 text-[13px] font-bold cp-muted">{{ t('home.events') }}</span></p>
                 <p class="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
-                  <span class="cp-muted">Last 7 days</span>
+                  <span class="cp-muted">{{ t('home.last7') }}</span>
                   <span class="text-[var(--cp-muted-soft)]">·</span>
                   <span class="inline-flex items-center gap-1 font-semibold" :style="{ color: 'var(--cp-success-ink)' }">
                     <i class="fa-solid fa-wave-square text-[8px]"></i>
-                    Delivery and decisions
+                    {{ t('home.deliveryDecisions') }}
                   </span>
                 </p>
               </div>
@@ -478,10 +481,10 @@ function openEvent(event) {
               <div class="flex flex-wrap items-center gap-3">
                 <span v-for="item in legend" :key="item.id" class="inline-flex items-center gap-1.5 text-[9px] font-semibold cp-muted">
                   <span class="h-1.5 w-1.5 rounded-full" :style="{ background: item.color }"></span>
-                  {{ item.label }}
+                  {{ t(item.labelKey) }}
                 </span>
               </div>
-              <span class="text-[9px] cp-muted-soft">{{ activity.length }} recent entries</span>
+              <span class="text-[9px] cp-muted-soft">{{ activity.length }} {{ t('home.recentEntries') }}</span>
             </div>
 
             <div class="relative mt-auto pt-4">
@@ -537,8 +540,8 @@ function openEvent(event) {
           <section class="cp-card cp-card-pad flex flex-col md:col-span-4" aria-label="Financial pulse">
             <header class="flex items-start justify-between gap-2">
               <div>
-                <p class="cp-eyebrow">Financials</p>
-                <p class="mt-1.5 text-[10px] cp-muted">{{ periodShort }} snapshot</p>
+                <p class="cp-eyebrow">{{ t('home.financials') }}</p>
+                <p class="mt-1.5 text-[10px] cp-muted">{{ t('home.snapshot') }}</p>
               </div>
               <span class="cp-icon-tile cp-icon-tile--lime !h-7 !w-7">
                 <i class="fa-solid fa-wallet text-[10px]"></i>
@@ -622,7 +625,7 @@ function openEvent(event) {
 
           <section class="cp-card cp-card-pad relative flex flex-col overflow-hidden" aria-label="Quick wins">
             <header>
-              <h2 class="cp-title">Next actions</h2>
+              <h2 class="cp-title">{{ t('home.nextActions') }}</h2>
               <p class="mt-1 text-[9.5px] cp-muted">The three most useful moves from today's signals.</p>
             </header>
 
@@ -667,7 +670,7 @@ function openEvent(event) {
           <!-- AI spend -->
           <section class="cp-card cp-card-pad flex flex-col" aria-label="AI spend">
             <header class="flex items-center justify-between gap-2">
-              <h2 class="cp-title whitespace-nowrap">AI spend</h2>
+              <h2 class="cp-title whitespace-nowrap">{{ t('home.aiSpend') }}</h2>
               <span class="cp-chip !h-6 !text-[8.5px]">All time</span>
             </header>
             <p class="mt-2.5 text-[20px] font-extrabold leading-none tracking-tight tabular-nums">
@@ -692,7 +695,7 @@ function openEvent(event) {
               </div>
             </div>
             <div v-else class="mt-4 flex flex-1 flex-col items-start justify-center rounded-xl border border-dashed border-[var(--cp-border)] p-3">
-              <p class="text-[9.5px] font-semibold">No spend recorded yet.</p>
+              <p class="text-[9.5px] font-semibold">{{ t('home.noSpend') }}</p>
               <p class="mt-0.5 text-[8.5px] cp-muted">Dispatch a goal and the cost shows up here.</p>
             </div>
 
@@ -701,7 +704,7 @@ function openEvent(event) {
               class="mt-auto flex items-center justify-between border-t border-[var(--cp-border)] pt-2.5 text-[8.5px] font-semibold cp-muted transition hover:text-[var(--cp-text)]"
               @click="emit('open-settings')"
             >
-              Budget settings
+              {{ t('home.budgetSettings') }}
               <i class="fa-solid fa-arrow-right text-[7px]"></i>
             </button>
           </section>
@@ -709,7 +712,7 @@ function openEvent(event) {
           <!-- Operating health -->
           <section class="cp-card cp-card-pad flex flex-col" aria-label="Operating health">
             <header class="flex items-center justify-between gap-2">
-              <h2 class="cp-title whitespace-nowrap">Operating health</h2>
+              <h2 class="cp-title whitespace-nowrap">{{ t('home.operatingHealth') }}</h2>
               <span class="cp-chip !h-6 !text-[8.5px]">Now</span>
             </header>
             <div class="mt-2.5 flex items-end justify-between gap-2">
@@ -759,11 +762,11 @@ function openEvent(event) {
           <section class="company-goal-card cp-card cp-card-pad flex flex-col sm:col-span-2" aria-label="Goal tracker">
             <header class="flex items-center justify-between gap-2">
               <div>
-                <h2 class="cp-title whitespace-nowrap">Goal tracker</h2>
+                <h2 class="cp-title whitespace-nowrap">{{ t('home.goalTracker') }}</h2>
                 <p class="mt-0.5 text-[8.5px] cp-muted">In motion right now</p>
               </div>
               <button v-if="canManage" class="cp-chip !h-6 !text-[8.5px]" @click="emit('new-goal')">
-                <i class="fa-solid fa-plus text-[7px]"></i> Add goal
+                <i class="fa-solid fa-plus text-[7px]"></i> {{ t('home.addGoal') }}
               </button>
             </header>
 
@@ -801,7 +804,7 @@ function openEvent(event) {
 
             <div v-else class="mt-3 flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--cp-border)] p-3 text-center">
               <i class="fa-solid fa-flag-checkered text-lg text-[var(--cp-muted-soft)]"></i>
-              <p class="mt-1 text-[9.5px] font-bold">No open goals.</p>
+              <p class="mt-1 text-[9.5px] font-bold">{{ t('home.noGoals') }}</p>
               <p class="mt-0.5 text-[8.5px] cp-muted">Turn an outcome into work the team can run.</p>
               <button v-if="canManage" class="cp-cta mt-2 !h-7 !text-[9px]" @click="emit('new-goal')">Set a goal</button>
             </div>
@@ -824,7 +827,7 @@ function openEvent(event) {
         <section class="cp-card cp-card-pad" aria-label="Quick actions">
           <header class="flex items-center justify-between gap-2">
             <div>
-              <h2 class="cp-title">Quick actions</h2>
+              <h2 class="cp-title">{{ t('home.quickActions') }}</h2>
               <p class="mt-0.5 text-[8.5px] cp-muted">One click to the work that matters.</p>
             </div>
             <span class="cp-chip !h-6 !text-[8.5px]">{{ counts.teams || teams.length || 0 }} teams</span>
@@ -836,22 +839,22 @@ function openEvent(event) {
               :key="action.id"
               type="button"
               class="cp-quick-btn"
-              :title="action.label"
+              :title="t(action.labelKey)"
               @click="action.run"
             >
               <i :class="action.icon"></i>
-              <span>{{ action.label }}</span>
+              <span>{{ t(action.labelKey) }}</span>
             </button>
           </div>
 
           <div class="mt-2.5 grid grid-cols-2 gap-2">
             <button class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5 text-left transition hover:bg-[var(--cp-surface-strong)]" @click="emit('open-business')">
-              <span class="cp-eyebrow !text-[7.5px]">Open pipeline</span>
+              <span class="cp-eyebrow !text-[7.5px]">{{ t('home.openPipeline') }}</span>
               <span class="mt-1 block text-[14px] font-extrabold leading-tight tabular-nums">{{ formatMoney(pipelineValue, currency, true) }}</span>
               <span class="mt-0.5 block text-[8px] cp-muted">{{ openDealCount }} opportunit{{ openDealCount === 1 ? 'y' : 'ies' }}</span>
             </button>
             <button class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5 text-left transition hover:bg-[var(--cp-surface-strong)]" @click="emit('open-team')">
-              <span class="cp-eyebrow !text-[7.5px]">People</span>
+              <span class="cp-eyebrow !text-[7.5px]">{{ t('home.people') }}</span>
               <span class="mt-1 block text-[14px] font-extrabold leading-tight tabular-nums">{{ peopleCount }}</span>
               <span class="mt-0.5 block text-[8px] cp-muted">humans + AI</span>
             </button>
@@ -859,7 +862,7 @@ function openEvent(event) {
 
           <div class="mt-2.5 border-t border-[var(--cp-border)] pt-2.5">
             <div class="flex items-center justify-between">
-              <p class="cp-eyebrow !text-[8px]">AI teammates</p>
+              <p class="cp-eyebrow !text-[8px]">{{ t('home.aiTeammates') }}</p>
               <button class="grid h-5 w-5 place-items-center rounded-md cp-muted transition hover:bg-[var(--cp-surface-soft)] hover:text-[var(--cp-text)]" title="Manage the team" aria-label="Manage the team" @click="emit('open-team')">
                 <i class="fa-solid fa-plus text-[8px]"></i>
               </button>
@@ -882,7 +885,7 @@ function openEvent(event) {
                   <span class="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[var(--cp-surface)]" :class="person.kind === 'ai' ? 'bg-[var(--cp-lime)]' : 'bg-[var(--cp-green)]'"></span>
                 </button>
               </div>
-              <span v-else class="text-[8.5px] cp-muted">No teammates yet.</span>
+              <span v-else class="text-[8.5px] cp-muted">{{ t('home.noTeammates') }}</span>
               <button
                 class="ml-auto grid h-7 w-7 place-items-center rounded-full border border-[var(--cp-border)] cp-muted transition hover:bg-[var(--cp-surface-soft)] hover:text-[var(--cp-text)]"
                 title="Ask the team"
@@ -895,10 +898,12 @@ function openEvent(event) {
           </div>
         </section>
 
+        <CompanyCalendar :snapshot="snapshot" @open="emit('open-calendar')" />
+
         <!-- Activity history -->
         <section class="cp-card cp-card-pad flex flex-col" aria-label="Company activity">
           <header class="flex items-center justify-between gap-2">
-            <h2 class="cp-title">Activity history</h2>
+            <h2 class="cp-title">{{ t('home.activityHistory') }}</h2>
             <span class="cp-chip !h-6 !text-[8.5px]">7d</span>
           </header>
 
@@ -936,7 +941,7 @@ function openEvent(event) {
             class="mt-2 flex items-center justify-between border-t border-[var(--cp-border)] pt-2.5 text-[9px] font-semibold cp-muted transition hover:text-[var(--cp-text)]"
             @click="emit('open-activity')"
           >
-            View all activity
+            {{ t('home.allActivity') }}
             <i class="fa-solid fa-arrow-right text-[8px]"></i>
           </button>
         </section>

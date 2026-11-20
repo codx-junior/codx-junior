@@ -186,7 +186,7 @@ def guard_file_write(
         ``redacted_text`` is set the caller may write that instead.
 
     Example:
-        >>> verdict = guard_file_write(".env", 'DB_PASSWORD="hunter2-hunter2-hunter2"')
+        >>> verdict = guard_file_write(".env", 'DB_PASSWORD="S3cr3tP@ssw0rd!"')
         >>> verdict.blocked
         True
     """
@@ -206,6 +206,7 @@ def guard_diff(
     settings: Any = None,
     domain: SecurityDomain = SecurityDomain.GIT_COMMIT,
     policy: Optional[CisoPolicy] = None,
+    context_provider: Optional[Any] = None,
 ) -> SecurityVerdict:
     """Inspect a unified diff before it is committed, pushed or merged.
 
@@ -214,13 +215,20 @@ def guard_diff(
         settings: Project settings.
         domain: ``git_commit`` or ``pull_request``.
         policy: Explicit policy override.
+        context_provider: Optional callback returning the full new content of a
+            path, used to restore docstring/comment context in a ``-U0`` diff.
 
     Returns:
         SecurityVerdict: ``blocked`` means the change must not be committed.
     """
     policy = policy or ciso_policy.resolve_policy(settings)
     try:
-        verdict = scanner.scan_diff(patch, domain=domain, policy=policy)
+        verdict = scanner.scan_diff(
+            patch,
+            domain=domain,
+            policy=policy,
+            context_provider=context_provider,
+        )
         _audit(settings, verdict, "diff")
         return verdict
     except Exception as ex:  # pragma: no cover - defensive
@@ -356,12 +364,23 @@ def guard_knowledge(
     """
     policy = policy or ciso_policy.resolve_policy(settings)
     try:
+        # ``knowledge://`` marks the content as ingested rather than committed:
+        # a ``.codx`` source must not inherit the commit gate's data-path
+        # downgrade, because reading this chunk *is* the execution.
+        scan_path = f"knowledge://{source}" if source else "knowledge://document"
         verdict = scanner.scan_content(
             text,
-            path=source,
+            path=scan_path,
             domain=SecurityDomain.KNOWLEDGE_INGESTION,
             policy=policy,
+            # A document is data, not an executed file: its code snippets are
+            # quarantined by the code gates, while ingestion owns the two risks
+            # that actually cross this boundary -- a stored instruction and a
+            # credential that would be replayed into every later prompt.
+            detectors=("secrets", "injection"),
         )
+        for finding in verdict.findings:
+            finding.path = str(source) if source else finding.path
         if verdict.findings:
             _audit(settings, verdict, source or "knowledge")
         return verdict
@@ -415,7 +434,7 @@ def sanitize_for_log(text: str, limit: int = 2000) -> str:
         str: Safe, bounded text.
 
     Example:
-        >>> sanitize_for_log('DB_PASSWORD="hunter2-hunter2-hunter2"')[:10]
+        >>> sanitize_for_log('DB_PASSWORD="S3cr3tP@ssw0rd!"')[:10]
         'DB_PASSWOR'
     """
     try:

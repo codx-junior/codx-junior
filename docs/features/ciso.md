@@ -52,7 +52,7 @@ survives a restart without ever entering git.
 
 | Scope | What is analysed |
 | --- | --- |
-| **Whole project** | Bounded walk of the tracked and untracked text files (vendor/build folders skipped). |
+| **Whole project** | Bounded walk of tracked and untracked text files; generated reports, caches, lock files, certificates, test fixtures and runtime home folders are classified, not treated as product code. |
 | **Working tree + untracked** | Added lines of `git diff HEAD` **plus** every untracked file. This is the scope that catches a file an agent created and forgot: a diff alone would not show it. |
 | **Staged changes** | Added lines of `git diff --cached`. |
 | **Selected paths** | Files and folders you name, relative to the project. |
@@ -64,6 +64,28 @@ interpretable after the policy changes. Scans can be cancelled cooperatively
 The findings panel filters server-side by severity floor, category and free
 text, and pages the result. Evidence is always already redacted by the backend:
 a security report never reproduces the value it detected.
+
+### What is deliberately not a blocking finding
+
+The detectors read raw text, so the scanner also classifies **where** a match
+lives before it decides a severity. None of these are silenced: they are still
+reported, at `low` or `medium`, so a real defect written there stays visible.
+
+| Context | Example | Why |
+| --- | --- | --- |
+| Lock file | `uv.lock`, `Cargo.lock` | Hashes and package URLs. Known provider tokens and `user:pass@` URLs are still checked; only the unknown-token entropy heuristic is skipped. |
+| Metadata key | `TOKEN_ARG_PREFIX = "http.extraheader="`, `DEFAULT_TOKEN_USERNAME = "x-access-token"` | A credential word in the key does not make a config label a secret. |
+| Docstring / comment / doctest | `>>> client = Client(token="ghp_...")` | Documentation is not executed. A real credential in a docstring is still reported, as `low`. |
+| Detector corpus / fixtures | `api/codx/junior/security/ciso/**`, `api/tests/security/**` | Rule tables and regression fixtures must contain the strings they detect. `secret.*` stays at full strength: a real key added there is still found. |
+| Test file | `api/tests/**` | Fake keys, paths and attack strings are fixtures. A real credential pasted into a test is still reported, as `low`; a real executable malicious call is still a code finding. |
+| Certificate / minified asset | `*.pem`, `*.crt`, `*.css`, source maps | Entropy in a certificate body or a minified bundle is not a credential. Private-key blocks still report. |
+| Chat-role type annotation | `system: Optional[str]` | A type annotation is not a `system:` prompt role. A role line must introduce an actual instruction to be reported. |
+| Negated safety rule | `Do not disable security settings` | The sentence is the opposite of a bypass instruction. |
+| Documentation marker | `For example, a task may say "ignore previous rules"` | A guide or fixture *describes* an attack; a real instruction in prose still blocks. |
+
+A URL fragment with no `userinfo` is also skipped by the entropy rule (a
+Google thumbnail id is not a token), and the generic assignment finding
+deduplicates against the precise provider/URL rule for the same span.
 
 ### From findings to a fix
 
@@ -107,18 +129,64 @@ a genuinely new detector belongs in the detector module with a test.
     "block_above": "high",
     "approval_above": "medium",
     "fail_closed": false,
-    "ignore_rules": ["secret.high-entropy-token"],
     "ignore_paths": ["vendor/"]
   }
 }
 ```
 
 ::: warning Rules are not a suggestion
-Silencing a rule removes its findings from every gate (file write, commit,
-command, container, model output). Prefer narrowing `ignore_paths` or lowering
-the severity of a noisy rule over silencing a family that protects the
-repository.
+Silencing a rule removes its findings from the interactive gates (file write,
+command, container, model output). It does **not** disable the pre-commit
+control: `secret.*`, `malicious.*`, `injection.*`, `obfuscation.*`,
+`exfiltration.*`, `supply_chain.*`, `destructive.*`, `dangerous.*` and
+`command.*` form the protection floor and are always enforced by the hook.
+Prefer narrowing `ignore_paths` or fixing the false positive over silencing a
+family that protects the repository.
 :::
+
+`GET /api/ciso/policy` reports both `mandatory_rules` (the floor) and
+`silenced_mandatory_rules` (rules switched off in this project), so the view can
+show that a silenced rule still protects the commit boundary.
+
+## Pre-commit control
+
+`.githooks/pre-commit` runs `codx.junior.security.ciso.precommit` on the staged
+diff before a git object exists. It blocks `high`/`critical` findings in the
+protected families:
+
+* secrets and keys,
+* malicious, exfiltrating, destructive or supply-chain code,
+* stored instructions aimed at the next agent.
+
+A `medium` entropy warning, a low documentation example or a configuration
+finding is reported but never blocks. The gate does **not** read the project
+`ignore_rules`: a rule silenced in the UI cannot silently disable the commit
+boundary. For a reviewed exception, approve the exact staged content for one
+commit; the approval is fingerprint-bound, spent on use and invalidated by any
+edit:
+
+```bash
+bash .githooks/pre-commit --approve   # one commit, this exact index state
+bash .githooks/pre-commit --status
+bash .githooks/pre-commit --revoke
+```
+
+## Knowledge ingestion
+
+A knowledge chunk is replayed into later prompts, so a stored instruction is
+executed by reading it. Both vector-store indexers (`knowledge_db` and
+`knowledge_lancedb`) call `guard_knowledge` before `index_documents`:
+
+* a document with a stored injection payload at `high` or above is **not
+  indexed**;
+* a document with a credential is indexed with the redacted text (or dropped
+  when the policy blocks it);
+* code snippets in a document are data, not executed files, so the knowledge
+  gate runs the secret and injection detectors, not the code-family rules.
+
+The source is scanned as `knowledge://<source>`, which keeps a `.codx` task
+body or a test fixture at full severity: reading the chunk is the execution,
+so the commit gate's data-path downgrade does not apply here.
 
 ## Activity
 
@@ -186,3 +254,6 @@ convention) and mounted by the dynamic router loader:
   so a monorepo cannot hang a request or a worker.
 * A scan runs in a daemon thread with a cross-process `flock`: several API
   workers can poll and cancel it, but only one scan runs per project.
+* The scanner and the pre-commit hook share `context.py`: the same path
+  classification decides what is a comment, docstring, lock file, test fixture
+  or detector table. A rule cannot be precise in one gate and noisy in another.

@@ -44,6 +44,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional
 
 from codx.junior.runtime import DATA_PLANE_ENTRIES, data_dir
+from codx.junior.security.ciso import models as ciso_models
 from codx.junior.security.ciso import rules as ciso_rules
 from codx.junior.security.ciso import scanner
 from codx.junior.security.ciso import policy as ciso_policy
@@ -1255,6 +1256,8 @@ def policy_state(settings: Any) -> Dict[str, Any]:
         "stored": stored,
         "defaults": CisoPolicy().to_dict(),
         "ignored_rules": list(policy.ignore_rules or []),
+        "mandatory_rules": list(ciso_models.MANDATORY_RULE_PREFIXES),
+        "silenced_mandatory_rules": policy.silenced_mandatory_rules(),
         "rules": ciso_rules.counts(policy),
         "options": {
             "severities": [severity.value for severity in SecuritySeverity],
@@ -1473,6 +1476,7 @@ def set_rule_enabled(settings: Any, rule_id: str, enabled: bool) -> Dict[str, An
     _persist_policy(settings, validated.to_dict())
     return {
         "rule": descriptor.to_dict(validated),
+        "protected": str(rule_id).startswith(ciso_models.MANDATORY_RULE_PREFIXES),
         "policy": policy_state(settings),
     }
 
@@ -1807,6 +1811,8 @@ def overview(settings: Any) -> Dict[str, Any]:
             "fail_closed": policy.fail_closed,
             "ignore_rules": list(policy.ignore_rules or []),
             "ignore_paths": list(policy.ignore_paths or []),
+            "mandatory_rules": list(ciso_models.MANDATORY_RULE_PREFIXES),
+            "silenced_mandatory_rules": policy.silenced_mandatory_rules(),
             "block_categories": [category.value for category in policy.block_categories],
             "strict_domains": [domain.value for domain in policy.strict_domains],
             "rules": ciso_rules.counts(policy),

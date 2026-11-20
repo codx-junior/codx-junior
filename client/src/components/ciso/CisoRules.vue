@@ -5,7 +5,8 @@
  * Two halves, one source of truth:
  *   - the detector catalogue (100 deterministic rules) can be silenced one by
  *     one; the toggle writes the project `ciso_policy.ignore_rules`, and the
- *     very next gate in the process honours it;
+ *     next interactive gate honours it. The pre-commit protection floor always
+ *     enforces the core families, even when a rule is silenced here;
  *   - the decision ladder (block / approval / warn) and the scanner options are
  *     edited as a validated partial policy. The backend rejects unknown fields
  *     and invalid enum values instead of silently ignoring them.
@@ -219,7 +220,9 @@ async function toggleRule(rule) {
     counts.value = payload.policy?.rules || counts.value
     notice.value = rule.enabled
       ? `Rule enabled: ${rule.rule_id}`
-      : `Rule silenced: ${rule.rule_id}`
+      : payload.protected
+        ? `Rule silenced for interactive gates: ${rule.rule_id}. The pre-commit hook still enforces it.`
+        : `Rule silenced: ${rule.rule_id}`
     emit('changed')
   } catch (ex) {
     error.value = errorMessage(ex)
@@ -238,6 +241,19 @@ onMounted(load)
     </div>
     <div v-if="notice" class="alert alert-success text-sm py-2">
       <i class="fa-solid fa-circle-check"></i>{{ notice }}
+    </div>
+    <div
+      v-if="policyState?.silenced_mandatory_rules?.length"
+      class="alert alert-warning text-sm py-2"
+    >
+      <i class="fa-solid fa-shield-halved"></i>
+      <span>
+        {{ policyState.silenced_mandatory_rules.length }} protection-floor rule(s)
+        silenced:
+        <code>{{ policyState.silenced_mandatory_rules.join(', ') }}</code>.
+        The pre-commit hook still enforces them; restore them to see their
+        findings in the interactive gates.
+      </span>
     </div>
 
     <div v-if="loading && !policyState" class="flex items-center gap-2 text-sm text-base-content/60">

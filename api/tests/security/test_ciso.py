@@ -22,6 +22,7 @@ from codx.junior.security.ciso.models import (
     SecurityAction,
     SecurityCategory,
     SecurityDomain,
+    SecurityFinding,
     SecuritySeverity,
 )
 from codx.junior.security.ciso.policy import evaluate, policy_from_dict
@@ -232,14 +233,32 @@ def test_high_finding_in_strict_domain_blocks():
     assert verdict.blocked is True
 
 
-def test_high_finding_outside_strict_domain_requires_approval():
-    verdict = scan_content(
-        'import os\nos.system("ls")',
-        path="scripts/deploy.py",
-        domain=SecurityDomain.MODEL_OUTPUT,
+def test_high_advisory_finding_outside_strict_domain_requires_approval():
+    finding = SecurityFinding(
+        rule_id="test.advisory",
+        title="Advisory",
+        severity=SecuritySeverity.HIGH,
+        category=SecurityCategory.CONFIGURATION,
+    )
+    verdict = evaluate(
+        [finding], domain=SecurityDomain.MODEL_OUTPUT, policy=CisoPolicy()
     )
     assert verdict.blocked is False
     assert verdict.action == SecurityAction.REQUIRE_APPROVAL
+
+
+def test_high_malicious_finding_blocks_outside_a_strict_domain():
+    finding = SecurityFinding(
+        rule_id="test.malicious",
+        title="Malicious",
+        severity=SecuritySeverity.HIGH,
+        category=SecurityCategory.MALICIOUS,
+    )
+    verdict = evaluate(
+        [finding], domain=SecurityDomain.MODEL_OUTPUT, policy=CisoPolicy()
+    )
+    assert verdict.blocked is True
+    assert verdict.action == SecurityAction.BLOCK
 
 
 def test_clean_payload_allows():

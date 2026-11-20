@@ -477,7 +477,10 @@ export default {
   name: 'MeetView',
   props: {
     // Panel params (desktop mode) may carry a meetId to auto-join a deep link.
-    params: { type: Object, default: () => ({}) }
+    params: { type: Object, default: () => ({}) },
+    // Embedded in the company shell: closing returns to the company, never to
+    // the project workspace.
+    embedded: { type: Boolean, default: false }
   },
   data() {
     return {
@@ -1222,6 +1225,10 @@ export default {
     },
     async onClose() {
       await this.onLeaveMeet()
+      if (this.embedded) {
+        this.$emit('close')
+        return
+      }
       this.$router.push({ name: 'home' })
     },
   }

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
+import { useCompanyI18n } from './i18n'
 import { API } from '@/api/api'
 import { $storex } from '@/store'
 import {
@@ -18,6 +19,8 @@ import {
  * lets the owner dispatch, approve and review it, and surfaces the team's
  * evidence instead of a raw task list.
  */
+const { t } = useCompanyI18n()
+
 const props = defineProps({
   companyId: { type: String, required: true },
   snapshot: { type: Object, default: null },
@@ -74,11 +77,11 @@ const counts = computed(() => ({
 }))
 
 const filters = computed(() => [
-  { id: 'all', label: 'All goals', count: counts.value.all },
-  { id: 'attention', label: 'Needs me', count: counts.value.attention },
-  { id: 'running', label: 'Running', count: counts.value.running },
-  { id: 'review', label: 'To review', count: counts.value.review },
-  { id: 'done', label: 'Done', count: counts.value.done }
+  { id: 'all', label: t('work.allGoals'), count: counts.value.all },
+  { id: 'attention', label: t('work.needsMe'), count: counts.value.attention },
+  { id: 'running', label: t('status.running'), count: counts.value.running },
+  { id: 'review', label: t('work.toReview'), count: counts.value.review },
+  { id: 'done', label: t('work.done'), count: counts.value.done }
 ])
 
 function notify(text, type = 'info') {
@@ -209,20 +212,20 @@ function eventTone(event) {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">Execution</p>
-        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">Goals &amp; work</h1>
+        <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">{{ t('nav.work') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Every goal has an owner, a deadline and evidence. Start it, review it, accept it — or ask the assistant why it is stuck.
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
         <button class="btn btn-sm gap-1.5 rounded-xl border-base-content/15" :disabled="busy" @click="sync">
-          <i class="fa-solid fa-rotate" :class="busy ? 'animate-spin' : ''"></i> Sync
+          <i class="fa-solid fa-rotate" :class="busy ? 'animate-spin' : ''"></i> {{ t('work.sync') }}
         </button>
         <button class="btn btn-sm gap-1.5 rounded-xl border-base-content/15" @click="ask('Review the work in progress and tell me what needs my attention')">
-          <i class="fa-solid fa-wand-magic-sparkles"></i> Ask AI
+          <i class="fa-solid fa-wand-magic-sparkles"></i> {{ t('work.askAi') }}
         </button>
         <button v-if="canManage" class="btn btn-primary btn-sm gap-1.5 rounded-xl shadow-lg shadow-primary/20" @click="emit('new-goal')">
-          <i class="fa-solid fa-plus"></i> New goal
+          <i class="fa-solid fa-plus"></i> {{ t('shell.newGoal') }}
         </button>
       </div>
     </header>
@@ -262,7 +265,7 @@ function eventTone(event) {
           <div class="mb-2 flex items-center justify-between px-1">
             <div class="flex items-center gap-1.5">
               <span class="h-1.5 w-1.5 rounded-full" :class="column.id === 'running' ? 'bg-primary' : column.id === 'review' ? 'bg-warning' : column.id === 'done' ? 'bg-success' : 'bg-base-content/30'"></span>
-              <span class="text-[10px] font-bold uppercase tracking-[0.14em] text-base-content/50">{{ column.label }}</span>
+              <span class="text-[10px] font-bold uppercase tracking-[0.14em] text-base-content/50">{{ t(`status.${column.id}`) }}</span>
             </div>
             <span class="text-[10px] text-base-content/35">{{ (columnMissions[column.id] || []).length }}</span>
           </div>
@@ -291,7 +294,7 @@ function eventTone(event) {
             </button>
 
             <div v-if="!(columnMissions[column.id] || []).length" class="rounded-lg border border-dashed border-base-content/15 p-4 text-center text-[9px] text-base-content/30">
-              Empty
+              {{ t('work.empty') }}
             </div>
           </div>
         </div>
@@ -354,7 +357,7 @@ function eventTone(event) {
               <i class="fa-solid fa-pen"></i> Edit
             </button>
             <button class="btn btn-ghost btn-xs gap-1" @click="ask(`Review the goal ${selected.title} and tell me what needs my attention`)">
-              <i class="fa-solid fa-wand-magic-sparkles"></i> Ask AI
+              <i class="fa-solid fa-wand-magic-sparkles"></i> {{ t('work.askAi') }}
             </button>
           </div>
         </header>

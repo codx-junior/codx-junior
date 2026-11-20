@@ -4,6 +4,7 @@ import { API } from '@/api/api'
 import { $storex } from '@/store'
 import MessengerChannelList from '@/components/messenger/MessengerChannelList.vue'
 import ChatView from '@/views/ChatView.vue'
+import { useCompanyI18n } from './i18n'
 
 /**
  * Company chats — the company/team channels.
@@ -18,12 +19,14 @@ const props = defineProps({
   companyId: { type: String, required: true },
   snapshot: { type: Object, default: null },
   canManage: { type: Boolean, default: false },
-  teamId: { type: String, default: '' }
+  teamId: { type: String, default: '' },
+  chatId: { type: String, default: '' }
 })
 
 const emit = defineEmits(['close', 'changed'])
 
 const api = API.companies
+const { t } = useCompanyI18n()
 
 const loading = ref(true)
 const busy = ref(false)
@@ -90,11 +93,16 @@ function errorMessage(error) {
   )
 }
 
-async function loadChats({ selectFirst = false } = {}) {
+async function loadChats({ selectFirst = false, selectId = '' } = {}) {
   loading.value = true
   try {
     chats.value = await api.listChats(props.companyId)
-    if (selectFirst && visibleChats.value.length) {
+    const target = selectId
+      ? visibleChats.value.find(item => item.chat_id === selectId)
+      : null
+    if (target) {
+      await selectChat({ _companyChat: target })
+    } else if (selectFirst && visibleChats.value.length) {
       const first = visibleChats.value.find(item => item.available)
       if (first) await selectChat({ _companyChat: first })
     }
@@ -214,10 +222,10 @@ async function removeChannel() {
   }
 }
 
-watch(() => [props.teamId, props.companyId], async () => {
+watch(() => [props.teamId, props.companyId, props.chatId], async () => {
   activeChat.value = null
   activeRef.value = null
-  await loadChats({ selectFirst: true })
+  await loadChats({ selectFirst: !props.chatId, selectId: props.chatId })
 }, { immediate: true })
 </script>
 
@@ -230,25 +238,25 @@ watch(() => [props.teamId, props.companyId], async () => {
           <i class="fa-regular fa-comments"></i>
         </div>
         <div class="min-w-0 flex-1">
-          <h2 class="text-sm font-bold truncate">{{ focusedTeam ? focusedTeam.name : 'Company chats' }}</h2>
+          <h2 class="text-sm font-bold truncate">{{ focusedTeam ? focusedTeam.name : t('chats.title') }}</h2>
           <p class="text-[10px] text-base-content/45 truncate">
             {{ visibleChats.length }} channel{{ visibleChats.length === 1 ? '' : 's' }} ·
-            {{ focusedTeam ? 'team room' : 'hosted by the company projects' }}
+            {{ focusedTeam ? t('chats.teamRoom') : t('chats.hosted') }}
           </p>
         </div>
         <button
           v-if="canManage"
           class="btn btn-sm btn-primary gap-1"
           :disabled="busy"
-          title="New channel"
+          :title="t('chats.newChannel')"
           @click="openCreate"
         >
           <i class="fa-solid fa-plus"></i>
-          <span class="hidden sm:inline">New channel</span>
+          <span class="hidden sm:inline">{{ t('chats.newChannel') }}</span>
         </button>
-        <button class="btn btn-sm btn-ghost" title="Close" @click="emit('close')">
+        <button class="btn btn-sm btn-ghost" :title="t('chats.close')" @click="emit('close')">
           <i class="fa-solid fa-xmark"></i>
-          <span class="hidden sm:inline">Close</span>
+          <span class="hidden sm:inline">{{ t('chats.close') }}</span>
         </button>
       </div>
     </header>
@@ -256,8 +264,8 @@ watch(() => [props.teamId, props.companyId], async () => {
     <div class="flex-1 min-h-0 flex overflow-hidden">
       <!-- Channel sidebar (desktop) -->
       <aside
-        v-if="!$storex.ui.isMobile" class="flex shrink-0 flex-col border-r border-base-content/10 bg-base-200/40"
-        :style="sidebarCollapsed ? 'width:64px' : 'width:260px'"
+        v-if="!$storex.ui.isMobile" class="flex min-w-0 shrink-0 flex-col overflow-hidden border-r border-base-content/10 bg-base-200/40"
+        :style="sidebarCollapsed ? 'width:64px' : 'width:288px'"
       >
         <MessengerChannelList
           :groups="groups"
@@ -280,7 +288,7 @@ watch(() => [props.teamId, props.companyId], async () => {
         class="fixed inset-0 z-50 bg-base-200 md:hidden"
       >
         <div class="flex items-center justify-between px-3 py-3 border-b border-base-content/10">
-          <span class="text-sm font-bold">Channels</span>
+          <span class="text-sm font-bold">{{ t('chats.channels') }}</span>
           <button class="btn btn-ghost btn-sm btn-square" @click="showMobileChannels = false">
             <i class="fa-solid fa-xmark"></i>
           </button>
@@ -304,14 +312,14 @@ watch(() => [props.teamId, props.companyId], async () => {
         >
           <i class="fa-regular fa-comments text-5xl"></i>
           <p class="text-sm text-center">
-            {{ focusedTeam ? `No room yet for ${focusedTeam.name}. Create one and the whole team joins.` : 'Pick a channel to talk with your team, or create one for a team.' }}
+            {{ focusedTeam ? `${t('chats.noChannels')} · ${focusedTeam.name}` : t('chats.pick') }}
           </p>
           <div class="flex gap-2">
             <button class="btn btn-sm md:hidden" @click="showMobileChannels = true">
-              <i class="fa-solid fa-hashtag"></i> Channels
+              <i class="fa-solid fa-hashtag"></i> {{ t('chats.channels') }}
             </button>
             <button v-if="canManage" class="btn btn-sm btn-primary" @click="openCreate">
-              <i class="fa-solid fa-plus"></i> New channel
+              <i class="fa-solid fa-plus"></i> {{ t('chats.newChannel') }}
             </button>
           </div>
         </div>
@@ -357,7 +365,7 @@ watch(() => [props.teamId, props.companyId], async () => {
     <div v-if="showCreate" class="modal modal-open" role="dialog" aria-modal="true">
       <div class="modal-box max-w-lg">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="font-bold text-lg">New company channel</h3>
+          <h3 class="font-bold text-lg">{{ t('chats.newChannel') }}</h3>
           <button class="btn btn-ghost btn-sm btn-square" aria-label="Close" @click="showCreate = false">
             <i class="fa-solid fa-xmark"></i>
           </button>

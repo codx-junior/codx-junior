@@ -3,7 +3,7 @@ import moment from 'moment'
 </script>
 
 <template>
-  <div class="flex flex-col h-full" :class="isCollapsed ? 'w-16' : 'w-72'" style="transition: width 0.2s">
+  <div class="flex h-full w-full min-w-0 flex-col" style="transition: width 0.2s">
 
     <!-- ── Header ── -->
     <div class="shrink-0 flex items-center gap-2 px-3 py-3 border-b border-base-content/10">

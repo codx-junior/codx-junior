@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { API } from '@/api/api'
 import { $storex } from '@/store'
 import { AUTONOMY_LEVELS } from './companyMeta'
+import { useCompanyI18n } from './i18n'
 
 /**
  * Settings — the minimum an owner needs to run codx-junior.
@@ -21,6 +23,8 @@ const props = defineProps({
 const emit = defineEmits(['refresh', 'assistant', 'deleted'])
 
 const api = API.companies
+const router = useRouter()
+const { t } = useCompanyI18n()
 const savingProfile = ref(false)
 const savingAutonomy = ref(false)
 const confirmDelete = ref(false)
@@ -66,16 +70,27 @@ const ai = reactive({
   showKey: false,
   newModelName: '',
   newModelId: '',
-  newModelError: ''
+  newModelError: '',
+  roles: {},
+  applyAll: true,
+  savingRoles: false
 })
 
 const selectedProvider = computed(() => ai.providers.find(item => item.name === ai.selectedProvider) || null)
-const llmModels = computed(() => ai.models.filter(model => (model.model_type || 'llm') === 'llm'))
 const defaultModelOptions = computed(() => {
-  const names = llmModels.value.map(model => model.name).filter(Boolean)
+  const names = ai.models.filter(model => (model.model_type || 'llm') === 'llm').map(model => model.name).filter(Boolean)
   if (ai.defaultModel && !names.includes(ai.defaultModel)) names.unshift(ai.defaultModel)
   return names
 })
+const roleRows = computed(() => [
+  { id: 'llm_model', label: 'Reasoning' },
+  { id: 'rag_model', label: 'RAG' },
+  { id: 'wiki_model', label: 'Wiki' },
+  { id: 'guardrail_model', label: 'Guardrails' },
+  { id: 'embeddings_model', label: 'Embeddings' },
+  { id: 'image_generation_model', label: 'Image generation' },
+  { id: 'image_vision_model', label: 'Image vision' }
+].map(role => ({ ...role, value: ai.roles[role.id] || '' })))
 
 function providerFields(provider) {
   ai.providerName = provider?.name || ''
@@ -103,6 +118,10 @@ async function loadAI() {
     ai.providers = Array.isArray(settings.ai_providers) ? settings.ai_providers.map(item => ({ ...item })) : []
     ai.models = Array.isArray(settings.ai_models) ? settings.ai_models.map(item => ({ ...item })) : []
     ai.defaultModel = settings.llm_model || ''
+    ai.roles = Object.fromEntries([
+      'llm_model', 'rag_model', 'wiki_model', 'guardrail_model',
+      'embeddings_model', 'image_generation_model', 'image_vision_model'
+    ].map(key => [key, settings[key] || '']))
     if (ai.providers.length) {
       chooseProvider(ai.providers[0].name)
     } else {
@@ -162,6 +181,9 @@ async function saveAI() {
     if (ai.newProvider && ai.providers.some(item => item.name === name)) {
       throw new Error('A provider with that name already exists — select it instead.')
     }
+    if (ai.applyAll && !ai.defaultModel) {
+      throw new Error('Choose or add a model before applying it to every AI role.')
+    }
 
     const provider = {
       ...(selectedProvider.value || {}),
@@ -177,7 +199,20 @@ async function saveAI() {
 
     await API.settings.global.saveSection('ai_providers', providers)
     await API.settings.global.saveSection('ai_models', ai.models)
-    await API.settings.global.saveSection('llm_model', ai.defaultModel || '')
+
+    if (ai.applyAll) {
+      const settings = await API.settings.global.read()
+      const model = ai.defaultModel || ''
+      for (const key of [
+        'llm_model', 'rag_model', 'wiki_model', 'guardrail_model',
+        'embeddings_model', 'image_generation_model', 'image_vision_model'
+      ]) {
+        settings[key] = model
+      }
+      await API.settings.global.write(settings)
+    } else {
+      await API.settings.global.saveSection('llm_model', ai.defaultModel || '')
+    }
 
     ai.providers = providers
     ai.selectedProvider = name
@@ -192,6 +227,22 @@ async function saveAI() {
   } finally {
     ai.saving = false
   }
+}
+
+function openAdvancedAI() {
+  const linked = (props.snapshot?.projects || []).find(project => project.available)
+  const project = $storex.projects.activeProject ||
+    ($storex.projects.allProjects || []).find(item => item.project_id === linked?.project_id)
+  const projectName = project?.project_name || linked?.discovered_name || linked?.project_id
+  if (!projectName) {
+    notify('Open a project before changing advanced AI settings.', 'error')
+    return
+  }
+  router.push({
+    name: 'global-settings',
+    params: { projectName },
+    query: { tab: 'ai' }
+  }).catch(() => {})
 }
 
 // ── Company profile & autonomy ─────────────────────────────────────────────
@@ -286,9 +337,9 @@ function ask(prompt) {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <p class="cp-eyebrow">Administration</p>
-        <h1 class="mt-1 text-xl font-extrabold tracking-tight md:text-2xl">Company settings</h1>
+        <h1 class="mt-1 text-xl font-extrabold tracking-tight md:text-2xl">{{ t('settings.title') }}</h1>
         <p class="mt-1 text-[11px] leading-relaxed cp-muted">
-          The minimum codx-junior needs: who the company is, which AI it uses and how much it may do alone.
+          {{ t('settings.subtitle') }}
         </p>
       </div>
       <button class="cp-chip" @click="ask('Review my company settings and tell me what is missing')">
@@ -302,42 +353,42 @@ function ask(prompt) {
         <section class="cp-card cp-card-pad">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">Company context</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">Every AI teammate uses this before it works.</p>
+              <h2 class="cp-title">{{ t('settings.companyContext') }}</h2>
+              <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.companyHint') }}</p>
             </div>
             <span class="cp-icon-tile cp-icon-tile--lime !h-7 !w-7"><i class="fa-solid fa-building text-[10px]"></i></span>
           </div>
 
           <div class="mt-3 grid gap-2.5 sm:grid-cols-2">
             <label class="cp-field sm:col-span-2">
-              <span>Company name</span>
+              <span>{{ t('settings.name') }}</span>
               <input v-model="profile.name" class="cp-input" :disabled="!canManage" />
             </label>
             <label class="cp-field sm:col-span-2">
-              <span>What the company does</span>
+              <span>{{ t('settings.description') }}</span>
               <textarea v-model="profile.description" class="cp-textarea" rows="2" :disabled="!canManage" placeholder="One paragraph a new teammate would understand."></textarea>
             </label>
             <label class="cp-field sm:col-span-2">
-              <span>Mission</span>
+              <span>{{ t('settings.mission') }}</span>
               <textarea v-model="profile.mission" class="cp-textarea" rows="2" :disabled="!canManage" placeholder="Why the company exists and what winning looks like."></textarea>
             </label>
           </div>
 
           <details class="mt-3 border-t border-[var(--cp-border)] pt-2">
             <summary class="cursor-pointer list-none text-[9px] font-semibold cp-muted transition hover:text-[var(--cp-text)]">
-              More context (vision, values, website)
+              {{ t('settings.moreContext') }}
             </summary>
             <div class="mt-2 grid gap-2.5 sm:grid-cols-2">
               <label class="cp-field sm:col-span-2">
-                <span>Vision</span>
+                <span>{{ t('settings.vision') }}</span>
                 <textarea v-model="profile.vision" class="cp-textarea" rows="2" :disabled="!canManage"></textarea>
               </label>
               <label class="cp-field">
-                <span>Values (comma separated)</span>
+                <span>{{ t('settings.values') }}</span>
                 <input v-model="profile.values" class="cp-input" :disabled="!canManage" />
               </label>
               <label class="cp-field">
-                <span>Website</span>
+                <span>{{ t('settings.website') }}</span>
                 <input v-model="profile.website" class="cp-input" :disabled="!canManage" placeholder="https://" />
               </label>
             </div>
@@ -346,7 +397,7 @@ function ask(prompt) {
           <div class="mt-3 flex justify-end">
             <button class="cp-cta" :disabled="!canManage || savingProfile" @click="saveProfile">
               <span v-if="savingProfile" class="loading loading-spinner loading-xs"></span>
-              Save company context
+              {{ t('settings.saveContext') }}
             </button>
           </div>
         </section>
@@ -355,19 +406,21 @@ function ask(prompt) {
         <section class="cp-card cp-card-pad">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">AI connection</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">The provider, key and model that make codx-junior work.</p>
+              <h2 class="cp-title">{{ t('settings.aiConnection') }}</h2>
+              <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.aiHint') }}</p>
             </div>
-            <span class="cp-icon-tile cp-icon-tile--green !h-7 !w-7"><i class="fa-solid fa-key text-[10px]"></i></span>
+            <button class="cp-chip !h-7 !text-[8.5px]" @click="openAdvancedAI">
+              <i class="fa-solid fa-sliders text-[8px]"></i> {{ t('settings.advanced') }}
+            </button>
           </div>
 
           <div v-if="!canAdmin" class="mt-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-3">
-            <p class="text-[10px] font-semibold">Only a company admin can change AI providers and keys.</p>
+            <p class="text-[10px] font-semibold">{{ t('settings.adminOnly') }}</p>
             <p class="mt-0.5 text-[9px] cp-muted">Ask an admin to update them in Global Settings → AI Providers.</p>
           </div>
 
           <div v-else-if="ai.loading" class="mt-4 flex items-center gap-2 text-[10px] cp-muted">
-            <span class="loading loading-spinner loading-xs"></span> Loading AI setup…
+            <span class="loading loading-spinner loading-xs"></span> {{ t('settings.loading') }}
           </div>
 
           <div v-else class="mt-3 space-y-2.5">
@@ -375,22 +428,36 @@ function ask(prompt) {
               {{ ai.error }}
             </div>
 
+            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
+              <p class="text-[9px] font-bold">Current global model roles</p>
+              <div class="mt-1.5 flex flex-wrap gap-1">
+                <span
+                  v-for="role in roleRows"
+                  :key="role.id"
+                  class="rounded-full border border-[var(--cp-border)] bg-[var(--cp-surface)] px-1.5 py-0.5 text-[8px] cp-muted"
+                  :title="role.value || 'Not set'"
+                >
+                  {{ role.label }}: <strong class="text-[var(--cp-text)]">{{ role.value || '—' }}</strong>
+                </span>
+              </div>
+            </div>
+
             <label class="cp-field">
-              <span>Provider</span>
+              <span>{{ t('settings.provider') }}</span>
               <select class="cp-select" :value="ai.selectedProvider" :disabled="ai.saving" @change="chooseProvider($event.target.value)">
                 <option v-for="provider in ai.providers" :key="provider.name" :value="provider.name">{{ provider.name }}</option>
-                <option value="__new__">+ Add a provider</option>
+                <option value="__new__">+ Add provider</option>
               </select>
             </label>
 
             <div class="grid gap-2.5 sm:grid-cols-2">
               <label class="cp-field">
-                <span>Provider name</span>
+                <span>{{ t('settings.providerName') }}</span>
                 <input v-model="ai.providerName" class="cp-input" :disabled="ai.saving || !ai.newProvider" placeholder="e.g. OpenAI" />
-                <span v-if="!ai.newProvider" class="cp-help">Existing provider names are fixed. Choose “+ Add a provider” to create one.</span>
+                <span v-if="!ai.newProvider" class="cp-help">Existing provider names are fixed. Choose “+ Add provider” to create one.</span>
               </label>
               <label class="cp-field">
-                <span>Protocol</span>
+                <span>{{ t('settings.protocol') }}</span>
                 <input v-model="ai.providerType" class="cp-input" :disabled="ai.saving" list="cp-ai-protocols" placeholder="openai" />
                 <datalist id="cp-ai-protocols">
                   <option value="openai"></option>
@@ -400,28 +467,28 @@ function ask(prompt) {
                 </datalist>
               </label>
               <label class="cp-field sm:col-span-2">
-                <span>API URL</span>
+                <span>{{ t('settings.apiUrl') }}</span>
                 <input v-model="ai.apiUrl" class="cp-input font-mono" :disabled="ai.saving" placeholder="https://api.openai.com/v1" />
               </label>
               <label class="cp-field sm:col-span-2">
-                <span>API key</span>
+                <span>{{ t('settings.apiKey') }}</span>
                 <div class="relative">
                   <input v-model="ai.apiKey" class="cp-input pr-16 font-mono" :type="ai.showKey ? 'text' : 'password'" :disabled="ai.saving" autocomplete="off" placeholder="sk-…" />
                   <button type="button" class="absolute right-1 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-[8px] font-bold cp-muted hover:text-[var(--cp-text)]" @click="ai.showKey = !ai.showKey">
-                    {{ ai.showKey ? 'Hide' : 'Show' }}
+                    {{ ai.showKey ? t('settings.hide') : t('settings.show') }}
                   </button>
                 </div>
-                <span class="cp-help">Stored in Global Settings. Never shown to teammates.</span>
+                <span class="cp-help">{{ t('settings.storedGlobally') }}</span>
               </label>
             </div>
 
             <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
               <div class="flex items-center justify-between gap-2">
                 <div>
-                  <p class="text-[10px] font-bold">Default model</p>
-                  <p class="mt-0.5 text-[8.5px] cp-muted">Used by the assistant and every AI teammate.</p>
+                  <p class="text-[10px] font-bold">{{ t('settings.model') }}</p>
+                  <p class="mt-0.5 text-[8.5px] cp-muted">{{ t('settings.modelHint') }}</p>
                 </div>
-                <span class="cp-chip !h-6 !text-[8px]">{{ llmModels.length }} available</span>
+                <span class="cp-chip !h-6 !text-[8px]">{{ defaultModelOptions.length }} available</span>
               </div>
               <label class="cp-field mt-2">
                 <span>Model</span>
@@ -433,28 +500,37 @@ function ask(prompt) {
 
               <div class="mt-2 grid gap-2 sm:grid-cols-2">
                 <label class="cp-field">
-                  <span>Add a model — display name</span>
+                  <span>{{ t('settings.displayName') }}</span>
                   <input v-model="ai.newModelName" class="cp-input" :disabled="ai.saving" placeholder="e.g. GPT-4o" />
                 </label>
                 <label class="cp-field">
-                  <span>Provider model id</span>
+                  <span>{{ t('settings.modelId') }}</span>
                   <input v-model="ai.newModelId" class="cp-input font-mono" :disabled="ai.saving" placeholder="gpt-4o" />
                 </label>
               </div>
               <div class="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                 <p v-if="ai.newModelError" class="text-[8.5px] text-[var(--cp-error-ink)]">{{ ai.newModelError }}</p>
-                <p v-else class="text-[8.5px] cp-muted">The model id must match exactly what the provider expects.</p>
+                <p v-else class="text-[8.5px] cp-muted">{{ t('settings.modelHelp') }}</p>
                 <button type="button" class="cp-chip !h-7 !text-[8.5px]" :disabled="ai.saving" @click="addModelToDraft">
-                  <i class="fa-solid fa-plus text-[7px]"></i> Add model
+                  <i class="fa-solid fa-plus text-[7px]"></i> {{ t('settings.addModelBtn') }}
                 </button>
               </div>
             </div>
 
+            <label class="flex items-start gap-2 rounded-xl border border-[var(--cp-border)] p-2.5 text-[9px] leading-relaxed">
+              <input v-model="ai.applyAll" type="checkbox" class="mt-0.5 accent-[var(--cp-lime)]" />
+              <span>
+                <strong class="block text-[10px]">{{ t('settings.applyAll') }}</strong>
+                {{ t('settings.applyAllHint') }}
+                Use <button type="button" class="font-bold text-[var(--cp-accent-ink)]" @click="openAdvancedAI">Advanced</button> for separate models.
+              </span>
+            </label>
+
             <div class="flex items-center justify-between gap-2 pt-0.5">
-              <p class="text-[8.5px] cp-muted">Advanced models, embeddings and pricing live in Global Settings.</p>
+              <p class="text-[8.5px] cp-muted">{{ t('settings.advancedHint') }}</p>
               <button class="cp-cta" :disabled="ai.saving" @click="saveAI">
                 <span v-if="ai.saving" class="loading loading-spinner loading-xs"></span>
-                Save AI setup
+                {{ t('settings.saveAI') }}
               </button>
             </div>
           </div>
@@ -466,8 +542,8 @@ function ask(prompt) {
         <section class="cp-card cp-card-pad">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">Autonomy</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">How much the company may do without asking.</p>
+              <h2 class="cp-title">{{ t('settings.autonomy') }}</h2>
+              <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.autonomyHint') }}</p>
             </div>
             <button
               class="relative h-5 w-9 shrink-0 rounded-full border transition-colors"
@@ -483,35 +559,35 @@ function ask(prompt) {
 
           <div class="mt-3 grid gap-2.5">
             <label class="cp-field">
-              <span>Level</span>
+              <span>{{ t('settings.level') }}</span>
               <select v-model="policy.level" class="cp-select" :disabled="!canManage">
                 <option v-for="level in AUTONOMY_LEVELS" :key="level.id" :value="level.id">{{ level.label }} — {{ level.hint }}</option>
               </select>
             </label>
             <label class="cp-field">
-              <span>Daily AI budget (cxj)</span>
+              <span>{{ t('settings.dailyBudget') }}</span>
               <input v-model.number="policy.daily_budget_cxjcoins" type="number" min="0" step="1" class="cp-input" :disabled="!canManage" />
-              <span class="cp-help">0 means no daily limit.</span>
+              <span class="cp-help">{{ t('settings.noLimit') }}</span>
             </label>
             <label class="flex items-start gap-2 text-[9.5px] leading-relaxed">
               <input v-model="policy.require_human_acceptance" type="checkbox" class="mt-0.5 accent-[var(--cp-lime)]" :disabled="!canManage" />
-              <span>Human accepts the outcome before a goal is closed.</span>
+              <span>{{ t('settings.acceptance') }}</span>
             </label>
           </div>
 
           <details class="mt-2 border-t border-[var(--cp-border)] pt-2">
-            <summary class="cursor-pointer list-none text-[9px] font-semibold cp-muted hover:text-[var(--cp-text)]">Advanced cycle limits</summary>
+            <summary class="cursor-pointer list-none text-[9px] font-semibold cp-muted hover:text-[var(--cp-text)]">{{ t('settings.advancedCycle') }}</summary>
             <div class="mt-2 grid grid-cols-2 gap-2">
               <label class="cp-field">
-                <span>Interval (min)</span>
+                <span>{{ t('settings.interval') }}</span>
                 <input v-model.number="policy.interval_minutes" type="number" min="5" class="cp-input" :disabled="!canManage" />
               </label>
               <label class="cp-field">
-                <span>Max concurrent</span>
+                <span>{{ t('settings.concurrent') }}</span>
                 <input v-model.number="policy.max_concurrent_missions" type="number" min="1" class="cp-input" :disabled="!canManage" />
               </label>
               <label class="cp-field col-span-2">
-                <span>Max goals per cycle</span>
+                <span>{{ t('settings.perCycle') }}</span>
                 <input v-model.number="policy.max_missions_per_cycle" type="number" min="1" class="cp-input" :disabled="!canManage" />
               </label>
             </div>
@@ -520,49 +596,49 @@ function ask(prompt) {
           <div class="mt-3 flex justify-end">
             <button class="cp-cta" :disabled="!canManage || savingAutonomy" @click="saveAutonomy">
               <span v-if="savingAutonomy" class="loading loading-spinner loading-xs"></span>
-              Save autonomy
+              {{ t('settings.saveAutonomy') }}
             </button>
           </div>
         </section>
 
         <!-- Plan -->
         <section class="cp-card cp-card-pad">
-          <h2 class="cp-title">Company plan</h2>
+          <h2 class="cp-title">{{ t('settings.plan') }}</h2>
           <div class="mt-2.5 grid grid-cols-2 gap-2">
             <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">Teams</p>
+              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.teams') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.teams || 0 }}</p>
             </div>
             <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">People</p>
+              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.people') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ (counts.human || counts.humans || 0) + (counts.ai || 0) }}</p>
             </div>
             <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">Projects</p>
+              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.projects') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.projects || 0 }}</p>
             </div>
             <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">AI teammates</p>
+              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.aiTeammates') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.ai || 0 }}</p>
             </div>
           </div>
         </section>
 
         <section v-if="canAdmin" class="cp-card cp-card-pad border-[var(--cp-red)]/25">
-          <h2 class="cp-title text-error">Danger zone</h2>
-          <p class="mt-0.5 text-[9.5px] leading-relaxed cp-muted">Deleting the company removes its document and journal. Project files and boards are kept.</p>
-          <button class="cp-chip mt-2.5 !border-error/30 !text-error" @click="confirmDelete = true">Delete company</button>
+          <h2 class="cp-title text-error">{{ t('settings.danger') }}</h2>
+          <p class="mt-0.5 text-[9.5px] leading-relaxed cp-muted">{{ t('settings.dangerHint') }}</p>
+          <button class="cp-chip mt-2.5 !border-error/30 !text-error" @click="confirmDelete = true">{{ t('settings.delete') }}</button>
         </section>
       </div>
     </div>
 
     <div v-if="confirmDelete" class="fixed inset-0 z-[95] grid place-items-center bg-black/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
       <div class="cp-card w-full max-w-sm p-4">
-        <h3 class="text-base font-extrabold">Delete {{ company.name }}?</h3>
+        <h3 class="text-base font-extrabold">{{ t('settings.deleteConfirm') }} · {{ company.name }}</h3>
         <p class="mt-1 text-[10px] leading-relaxed cp-muted">This removes the company document and its journal. Project files, boards and chats are kept.</p>
         <div class="mt-3 flex justify-end gap-2">
-          <button class="cp-chip" @click="confirmDelete = false">Cancel</button>
-          <button class="cp-chip !border-transparent !bg-[var(--cp-red)] !text-white" @click="deleteCompany(); confirmDelete = false">Delete company</button>
+          <button class="cp-chip" @click="confirmDelete = false">{{ t('settings.cancel') }}</button>
+          <button class="cp-chip !border-transparent !bg-[var(--cp-red)] !text-white" @click="deleteCompany(); confirmDelete = false">{{ t('settings.delete') }}</button>
         </div>
       </div>
     </div>

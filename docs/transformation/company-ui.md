@@ -20,21 +20,25 @@ review delivery and grow revenue.
 | --- | --- |
 | **Home** | How is the company doing? What needs me now? What is moving? Where is the money? |
 | **Goals & work** | What are we trying to achieve, who owns it, what is blocked, what is ready to review? |
-| **Teams** | Who is in each team, who leads it, what is it working on, how is it performing? |
-| **People** | Who are the humans and AI teammates, what are their roles, who is on duty? |
+| **Team** | Teams and people in one place: who leads, who is on the roster, what the team is working on, and each human/AI teammate. |
 | **Business** | Revenue vs target, gross profit, pipeline, business metrics and the growth plan. |
-| **Activity** | What was delivered, what changed, what was decided — in plain language. |
-| **Security** | Cross-project CISO posture, findings and scan actions. |
-| **Settings** | Company context, the AI provider/model/key codx-junior needs, autonomy envelope and AI budget. |
+| **Activity** | What was delivered, what changed, what was decided — in plain language; click an entry to open its chat, or create a task. |
+| **Security** | CISO posture of the current project and its child projects only. |
+| **Settings** | Company context, a simple AI provider/model/key setup, autonomy envelope and AI budget. |
+| **Meet / CoWorking / Calendar** | Existing workplace surfaces embedded in the company main area, without leaving company mode. |
 
-The workspace has a local **light/dark theme** (brand magenta and the design-system
+The app bar now has **Ask codx-junior** with the sparkle icon (no floating assistant button), a user menu with language / settings / logout, and the last three updated company channels in the left rail. The workspace has a local **light/dark theme** (brand magenta and the design-system
 surfaces) and an explicit **Exit company** link to simple mode or the desktop
-workspace. The **assistant is always one click away** (a floating companion on desktop and
-mobile). It opens with live signals (decisions waiting, revenue gap, blocked
+workspace. The **Ask codx-junior bar** opens the assistant from the top bar (there is no
+floating assistant button anymore). It opens with live signals (decisions waiting, revenue gap, blocked
 goals), four one-click actions and a conversation grounded in the company
 document, teams, missions, pipeline, budget and recent journal.
 
 ![Business cockpit](images/company-business.png)
+
+![Team](images/company-team.png)
+
+![AI setup](images/company-settings.png)
 
 ## The business layer
 
@@ -48,6 +52,32 @@ The company document now includes a persistent `business` plan:
 It is edited from the Business workspace (`Edit numbers`, `Add opportunity`,
 `Add metric`) and is part of the same company JSON document, so it follows the
 company across projects and is visible to the assistant.
+
+## Language and workplace
+
+- **Company-only i18n**: English, Español, Français, Deutsch and हिन्दी. The
+  language selector lives in the user menu (and the mobile menu). The company
+  shell, navigation, dashboard, Team, Activity, Settings, Calendar widget,
+  channels and workplace sections use the shared company dictionary; missing
+  keys fall back to English.
+- **Meet, CoWorking and Calendar** render inside the company main area. Opening
+  any of them changes the company section, not the product shell, so the owner
+  stays in company mode.
+- The **last three updated channels** are listed in the left rail and open the
+  channel directly. Channel names are truncated and the chat rail has a fixed
+  width so long names cannot push the conversation.
+
+## AI settings
+
+The simple AI mode uses the real global settings:
+
+- choose or add a provider and API key,
+- choose or add a model,
+- assign that model to **every** codx-junior role (reasoning, RAG, wiki,
+  guardrails, embeddings, image generation and image vision),
+- see the current role assignments,
+- use **Advanced** to jump to Global Settings with the **AI Models** tab open
+  when separate models are needed.
 
 ## Assistant behaviour
 

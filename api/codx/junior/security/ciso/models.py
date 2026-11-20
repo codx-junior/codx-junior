@@ -131,6 +131,16 @@ def _plain(value: Any, json_mode: bool) -> Any:
     return value
 
 
+#: Rule families the platform treats as a protection floor. A project may
+#: silence them in its policy for the interactive gates, but the pre-commit
+#: hook always enforces them: a rule switched off in the UI must not silently
+#: disable the commit gate.
+MANDATORY_RULE_PREFIXES = (
+    "secret.", "malicious.", "injection.", "obfuscation.", "exfiltration.",
+    "supply_chain.", "destructive.", "dangerous.", "command.",
+)
+
+
 class SecuritySeverity(str, Enum):
     """Severity of a single CISO finding."""
 
@@ -357,6 +367,11 @@ def _default_strict_domains() -> List[SecurityDomain]:
         SecurityDomain.COMMAND,
         SecurityDomain.CONTAINER,
         SecurityDomain.DEPLOY,
+        # A stored injection is executed by *reading* it: the knowledge chunk
+        # is replayed into the next prompt, so ingestion is as strict as a
+        # file write. The same reasoning applies to a saved agent profile.
+        SecurityDomain.KNOWLEDGE_INGESTION,
+        SecurityDomain.PROFILE,
     ]
 
 
@@ -479,6 +494,18 @@ class CisoPolicy(CisoModel):
     def ignores_rule(self, rule_id: str) -> bool:
         """Return True when *rule_id* is silenced by this policy."""
         return rule_id in (self.ignore_rules or [])
+
+    def silenced_mandatory_rules(self) -> List[str]:
+        """Return the protection-floor rules this policy would silence.
+
+        The pre-commit hook ignores this list on purpose. Reporting it lets the
+        CISO view warn that a rule switched off in the UI still protects the
+        repository at commit time.
+        """
+        return [
+            rule_id for rule_id in (self.ignore_rules or [])
+            if str(rule_id).startswith(MANDATORY_RULE_PREFIXES)
+        ]
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON serialisable representation."""

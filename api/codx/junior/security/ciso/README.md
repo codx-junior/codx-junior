@@ -45,7 +45,7 @@ untracked, because one gate is never enough:
 | 9 | Container build/run | `docker_run/build/compose` | `guard_container` | pending |
 | 10 | Profile save | `profiles/profile_manager.py` → `save_profile` | `guard_profile` | pending |
 | 11 | Logs and exports | `ai_logger`, `api_logs`, `chat_export` | `sanitize_for_log` | pending |
-| 12 | Knowledge ingestion | `knowledge_loader`, `fetch_webpage`, wiki, task bodies | `guard_knowledge` | pending |
+| 12 | Knowledge ingestion | `knowledge_db` / `knowledge_lancedb` `index_documents` | `guard_knowledge` | **wired** (document indexing) |
 
 Items 1–5 are the ones the incident proves load-bearing. Items 6–12 are grouped
 by class in the follow-up tickets of the incident report.
@@ -71,7 +71,7 @@ The default stays `<project>/.codx`, so existing installs keep working and the
 paths that sibling containers bind-mount (browser sessions, downloads) stay
 host-visible.
 
-## Pre-commit gate
+## Pre-commit security gate
 
 ```bash
 # once per clone
@@ -85,11 +85,18 @@ CISO_PRECOMMIT_STRICT=1 git commit ...
 ```
 
 Exit codes of `python -m codx.junior.security.ciso.precommit`:
-`0` clean · `1` a credential blocks the commit · `3` the scanner could not run.
+`0` clean · `1` a protected finding blocks the commit · `3` the scanner could
+not run.
 
-The gate scans **added lines only** (`git diff --cached --unified=0`) and prints
-a report whose evidence is already redacted — a security report must never
-reproduce what it detected.
+The gate blocks `high`/`critical` findings in the protection floor (`secret.*`,
+`malicious.*`, `injection.*`, `obfuscation.*`, `exfiltration.*`,
+`supply_chain.*`, `destructive.*`, `dangerous.*`, `command.*`). It scans
+**added lines only** (`git diff --cached --unified=0`) and prints a report whose
+evidence is already redacted — a security report must never reproduce what it
+detected. It deliberately does **not** read the project `ignore_rules`: a rule
+silenced in the CISO view must not silently disable the commit boundary. For a
+reviewed exception, `--approve` fingerprints the exact staged content for one
+commit.
 
 ## Repository audit
 
@@ -152,6 +159,7 @@ PYTHONPATH=<repo>/api <repo>/api/.venv/bin/python -m pytest -q \
 | `secrets.py` | known provider token shapes, credential assignments, URL credentials, entropy, placeholder filter |
 | `malicious.py` | malicious / obfuscated / destructive / supply-chain / exfiltration code, shell commands. `command.python-delete` / `dangerous.python-dynamic-delete` catch inline Python deletion (`__import__("os").unlink(...)`) used to bypass the absent delete tool. |
 | `injection.py` | stored prompt injection (override, coercion, hidden HTML/invisible chars) |
+| `context.py` | path/comment/docstring/rule-table/test/lock/asset classification shared by every detector and the scanner |
 | `policy.py` | the deterministic ladder `ALLOW → WARN → REQUIRE_APPROVAL → REDACT → BLOCK` |
 | `scanner.py` | `scan_content`, `scan_file`, `scan_diff`, `scan_project` (all size-bounded) |
 | `payload.py` | recursion for structures: task cards and prompt messages |

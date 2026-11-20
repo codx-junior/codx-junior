@@ -71,6 +71,7 @@ from codx.junior.kanban.model import (
     LOCK_FILE,
     STORE_VERSION,
     clean_profiles,
+    normalize_board_type,
     safe_folder,
 )
 from codx.junior.migrations.kanban_v1_to_v2 import migrate_kanban_v1_to_v2
@@ -212,6 +213,7 @@ class KanbanStore:
             merged = {**entry, **board}
             title = str(merged.get("title") or entry.get("title") or "").strip()
             if title:
+                merged["type"] = normalize_board_type(merged.get("type"))
                 boards[title.lower()] = merged
 
         self._cache_key = (index_file, mtime)
@@ -259,6 +261,10 @@ class KanbanStore:
             title = str(merged.get("title") or entry.get("title") or "").strip()
             if not title:
                 continue
+            # The sprint board type was removed. Normalize it at read time so
+            # every consumer (API, tools, UI and tests) sees a single board
+            # concept even before the file is rewritten.
+            merged["type"] = normalize_board_type(merged.get("type"))
             boards[title] = merged
             order.append((int(merged.get("order") or position), title))
 
@@ -275,13 +281,15 @@ class KanbanStore:
     @staticmethod
     def _assemble_legacy(legacy: Dict[str, Any]) -> Dict[str, Any]:
         """Shape a raw v1 payload like :meth:`load` does."""
+        raw_boards = legacy.get("boards") if isinstance(legacy.get("boards"), dict) else {}
+        boards = {}
+        for title, entry in raw_boards.items():
+            if not isinstance(entry, dict):
+                continue
+            boards[title] = {**entry, "type": normalize_board_type(entry.get("type"))}
         if not legacy.get("version"):
-            return {
-                "version": STORE_VERSION,
-                "boards": legacy if isinstance(legacy.get("boards"), dict) else {},
-                "tags": {},
-            }
-        return legacy
+            return {"version": STORE_VERSION, "boards": boards, "tags": {}}
+        return {**legacy, "boards": boards}
 
     # ------------------------------------------------------------------
     # Folder resolution (used by ChatManager.get_chat_file)
@@ -583,6 +591,11 @@ class KanbanStore:
                 "order": column.get("order") if column.get("order") is not None else order,
                 "project_id": str(project_id or "").strip() or None,
                 "profiles": clean_profiles(profiles),
+                # A column used as a sprint maps a task status to a label. The
+                # sprint board type is gone, but the mapping stays: old sprint
+                # columns and the solopreneur workspace still read it.
+                "status": str(column.get("status", previous_column.get("status")) or "").strip(),
+                "icon": str(column.get("icon", previous_column.get("icon")) or "").strip(),
             })
         return normalized
 
@@ -608,12 +621,31 @@ class KanbanStore:
         title = str(entry.get("title") or name or "").strip() or str(entry.get("id") or "board")
         stored = self._find_existing(existing, entry.get("id"), title) or {}
 
-        board_type = str(entry.get("type") or stored.get("type") or BOARD_TYPE_KANBAN).strip().lower()
+        # There is a single board type now: any board can be used as a sprint.
+        # Legacy "sprint" values are normalized, never persisted again.
+        board_type = normalize_board_type(
+            entry.get("type") or stored.get("type") or BOARD_TYPE_KANBAN
+        )
         folder = (
             entry.get("folder")
             or stored.get("folder")
             or safe_folder(title, DEFAULT_BOARD)
         )
+        # Owning company team: the team lead is the person responsible for the
+        # board. An omitted key keeps the stored team, an explicit empty value
+        # clears it.
+        team_id = entry.get("team_id", stored.get("team_id"))
+        team_name = entry.get("team_name", stored.get("team_name"))
+        # Board management: who owns the board and how it is run. An omitted
+        # key keeps the stored value; an explicit empty value clears it. The
+        # flow defaults to "agile" (todo, doing, done, rejected, onhold).
+        responsible_kind = entry.get(
+            "responsible_kind", stored.get("responsible_kind")
+        )
+        responsible_name = entry.get(
+            "responsible_name", stored.get("responsible_name")
+        )
+        flow = entry.get("flow", stored.get("flow"))
 
         return {
             **stored,
@@ -622,7 +654,12 @@ class KanbanStore:
             "title": title,
             "description": entry.get("description") if entry.get("description") is not None
                            else stored.get("description") or "",
-            "type": board_type or BOARD_TYPE_KANBAN,
+            "type": board_type,
+            "team_id": str(team_id or "").strip(),
+            "team_name": str(team_name or "").strip(),
+            "responsible_kind": str(responsible_kind or "").strip().lower(),
+            "responsible_name": str(responsible_name or "").strip(),
+            "flow": str(flow or "agile").strip().lower(),
             "parent_id": entry.get("parent_id", stored.get("parent_id")),
             "folder": folder,
             "columns": self._normalize_columns(

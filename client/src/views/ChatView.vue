@@ -835,10 +835,10 @@ export default {
       const board = this.kanban?.title || this.theChat?.board
       this.$emit('chats', board)
 
-      // Desktop (dockview): the chat lives in a panel, so switching the active
-      // tab is enough — the host opens the board.
+      // Desktop (dockview): open the chat's board panel. The general Tasks
+      // table is a different screen; a chat always belongs to a board.
       if (this.$ui.isDesktopMode) {
-        if (this.$ui.activeTab !== 'tasks') this.$ui.setActiveTab('tasks')
+        this.$storex.ui.openApp('tasks', { board, boardName: board })
         return
       }
 

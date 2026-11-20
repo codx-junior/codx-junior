@@ -222,6 +222,152 @@ def _chat_info_cache_put(file_path: str, signature, chat: Chat) -> None:
         _CHAT_INFO_CACHE[file_path] = (signature, cached)
 
 
+# Execution states that mean the task did not finish cleanly. They are
+# derived while a chat file is read and annotate the transient task-table
+# fields on Chat (never persisted).
+_PROCESS_ERROR_STATUSES = {
+    "failed", "error", "stalled", "budget_exhausted", "budget-exhausted",
+    "aborted", "timeout", "crashed",
+}
+_PROCESS_STOPPED_STATUSES = {
+    "stopped", "cancelled", "canceled", "paused", "halted", "interrupted",
+}
+_PROCESS_RUNNING_STATUSES = {
+    "queued", "running", "starting", "waiting_input", "waiting-input", "in_progress",
+}
+
+#: A task whose last activity is older than this is marked as "old" by the
+#: Follow-up view (the UI still shows the exact age; this only drives the
+#: visual emphasis and the `old` filter/badge).
+OLD_TASK_DAYS = 7
+
+
+def _task_visible_messages(messages: List[Message]) -> List[Message]:
+    """Return the messages that belong to the visible task conversation."""
+    return [
+        message for message in (messages or [])
+        if not getattr(message, "unsent", False)
+        and not getattr(message, "hide", False)
+    ]
+
+
+def _task_latest_message(messages: List[Message]) -> Optional[Dict[str, Any]]:
+    """Compact payload of the newest visible message (Follow-up preview)."""
+    visible = _task_visible_messages(messages)
+    if not visible:
+        return None
+    message = visible[-1]
+    content = " ".join(str(getattr(message, "content", "") or "").split())
+    if len(content) > 280:
+        content = content[:277].rstrip() + "…"
+    return {
+        "doc_id": getattr(message, "doc_id", None),
+        "role": getattr(message, "role", "") or "",
+        "user": getattr(message, "user", "") or "",
+        "content": content,
+        "created_at": getattr(message, "created_at", None),
+        "updated_at": getattr(message, "updated_at", None),
+        "done": getattr(message, "done", True),
+        "error": getattr(message, "error", None),
+        "read_by": list(getattr(message, "read_by", None) or []),
+    }
+
+
+def _task_unread_count(messages: List[Message], username: Optional[str]) -> int:
+    """
+    Count unread assistant replies for *username*.
+
+    Same rule as the client (``src/utils/chatUnread.js``): assistant replies by
+    somebody else, not in ``read_by``, finished (``done != False``), visible.
+    """
+    if not username:
+        return 0
+    count = 0
+    for message in _task_visible_messages(messages):
+        if (getattr(message, "role", "") or "") != "assistant":
+            continue
+        if (getattr(message, "user", "") or "") == username:
+            continue
+        if username in (getattr(message, "read_by", None) or []):
+            continue
+        if getattr(message, "done", True) is False:
+            continue
+        count += 1
+    return count
+
+
+def _task_process_state(chat: Chat, messages: List[Message]) -> tuple:
+    """
+    Derive ``(state, error)`` for the task execution.
+
+    ``run_status`` (orchestration), ``harness_status``/``external_status``
+    (external execution) and the last assistant message are combined. The
+    workflow ``status`` (todo/doing/done) is intentionally NOT used: a task can
+    be "doing" without any process running and vice versa.
+    """
+    last_error = ""
+    last_open = False
+    for message in _task_visible_messages(messages):
+        if (getattr(message, "role", "") or "") != "assistant":
+            continue
+        error = getattr(message, "error", None)
+        # Only the LAST assistant message decides the current state; an old
+        # failed answer followed by a successful one must not stay "error".
+        last_error = str(error) if error else ""
+        if getattr(message, "done", True) is False:
+            last_open = True
+        else:
+            last_open = False
+
+    harness_meta = getattr(chat, "harness_metadata", None) or {}
+    meta_error = ""
+    if isinstance(harness_meta, dict):
+        meta_error = str(
+            harness_meta.get("error")
+            or harness_meta.get("error_message")
+            or harness_meta.get("last_error")
+            or ""
+        ).strip()
+
+    candidates = [
+        ("run", getattr(chat, "run_status", None)),
+        ("harness", getattr(chat, "harness_status", None)),
+        ("external", getattr(chat, "external_status", None)),
+    ]
+    for label, raw in candidates:
+        status = str(raw or "").strip().lower()
+        if not status:
+            continue
+        if status in _PROCESS_ERROR_STATUSES:
+            return "error", last_error or meta_error or f"{label} status: {status}"
+        if status in _PROCESS_STOPPED_STATUSES:
+            return "stopped", last_error or meta_error or f"{label} status: {status}"
+        if status in _PROCESS_RUNNING_STATUSES:
+            return "running", None
+    if last_error:
+        return "error", last_error
+    if last_open:
+        return "running", None
+    if meta_error:
+        return "error", meta_error
+    return "idle", None
+
+
+def _annotate_task_activity(chat: Chat, unread_for: Optional[str] = None) -> Chat:
+    """Fill the transient Follow-up fields of *chat* before messages are cut."""
+    messages = list(getattr(chat, "messages", None) or [])
+    latest = _task_latest_message(messages)
+    chat.task_latest_message = latest
+    chat.task_unread_count = _task_unread_count(messages, unread_for)
+    chat.task_process_state, chat.task_process_error = _task_process_state(chat, messages)
+    chat.task_last_activity_at = (
+        (latest or {}).get("created_at")
+        or (latest or {}).get("updated_at")
+        or getattr(chat, "updated_at", None)
+    )
+    return chat
+
+
 def _parse_timestamp(value: Optional[str]) -> datetime:
     """
     Parse a message timestamp that may be in either historical format.
@@ -566,6 +712,7 @@ class ChatManager:
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
         include_archived: bool = False,
+        unread_for: Optional[str] = None,
     ) -> List[Chat]:
         """
         Return a sorted list of all chats (metadata only, no messages).
@@ -584,6 +731,8 @@ class ChatManager:
         :param include_archived: Also list the archived (compressed) tasks.
             They are metadata only (``archived=True``), because their messages
             live inside the archive payload, not in the tasks tree.
+        :param unread_for: Optional username used to compute the transient
+            ``task_unread_count`` annotation (Follow-up view).
         :return: List of Chat objects sorted by index/updated_at descending.
         """
         last_update = datetime.fromisoformat(from_date) if from_date else None
@@ -596,14 +745,21 @@ class ChatManager:
         def _load_chat_info(file_path: str) -> Optional[Chat]:
             try:
                 signature = _chat_file_signature(file_path)
-                cached = _chat_info_cache_get(file_path, signature)
+                # The unread count is user-scoped, so the cache key includes the
+                # reader; metadata-only callers keep the shared entry.
+                cache_key = f"{file_path}::unread::{unread_for}" if unread_for else file_path
+                cached = _chat_info_cache_get(cache_key, signature)
                 if cached is not None:
                     return cached
-                chat = self.load_chat_from_path(chat_file=file_path, chat_only=True)
+                chat = self.load_chat_from_path(
+                    chat_file=file_path,
+                    chat_only=True,
+                    unread_for=unread_for,
+                )
                 # Only cache when the file did not change while it was being
                 # read, otherwise the stale signature would hide the update.
                 if chat is not None and _chat_file_signature(file_path) == signature:
-                    _chat_info_cache_put(file_path, signature, chat)
+                    _chat_info_cache_put(cache_key, signature, chat)
                 return chat
             except (OSError, ValueError, KeyError) as ex:
                 # ValueError covers json.JSONDecodeError and pydantic validation
@@ -1515,7 +1671,12 @@ class ChatManager:
             return chat
         return self.load_chat_from_path(chat_file=chat_file)
 
-    def load_chat_from_path(self, chat_file: str, chat_only: bool = False) -> Chat:
+    def load_chat_from_path(
+        self,
+        chat_file: str,
+        chat_only: bool = False,
+        unread_for: Optional[str] = None,
+    ) -> Chat:
         """
         Load a Chat from a JSON file, ensuring the loaded chat always has a valid ID.
 
@@ -1525,6 +1686,8 @@ class ChatManager:
 
         :param chat_file: Path to the chat JSON file.
         :param chat_only: If ``True`` the returned chat has an empty message list.
+        :param unread_for: Optional username used to compute the transient
+            unread/activity annotations before the message list is truncated.
         :return: Loaded Chat object with guaranteed valid ID.
         """
         with open(chat_file, "r", encoding="utf-8") as f:
@@ -1551,6 +1714,10 @@ class ChatManager:
                     chat.id,
                 )
         
+        # Annotate the task table BEFORE the message list is truncated: the
+        # latest message, unread count and execution state need the full
+        # conversation, while `chat_only` keeps the payload small.
+        _annotate_task_activity(chat, unread_for=unread_for)
         if chat_only:
             chat.messages = [chat.messages[-1]] if len(chat.messages) else []
         chat.owner_project_id = self.settings.project_id

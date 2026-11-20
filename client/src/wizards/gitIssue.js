@@ -29,7 +29,7 @@ export class GitIssueWizard {
 
   async createKanban() {
     const { issueInfo, issueUrl } = this.data
-    this.$service.$storex.ui.setActiveTab('tasks')
+    this.$service.$storex.ui.setActiveTab('task-list')
     const boardName = issueInfo.title
     const description = `Fixing issue: ${issueUrl}`
     const columns = this.$service.$storex.projects.kanbanTemplates.find(t => t.name === "Backlog").columns

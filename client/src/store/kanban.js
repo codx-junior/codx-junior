@@ -352,6 +352,28 @@ function sprintColumnStatus(column) {
   return column?.status || column?.title
 }
 
+// The column a task is rendered in.
+//
+// Regular tasks carry `chat.column`. Legacy tasks created by the removed sprint
+// boards may only carry a status + `sprints` membership; when that is the case
+// the first board column whose title (or, for converted boards, status) matches
+// the task status is used, so removing the sprint board type does not make old
+// tasks disappear from their board.
+function taskColumnValue(boardId, task, board) {
+  const legacy = !sameKey(task?.board, boardId) &&
+    (task?.sprints || []).some(name => sameKey(name, boardId))
+  if (legacy) {
+    const status = compareKey(task?.status)
+    const stored = (board?.columns || []).find(column =>
+      sameKey(column?.status || column?.title, status)
+    )
+    if (stored) return stored.title
+    return board?.columns?.[0]?.title || NO_COLUMN_ID
+  }
+  if (task?.column) return task.column
+  return NO_COLUMN_ID
+}
+
 // Ordering of the tasks inside a board column: explicit sort_index first, then
 // the most recently updated task.
 function sortColumnTasks(a, b) {
@@ -402,7 +424,7 @@ export const getters = getterTree(state, {
     return {
       id: NO_BOARD_ID,
       title: NO_BOARD_ID,
-      type: 'sprint',
+      type: 'kanban',
       virtual: true,
       description: 'Chats not associated with any board',
       background: '',
@@ -444,10 +466,14 @@ export const getters = getterTree(state, {
         ...boards[title],
         id: title,
         title,
-        // Boards are 'kanban' unless explicitly created as a 'sprint'
-        type: boards[title]?.type || 'kanban',
+        // There is a single board type now. Any board can be used as a sprint;
+        // legacy `type: "sprint"` documents are read as regular boards.
+        type: 'kanban',
         // Board participants (user list) — optional
         users: boards[title]?.users || [],
+        // Team that owns the board: its lead is responsible for the board.
+        team_id: boards[title]?.team_id || '',
+        team_name: boards[title]?.team_name || '',
         // Profile the board is assigned to (single profile name) — optional
         assignee: boards[title]?.assignee || null,
         // Background board manager configuration — null when never configured
@@ -487,11 +513,12 @@ export const getters = getterTree(state, {
 
   isVirtualBoard: (state, getters) => (boardId) => sameKey(boardId, NO_BOARD_ID),
 
-  isSprintBoard: (state, getters) => (boardId) =>
-    getters.boardById(boardId)?.type === 'sprint',
+  // Backward compatible getter: the sprint board type was removed, so no
+  // board is a sprint board any more. Keeping the getter avoids touching every
+  // caller at once while the board canvas is unified.
+  isSprintBoard: (state, getters) => (boardId) => false,
 
-  boardType: (state, getters) => (boardId) =>
-    getters.boardById(boardId)?.type || 'kanban',
+  boardType: (state, getters) => (boardId) => 'kanban',
 
   // The PROFILE a board is assigned to.
   //
@@ -547,8 +574,14 @@ export const getters = getterTree(state, {
     if (!boardId) return []
     if (sameKey(boardId, NO_BOARD_ID)) return getters.noBoardChats
     const allChats = Object.values($storex.chats.chats || {})
-    // The stored board title and the requested id may differ in case only
-    return allChats.filter(c => sameKey(c.board, boardId))
+    // The stored board title and the requested id may differ in case only.
+    // Tasks created by older clients / orchestration runs also carry legacy
+    // sprint membership. They are still surfaced on the board used as their
+    // sprint, so removing the sprint board type does not hide existing work.
+    return allChats.filter(c =>
+      sameKey(c.board, boardId) ||
+      (c.sprints || []).some(name => sameKey(name, boardId))
+    )
   },
 
   // The chat field VALUES the board columns group. Stored columns contribute
@@ -560,9 +593,10 @@ export const getters = getterTree(state, {
   // list is deduplicated by that key while keeping the first spelling seen —
   // otherwise one column would be rendered twice (once per spelling).
   columnList: (state, getters) => (boardId) => {
-    const kanbanColumns = getters.boardById(boardId)?.columns?.map(c => c.title) || []
+    const board = getters.boardById(boardId)
+    const kanbanColumns = board?.columns?.map(c => c.title) || []
     // Chats without a column are grouped under a placeholder column
-    const chatColumns = getters.boardChats(boardId).map(c => c.column || NO_COLUMN_ID)
+    const chatColumns = getters.boardChats(boardId).map(c => taskColumnValue(boardId, c, board))
     const byKey = new Map()
     ;[...kanbanColumns, ...chatColumns].forEach(value => {
       const key = compareKey(value)
@@ -594,7 +628,7 @@ export const getters = getterTree(state, {
       const tasks = boardTasks
         // The chat column value is compared ignoring case, so a task stored as
         // "doing" is grouped by the column named "Doing"
-        .filter(t => sameKey(t.column || NO_COLUMN_ID, col))
+        .filter(t => sameKey(taskColumnValue(boardId, t, board), col))
         .sort((a, b) => {
           // Respect explicit sort_index if present, then fall back to pinned / chat index
           if (a.sort_index !== undefined && b.sort_index !== undefined) {
@@ -641,9 +675,9 @@ export const getters = getterTree(state, {
   // `icon` and a `color` to the chat `status` they group; boards that were never
   // edited (and the virtual board) fall back to the canonical status order.
 
-  // Real sprint boards only — the virtual board must not be a switch target
-  sprintBoards: (_, getters) =>
-    getters.allBoards.filter(b => b.type === 'sprint' && !b.virtual),
+  // Sprint boards no longer exist; kept as an empty list for callers that
+  // still query it.
+  sprintBoards: (_, getters) => [],
 
   // Tasks that belong to a sprint (chat.sprints includes the board id).
   // Returned as stored, like `boardChats` — no clones, no defaulted `status`.
@@ -1136,11 +1170,15 @@ export const actions = actionTree(
     // ── Sprint actions ───────────────────────────────────────────────────────
 
     // Create a board of type 'sprint' (columns are implicit statuses)
+    // Deprecated alias: a sprint is just a board a team uses for a sprint.
     async createSprintBoard({ state }, { title, description } = {}) {
+      // A sprint is a regular board used for a time-boxed goal. Give it the
+      // canonical status columns so the board canvas and the solopreneur
+      // workspace both show the work immediately.
       return $storex.kanban.addBoard({
         title,
         description,
-        type: 'sprint'
+        columns: defaultSprintColumns()
       })
     },
 
@@ -1430,7 +1468,7 @@ export const actions = actionTree(
       return chat
     },
 
-    async addBoard({ state }, { title, description, background, parent_id, project_id, columns, type, users, assignee, manager }) {
+    async addBoard({ state }, { title, description, background, parent_id, project_id, columns, team_id, team_name, users, assignee, manager }) {
       const kanban = getKanban()
       if (!kanban) return
 
@@ -1443,11 +1481,15 @@ export const actions = actionTree(
       kanban.boards[title] = {
         id: uuidv4(),
         title,
-        type: type || 'kanban',
+        // There is a single board type; the parameter is accepted for older
+        // callers but never persisted.
+        type: 'kanban',
         description: description || '',
         background: background || '',
         parent_id: parent_id || null,
         project_id: project_id || null,
+        team_id: team_id || '',
+        team_name: team_name || '',
         users: users || [],
         // Profile the board is assigned to (single profile name)
         assignee: normalizeAssignee(assignee),
@@ -1472,11 +1514,9 @@ export const actions = actionTree(
       const oldKey = findBoardKey(kanban, oldName)
       const newKey = findBoardKey(kanban, newName)
 
-      // Preserve board type (kanban | sprint) across edits and renames
-      const boardType = board.type
-        || (oldKey && kanban.boards?.[oldKey]?.type)
-        || (newKey && kanban.boards?.[newKey]?.type)
-        || 'kanban'
+      // There is a single board type: legacy sprint boards become regular
+      // boards when edited.
+      const boardType = 'kanban'
 
       // Do not silently overwrite a DIFFERENT existing board. Renaming into the
       // same board (a case-only change) is allowed.
@@ -1515,6 +1555,9 @@ export const actions = actionTree(
         background: board.background !== undefined ? board.background : (existing.background || ''),
         parent_id: board.parent_id !== undefined ? board.parent_id : (existing.parent_id || null),
         project_id: board.project_id !== undefined ? board.project_id : (existing.project_id || null),
+        // Owning team (its lead is the responsible person for the board)
+        team_id: board.team_id !== undefined ? (board.team_id || '') : (existing.team_id || ''),
+        team_name: board.team_name !== undefined ? (board.team_name || '') : (existing.team_name || ''),
         users: board.users !== undefined ? board.users : (existing.users || []),
         // Profile the board is assigned to (shown on the board header)
         assignee,
@@ -1547,21 +1590,16 @@ export const actions = actionTree(
       const boardKey = findBoardKey(kanban, boardTitle)
       if (!boardKey) return
 
-      const boardType = board?.type || kanban.boards[boardKey]?.type || 'kanban'
       const allChats = Object.values($storex.chats.chats || {})
-      // Kanban tasks carry `chat.board`; sprint tasks carry the id in `sprints`.
-      const boardChats = boardType === 'sprint'
-        ? allChats.filter(c => (c.sprints || []).some(id => sameKey(id, boardKey)))
-        : allChats.filter(c => sameKey(c.board, boardKey))
+      // Tasks carry `chat.board`; tasks created by older clients may still
+      // carry the board only in the deprecated `sprints` membership.
+      const boardChats = allChats.filter(c =>
+        sameKey(c.board, boardKey) ||
+        (!c.board && (c.sprints || []).some(id => sameKey(id, boardKey)))
+      )
 
       if (deleteChats) {
         await Promise.all(boardChats.map(c => $storex.chats.deleteChat(c)))
-      } else if (boardType === 'sprint') {
-        // Keep the tasks, only remove this sprint from their membership.
-        await Promise.all(boardChats.map(c => $storex.chats.updateChatInfo({
-          chat: c,
-          updates: { sprints: (c.sprints || []).filter(id => !sameKey(id, boardKey)) }
-        })))
       } else {
         // Keep the tasks but detach them from the board (board + column cleared)
         // so they fall back to the virtual "Unassigned" board.

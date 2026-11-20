@@ -101,9 +101,11 @@ export default {
     showRight: { type: Boolean, default: true },
     // Make the resize dragger clearly visible (grip + hover) so it is discoverable.
     showHandle: { type: Boolean, default: false },
-    // When set, the last panel layout (sizes) is persisted in localStorage under
-    // this key and reused the next time the splitter (or its optional panel) is
-    // shown again. Left unset, the component keeps no state (current behaviour).
+    // Stable key used to persist the last panel layout (sizes) in localStorage.
+    // When omitted, a key is derived from the route + parent component + the
+    // splitter's position among its siblings, so EVERY VerticalSplitter
+    // remembers its width without call sites having to opt in. Pass an explicit
+    // key when several splitter instances share the same parent/route.
     persistKey: { type: String, default: null }
   },
   emits: ['resize'],
@@ -132,6 +134,32 @@ export default {
       if (!this.showLeft) return 100
       const saved = this.seededLayout?.[1]
       return saved != null ? saved : (this.panels?.right?.defaultSize || 20)
+    },
+    // Persistence key actually used. An explicit `persistKey` wins; otherwise a
+    // deterministic key is derived from where the splitter is mounted, so the
+    // improvement applies to all existing splitters too.
+    effectivePersistKey() {
+      if (this.persistKey) return this.persistKey
+      const route = this.$route?.name || this.$route?.path || 'app'
+      const parent = this.$parent?.$options?.name ||
+        this.$parent?.$?.type?.name ||
+        this.$parent?.$?.type?.__name ||
+        'parent'
+      const siblings = (this.$parent?.$children || []).filter(child =>
+        child === this ||
+        child?.$options?.name === 'VerticalSplitter' ||
+        child?.constructor === this.constructor
+      )
+      const index = Math.max(0, siblings.indexOf(this))
+      return `auto:${route}:${parent}:${index}`
+    }
+  },
+  created() {
+    // Explicit keys seed the layout through the watcher below; the derived key
+    // is known at creation too, so it is applied before the first render and the
+    // panels mount directly at the remembered sizes.
+    if (!this.persistKey) {
+      this.applyPersistedLayout(this.effectivePersistKey)
     }
   },
   watch: {
@@ -139,10 +167,11 @@ export default {
     persistKey: {
       immediate: true,
       handler(key) {
-        const layout = this.readLayout(key)
-        this.seededLayout = layout
-        // Do not re-emit/re-persist a layout we already know about
-        this.dragState().lastCommitted = layout ? this.signature(layout) : null
+        // With an explicit key the layout is known before mount. Without one the
+        // effective key depends on the mounted child order, so it is loaded in
+        // `mounted()` instead.
+        if (!key) return
+        this.applyPersistedLayout(key)
       }
     }
   },
@@ -156,12 +185,15 @@ export default {
     // drag, writing seededLayout, which re-seeded the panels, which fired
     // another @layout — a tight render loop.
     this.dragState().mountedAt = Date.now()
+    // Every splitter remembers its width: load the derived key when no explicit
+    // `persistKey` was supplied.
+    if (!this.persistKey) this.applyPersistedLayout(this.effectivePersistKey)
   },
   beforeUnmount() {
     const state = this.dragState()
     clearTimeout(state.timer)
     // Keep the last split for the next mount without emitting anything
-    if (state.sizes) this.writeLayout(this.persistKey, state.sizes)
+    if (state.sizes) this.writeLayout(this.effectivePersistKey, state.sizes)
   },
   methods: {
     // Non-reactive drag bookkeeping. It changes on EVERY `layout` event, so it
@@ -182,6 +214,13 @@ export default {
     // localStorage key for a given persist key
     storageKey(key) {
       return `splitter-layout:${key}`
+    },
+    // Apply a persisted layout to the seeded sizes without reacting to it.
+    applyPersistedLayout(key) {
+      const layout = this.readLayout(key)
+      this.seededLayout = layout
+      // Do not re-emit/re-persist a layout we already know about
+      this.dragState().lastCommitted = layout ? this.signature(layout) : null
     },
     // Read the persisted layout (array of panel sizes) for a given key
     readLayout(key) {
@@ -248,7 +287,7 @@ export default {
       if (this.signature(this.seededLayout || []) !== signature) {
         this.seededLayout = [...sizes]
       }
-      this.writeLayout(this.persistKey, sizes)
+      this.writeLayout(this.effectivePersistKey, sizes)
       this.$emit('resize', { sizes: [...sizes], left: sizes[0], right: sizes[1] })
     }
   }

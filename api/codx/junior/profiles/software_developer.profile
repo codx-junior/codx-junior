@@ -8,7 +8,10 @@
   "tools": [
     "project_read_file",
     "project_write_file",
-    "apply_file_changes"
+    "apply_file_changes",
+    "qa_run_tests",
+    "qa_review_changes",
+    "security_review_changes"
   ],
   "effort": {
     "max_iterations": 40,

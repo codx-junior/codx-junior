@@ -128,6 +128,17 @@ AUTONOMY_EDITABLE_FIELDS = (
     "require_human_acceptance",
 )
 
+#: Name of the company created automatically on a fresh installation.
+#: Deployments can override it with ``CODX_JUNIOR_DEFAULT_COMPANY_NAME``.
+DEFAULT_COMPANY_NAME = "My Company"
+
+#: Slug of the default company. It is stable so a deep link can address it
+#: before the user has had any chance to rename it.
+DEFAULT_COMPANY_SLUG = "default"
+
+#: Environment variable that overrides the default company name.
+DEFAULT_COMPANY_NAME_ENV = "CODX_JUNIOR_DEFAULT_COMPANY_NAME"
+
 #: Order used when picking the next mission to dispatch.
 _PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
@@ -564,7 +575,8 @@ class CompanyManager:
     def _slug_in_use(self, slug: str, exclude_id: str = "") -> bool:
         """Tell whether *slug* is already used by another company."""
         wanted = (slug or "").lower()
-        for company in self.list_companies(include_archived=True):
+        # Never bootstrap here: creating a company must not create another one.
+        for company in self.list_companies(include_archived=True, ensure_default=False):
             if company["id"] == exclude_id:
                 continue
             if (company.get("slug") or "").lower() == wanted:
@@ -575,16 +587,246 @@ class CompanyManager:
     # Company CRUD
     # ------------------------------------------------------------------
 
-    def list_companies(self, include_archived: bool = True) -> List[Dict[str, Any]]:
+    def _default_company_name(self) -> str:
+        """Resolve the display name of the installation's default company."""
+        configured = self._clean(os.environ.get(DEFAULT_COMPANY_NAME_ENV))
+        return configured or DEFAULT_COMPANY_NAME
+
+    def _company_ids(self) -> List[str]:
+        """Return every stored company id without triggering a bootstrap."""
+        try:
+            return self.store.list_ids()
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Company: cannot list stored companies: %s", ex)
+            return []
+
+    def _sync_default_company_projects(
+        self, company: Company, actor: str = "system"
+    ) -> Company:
+        """
+        Keep the default company able to work with every discovered project.
+
+        The default company starts with **all** projects linked and keeps
+        linking newly discovered ones while ``auto_sync_projects`` is true. The
+        flag is switched off the first time a user edits the project list, so
+        an explicit unlink is never undone behind their back.
+
+        Args:
+            company: Default company to synchronize.
+            actor: Username recorded when new projects are linked.
+
+        Returns:
+            The company (unchanged when there is nothing new to link).
+        """
+        if not company.is_default or not company.auto_sync_projects:
+            return company
+
+        catalog = self._project_catalog()
+        if not catalog:
+            return company
+        linked = {project.project_id for project in company.projects}
+        missing = [
+            project for project in catalog
+            if project["project_id"] not in linked
+        ]
+        if not missing:
+            return company
+
+        with self.store.lock(company.id):
+            # Reload under the lock: another process may have linked a project
+            # between the read above and this write.
+            current = self.store.load(company.id)
+            if not current.is_default or not current.auto_sync_projects:
+                return current
+            linked = {project.project_id for project in current.projects}
+            added: List[str] = []
+            for project in missing:
+                if project["project_id"] in linked:
+                    continue
+                current.projects.append(
+                    CompanyProject(
+                        project_id=project["project_id"],
+                        name=project["project_name"] or project["project_id"],
+                        role="",
+                    )
+                )
+                linked.add(project["project_id"])
+                added.append(project["project_id"])
+            if not added:
+                return current
+            saved = self.store.save(current)
+            self._event(
+                saved,
+                "project.linked",
+                f"{len(added)} discovered project(s) linked to the default company",
+                actor=actor,
+                project_ids=added,
+                automatic=True,
+            )
+            return saved
+
+    def _enroll_users_in_default_company(self, company: Company) -> None:
+        """
+        Make every existing user a member of the fresh default company.
+
+        The default company is the installation-wide company, so a user must
+        not have to be invited before entering the product. Global admins and
+        company admins become company admins; everyone else joins as a member.
+        The operation is idempotent and best-effort: auth may be disabled or a
+        user document may be read-only.
+        """
+        try:
+            from codx.junior.security.user_management import UserSecurityManager
+
+            security = UserSecurityManager()
+            for user in self._users():
+                username = self._clean(user.get("username"))
+                if not username:
+                    continue
+                role = (
+                    "admin"
+                    if user.get("role") in ("admin", "company_admin")
+                    else "member"
+                )
+                try:
+                    security.add_company_member(
+                        company_id=company.id,
+                        username=username,
+                        role=role,
+                        title="Owner" if role == "admin" else "",
+                    )
+                except Exception as ex:  # pragma: no cover - per-user best effort
+                    logger.debug(
+                        "Company: cannot enroll '%s' in the default company: %s",
+                        username,
+                        ex,
+                    )
+        except Exception as ex:  # pragma: no cover - auth may be disabled
+            logger.debug("Company: default company enrollment unavailable: %s", ex)
+
+    def ensure_default_company(
+        self, actor: str = "system", name: str = ""
+    ) -> Company:
+        """
+        Return the installation's default company, creating it when needed.
+
+        A fresh installation has no company. Instead of forcing every user to
+        create one before seeing anything, codx-junior provisions a default
+        company that links **every discovered project**. Existing installations
+        created before companies were the top-level entity are adopted: the
+        first stored company becomes the default and keeps its project list
+        (the user's existing configuration is never rewritten implicitly).
+
+        The operation is idempotent and safe to call from every request that
+        lists companies.
+
+        Args:
+            actor: Username recorded in the journal.
+            name: Optional display name for the company when it is created.
+
+        Returns:
+            The default company.
+        """
+        ids = self._company_ids()
+        for company_id in ids:
+            try:
+                company = self.store.load(company_id)
+            except Exception as ex:
+                logger.warning("Company '%s' skipped during bootstrap: %s", company_id, ex)
+                continue
+            if company.is_default:
+                return self._sync_default_company_projects(company, actor=actor)
+
+        if ids:
+            # Migration path: adopt the oldest stored company as the default so
+            # the product keeps a single top-level company without destroying
+            # data. It keeps its name and project list.
+            try:
+                adopted = self.store.load(ids[0])
+            except Exception:
+                adopted = None
+            if adopted is not None:
+                adopted.is_default = True
+                adopted.auto_sync_projects = False
+                adopted.updated_at = now_iso()
+                saved = self.store.save(adopted)
+                self._event(
+                    saved,
+                    "company.default",
+                    f"Company '{saved.name}' adopted as the default company",
+                    actor=actor,
+                    adopted=True,
+                )
+                return saved
+
+        catalog = self._project_catalog()
+        company_name = self._clean(name) or self._default_company_name()
+        company = Company(
+            name=company_name,
+            slug=DEFAULT_COMPANY_SLUG,
+            description=(
+                "Default company created automatically. It links every "
+                "codx-junior project and can be renamed or split into more "
+                "companies at any time."
+            ),
+            owner="" if (actor or "system") == "system" else actor,
+            is_default=True,
+            auto_sync_projects=True,
+            tags=["default"],
+        )
+        for project in catalog:
+            existing = company.project(project["project_id"])
+            if existing is not None:
+                continue
+            company.projects.append(
+                CompanyProject(
+                    project_id=project["project_id"],
+                    name=project["project_name"] or project["project_id"],
+                    role="",
+                )
+            )
+        saved = self.store.save(company)
+        self._event(
+            saved,
+            "company.created",
+            f"Default company '{saved.name}' created with {len(saved.projects)} project(s)",
+            actor=actor,
+            default=True,
+        )
+        # The default company is the installation-wide company: every user can
+        # enter it from the first login.
+        self._enroll_users_in_default_company(saved)
+        logger.info(
+            "Default company created: %s (%s) with %d project(s)",
+            saved.name,
+            saved.id,
+            len(saved.projects),
+        )
+        return saved
+
+    def list_companies(
+        self,
+        include_archived: bool = True,
+        ensure_default: bool = True,
+    ) -> List[Dict[str, Any]]:
         """
         List every stored company.
 
         Args:
             include_archived: When false, archived companies are hidden.
+            ensure_default: Provision the default company on a fresh install
+                (and keep it linked to every discovered project) before listing.
+                Pass ``False`` from write paths that must not mutate the store
+                implicitly.
 
         Returns:
             Company summaries sorted by name.
         """
+        if ensure_default:
+            try:
+                self.ensure_default_company()
+            except Exception as ex:  # pragma: no cover - bootstrap must not break reads
+                logger.warning("Company: default company bootstrap failed: %s", ex)
         result: List[Dict[str, Any]] = []
         for company_id in self.store.list_ids():
             try:
@@ -1324,6 +1566,8 @@ class CompanyManager:
                 existing.updated_at = now_iso()
                 event_type = "project.updated"
                 message = f"Project '{existing.name}' updated"
+            # An explicit link/unlink means the user manages the project list.
+            company.auto_sync_projects = False
             saved = self.store.save(company)
             self._event(
                 saved,
@@ -1383,6 +1627,9 @@ class CompanyManager:
                 team.project_ids = [
                     item for item in team.project_ids if item != project_id
                 ]
+            # An explicit unlink is a user decision: stop the default company
+            # from auto-linking the project again on the next request.
+            company.auto_sync_projects = False
             saved = self.store.save(company)
             self._event(
                 saved,
@@ -1391,6 +1638,85 @@ class CompanyManager:
                 actor=actor,
                 project_id=project_id,
             )
+            return saved
+
+    def set_project_links(
+        self,
+        company_id: str,
+        project_ids: List[str],
+        actor: str = "system",
+    ) -> Company:
+        """
+        Replace the company's project list in one atomic operation.
+
+        This is the endpoint the company settings screen uses: linking and
+        unlinking one by one is fine for an automation, but a settings form
+        must not leave the company half-configured when one request fails.
+        Metadata of already-linked projects (role, team, budget) is preserved.
+
+        Args:
+            company_id: Company id.
+            project_ids: Complete list of project ids to keep linked.
+            actor: Username recorded in the audit trail.
+
+        Returns:
+            The updated company.
+
+        Raises:
+            CompanyValidationError: When any project is not discovered.
+        """
+        catalog = {project["project_id"]: project for project in self._project_catalog()}
+        wanted: List[str] = []
+        for project_id in project_ids or []:
+            value = self._clean(
+                project_id.get("project_id")
+                if isinstance(project_id, dict)
+                else project_id
+            )
+            if not value or value in wanted:
+                continue
+            self._validate_project(value, projects=list(catalog.values()))
+            wanted.append(value)
+
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            previous = {project.project_id: project for project in company.projects}
+            projects: List[CompanyProject] = []
+            added: List[str] = []
+            removed: List[str] = []
+            for project_id in wanted:
+                project = previous.get(project_id)
+                if project is None:
+                    discovered = catalog.get(project_id, {})
+                    project = CompanyProject(
+                        project_id=project_id,
+                        name=discovered.get("project_name") or project_id,
+                        role="",
+                    )
+                    added.append(project_id)
+                projects.append(project)
+            for project_id in previous:
+                if project_id not in wanted:
+                    removed.append(project_id)
+            company.projects = projects
+            # From now on the user owns the project list.
+            company.auto_sync_projects = False
+            # Detach removed projects from teams (missions keep their reference
+            # and are handled by the dedicated mission routes).
+            for team in company.teams:
+                team.project_ids = [
+                    item for item in team.project_ids if item in wanted
+                ]
+            saved = self.store.save(company)
+            if added or removed:
+                self._event(
+                    saved,
+                    "projects.updated",
+                    f"Project list updated (+{len(added)} / -{len(removed)})",
+                    actor=actor,
+                    added=added,
+                    removed=removed,
+                )
             return saved
 
     # ------------------------------------------------------------------

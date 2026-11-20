@@ -221,6 +221,9 @@ import MobileActionSheet from '@/components/mobile/MobileActionSheet.vue'
         </span>
         <span class="text-xs text-base-content/40">
           {{ activeColumns.length }} columns · {{ sidebarTasks.length }} tasks
+          <template v-if="activeBoardTeamLabel">
+            · <i class="fa-solid fa-people-group mx-0.5 text-[9px]"></i>{{ activeBoardTeamLabel }}
+          </template>
         </span>
       </div>
 
@@ -537,6 +540,7 @@ import MobileActionSheet from '@/components/mobile/MobileActionSheet.vue'
     <VerticalSplitter
       v-else
       class="flex-1 min-h-0"
+      persist-key="kanban-board"
       :panels="boardSplitterPanels"
       :split="!isMobile"
       :show-handle="!isMobile"
@@ -738,6 +742,8 @@ import MobileActionSheet from '@/components/mobile/MobileActionSheet.vue'
 </template>
 
 <script>
+import { API } from '@/api/api'
+
 // Views this component can render.
 //   board  · table   → both flavours
 //   gantt            → sprint boards (sprint timeline)
@@ -794,10 +800,13 @@ export default {
       showGlobalSearch: false,
       // Background board manager configuration/status modal
       showBoardManager: false,
+      // Company teams (the team lead is responsible for the board)
+      boardTeams: [],
       managerBoardId: null
     }
   },
   created() {
+    this.loadBoardTeams()
     // Snapshot the board requested through the app params / route *before* we
     // publish anything, so `syncAppInfo` can't make it point at the fallback.
     this.initialRequestedBoardId = this.resolveRequestedBoardId()
@@ -1033,7 +1042,22 @@ export default {
     },
     // Sprint boards replace the kanban canvas/sidebar with the sprint shell
     isSprintBoard() {
-      return this.activeBoard?.type === 'sprint'
+      // The sprint board type was removed: every board is a regular board and
+      // any board can be used as a sprint by its team.
+      return false
+    },
+    // Owning team + lead of the active board. The lead is the responsible
+    // person for the board (boards are managed by teams).
+    activeBoardTeam() {
+      if (!this.activeBoard?.team_id) return null
+      return this.boardTeams.find(team => team.id === this.activeBoard.team_id) || null
+    },
+    activeBoardTeamLabel() {
+      const team = this.activeBoardTeam
+      const name = team?.name || this.activeBoard?.team_name || ''
+      if (!name) return ''
+      const lead = team?.lead_name
+      return lead ? `${name} · ${lead}` : name
     },
     // The synthetic "No board" board: it surfaces board-less chats read-only
     isVirtualBoard() {
@@ -1876,13 +1900,26 @@ export default {
       if (!this.activeBoard) return
       this.$refs.modals?.openEditBoard(this.activeBoard)
     },
-    async onBoardCreated({ title, description, type, background }) {
+    // Teams + leads are company data. They are optional: a board without a team
+    // still works, it just has no responsible team lead.
+    async loadBoardTeams() {
+      try {
+        const data = await API.tasks.boards()
+        this.boardTeams = data?.teams || []
+      } catch (error) {
+        this.boardTeams = []
+      }
+    },
+    async onBoardCreated({ title, description, type, background, team_id, team_name }) {
       if (!title?.trim()) return
       const created = await this.$storex.kanban.addBoard({
         title,
         description,
         type,
         background,
+        // The team owns the board; its lead is the responsible person.
+        team_id,
+        team_name,
         // A board created from the board view becomes a child of the open board
         parent_id: this.activeBoard?.id || null
       })

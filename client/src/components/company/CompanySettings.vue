@@ -20,7 +20,7 @@ const props = defineProps({
   canAdmin: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['refresh', 'assistant', 'deleted'])
+const emit = defineEmits(['refresh', 'assistant', 'deleted', 'open-projects', 'new-company'])
 
 const api = API.companies
 const router = useRouter()
@@ -603,7 +603,12 @@ function ask(prompt) {
 
         <!-- Plan -->
         <section class="cp-card cp-card-pad">
-          <h2 class="cp-title">{{ t('settings.plan') }}</h2>
+          <div class="flex items-start justify-between gap-2">
+            <h2 class="cp-title">{{ t('settings.plan') }}</h2>
+            <button class="cp-chip" @click="emit('open-projects')" :disabled="!canManage">
+              <i class="fa-solid fa-cubes text-[9px]"></i> Manage projects
+            </button>
+          </div>
           <div class="mt-2.5 grid grid-cols-2 gap-2">
             <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
               <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.teams') }}</p>
@@ -622,6 +627,17 @@ function ask(prompt) {
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.ai || 0 }}</p>
             </div>
           </div>
+        </section>
+
+        <section class="cp-card cp-card-pad">
+          <h2 class="cp-title">Companies</h2>
+          <p class="mt-0.5 text-[9.5px] leading-relaxed cp-muted">
+            The default company covers every project. Create another company when the
+            business, teams or project list must stay separate.
+          </p>
+          <button class="cp-chip mt-2.5" @click="emit('new-company')">
+            <i class="fa-solid fa-plus text-[9px]"></i> New company
+          </button>
         </section>
 
         <section v-if="canAdmin" class="cp-card cp-card-pad border-[var(--cp-red)]/25">

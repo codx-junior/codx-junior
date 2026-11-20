@@ -6,8 +6,8 @@
     </a>
     <a role="tab" :class="['tab flex items-center gap-2', 
       disableProjectTabs && 'tab-disabled',
-      ($ui.activeTab === 'tasks') ? 'tab-active font-bold' : '']"
-      @click="setActiveTab('tasks')">
+      ($ui.activeTab === 'task-list') ? 'tab-active font-bold' : '']"
+      @click="setActiveTab('task-list')">
       <i class="fa-solid fa-list-check"></i> <span class="hidden lg:inline">TO DO</span>
     </a>
     <a role="tab" :class="['hidden tab flex items-center gap-2', 

@@ -190,6 +190,45 @@ async def oauth_login(request: Request):
     logger.error(f"GitHub OAuth login failed for provider: {oauth_provider}")
     return {"error": "OAuth login failed"}
 
+def _ensure_default_company_membership(user: CodxUser = None):
+    """
+    Enroll a user in the installation's default company on login.
+
+    A company is the top-level element of the product. The default company is
+    created with every project linked; a user therefore belongs to it from the
+    first login instead of having to be invited. Existing installations that
+    acquire the default company later are covered too.
+
+    Best effort: login must never fail because the company store or the user
+    document cannot be written.
+    """
+    if not user or not getattr(user, "username", None):
+        return user
+    # Already a company member: nothing to provision (and no project scan).
+    if getattr(user, "companies", None):
+        return user
+    try:
+        from codx.junior.company.manager import CompanyManager
+
+        manager = CompanyManager()
+        company = manager.ensure_default_company(actor=user.username)
+        security = UserSecurityManager()
+        memberships = list(getattr(user, "companies", None) or [])
+        if not any(item.company_id == company.id for item in memberships):
+            security.add_company_member(
+                company_id=company.id,
+                username=user.username,
+                role="admin" if user.role in ("admin", "company_admin") else "member",
+                title="Owner" if user.role in ("admin", "company_admin") else "",
+            )
+            stored = security.find_user(username=user.username)
+            if stored is not None:
+                user.companies = list(stored.companies or [])
+    except Exception as ex:  # pragma: no cover - never block login
+        logger.warning("Could not enroll '%s' in the default company: %s", user.username, ex)
+    return user
+
+
 @router.post("/users/login")
 async def user_login(request: Request, response: Response):
     body = await request.json()
@@ -200,13 +239,14 @@ async def user_login(request: Request, response: Response):
         return oauth_data
 
     login_user = CodxUserLogin(**body)
-    user = get_authenticated_user(request=request)
+    user = _ensure_default_company_membership(get_authenticated_user(request=request))
     logger.info(f"user_login user: {redact_user(user)} - body: {redact_user(login_user)}")
     if user:
         response.set_cookie(key="codx-session", value=user.token)
         return user
     response.set_cookie(key="codx-session", value="")
-    return UserSecurityManager().login_user(user=login_user)
+    user = UserSecurityManager().login_user(user=login_user)
+    return _ensure_default_company_membership(user)
 
 @router.put("/users")
 async def user_update(request: Request, user: CodxUser = Depends(get_authenticated_user)):

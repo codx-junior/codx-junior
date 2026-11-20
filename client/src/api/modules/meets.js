@@ -150,12 +150,38 @@ export const meetsModule = (API) => ({
    * Initiate a new meet (backend will create signaling session)
    * Backend: POST /api/meets/initiate
    */
-  async initiateMeet({ meetId, name, participants } = {}) {
+  async initiateMeet({
+    meetId,
+    name,
+    participants,
+    profiles,
+    invitedUsers,
+    agenda,
+    board,
+    taskIds,
+    channelId,
+    channelName,
+    teamId,
+    source,
+    createChat = true,
+    settings
+  } = {}) {
     try {
       const result = await API.post('/api/meets/initiate', {
         meetId,
         name,
         participants,
+        profiles,
+        invitedUsers,
+        agenda,
+        board,
+        taskIds,
+        channelId,
+        channelName,
+        teamId,
+        source,
+        createChat,
+        settings,
         timestamp: new Date().getTime()
       })
       return result
@@ -163,6 +189,126 @@ export const meetsModule = (API) => ({
       console.error('[meets] Failed to initiate meet:', error)
       throw error
     }
+  },
+
+  /** Persisted meetings of the project: GET /api/meets/history */
+  async listHistory({ limit = 30 } = {}) {
+    return API.get(`/api/meets/history?limit=${encodeURIComponent(limit)}`)
+  },
+
+  /** Add human invites / AI profiles: POST /api/meets/:id/participants */
+  async addParticipants({ meetId, users = [], profiles = [], notify = true } = {}) {
+    return API.post(`/api/meets/${meetId}/participants`, {
+      users,
+      profiles,
+      notify
+    })
+  },
+
+  /** Remove an invited participant: DELETE /api/meets/:id/participants/:name */
+  async removeParticipant({ meetId, name, kind = 'user' } = {}) {
+    return API.delete(
+      `/api/meets/${meetId}/participants/${encodeURIComponent(name)}?kind=${encodeURIComponent(kind)}`
+    )
+  },
+
+  /** Create/load the meeting chat: POST /api/meets/:id/chat */
+  async ensureChat({ meetId, name = '' } = {}) {
+    return API.post(`/api/meets/${meetId}/chat`, { name })
+  },
+
+  /** Record a spoken/typed meeting utterance: POST /api/meets/:id/utterance */
+  async sendUtterance({
+    meetId,
+    text,
+    speaker = '',
+    kind = 'user',
+    source = 'speech',
+    clientMessageId = null,
+    autoRespond = null
+  } = {}) {
+    return API.post(`/api/meets/${meetId}/utterance`, {
+      text,
+      speaker,
+      kind,
+      source,
+      clientMessageId,
+      autoRespond
+    })
+  },
+
+  /** Announce speech start/end (barge-in): POST /api/meets/:id/floor */
+  async setFloor({ meetId, event, kind = 'user', speaker = '' } = {}) {
+    return API.post(`/api/meets/${meetId}/floor`, { event, kind, speaker })
+  },
+
+  /** Meeting transcript: GET /api/meets/:id/transcript */
+  async getTranscript({ meetId } = {}) {
+    return API.get(`/api/meets/${meetId}/transcript`)
+  },
+
+  /** Notes/minutes: GET /api/meets/:id/notes */
+  async getNotes({ meetId } = {}) {
+    return API.get(`/api/meets/${meetId}/notes`)
+  },
+
+  /** Generate notes/minutes: POST /api/meets/:id/notes */
+  async generateNotes({ meetId, instructions = '', force = false, async: asyncGeneration = true } = {}) {
+    return API.post(`/api/meets/${meetId}/notes`, {
+      instructions,
+      force,
+      async: asyncGeneration
+    })
+  },
+
+  /** Create/run/schedule tasks from the minutes: POST /api/meets/:id/tasks */
+  async createTasks({
+    meetId,
+    items = null,
+    item_ids = [],
+    board = null,
+    column = null,
+    run = false,
+    schedule_at = null,
+    timezone = null
+  } = {}) {
+    return API.post(`/api/meets/${meetId}/tasks`, {
+      items,
+      item_ids,
+      board,
+      column,
+      run,
+      schedule_at,
+      timezone
+    })
+  },
+
+  /** Synthesized profile voice: POST /api/meets/:id/speech */
+  async speechBlob({ meetId, messageId = null, text = null, profile = null } = {}) {
+    return API.connection.postBlob(`/api/meets/${meetId}/speech`, {
+      messageId,
+      text,
+      profile
+    })
+  },
+
+  /** Upload the mixed call recording: POST /api/meets/:id/recording */
+  async uploadRecording({ meetId, blob, duration = 0, mime = '' } = {}) {
+    const form = new FormData()
+    form.append('file', blob, `meeting-${meetId}.webm`)
+    form.append('duration', String(duration || 0))
+    if (mime) form.append('mime', mime)
+    return API.post(`/api/meets/${meetId}/recording`, form)
+  },
+
+  /** Mark the recording as started: POST /api/meets/:id/recording/start */
+  async startRecording({ meetId } = {}) {
+    return API.post(`/api/meets/${meetId}/recording/start`, {})
+  },
+
+  /** Download the meeting recording as a blob: GET /api/meets/:id/recording */
+  async recordingBlob({ meetId } = {}) {
+    return API.connection.getBlob(`/api/meets/${meetId}/recording`)
   },
 
   /**

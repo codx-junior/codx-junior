@@ -6,8 +6,7 @@
 //   • MOBILE_TABS      — the persistent bottom tab bar.
 //   • MOBILE_APP_GROUPS — the "Everything" launcher inside the More sheet.
 //
-// The tab bar is deliberately small: Home (management dashboard), Chats,
-// Tasks and More. Everything else is one tap away from the More sheet, which
+// The tab bar is deliberately small: Home, Chats, Tasks and More. Everything else is one tap away from the More sheet, which
 // is searchable and grouped the way people think about the product (work,
 // people, build, insights, account).
 //
@@ -32,7 +31,7 @@ export const MOBILE_TABS = [
     key: 'tasks',
     label: 'Tasks',
     icon: 'fa-solid fa-list-check',
-    route: { name: 'kanban' }
+    route: { name: 'tasks' }
   },
   {
     key: 'more',
@@ -83,8 +82,15 @@ export const MOBILE_APP_GROUPS = [
         tone: 'primary'
       },
       {
+        key: 'task-list',
+        title: 'Tasks',
+        description: 'Latest tasks across every board',
+        icon: 'fa-solid fa-list-check',
+        tone: 'success'
+      },
+      {
         key: 'tasks',
-        title: 'Task manager',
+        title: 'Board',
         description: 'Boards, columns and cards',
         icon: 'fa-brands fa-trello',
         tone: 'success'
@@ -112,13 +118,6 @@ export const MOBILE_APP_GROUPS = [
         description: 'Teams, people and missions',
         icon: 'fa-solid fa-building-columns',
         tone: 'primary'
-      },
-      {
-        key: 'management-dashboard',
-        title: 'Management',
-        description: 'Pulse, blockers, delivery',
-        icon: 'fa-solid fa-table-columns',
-        tone: 'secondary'
       },
       {
         key: 'projects',
@@ -347,13 +346,16 @@ export const MOBILE_ROUTE_TITLES = {
   chat: 'Chat',
   'chat-workspace': 'Chat',
   'new-chat': 'New chat',
-  kanban: 'Task manager',
+  tasks: 'Tasks',
+  kanban: 'Board',
   calendar: 'Calendar',
   harness: 'Harness',
   ciso: 'CISO',
   messenger: 'Messenger',
   meet: 'Meet',
   'meet-session': 'Meeting',
+  'meet-summary': 'Meeting summary',
+  'board-management': 'Board management',
   team: 'Team',
   workspaces: 'Workspaces',
   workspace: 'Workspace',
@@ -378,7 +380,6 @@ export const MOBILE_ROUTE_TITLES = {
   'decision-model-logs': 'Decision logs',
   metrics: 'Metrics',
   analytics: 'Analytics',
-  'management-dashboard': 'Management',
   'api-monitoring': 'API monitoring',
   infra: 'Infrastructure',
   'team-channel': 'Channel',

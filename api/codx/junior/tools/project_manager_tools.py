@@ -149,18 +149,17 @@ DEFAULT_BOARD = "kanban"
 DEFAULT_COLUMN = "tasks"
 DEFAULT_MODE = "task"
 
-# Board kinds supported by the catalogue. A "sprint" is not a different entity:
-# it is a board whose ``type`` is ``sprint`` and whose name is what
-# ``Chat.sprints`` stores.
+# There is a single board kind. The former "sprint" board type was removed:
+# any board can be used as a sprint, so the tool keeps accepting the legacy
+# value (AI prompts in the wild still send it) but always creates a board.
 BOARD_TYPE_KANBAN = "kanban"
-BOARD_TYPE_SPRINT = "sprint"
-VALID_BOARD_TYPES = [BOARD_TYPE_KANBAN, BOARD_TYPE_SPRINT]
+BOARD_TYPE_SPRINT = BOARD_TYPE_KANBAN
+VALID_BOARD_TYPES = [BOARD_TYPE_KANBAN]
 
-# Columns created with a new board. A regular board stores tasks in a single
-# workflow column, while a sprint board is meant to show the sprint cards
-# grouped by their state.
+# Columns created with a new board. Tasks are moved through the board's
+# columns; a team that wants a sprint simply uses the board for its sprint.
 DEFAULT_KANBAN_COLUMNS = [DEFAULT_COLUMN]
-DEFAULT_SPRINT_COLUMNS = ["To do", "Doing", "Done"]
+DEFAULT_SPRINT_COLUMNS = DEFAULT_KANBAN_COLUMNS
 
 # The board name is also the storage folder name under ``.codx/tasks``.
 MAX_BOARD_NAME_CHARS = 120
@@ -701,13 +700,13 @@ def _boards_info(kanban: Dict[str, Any]) -> List[Dict[str, Any]]:
         else:
             column_names = []
 
-        board_type = str(board.get("type") or "").lower()
-        is_sprint = board_type == BOARD_TYPE_SPRINT or bool(board.get("sprint"))
+        # The sprint board type was removed: a board is a board, even if an
+        # old document still carries type="sprint".
         info.append(
             {
                 "name": str(name),
-                "type": board_type or (BOARD_TYPE_SPRINT if is_sprint else BOARD_TYPE_KANBAN),
-                "is_sprint": is_sprint,
+                "type": BOARD_TYPE_KANBAN,
+                "is_sprint": False,
                 "parent_id": board.get("parent_id"),
                 "columns": [c for c in column_names if c],
             }
@@ -727,12 +726,10 @@ def _board_dict(name: str, entry: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         Dict describing the board or sprint.
     """
     entry = entry if isinstance(entry, dict) else {}
-    board_type = str(entry.get("type") or "").lower()
-    is_sprint = board_type == BOARD_TYPE_SPRINT or bool(entry.get("sprint"))
     return {
         "name": name,
-        "type": board_type or (BOARD_TYPE_SPRINT if is_sprint else BOARD_TYPE_KANBAN),
-        "is_sprint": is_sprint,
+        "type": BOARD_TYPE_KANBAN,
+        "is_sprint": False,
         "description": entry.get("description") or "",
         "parent_id": entry.get("parent_id") or None,
         "columns": _column_titles(entry),
@@ -800,10 +797,9 @@ def _board_catalogue(kanban: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _board_names(boards: List[Dict[str, Any]], only_sprints: bool = False) -> str:
     """Render the known board names (optionally only the sprint ones) for errors."""
-    names = [
-        board["name"] for board in boards
-        if not only_sprints or board["is_sprint"]
-    ]
+    # ``only_sprints`` is accepted for backward compatibility with old prompts,
+    # but no board is a sprint any more.
+    names = [] if only_sprints else [board["name"] for board in boards]
     return ", ".join(names) or "none"
 
 
@@ -918,12 +914,13 @@ def _normalize_board_type(board_type: Optional[str]) -> str:
         ValueError: When the value is not a supported board kind.
     """
     resolved = (board_type or BOARD_TYPE_KANBAN).strip().lower()
-    if resolved not in VALID_BOARD_TYPES:
+    if resolved not in ("kanban", "sprint"):
         raise ValueError(
-            f"board_type must be one of {', '.join(VALID_BOARD_TYPES)} "
-            f"(received '{board_type}')"
+            f"board_type must be 'kanban' (received '{board_type}')"
         )
-    return resolved
+    # The sprint board type was removed: a legacy "sprint" request creates a
+    # regular board (any board can be used as a sprint).
+    return BOARD_TYPE_KANBAN
 
 
 def _new_board_entry(
@@ -1565,10 +1562,7 @@ def _action_create_board(
             )
         parent = parent_info["name"]
 
-    defaults = (
-        DEFAULT_SPRINT_COLUMNS if resolved_type == BOARD_TYPE_SPRINT
-        else DEFAULT_KANBAN_COLUMNS
-    )
+    defaults = DEFAULT_KANBAN_COLUMNS
     titles: List[str] = []
     for title in (_to_list(columns) or defaults):
         if title not in titles:
@@ -1594,29 +1588,21 @@ def _action_create_board(
         chat_manager=chat_manager, board_name=board_name, columns=titles
     )
 
-    is_sprint = resolved_type == BOARD_TYPE_SPRINT
     logger.info(
-        "project_manager: created %s '%s' (columns=%s parent=%s)",
-        resolved_type, board_name, titles, parent,
+        "project_manager: created board '%s' (columns=%s parent=%s)",
+        board_name, titles, parent,
     )
 
     user_lines = [
-        f"✅ {'Sprint' if is_sprint else 'Board'} created: **{board_name}**",
-        f"- Type: `{resolved_type}`",
+        f"✅ Board created: **{board_name}**",
         f"- Columns: {', '.join(f'`{title}`' for title in titles)}",
     ]
     if parent:
         user_lines.append(f"- Parent board: `{parent}`")
-    if is_sprint:
-        user_lines.append(
-            f"- Associate tasks with `sprint='{board_name}'` "
-            "(action='create_task' / action='update_task')."
-        )
-    else:
-        user_lines.append(
-            f"- Create tasks on it with `board='{board_name}'` "
-            "(action='create_task')."
-        )
+    user_lines.append(
+        f"- Create tasks on it with `board='{board_name}'` "
+        "(action='create_task')."
+    )
 
     return ToolResponse(
         user_response="\n".join(user_lines),
@@ -1862,10 +1848,10 @@ def _action_delete_board(
     )
 
     user_lines = [
-        f"🗑️ {'Sprint' if info['is_sprint'] else 'Board'} deleted: **{resolved}**",
+        f"🗑️ Board deleted: **{resolved}**",
         f"- Tasks deleted: {deleted_tasks}" if force else "- Tasks: none (empty board)",
         f"- Child boards detached: {detached}" if detached else None,
-        f"- Sprint membership removed from {dropped_from} task(s)"
+        f"- Legacy sprint membership removed from {dropped_from} task(s)"
         if dropped_from else None,
     ]
     return ToolResponse(
@@ -3122,10 +3108,8 @@ async def project_manager(
                 name=name or board,
                 description=description,
                 columns=columns,
-                board_type=(
-                    BOARD_TYPE_SPRINT if resolved_action == "create_sprint"
-                    else board_type
-                ),
+                # create_sprint is a legacy alias for create_board.
+                board_type=BOARD_TYPE_KANBAN,
                 parent_id=parent_id,
             )
 
@@ -3471,8 +3455,9 @@ PROJECT_MANAGER_TOOL_JSON = {
                         "When an autonomous agent must be woken for this task: the "
                         "alarm clock read by the autonomy worker, NOT a deadline "
                         "(that is due_date). Accepts relative expressions like "
-                        "'+2d' or '6 hours', a date ('2026-04-03') or an ISO "
-                        "instant. On update an empty string clears the schedule."
+                        "'+2d' or '6 hours', a date ('2026-04-03'), an ISO "
+                        "instant or 'non-working-hours' (outside the human working "
+                        "window). On update an empty string clears the schedule."
                     )
                 },
                 "progress": {
@@ -3517,9 +3502,8 @@ PROJECT_MANAGER_TOOL_JSON = {
                     "type": "string",
                     "enum": VALID_BOARD_TYPES,
                     "description": (
-                        "Board kind on create_board ('kanban' by default) and the new "
-                        "kind on update_board. Use 'sprint' (or action='create_sprint') "
-                        "for a sprint board."
+                        "Deprecated. Every board is a kanban board now; "
+                        "'sprint' is accepted as an alias for a regular board."
                     )
                 },
                 "new_name": {

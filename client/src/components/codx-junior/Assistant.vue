@@ -169,7 +169,7 @@ export default {
       }
     },
     goToChat() {
-      this.$ui.setActiveTab('tasks')
+      this.$ui.setActiveTab('task-list')
       this.$chats.setActiveChat(this.chat)
     },
     closeAssitant() {

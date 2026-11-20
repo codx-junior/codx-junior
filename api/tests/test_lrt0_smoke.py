@@ -131,7 +131,8 @@ def test_store_migrates_legacy_kanban(tasks_path):
     assert set(kanban["boards"]) == {"Bugs", "Sprint 12"}
     assert kanban["tags"] == {"ui": "#fff"}
     assert kanban["boards"]["Bugs"]["columns"][0]["title"] == "Backlog"
-    assert kanban["boards"]["Sprint 12"]["type"] == "sprint"
+    # The sprint board type was removed: any board can be used as a sprint.
+    assert kanban["boards"]["Sprint 12"]["type"] == "kanban"
 
     index = read_json(os.path.join(tasks_path, "index.json"))
     assert index["version"] == 2

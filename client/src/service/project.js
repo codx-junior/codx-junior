@@ -24,8 +24,8 @@ export class ProjectService extends Service {
     })
     this.$projects.setActiveChat(chat)
    
-    if (this.$ui.activeTab !== 'tasks') {
-      this.$ui.setActiveTab('tasks')
+    if (this.$ui.activeTab !== 'task-list') {
+      this.$ui.setActiveTab('task-list')
     }
   }
 

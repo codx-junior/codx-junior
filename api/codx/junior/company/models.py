@@ -1508,6 +1508,12 @@ class Company(BaseModel):
         logo / color: UI presentation.
         status: ``active``, ``paused`` or ``archived``.
         owner: Username of the human owner (empty = unowned).
+        is_default: Whether this is the installation's default company. A fresh
+            installation gets one automatically and it covers every discovered
+            project, so the product is usable without creating a company first.
+        auto_sync_projects: When true (the default), every discovered project is
+            linked automatically. It is switched off as soon as a user edits the
+            project list, so unlinking a project is respected.
         org_units: Departments/functions tree.
         teams: Hybrid teams.
         projects: Linked codx-junior projects.
@@ -1531,6 +1537,21 @@ class Company(BaseModel):
     color: str = Field(default="#6366f1", description="UI accent colour")
     status: str = Field(default="active", description="active | paused | archived")
     owner: str = Field(default="", description="Owner username")
+    is_default: bool = Field(
+        default=False,
+        description=(
+            "Default company of the installation. Exactly one company is the "
+            "default; a fresh installation creates it with every discovered "
+            "project linked."
+        ),
+    )
+    auto_sync_projects: bool = Field(
+        default=True,
+        description=(
+            "Link every discovered project automatically. Turned off once the "
+            "user edits the company's project list."
+        ),
+    )
     org_units: List[OrgUnit] = Field(default_factory=list)
     teams: List[CompanyTeam] = Field(default_factory=list)
     projects: List[CompanyProject] = Field(default_factory=list)
@@ -1729,6 +1750,9 @@ class Company(BaseModel):
             "description": self.description,
             "status": self.status,
             "owner": self.owner,
+            "is_default": self.is_default,
+            "auto_sync_projects": self.auto_sync_projects,
+            "project_ids": [project.project_id for project in self.projects],
             "color": self.color,
             "logo": self.logo,
             "counts": self.counts(),

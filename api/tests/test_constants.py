@@ -109,8 +109,12 @@ def test_agile_wall_clock_is_short_and_overridable_by_env():
 
 # ── MAX tier: the ONLY tier allowed to run unbounded (``codx-junior-max``) ───
 def test_max_budget_is_larger_than_agile():
-    assert constants.MAX_MAX_ITERATIONS == 40
-    assert constants.MAX_MAX_TOOL_CALLS == 8
+    # Deliberate product decision: the max tier runs 24 tool iterations with 6
+    # calls per round, 80 rounds and 4 course corrections. The old 40/8 pair was
+    # a draft that never reached ``constants.py`` nor the resolved policy
+    # (``codx.junior.ai.smol.effort.max_policy``), so the code is the contract.
+    assert constants.MAX_MAX_ITERATIONS == 24
+    assert constants.MAX_MAX_TOOL_CALLS == 6
     assert constants.MAX_MAX_TOOL_ROUNDS == 80
 
     assert constants.MAX_MAX_ITERATIONS > constants.AGILE_MAX_ITERATIONS

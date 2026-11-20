@@ -100,8 +100,17 @@ def _resolve_when(
     if not text:
         raise ValueError(
             "schedule_task requires 'when': '01:00', 'tonight 01:00', "
-            "'tomorrow 1am', 'after hours', '+2d', '3 hours' or an ISO instant"
+            "'tomorrow 1am', 'after hours', 'non-working-hours', '+2d', "
+            "'3 hours' or an ISO instant"
         )
+
+    # The human working window is an installation setting. "non-working-hours"
+    # resolves to its next closing instant, so the task runs when the team is
+    # offline instead of colliding with the daily work.
+    from codx.junior.working_hours import is_non_working_token, next_non_working_start
+
+    if is_non_working_token(text):
+        return next_non_working_start(moment=now)
 
     lowered = text.lower()
     tonight = any(word in lowered for word in _NIGHT_WORDS)
@@ -201,7 +210,7 @@ SCHEDULE_TASK_TOOL_JSON = {
             "Either reschedule an existing task ('task_id' or 'task' name) or "
             "create one already scheduled ('name' + 'description'). "
             "'when' accepts '01:00', 'tonight 01:00', 'tomorrow 1am', "
-            "'after hours', '+2d', '3 hours', an ISO date or an ISO instant; clock "
+            "'after hours', 'non-working-hours', '+2d', '3 hours', an ISO date or an ISO instant; clock "
             "times resolve to the next occurrence in 'timezone' (UTC by default). "
             "Use 'profiles' (e.g. ['codx-junior-max']) to run it with the effort "
             "tier you want. Returns the value actually stored in the task."
@@ -213,8 +222,8 @@ SCHEDULE_TASK_TOOL_JSON = {
                     "type": "string",
                     "description": (
                         "When to wake the task: '01:00', 'tonight 01:00', "
-                        "'tomorrow 1am', 'after hours', '+2d', '3 hours', "
-                        "'2026-04-03' or an ISO instant."
+                        "'tomorrow 1am', 'after hours', 'non-working-hours', "
+                        "'+2d', '3 hours', '2026-04-03' or an ISO instant."
                     ),
                 },
                 "context": {

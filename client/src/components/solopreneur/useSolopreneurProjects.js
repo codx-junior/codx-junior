@@ -121,8 +121,10 @@ export const projects = computed(() => {
       project,
       active,
       boards,
-      sprintBoards: boards.filter(b => b.type === 'sprint'),
-      kanbanBoards: boards.filter(b => b.type !== 'sprint'),
+      // Any board can be used as a sprint now: the solopreneur "Sprints"
+      // workspace lists every board of the project.
+      sprintBoards: boards,
+      kanbanBoards: [],
       tasks: own.length,
       done,
       onhold,
@@ -209,19 +211,22 @@ export const recentChats = computed(() => {
 // Tasks of one sprint board (used by the projects detail, before opening it).
 export function countSprintTasks(boardId) {
   if (!boardId) return 0
-  return projectChats.value.filter(c => (c.sprints || []).includes(boardId)).length
+  return projectChats.value.filter(c =>
+    c.board === boardId || (c.sprints || []).includes(boardId)
+  ).length
 }
 
 export function countSprintDone(boardId) {
   if (!boardId) return 0
   return projectChats.value.filter(
-    c => (c.sprints || []).includes(boardId) && (c.status || 'todo') === 'done'
+    c => (c.board === boardId || (c.sprints || []).includes(boardId)) &&
+      (c.status || 'todo') === 'done'
   ).length
 }
 
 // ── sprints ─────────────────────────────────────────────────────────────────
 export const sprintBoards = computed(() =>
-  boardList($storex.projects.activeProject).filter(b => b.type === 'sprint')
+  boardList($storex.projects.activeProject)
 )
 
 export const selectedSprint = computed(() => {
@@ -236,7 +241,14 @@ export const selectedSprintId = computed(() => selectedSprint.value?.id || null)
 // the chats whose `status` matches the column's status.
 export const sprintColumns = computed(() => {
   const id = selectedSprintId.value
-  return id ? ($storex.kanban.sprintColumns(id) || []) : []
+  if (!id) return []
+  // Every board is a regular board now, so its columns/tasks come from the
+  // same builder the board canvas uses. `status` is kept for the existing
+  // status chips (it falls back to the column value).
+  return ($storex.kanban.buildViewColumns(id) || []).map(column => ({
+    ...column,
+    status: column.status || column.value
+  }))
 })
 
 // Columns filtered by the active chip / search query.

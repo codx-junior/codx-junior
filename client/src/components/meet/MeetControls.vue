@@ -84,6 +84,17 @@ import MicIndicator from './MicIndicator.vue'
         <i class="fa-solid fa-user-plus text-base"></i>
       </button>
 
+      <!-- Notes / minutes -->
+      <button
+        @click="$emit('notes')"
+        class="w-11 h-11 lg:w-12 lg:h-12 rounded-full flex items-center justify-center transition-all duration-150 active:scale-95"
+        :class="activePanelTab === 'notes' && !panelCollapsed ? 'bg-primary hover:bg-primary/80' : 'bg-[#3c4043] hover:bg-[#4c5055]'"
+        title="Meeting notes and transcript"
+        aria-label="Meeting notes and transcript"
+      >
+        <i class="fa-solid fa-pen-to-square text-white text-base"></i>
+      </button>
+
       <!-- Chat -->
       <button
         @click="$emit('chat')"
@@ -131,10 +142,10 @@ import MicIndicator from './MicIndicator.vue'
         v-if="isInitiator"
         @click="$emit('end')"
         class="btn btn-sm btn-outline btn-error rounded-full px-4 gap-1.5"
-        title="End call for everyone"
+        title="End the meeting for everyone and open the minutes"
       >
         <i class="fa-solid fa-phone-slash"></i>
-        End
+        End &amp; minutes
       </button>
       <button
         @click="$emit('leave')"
@@ -162,7 +173,7 @@ export default {
     duration: { type: String, default: '00:00' },
     isInitiator: { type: Boolean, default: false }
   },
-  emits: ['toggle-mute', 'toggle-camera', 'start-screen-share', 'settings', 'invite', 'chat', 'browser', 'people', 'leave', 'end'],
+  emits: ['toggle-mute', 'toggle-camera', 'start-screen-share', 'settings', 'invite', 'chat', 'notes', 'browser', 'people', 'leave', 'end'],
   computed: {
     isScreenSharing() {
       return this.screenShareCount > 0

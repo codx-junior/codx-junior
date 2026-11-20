@@ -19,10 +19,6 @@ function openCompanyWorkspace() {
   })
 }
 
-function openManagementDashboard() {
-  $storex.ui.openApp('management-dashboard')
-}
-
 function openProjects() {
   $storex.ui.openApp('projects')
 }
@@ -50,10 +46,6 @@ function openCompanySettings() {
     <i class="fa-solid fa-building-user"></i>
     Company settings
   </MenubarItem>
-  <MenubarItem @click="openManagementDashboard">
-    <i class="fa-solid fa-table-columns"></i>
-    Management
-  </MenubarItem>
   <MenubarItem @click="openProjects">
     <i class="fa-solid fa-cubes"></i>
     Projects
@@ -65,9 +57,9 @@ function openCompanySettings() {
   <MenubarItem @click="$ui.setActiveTab('wiki')">
     <i class="fa-solid fa-graduation-cap"></i> Wiki
   </MenubarItem>
-  <MenubarItem @click="$ui.setActiveTab('tasks')">
-    <i class="fa-brands fa-trello"></i>
-    Task manager
+  <MenubarItem @click="$ui.openApp('task-list')">
+    <i class="fa-solid fa-list-check"></i>
+    Tasks
   </MenubarItem>
   <MenubarItem @click="$ui.openPlanning()">
     <i class="fa-solid fa-diagram-project"></i>
@@ -77,9 +69,13 @@ function openCompanySettings() {
     <i class="fa-solid fa-people-group"></i>
     Team
   </MenubarItem>
-  <MenubarItem @click="$ui.openMeet()">
+  <MenubarItem @click="$ui.openMeetingSetup({ source: 'manual' })">
     <i class="fa-solid fa-video"></i>
-    Meet
+    New meeting
+  </MenubarItem>
+  <MenubarItem @click="$ui.openMeet()">
+    <i class="fa-solid fa-phone"></i>
+    Join a meeting
   </MenubarItem>
   <MenubarItem @click="$ui.setActiveTab('file-explorer')">
     <i class="fa-regular fa-folder-open"></i>

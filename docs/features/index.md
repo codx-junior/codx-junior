@@ -32,6 +32,8 @@ context and stay in budget. This section documents every feature in detail.
 | [Coworking](/features/computer-use) | A whole machine shared by the user and the AI: Linux desktops, Windows/macOS VMs, remote VNC/SSH hosts and the original browser sessions. |
 | [Browser use and co-browsing](/features/browser-use) | The `browser` kind: one Chromium page shared by the user (live view) and the AI (CDP tools). |
 | [Teams and messenger](/features/teams) | Teams, categories, channels and direct messages shared by humans and agents — a team can also be generated from a plain-language need. |
+| [Company meetings](/features/company-meetings) | Live calls with people and AI profiles: transcript, recording, minutes and tasks created from the meeting. |
+| [Channel content creator](/features/channel-creator) | Project admins ask for new content (video, short, podcast, wiki, slides, doc) from a brief and the AI builds it. |
 | [Slack and WhatsApp channels](/features/slack-whatsapp-integration) | Design and implementation plan for mirroring external Slack and WhatsApp conversations into codx-junior channels. |
 | [External actors and outreach](/features/external-actors) | Ask questions to people outside the platform from a task, with a global actor directory, per-project links and email/manual relay (MVP). |
 | [Development tools](/features/development-tools) | Desktop window manager, Coder, file browser, project scripts and logs. |

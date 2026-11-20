@@ -71,6 +71,16 @@ export const companiesModule = (API) => ({
     return API.put(`${BASE}/${encodeURIComponent(companyId)}`, payload)
   },
 
+  /**
+   * Replace the company's project list in one request. This is what the
+   * settings → Projects editor saves; existing project metadata is preserved.
+   */
+  setProjects(companyId, projectIds = []) {
+    return API.put(`${BASE}/${encodeURIComponent(companyId)}/projects`, {
+      project_ids: projectIds
+    })
+  },
+
   /** Delete a company and its journal. */
   remove(companyId) {
     return API.delete(`${BASE}/${encodeURIComponent(companyId)}`)

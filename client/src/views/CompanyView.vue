@@ -11,6 +11,7 @@ import CompanyBusiness from '@/components/company/CompanyBusiness.vue'
 import CompanyActivity from '@/components/company/CompanyActivity.vue'
 import CompanySecurity from '@/components/company/CompanySecurity.vue'
 import CompanySettings from '@/components/company/CompanySettings.vue'
+import CompanyProjectsPanel from '@/components/company/CompanyProjectsPanel.vue'
 import CompanyAssistant from '@/components/company/CompanyAssistant.vue'
 import CompanyWorkplace from '@/components/company/CompanyWorkplace.vue'
 import CompanyChatPanel from '@/components/company/CompanyChatPanel.vue'
@@ -46,12 +47,17 @@ const companies = ref([])
 const activeId = ref('')
 const snapshot = ref(null)
 const companyActors = ref({ actors: [], counts: {} })
+const companyReferences = ref({ projects: [], users: [], profiles: [] })
 const companyChats = ref([])
 const section = ref('home')
 const navOpen = ref(false)
 const exitOpen = ref(false)
 const userMenuOpen = ref(false)
 const askText = ref('')
+const newCompanyOpen = ref(false)
+const newCompanySaving = ref(false)
+const newCompanyError = ref('')
+const newCompanyForm = ref({ name: '', description: '' })
 
 const chatsOpen = ref(false)
 const chatTeamId = ref('')
@@ -110,6 +116,7 @@ const SECTIONS = [
   { id: 'home', labelKey: 'nav.overview', icon: 'fa-solid fa-border-all', hintKey: 'The state of the company' },
   { id: 'work', labelKey: 'nav.work', icon: 'fa-solid fa-flag', hintKey: 'Goals, delivery, review' },
   { id: 'team', labelKey: 'nav.team', icon: 'fa-solid fa-people-group', hintKey: 'Teams and people' },
+  { id: 'projects', labelKey: 'nav.projects', icon: 'fa-solid fa-cubes', hintKey: 'Projects this company runs' },
   { id: 'business', labelKey: 'nav.business', icon: 'fa-solid fa-chart-line', hintKey: 'Revenue, margin, pipeline' },
   { id: 'activity', labelKey: 'nav.activity', icon: 'fa-solid fa-wave-square', hintKey: 'What happened' },
   { id: 'security', labelKey: 'nav.security', icon: 'fa-solid fa-shield-halved', hintKey: 'CISO posture' },
@@ -120,7 +127,7 @@ const SECTIONS = [
 ]
 
 const NAV_GROUPS = [
-  { id: 'workspace', labelKey: 'group.workspace', ids: ['home', 'work', 'team'] },
+  { id: 'workspace', labelKey: 'group.workspace', ids: ['home', 'work', 'team', 'projects'] },
   { id: 'business', labelKey: 'group.business', ids: ['business', 'activity'] },
   { id: 'governance', labelKey: 'group.governance', ids: ['security', 'settings'] }
 ]
@@ -242,14 +249,99 @@ async function loadCompanyActors(companyId) {
   }
 }
 
+async function loadCompanyReferences() {
+  try {
+    companyReferences.value = await api.references({
+      projectId: workingProject.value?.project_id || ''
+    })
+  } catch (error) {
+    // The project picker is optional context; the rest of the shell keeps working.
+    console.warn('[CompanyView] cannot load company references', error)
+  }
+}
+
 async function refreshSnapshot() {
   if (!activeId.value) return
   try {
     snapshot.value = await api.snapshot(activeId.value)
     await loadCompanyActors(activeId.value)
     await loadCompanyChats()
+    await loadCompanyReferences()
   } catch (error) {
     notifyError(error)
+  }
+}
+
+// ── Projects ──────────────────────────────────────────────────────────────
+// The project list is a company setting: it is what the company "can work
+// with". The default company starts linked to every project, and the user can
+// change the list here or create another company with its own list.
+async function linkCompanyProject({ project_id, payload } = {}) {
+  if (!activeId.value || !project_id) return
+  busy.value = true
+  try {
+    await api.linkProject(activeId.value, { project_id, ...(payload || {}) })
+    await refreshSnapshot()
+    notify('Project linked ✓', 'success')
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function unlinkCompanyProject(projectId) {
+  if (!activeId.value || !projectId) return
+  busy.value = true
+  try {
+    await api.unlinkProject(activeId.value, projectId)
+    await refreshSnapshot()
+    notify('Project unlinked', 'info')
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+async function openProjectByName(projectName) {
+  if (!projectName) return
+  const project = ($storex.projects.allProjects || []).find(item =>
+    item.project_name === projectName || item.project_id === projectName
+  )
+  if (project) {
+    await $storex.projects.activeProjectChanged(project).catch(() => {})
+  }
+  router.push({ name: 'home', params: { projectName } }).catch(() => {})
+}
+
+function openNewCompany() {
+  newCompanyForm.value = { name: '', description: '' }
+  newCompanyError.value = ''
+  newCompanyOpen.value = true
+}
+
+async function createCompany() {
+  const name = newCompanyForm.value.name.trim()
+  if (!name) {
+    newCompanyError.value = 'Give the company a name.'
+    return
+  }
+  newCompanySaving.value = true
+  newCompanyError.value = ''
+  try {
+    const created = await api.create({
+      name,
+      description: newCompanyForm.value.description.trim()
+    })
+    newCompanyOpen.value = false
+    companies.value = await api.list()
+    await selectCompany(created.id, { skipList: true })
+    notify('Company created ✓', 'success')
+  } catch (error) {
+    newCompanyError.value = errorMessage(error)
+  } finally {
+    newCompanySaving.value = false
   }
 }
 
@@ -428,6 +520,7 @@ onMounted(async () => {
   loading.value = true
   try {
     await loadCompanies()
+    await loadCompanyReferences()
     const preferredLanguage = $storex.api.user?.language
     if (preferredLanguage && preferredLanguage !== 'auto') setCompanyLanguage(preferredLanguage)
   } catch (error) {
@@ -452,7 +545,7 @@ function legacySection(value) {
     teams: 'team',
     people: 'team',
     organization: 'team',
-    projects: 'home',
+    projects: 'projects',
     activity: 'activity',
     missions: 'work',
     overview: 'home',
@@ -505,8 +598,8 @@ watch(() => route.query.assistant, value => {
           </div>
         </div>
 
-        <div v-if="companies.length > 1 && !sidebarCollapsed" class="px-3 pb-1.5">
-          <label class="relative block">
+        <div v-if="!sidebarCollapsed" class="flex items-center gap-1 px-3 pb-1.5">
+          <label v-if="companies.length > 1" class="relative block min-w-0 flex-1">
             <select
               class="w-full appearance-none rounded-[9px] border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-1.5 pl-2.5 pr-7 text-[10.5px] font-semibold text-[var(--cp-text)] outline-none transition hover:border-[var(--cp-border-strong)]"
               :value="activeId"
@@ -517,6 +610,15 @@ watch(() => route.query.assistant, value => {
             </select>
             <i class="fa-solid fa-chevron-down pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[8px] text-[var(--cp-muted-soft)]"></i>
           </label>
+          <button
+            type="button"
+            class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-[8px] border border-[var(--cp-border)] text-[10px] text-[var(--cp-muted)] transition hover:border-[var(--cp-border-strong)] hover:text-[var(--cp-text)]"
+            title="Create a new company"
+            aria-label="Create a new company"
+            @click="openNewCompany"
+          >
+            <i class="fa-solid fa-plus"></i>
+          </button>
         </div>
 
         <nav class="cp-scroll flex-1 overflow-y-auto px-2.5 pb-1 pt-1">
@@ -743,7 +845,7 @@ watch(() => route.query.assistant, value => {
       </div>
 
       <!-- ── Main column ──────────────────────────────────────────────────── -->
-      <div class="cp-canvas flex min-w-0 flex-1 flex-col overflow-hidden max-md:rounded-none md:rounded-[22px] md:border md:border-[var(--cp-border)]">
+      <div class="cp-canvas flex min-w-0 flex-1 flex-col overflow-hidden">
         <header class="cp-topbar shrink-0">
           <div class="flex h-[60px] items-center gap-2 px-3 md:h-[64px] md:px-5">
             <button v-if="isMobile" class="cp-icon-btn" aria-label="Open menu" @click="navOpen = true">
@@ -935,6 +1037,15 @@ watch(() => route.query.assistant, value => {
                     @new-goal="(teamId) => openGoal(teamId)"
                     @new-team="generateOpen = true"
                   />
+                  <CompanyProjectsPanel
+                    v-else-if="section === 'projects'"
+                    :snapshot="snapshot"
+                    :references="companyReferences"
+                    :busy="busy"
+                    @save="linkCompanyProject"
+                    @delete="unlinkCompanyProject"
+                    @open-project="openProjectByName"
+                  />
                   <CompanyBusiness
                     v-else-if="section === 'business'"
                     :company-id="activeId"
@@ -970,12 +1081,47 @@ watch(() => route.query.assistant, value => {
                     @refresh="refreshSnapshot"
                     @assistant="openAssistantFor"
                     @deleted="onCompanyDeleted"
+                    @open-projects="setSection('projects')"
+                    @new-company="openNewCompany"
                   />
                 </div>
               </Transition>
             </template>
           </div>
         </main>
+      </div>
+    </div>
+
+    <!-- ── New company ───────────────────────────────────────────────────── -->
+    <div v-if="newCompanyOpen" class="fixed inset-0 z-[80] grid place-items-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="Create a company">
+      <div class="w-full max-w-md rounded-2xl border border-base-300 bg-base-100 p-4 shadow-2xl">
+        <div class="mb-3 flex items-center justify-between">
+          <h3 class="text-base font-bold">Create a company</h3>
+          <button class="btn btn-ghost btn-sm btn-square" aria-label="Close" @click="newCompanyOpen = false">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+        <p class="mb-3 text-xs opacity-60">
+          A company owns projects, teams and boards. The default company already covers every project;
+          create another one to separate another business.
+        </p>
+        <label class="form-control mb-2">
+          <span class="label-text text-xs">Company name</span>
+          <input v-model="newCompanyForm.name" class="input input-sm input-bordered" placeholder="Acme Studio"
+                 autofocus @keydown.enter="createCompany" />
+        </label>
+        <label class="form-control mb-2">
+          <span class="label-text text-xs">Description <span class="opacity-50">(optional)</span></span>
+          <input v-model="newCompanyForm.description" class="input input-sm input-bordered" placeholder="What does it do?" />
+        </label>
+        <p v-if="newCompanyError" class="mb-2 text-xs text-error">{{ newCompanyError }}</p>
+        <div class="flex justify-end gap-2">
+          <button class="btn btn-ghost btn-sm" @click="newCompanyOpen = false">Cancel</button>
+          <button class="btn btn-primary btn-sm" :disabled="newCompanySaving || !newCompanyForm.name.trim()" @click="createCompany">
+            <span v-if="newCompanySaving" class="loading loading-spinner loading-xs"></span>
+            Create company
+          </button>
+        </div>
       </div>
     </div>
 

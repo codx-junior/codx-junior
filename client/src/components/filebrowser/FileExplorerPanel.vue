@@ -8,7 +8,7 @@ import VerticalSplitter from '../layout/VerticalSplitter.vue'
   <!-- Desktop / landscape: resizable split (tree + open files).
        The right (file) panel is only provided while a file is open, so the
        tree uses the full width when there is nothing to show. -->
-  <VerticalSplitter :panels="splitterConfig" v-if="!isSinglePanel">
+  <VerticalSplitter persist-key="file-explorer" :panels="splitterConfig" v-if="!isSinglePanel">
     <template #left>
       <FileExplorer
         ref="fileExplorer"

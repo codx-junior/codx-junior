@@ -40,6 +40,7 @@ DELETE /api/companies/{id}/teams/{team}/members
 PUT    /api/companies/{id}/teams/{team}/lead
 
 POST   /api/companies/{id}/projects            link project
+PUT    /api/companies/{id}/projects            replace the project list
 DELETE /api/companies/{id}/projects/{project}  unlink project
 
 POST   /api/companies/{id}/missions            add mission
@@ -222,6 +223,15 @@ class ProjectLinkRequest(BaseModel):
     priority: str = "medium"
     status: str = "active"
     budget_cxjcoins: float = 0.0
+
+
+class CompanyProjectsRequest(BaseModel):
+    """Replace the complete project list of a company."""
+
+    project_ids: List[str] = Field(
+        default_factory=list,
+        description="Every project that must stay linked (others are unlinked)",
+    )
 
 
 class MissionRequest(BaseModel):
@@ -513,8 +523,24 @@ def api_list_companies(
     include_archived: bool = Query(default=True),
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
-    """List every company (newest first is by name; summary payload)."""
-    return _run(lambda: _manager().list_companies(include_archived=include_archived))
+    """
+    List every company (summary payload).
+
+    On a fresh installation this provisions the default company — linked to
+    every discovered project — so the product always has a company as its
+    top-level element. The provisioning is idempotent.
+    """
+    manager = _manager()
+    try:
+        manager.ensure_default_company(actor=_actor(user))
+    except Exception as ex:  # bootstrap must not make the company list unusable
+        logger.warning("Could not provision the default company: %s", ex)
+    return _run(
+        lambda: manager.list_companies(
+            include_archived=include_archived,
+            ensure_default=False,
+        )
+    )
 
 
 @router.get("/companies/references")
@@ -1304,6 +1330,29 @@ def api_link_project(
             payload.project_id,
             actor=_actor(user),
             **payload.model_dump(exclude={"project_id"}),
+        )
+    )
+
+
+@router.put("/companies/{company_id}/projects")
+def api_set_company_projects(
+    company_id: str,
+    payload: CompanyProjectsRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    Replace the company's project list in one request.
+
+    This is what the company settings → Projects editor saves. Existing
+    project metadata (role, owning team, budget) is preserved for every project
+    that stays linked; unlinked projects are detached from teams as well.
+    """
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    return _run(
+        lambda: manager.set_project_links(
+            company_id,
+            payload.project_ids,
+            actor=_actor(user),
         )
     )
 

@@ -46,6 +46,13 @@ export const state = () => ({
   // entry and consumed by the dialog as soon as it opens, so it is never
   // persisted with the rest of the UI state.
   newTask: false,
+  // One-shot request that opens the codx-junior assistant chat (New in the
+  // left bar). The modal allows scheduling the task instead of running now.
+  newAssistantChat: false,
+  // One-shot setup request of the global "New meeting" dialog. Set by the main
+  // menu, the channel header and the team view; consumed by
+  // components/meet/NewMeetingModal.vue. It is never persisted.
+  meetingSetup: null,
   activeApp: null,
   appShowMode: null,
   viewEditor: null,
@@ -337,6 +344,10 @@ export const mutations = mutationTree(state, {
   showNewTask(state, show) {
     state.newTask = show
   },
+  // Open/close the codx-junior assistant chat modal (left bar → New).
+  showNewAssistantChat(state, show) {
+    state.newAssistantChat = show
+  },
   cloneApp(state, app) {
     // "Duplicate" only makes sense for apps declared as multi-instance in
     // config/apps.js (e.g. the Task Manager, one panel per board). For every
@@ -454,7 +465,7 @@ export const mutations = mutationTree(state, {
     }
     if (!Object.keys(state.openApps).length) {
       if (!state.activeTab) {
-        $storex.ui.showTab(state.lastActiveTab || 'tasks')
+        $storex.ui.showTab(state.lastActiveTab || 'task-list')
       }
     }
     $storex.ui.saveState()
@@ -619,8 +630,10 @@ export const actions = actionTree(
           ...state,
           uiReady: false,
           mobileMenuOpen: false,
-          // A one-shot dialog request must never survive a reload
+          // One-shot dialog requests must never survive a reload
           newTask: false,
+          newAssistantChat: false,
+          meetingSetup: null,
           openApps: {},
           viewEditor: null,
           projectLoadingState: {
@@ -647,6 +660,8 @@ export const actions = actionTree(
         console.error('Failed to parse saved UI state:', error)
       }
       state.mobileMenuOpen = false
+      state.newAssistantChat = false
+      state.meetingSetup = null
       $storex.ui.showNewProject(false)
       $storex.ui.showNewTask(false)
       $storex.ui.handleResize()
@@ -807,8 +822,25 @@ export const actions = actionTree(
       $storex.ui.openApp({ appKey: 'meet', payload: { meetId } })
     },
 
+    /**
+     * Open the global "New meeting" dialog.
+     *
+     * @param {object} prefill Optional channel/team context:
+     *   { source, channelId, channelName, teamId, teamName, name, users, profiles, board }
+     */
+    openMeetingSetup(_, prefill = {}) {
+      $storex.ui.meetingSetup = {
+        ...(prefill || {}),
+        openedAt: Date.now()
+      }
+    },
+
+    closeMeetingSetup() {
+      $storex.ui.meetingSetup = null
+    },
+
     openTasks() {
-      $storex.ui.setActiveTab('tasks')
+      $storex.ui.setActiveTab('task-list')
     },
 
     // Open the Task Manager directly on the Planning view.

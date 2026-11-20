@@ -18,6 +18,7 @@ import ChatAttachment from '@/api/model/ChatAttachment.js'
     <VerticalSplitter
       v-if="!isMobile && activeChat && !isHomePage"
       class="flex-1 min-w-0 h-full"
+      persist-key="quick-chat"
       :panels="splitterPanels"
     >
       <!-- Left panel: ChatView (includes sidebar + header + chat) -->

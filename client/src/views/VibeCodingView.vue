@@ -36,7 +36,7 @@ import { v4 as uuidv4 } from 'uuid'
     />
 
     <!-- Main layout: Chat panel + Code panels -->
-    <VerticalSplitter :panels="splitterConfig">
+    <VerticalSplitter persist-key="vibe-coding" :panels="splitterConfig">
       <template #left v-if="showChat">
         <ChatPanel
           :chat="activeChildChat || activeChat"
@@ -56,7 +56,7 @@ import { v4 as uuidv4 } from 'uuid'
       </template>
 
       <template #right v-if="showChanges || showPreview">
-        <VerticalSplitter :panels="codePanelsSplitterConfig">
+        <VerticalSplitter persist-key="vibe-coding-code" :panels="codePanelsSplitterConfig">
           <template #left v-if="showChanges">
             <ChangesPanel
               :chat="activeChat"

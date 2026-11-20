@@ -149,6 +149,14 @@ def to_wake_at(value: Any) -> Optional[str]:
     if not text:
         return None
     try:
+        from codx.junior.working_hours import is_non_working_token, next_non_working_start
+
+        # "non-working-hours" is not a date: it means the next instant at which
+        # the humans of the installation stop working, so the task runs at
+        # night/weekend without colliding with the daily work.
+        if is_non_working_token(text):
+            return next_non_working_start() or None
+
         from codx.junior.autonomy.models import parse_when
 
         return parse_when(text) or None

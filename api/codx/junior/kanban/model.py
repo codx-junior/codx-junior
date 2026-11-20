@@ -60,8 +60,52 @@ LOCK_FILE = ".kanban.lock"
 
 DEFAULT_BOARD = "kanban"
 DEFAULT_COLUMN = "tasks"
+
+#: Every board is a regular board. A "sprint" is no longer a board type: any
+#: board can be used as a sprint by the team that owns it, which is expressed
+#: through its columns and the team that uses it, never through a separate
+#: document type.
 BOARD_TYPE_KANBAN = "kanban"
-BOARD_TYPE_SPRINT = "sprint"
+
+#: Legacy type stored by older installations. It is normalized to
+#: :data:`BOARD_TYPE_KANBAN` when read, so existing documents keep working.
+LEGACY_BOARD_TYPE_SPRINT = "sprint"
+
+#: Deprecated alias kept for import compatibility. Production code must use
+#: :func:`normalize_board_type` instead of comparing against it.
+BOARD_TYPE_SPRINT = LEGACY_BOARD_TYPE_SPRINT
+
+#: Board types accepted on write. Only one type exists; the legacy value is
+#: accepted and normalized rather than rejected, so an old client cannot break
+#: a project by saving an existing board.
+VALID_BOARD_TYPES = (BOARD_TYPE_KANBAN, LEGACY_BOARD_TYPE_SPRINT)
+
+
+def normalize_board_type(value: Any = None) -> str:
+    """
+    Normalize any stored/provided board type to the single board type.
+
+    The sprint board concept was removed: a board is a board, and whether it is
+    used as a sprint is a team decision. Legacy ``"sprint"`` values are accepted
+    (old clients, old documents and the AI tools) and converted instead of
+    raising, so opening an old project never fails.
+
+    Args:
+        value: Persisted or requested board type.
+
+    Returns:
+        Always :data:`BOARD_TYPE_KANBAN`.
+
+    Example:
+        >>> normalize_board_type("sprint")
+        'kanban'
+    """
+    return BOARD_TYPE_KANBAN
+
+
+def is_legacy_sprint_board(value: Any) -> bool:
+    """Tell whether *value* is the removed sprint board type."""
+    return str(value or "").strip().lower() == LEGACY_BOARD_TYPE_SPRINT
 
 # Characters that can never appear in a directory name used as a folder.
 _INVALID_FOLDER_CHARS = re.compile(r'[/\\\x00-\x1f]')

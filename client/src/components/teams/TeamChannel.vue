@@ -18,6 +18,14 @@ import MemberAvatar from '@/components/teams/MemberAvatar.vue'
       </span>
       <div class="flex items-center gap-1 ml-auto shrink-0">
         <button
+          class="btn btn-xs btn-primary gap-1 tooltip"
+          data-tip="Start a meeting with this channel"
+          @click="startMeeting"
+        >
+          <i class="fa-solid fa-video text-xs"></i>
+          <span class="hidden sm:inline">Meet</span>
+        </button>
+        <button
           class="btn btn-xs btn-ghost tooltip"
           :data-tip="showChannelSearch ? 'Close search' : 'Search'"
           @click="toggleSearch"
@@ -133,6 +141,24 @@ export default {
     async openDm(member) {
       if (!this.team) return
       await this.$storex.ui.openTeamDM({ team: this.team, member })
+    },
+    /**
+     * Call the whole channel: every human member is invited and every profile
+     * of the team joins as a camera-off participant.
+     */
+    startMeeting() {
+      const team = this.team || {}
+      const channel = this.channel || {}
+      this.$storex.ui.openMeetingSetup({
+        source: 'channel',
+        teamId: team.id || null,
+        teamName: team.name || '',
+        channelId: channel.id || null,
+        channelName: channel.name || '',
+        name: `${team.name || 'Team'} – ${channel.name || 'channel'}`,
+        users: (team.members || []).map(member => member.username).filter(Boolean),
+        profiles: team.profiles || []
+      })
     }
   }
 }

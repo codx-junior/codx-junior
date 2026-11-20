@@ -582,7 +582,7 @@ export default function Navigate({ $router, $storex }) {
       },
 
       openKanban() {
-        openApp('tasks')
+        openApp('task-list')
       },
 
       // Open the Task Manager directly on the Planning view

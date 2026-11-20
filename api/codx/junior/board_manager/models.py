@@ -173,7 +173,20 @@ class BoardManagerConfig(BaseModel):
         raw = board.get(C.BOARD_CONFIG_KEY)
         if not isinstance(raw, dict):
             raw = {}
-        profile = _clip(raw.get("profile"), 120) or _clip(board.get("assignee"), 120)
+        # The board's responsible is the natural manager of the board. A human
+        # responsible cannot run a background actor, so only a profile is used
+        # here; the legacy board assistant (``assignee``) stays the fallback.
+        responsible_kind = str(board.get("responsible_kind") or "").strip().lower()
+        responsible_name = _clip(board.get("responsible_name"), 120)
+        profile = (
+            _clip(raw.get("profile"), 120)
+            or (
+                responsible_name
+                if responsible_name and responsible_kind != "user"
+                else ""
+            )
+            or _clip(board.get("assignee"), 120)
+        )
         return cls(
             enabled=bool(raw.get("enabled")),
             profile=profile,
@@ -203,7 +216,7 @@ class BoardManagerConfig(BaseModel):
             data["profile"] = _clip(fallback_profile, 120)
         return data
 
-    def to_actor_config(self, board: str) -> Any:
+    def to_actor_config(self, board: str, flow: str = "agile") -> Any:
         """
         Translate the board declaration into the actor that executes it.
 
@@ -218,6 +231,8 @@ class BoardManagerConfig(BaseModel):
 
         Args:
             board: Title of the reviewed board.
+            flow: Board flow (``agile`` by default). The flow tells the manager
+                which statuses mean active, blocked, done or discarded.
 
         Returns:
             An :class:`codx.junior.autonomy.models.ActorConfig`.
@@ -226,10 +241,30 @@ class BoardManagerConfig(BaseModel):
         from codx.junior.autonomy.models import ActorConfig, default_board_name
 
         config = self.normalized()
+        flow_name = str(flow or "agile").strip().lower()
+        flow_rules = {
+            "agile": (
+                "Use the agile flow: todo → doing → done, onhold for blocked "
+                "work and rejected for discarded/duplicated work. Archived "
+                "means done work that no longer needs board space."
+            ),
+            "delivery": (
+                "Use the delivery flow: backlog → todo → doing → review → done, "
+                "rejected for discarded work. A task is only done after review."
+            ),
+            "support": (
+                "Use the support flow: new → triage → waiting → resolved → "
+                "closed. Waiting means blocked on the requester; closed means "
+                "resolved and no longer active."
+            ),
+        }.get(flow_name, "")
         instructions = [
             f"You are the manager of the board **{board}**.",
             "Review the status of its tasks, request the missing information, "
             "add what is missing, reorganise and re-prioritise.",
+            flow_rules or f"Follow the board's own flow ({flow_name}).",
+            "Every task must end this review with a responsible, a clear next "
+            "step, or a terminal status (done/rejected/archived).",
             f"Do not make more than {config.max_actions} changes in one review.",
         ]
         if config.instructions:

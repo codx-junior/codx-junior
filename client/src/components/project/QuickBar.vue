@@ -22,7 +22,7 @@ import QuickChatSelector from '../QuickChatSelector.vue'
     </BarButton>
 
     <BarButton tab="tasks"
-      @click="$ui.setActiveTab('tasks')">
+      @click="$ui.setActiveTab('task-list')">
       <i class="fa-brands fa-trello"></i>
     </BarButton>
 

@@ -9,7 +9,8 @@ export default defineConfig({
   // Internal engineering reviews live next to the feature pages they audit. They
   // are not in the sidebar, but the build would publish them and the local search
   // index (search.provider 'local') would surface them. Keep them off the site.
-  srcExclude: ['features/workspaces-*-review.md'],
+  // Transformation material is internal until management decides to publish (IT team card 721dc223).
+  srcExclude: ['features/workspaces-*-review.md', 'transformation/**'],
   // Many cross-links are added as features grow; don't fail the build on them.
   ignoreDeadLinks: true,
   head: [
@@ -54,6 +55,8 @@ export default defineConfig({
             { text: 'Computer use (desktops, VMs, remote)', link: '/features/computer-use' },
             { text: 'Browser use and co-browsing', link: '/features/browser-use' },
             { text: 'Teams and messenger', link: '/features/teams' },
+            { text: 'Channel content creator', link: '/features/channel-creator' },
+            { text: 'Company meetings', link: '/features/company-meetings' },
             { text: 'Slack and WhatsApp channels', link: '/features/slack-whatsapp-integration' },
             { text: 'External actors and outreach', link: '/features/external-actors' },
             { text: 'Knowledge (RAG)', link: '/features/knowledge' },

@@ -453,7 +453,7 @@ class ManagementManager:
                     board=head.board or "—",
                     project_id=head.project_id,
                     project_name=head.project_name,
-                    type="sprint" if any(task.column == "sprint" for task in rows) else "kanban",
+                    type="kanban",
                     total=total,
                     done=done,
                     doing=sum(1 for task in rows if task.status == "doing"),
@@ -620,9 +620,6 @@ class ManagementManager:
 
             target = _parse_date(self._max_due(rows))
             blocked = sum(1 for task in rows if task.blocked)
-            # Sprint boards (any task declares sprint membership) demo on target.
-            is_sprint = any(task.column == "sprint" for task in rows)
-
             status, confidence = "on_track", "high"
             if blocked:
                 status, confidence = "at_risk", "low"
@@ -638,7 +635,7 @@ class ManagementManager:
                     board=head.board or "—",
                     project_id=head.project_id,
                     project_name=head.project_name,
-                    type="sprint" if is_sprint else "kanban",
+                    type="kanban",
                     committed=total,
                     done=len(done_rows),
                     remaining=remaining,
@@ -646,7 +643,7 @@ class ManagementManager:
                     eta_date=eta_date.isoformat(),
                     eta_days=eta_days,
                     target_date=target.isoformat() if target else None,
-                    demo_date=target.isoformat() if (is_sprint and target) else None,
+                    demo_date=None,
                     percentage=round((len(done_rows) / total) * 100) if total else 0,
                     blocked=blocked,
                     confidence=confidence,

@@ -292,6 +292,17 @@ async def startup_event():
         bootstrap_admin_from_env()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to provision the first admin: %s", ex)
+    # Company bootstrap: a company is the top-level element of the product, so
+    # a fresh installation always gets the default company (linked to every
+    # discovered project) instead of asking the user to create one first.
+    # Idempotent: it only links newly discovered projects while the company
+    # still has automatic project synchronization enabled.
+    try:
+        from codx.junior.company.manager import CompanyManager
+
+        CompanyManager().ensure_default_company(actor="system")
+    except Exception as ex:  # pragma: no cover - bootstrap must never block boot
+        logger.exception("Failed to provision the default company: %s", ex)
     # Event-loop lag sampler backing /api/health: the cheapest way to notice
     # that a synchronous call has crept back onto the event loop.
     asyncio.create_task(_event_loop_lag_monitor())

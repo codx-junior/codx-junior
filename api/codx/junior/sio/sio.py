@@ -274,6 +274,24 @@ async def io_chat(sid, data: dict, codxjunior_session: CODXJuniorSession):
             ),
         )
         return
+    # A message sent to a meeting chat is NOT a normal chat turn: it belongs to
+    # the meeting transcript and the profiles of the meeting answer it (one
+    # speaker at a time, with human barge-in). Routing it here keeps the normal
+    # chat composer working inside the meeting panel without starting a second
+    # assistant that would talk over the meeting.
+    if str(getattr(existing, "mode", "") or "").lower() == "meet":
+        try:
+            from codx.junior.meets.service import MeetingService
+
+            chat = codxjunior_session.get_chat_manager().find_by_id(data.chat.id)
+            message = chat.messages[-1] if chat and chat.messages else None
+            if message is not None and getattr(message, "role", "") == "user":
+                await MeetingService(codxjunior_session).handle_chat_message(
+                    chat, message
+                )
+                return
+        except Exception as ex:  # noqa: BLE001 - fall back to the normal turn
+            logger.warning("Meeting chat message could not be routed: %s", ex)
     codxjunior_session.event_manager.chat_event(chat=data.chat, message="Chatting with project...")
     await codxjunior_session.chat_with_project(chat_id=data.chat.id, owner_project_id=data.chat.owner_project_id)
 

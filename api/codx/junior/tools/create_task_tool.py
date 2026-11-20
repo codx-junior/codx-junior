@@ -74,7 +74,9 @@ CREATE_TASK_TOOL_JSON = {
             "given, there is no AI step that expands or splits it afterwards. "
             "Also accepts the kanban destination (board, column), the sprint "
             "membership (sprints/sprint), the planning fields (status, priority, "
-            "due_date, progress, assignees) and the parent chat. "
+            "due_date, progress, assignees), an optional wake_at schedule (for "
+            "example 'non-working-hours', '+2d' or an ISO instant) and the parent "
+            "chat. "
             "Nothing is inherited from the current chat (profiles, files, tags), so "
             "send every value the task needs. The destination must exist in the "
             "project catalogue: create the missing board, sprint or column first "
@@ -163,6 +165,15 @@ CREATE_TASK_TOOL_JSON = {
                     "type": "string",
                     "description": "Task due date in ISO format (YYYY-MM-DD)."
                 },
+                "wake_at": {
+                    "type": "string",
+                    "description": (
+                        "Schedule the task for later instead of doing it now: an "
+                        "ISO instant/date, a relative expression ('+2d', "
+                        "'3 hours'), or 'non-working-hours' to run outside the "
+                        "configured human working window (nights/weekends)."
+                    )
+                },
                 "progress": {
                     "type": "integer",
                     "description": "Task completion percentage (0-100)."
@@ -214,6 +225,7 @@ def create_task(
     status: Optional[str] = None,
     priority: Optional[str] = None,
     due_date: Optional[str] = None,
+    wake_at: Optional[str] = None,
     progress: Optional[int] = None,
     assignees: Optional[List[str]] = None,
     parent_id: Optional[str] = None,
@@ -246,6 +258,8 @@ def create_task(
         status: Initial task state (one of the canonical states)
         priority: Task priority (``high`` / ``medium`` / ``low``)
         due_date: Due date in ISO format (``YYYY-MM-DD``)
+        wake_at: Optional schedule for autonomous processing (ISO instant,
+            relative expression or ``non-working-hours``)
         progress: Completion percentage (0-100)
         assignees: Usernames assigned to the task
         parent_id: Parent chat id (defaults to the chat that triggered the tool)
@@ -334,6 +348,7 @@ def create_task(
             status=location["status"],
             priority=priority,
             due_date=due_date,
+            wake_at=wake_at,
             progress=progress,
             assignees=assignees,
             profiles=profiles,
@@ -354,7 +369,13 @@ def create_task(
         )
         if saved_task.parent_id:
             user_message += f"\nLinked to parent: `{saved_task.parent_id}`"
-        user_message += "\n\nUse `process_task` to start working on this task."
+        if getattr(saved_task, "wake_at", None):
+            user_message += (
+                f"\nScheduled: the task will be woken at "
+                f"`{saved_task.wake_at}` (not processed immediately)."
+            )
+        else:
+            user_message += "\n\nUse `process_task` to start working on this task."
 
         task_response = json.dumps({
             "task_id": saved_task.id,
@@ -366,6 +387,7 @@ def create_task(
             "status": saved_task.status,
             "priority": saved_task.priority,
             "due_date": saved_task.due_date,
+            "wake_at": saved_task.wake_at,
             "progress": saved_task.progress,
             "assignees": list(saved_task.assignees or []),
             "profiles": saved_task.profiles,

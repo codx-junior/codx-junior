@@ -39,7 +39,6 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
     <!-- ── Row: Header + Content ── -->
     <!-- Compact by default; comfortable once the chat panel reaches @lg (512px+). -->
     <div class="flex gap-2 items-start w-full @lg/panel:gap-3">
-
       <!-- Main block column -->
       <div class="flex-1 min-w-0 pb-0.5">
 
@@ -59,7 +58,7 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
           class="flex items-center gap-2 leading-none flex-wrap px-1"
           :class="isChannel
             ? 'pb-1.5 gap-x-2'
-            : 'sticky top-0 z-20 focus-within:z-30 -mt-1 pb-1.5 @lg/panel:pb-3 bg-base-100 border-b border-base-content/10 @lg/panel:border-base-content/30'"
+            : 'bg-base-300 sticky top-0 z-20 focus-within:z-30 -mt-1 pb-1.5 @lg/panel:pb-4'"
         >
 
           <!-- ─────────────────────────── LEFT: identity + state ─────────────────────────── -->
@@ -148,8 +147,7 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
             :aria-controls="eventsPanelId"
             @click.stop="toggleEventsPanel"
           >
-            <span v-if="!isDone" class="loading loading-spinner loading-xs text-info"></span>
-            <i v-else class="fa-solid fa-wrench" :class="toolEventCount ? 'text-info' : 'text-base-content/40'"></i>
+            <i v-if="isDone" class="fa-solid fa-wrench" :class="toolEventCount ? 'text-info' : 'text-base-content/40'"></i>
           </button>
 
           <span class="font-semibold text-sm text-base-content truncate max-w-[60%] @lg/panel:max-w-none">
@@ -232,6 +230,7 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
             >
               <span class="loading loading-xs"></span>Stop
             </button>
+            
 
             <!-- Core actions -->
             <!-- Rendered inline only on wide panels (@lg = 512px+). On narrow
@@ -381,12 +380,6 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
             <span>{{ threadChat.messages?.length || 0 }} replies</span>
           </button>
         </div>
-
-        <!-- ── Loading bar ── -->
-        <progress
-          v-if="!isDone"
-          class="progress progress-xs w-full mb-2 opacity-50"
-        ></progress>
 
         <!-- ── Selection context menu ── -->
         <ChatEntrySelectionMenu

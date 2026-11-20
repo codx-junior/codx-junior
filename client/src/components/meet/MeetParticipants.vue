@@ -1,107 +1,126 @@
 <script setup>
+import { computed } from 'vue'
 import MicIndicator from './MicIndicator.vue'
+import { $storex } from '@/store'
+
+const props = defineProps({
+  meet: { type: Object, default: null }
+})
+
+const currentUser = computed(() => $storex.users.user?.username || 'me')
+const humans = computed(() => (props.meet?.participants || []).map(username => ({ username, kind: 'user' })))
+const profiles = computed(() => props.meet?.profileParticipants || [])
+const floor = computed(() => props.meet?.floor || {})
+const profilesByName = computed(() => {
+  const map = {}
+  ;(props.meet?.profileParticipants || []).forEach(profile => {
+    map[profile.profileName || profile.username] = profile
+  })
+  return map
+})
+
+function avatarForHuman(username) {
+  if (username === currentUser.value) {
+    return $storex.users.user?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(username)}`
+  }
+  const online = $storex.users.onlineUsers?.[username]
+  return online?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(username)}`
+}
+
+function isMuted(username) {
+  if (username === currentUser.value) return !$storex.meets.isLocalMicOn
+  return false
+}
+
+function isSpeaking(username) {
+  if (username === currentUser.value) return $storex.meets.isMicSpeaking
+  return floor.value?.holder === username && floor.value?.kind === 'user'
+}
+
+function profileIsSpeaking(profile) {
+  const name = profile.profileName || profile.username
+  return floor.value?.holder === name
+}
 </script>
 
 <template>
-  <div class="p-4 space-y-4">
-    <!-- Participants header -->
+  <div class="space-y-4 p-4">
     <div class="flex items-center justify-between">
       <h3 class="text-sm font-semibold">
         Participants
-        <span class="text-base-content/60 font-normal">({{ meet?.participants?.length || 0 }})</span>
+        <span class="font-normal text-base-content/60">({{ humans.length + profiles.length }})</span>
       </h3>
+      <span v-if="profiles.length" class="badge badge-xs badge-secondary gap-1">
+        <i class="fa-solid fa-robot"></i> {{ profiles.length }} AI
+      </span>
     </div>
 
-    <!-- Participants grid/list -->
-    <div v-if="meet?.participants?.length" class="space-y-3">
+    <div v-if="humans.length || profiles.length" class="space-y-2">
+      <!-- People -->
       <div
-        v-for="username in meet.participants"
-        :key="username"
-        class="flex items-center gap-3 p-3 rounded-lg bg-base-content/5 border border-base-content/10 hover:border-base-content/20 transition-all"
+        v-for="person in humans"
+        :key="person.username"
+        class="flex items-center gap-3 rounded-lg border border-base-content/10 bg-base-content/5 p-2.5 transition-all"
+        :class="isSpeaking(person.username) ? 'ring-2 ring-success/60' : ''"
       >
-        <!-- Avatar -->
-        <div class="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-          <i class="fa-solid fa-user text-primary text-sm"></i>
-        </div>
-
-        <!-- Username -->
-        <div class="flex-1 min-w-0">
-          <div class="text-sm font-semibold truncate">{{ username }}</div>
+        <img :src="avatarForHuman(person.username)" class="h-10 w-10 shrink-0 rounded-full object-cover" alt="" />
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-semibold">{{ person.username }}</div>
           <div class="text-xs text-base-content/50">
-            <span v-if="isYou(username)" class="badge badge-xs badge-ghost">You</span>
+            <span v-if="person.username === currentUser" class="badge badge-xs badge-ghost">You</span>
+            <span v-else-if="floor.holder === person.username && floor.kind === 'user'" class="text-success">Speaking…</span>
             <span v-else class="text-base-content/40">Connected</span>
           </div>
         </div>
-
-        <!-- Status indicators -->
-        <div class="flex items-center gap-1.5 shrink-0">
-          <!-- Microphone status (pulses while the user is speaking) -->
-          <div
-            class="w-7 h-7 rounded-lg flex items-center justify-center"
-            :class="isMuted(username) ? 'bg-base-content/10' : 'bg-success/20'"
-          >
-            <MicIndicator
-              :enabled="!isMuted(username)"
-              :speaking="isSpeaking(username)"
-              size="sm"
-            />
+        <div class="flex shrink-0 items-center gap-1.5">
+          <div class="flex h-7 w-7 items-center justify-center rounded-lg" :class="isMuted(person.username) ? 'bg-base-content/10' : 'bg-success/20'">
+            <MicIndicator :enabled="!isMuted(person.username)" :speaking="isSpeaking(person.username)" size="sm" />
           </div>
+        </div>
+      </div>
 
-          <!-- Speaker volume (placeholder) -->
-          <div class="w-7 h-7 rounded-lg bg-base-content/5 flex items-center justify-center">
-            <i class="fa-solid fa-volume-2 text-xs text-base-content/40"></i>
+      <!-- AI profiles: camera off, profile avatar -->
+      <div
+        v-for="profile in profiles"
+        :key="profile.profileName || profile.username"
+        class="flex items-center gap-3 rounded-lg border border-secondary/20 bg-secondary/5 p-2.5 transition-all"
+        :class="profileIsSpeaking(profile) ? 'ring-2 ring-secondary/60' : ''"
+      >
+        <div class="relative h-10 w-10 shrink-0">
+          <img :src="profile.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(profile.name)}`" class="h-10 w-10 rounded-full object-cover" alt="" />
+          <span class="absolute -bottom-1 -right-1 grid h-5 w-5 place-items-center rounded-full border-2 border-base-200 bg-secondary text-[9px] font-bold text-secondary-content">AI</span>
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-semibold">{{ profile.name || profile.username }}</div>
+          <div class="text-xs text-base-content/50">
+            <span v-if="profileIsSpeaking(profile)" class="text-secondary">Answering…</span>
+            <span v-else>Camera off · avatar</span>
+          </div>
+        </div>
+        <div class="flex shrink-0 items-center gap-1.5">
+          <div class="flex h-7 w-7 items-center justify-center rounded-lg" :class="profileIsSpeaking(profile) ? 'bg-secondary/25' : 'bg-base-content/5'">
+            <i class="fa-solid fa-volume-high text-xs" :class="profileIsSpeaking(profile) ? 'text-secondary' : 'text-base-content/40'"></i>
+          </div>
+          <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-base-content/5" title="Camera off">
+            <i class="fa-solid fa-video-slash text-xs text-base-content/30"></i>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Empty state -->
-    <div v-else class="text-center py-8 text-base-content/40">
-      <i class="fa-solid fa-users text-3xl mb-2 block"></i>
+    <div v-else class="py-8 text-center text-base-content/40">
+      <i class="fa-solid fa-users mb-2 block text-3xl"></i>
       <p class="text-sm">No participants yet</p>
     </div>
 
-    <!-- Invite info -->
-    <div class="p-3 rounded-lg bg-info/10 border border-info/30 text-xs text-info space-y-2">
+    <div class="space-y-2 rounded-lg border border-info/30 bg-info/10 p-3 text-xs text-info">
       <div class="flex items-start gap-2">
         <i class="fa-solid fa-info-circle mt-0.5 shrink-0"></i>
         <div>
-          <p class="font-semibold mb-1">Share this meet:</p>
-          <p class="text-info/80">Send the meet ID to invite others to join</p>
+          <p class="mb-1 font-semibold">Share this meeting:</p>
+          <p class="text-info/80">Send the code or the invite link from the Invite button.</p>
         </div>
       </div>
     </div>
   </div>
 </template>
-
-<script>
-export default {
-  name: 'MeetParticipants',
-  props: {
-    meet: { type: Object, default: null }
-  },
-  data() {
-    return {
-      mutedParticipants: {}
-    }
-  },
-  methods: {
-    isYou(username) {
-      const currentUser = this.$storex.users.user?.username || 'me'
-      return username === currentUser
-    },
-    isMuted(username) {
-      // The current user reflects the real local microphone; other participants
-      // fall back to the (placeholder) per-participant map.
-      if (this.isYou(username)) {
-        return !this.$storex.meets.isLocalMicOn
-      }
-      return this.mutedParticipants[username] || false
-    },
-    isSpeaking(username) {
-      // Only the local user's audio can be detected today.
-      return this.isYou(username) && this.$storex.meets.isMicSpeaking
-    }
-  }
-}
-</script>

@@ -34,6 +34,35 @@ def clean_env(monkeypatch):
     yield
     hub._TOKEN_CACHE.clear()
 
+
+class _FakeProcess:
+    """Stand-in for the child ``dockerhub_publish`` spawns with ``Popen``.
+
+    The tool streams the build into its own log file instead of a pipe, so a test
+    must replace ``subprocess.Popen`` (not ``subprocess.run``) to observe what the
+    child actually receives.
+    """
+
+    pid = 4242
+
+    def __init__(self, returncode: int = 0):
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _fake_popen(on_spawn=None):
+    """Build a ``Popen`` replacement that records the spawn and exits 0."""
+
+    def spawn(*args, **kwargs):
+        if on_spawn is not None:
+            on_spawn(*args, **kwargs)
+        return _FakeProcess()
+
+    return spawn
+
+
 def test_missing_value_points_at_the_secrets_ui():
     """Nothing configured -> the message names where to store it."""
     message = hub._require_token("publishing")
@@ -136,12 +165,7 @@ def test_dry_run_never_asks_for_a_value(monkeypatch, tmp_path):
     monkeypatch.setattr(hub, "_project_dir", lambda settings: str(tmp_path))
     monkeypatch.setattr(hub, "_require_token", lambda action: "must not be called")
 
-    class Completed:
-        returncode = 0
-        stdout = "[build] (dry-run) docker buildx build --platform linux/amd64"
-        stderr = ""
-
-    monkeypatch.setattr(hub.subprocess, "run", lambda *args, **kwargs: Completed())
+    monkeypatch.setattr(hub.subprocess, "Popen", _fake_popen())
     response = hub.dockerhub_publish(tags=["v0.0.1"], dry_run=True)
     assert "must not be called" not in response.llm_response
     assert "Dry run" in response.user_response
@@ -158,7 +182,7 @@ def test_publish_reports_the_missing_value_and_does_not_build(monkeypatch, tmp_p
     def no_build(*args, **kwargs):
         raise AssertionError("the build must not run without a value")
 
-    monkeypatch.setattr(hub.subprocess, "run", no_build)
+    monkeypatch.setattr(hub.subprocess, "Popen", no_build)
     response = hub.dockerhub_publish(tags=["v0.0.1"])
     assert "Cannot publish" in response.user_response
     assert "is not configured" in response.user_response
@@ -178,18 +202,15 @@ def test_publish_hands_the_vault_value_to_the_script(monkeypatch, tmp_path):
     monkeypatch.setattr(hub, "_project_dir", lambda settings: str(tmp_path))
     monkeypatch.setattr(hub, "_vault_token", lambda settings=None: FAKE_VALUE)
     monkeypatch.setattr(hub, "_require_token", lambda action: None)
+    # Hermetic: the registry exchange is not what this test is about.
+    monkeypatch.setattr(hub, "_registry_check", lambda value: ("ok", "accepted"))
     seen = {}
-
-    class Completed:
-        returncode = 0
-        stdout = "pushed"
-        stderr = ""
 
     def capture(*args, **kwargs):
         seen.update(kwargs.get("env") or {})
-        return Completed()
+        return _FakeProcess()
 
-    monkeypatch.setattr(hub.subprocess, "run", capture)
+    monkeypatch.setattr(hub.subprocess, "Popen", capture)
     hub.dockerhub_publish(tags=["v0.0.1"])
     assert seen.get(hub.TOKEN_NAME) == FAKE_VALUE
 

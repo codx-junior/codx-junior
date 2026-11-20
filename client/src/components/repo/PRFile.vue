@@ -85,6 +85,7 @@ import VerticalSplitter from '@/components/layout/VerticalSplitter.vue'
 
     <!-- Content area with splitter -->
     <VerticalSplitter class="grow flex h-full min-h-96" 
+      persist-key="pr-file"
       :panels="{ left: { defaultSize: 60 }, right: { defaultSize: 40 }}"
       v-if="file.collapse === true">
       

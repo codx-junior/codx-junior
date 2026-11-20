@@ -1550,6 +1550,12 @@ class SmolAgent:
         orchestration_info = self._resolve_orchestration_info(config, headers)
         provider_headers: Dict[str, str] = self._strip_profiles_header(headers)
         session_id: Optional[str] = headers.get("session_id")
+        # Analytics tags for the turn: the chat engine builds them from the
+        # mode, the mentioned profiles, the run/step ids and the enabled tools
+        # and sends them in the ``tags`` header. Direct callers may omit the
+        # header, so default to an empty string (``_record_usage`` appends the
+        # tool-cache statistics).
+        tags: str = headers.get("tags", "") or ""
 
         # Inject session context into settings for tools that need it
         current_chat = config.get("current_chat")
@@ -5034,14 +5040,21 @@ class SmolAgent:
                 combined_output = thinking_text + output_text
                 output_tokens = count_tokens(combined_output, model=self.model)
 
-            # Augment tags with cache statistics if available
-            cache_tags = tags
+            # Augment tags with cache statistics if available. When the caller
+            # sent no tags at all, keep the string well-formed (no leading
+            # comma) instead of prefixing the cache stats with one.
+            cache_tags = tags or ""
             if tool_cache:
                 cache_stats = tool_cache.stats()
-                cache_tags += (
-                    f",cache_hits:{cache_stats['hits']},"
+                cache_stats_tags = (
+                    f"cache_hits:{cache_stats['hits']},"
                     f"cache_misses:{cache_stats['misses']},"
                     f"cache_hit_rate:{cache_stats['hit_rate']}"
+                )
+                cache_tags = (
+                    f"{cache_tags},{cache_stats_tags}"
+                    if cache_tags
+                    else cache_stats_tags
                 )
 
             _get_analytics().record_token_usage(

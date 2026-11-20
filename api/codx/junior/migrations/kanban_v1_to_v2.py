@@ -33,11 +33,11 @@ from codx.junior.kanban.model import (
     BOARD_FILE,
     BOARDS_DIR,
     BOARD_TYPE_KANBAN,
-    BOARD_TYPE_SPRINT,
     INDEX_FILE,
     LEGACY_FILE,
     LEGACY_VERSION,
     STORE_VERSION,
+    normalize_board_type,
     safe_folder,
 )
 
@@ -88,11 +88,14 @@ def _write_json(file_path: str, data: dict) -> None:
 
 
 def _board_type(entry: Dict[str, Any]) -> str:
-    """Return the canonical board type of a legacy entry."""
-    board_type = str(entry.get("type") or "").strip().lower()
-    if board_type in (BOARD_TYPE_KANBAN, BOARD_TYPE_SPRINT):
-        return board_type
-    return BOARD_TYPE_SPRINT if entry.get("sprint") else BOARD_TYPE_KANBAN
+    """
+    Return the canonical board type of a legacy entry.
+
+    The sprint board type was removed: legacy sprint boards are migrated to
+    regular boards (any board can be used as a sprint now). Keeping the
+    normalization here means the migration produces today's shape directly.
+    """
+    return normalize_board_type(entry.get("type") or entry.get("sprint"))
 
 
 def _columns(entry: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -223,9 +226,16 @@ def migrate_kanban_v1_to_v2(tasks_path: str, dry_run: bool = False) -> Dict[str,
         summary["migrated"] = True
         return summary
 
-    # Back up the legacy file BEFORE writing anything.
+    # Back up the legacy file BEFORE writing anything. ``copy2`` also copies
+    # permissions, which some container filesystems do not support (chmod
+    # raises ``ENOSYS``); the content is what matters for a rollback, so the
+    # metadata copy is best-effort.
     try:
-        shutil.copy2(legacy_path, backup_path)
+        shutil.copyfile(legacy_path, backup_path)
+        try:
+            shutil.copystat(legacy_path, backup_path)
+        except OSError:
+            pass
     except OSError as ex:
         logger.error("kanban migration: cannot back up '%s': %s", legacy_path, ex)
         return summary

@@ -1,5 +1,15 @@
 <script setup>
 import ModelSelector from '@/components/ai_settings/ModelSelector.vue'
+
+const weekdays = [
+  { value: 'mon', label: 'Mon' },
+  { value: 'tue', label: 'Tue' },
+  { value: 'wed', label: 'Wed' },
+  { value: 'thu', label: 'Thu' },
+  { value: 'fri', label: 'Fri' },
+  { value: 'sat', label: 'Sat' },
+  { value: 'sun', label: 'Sun' }
+]
 </script>
 
 <template>
@@ -16,6 +26,43 @@ import ModelSelector from '@/components/ai_settings/ModelSelector.vue'
             <span class="w-1/4">Projects Root Path:</span>
             <input v-model="settings.projects_root_path" type="text" class="input input-bordered flex-grow" />
           </div>
+        </div>
+      </div>
+      <!-- Human working hours: tasks can be scheduled for the non-working
+           hours so autonomous profiles do not collide with the team's day. -->
+      <div class="flex flex-col gap-2 text-xs" v-if="settings.working_hours">
+        <div class="text-xl font-bold">Human working hours</div>
+        <div class="ml-6 p-2 flex flex-col gap-2">
+          <label class="flex items-center gap-2">
+            <input v-model="settings.working_hours.enabled" type="checkbox" class="checkbox checkbox-sm" />
+            <span>Tasks scheduled as "non-working hours" run outside this window</span>
+          </label>
+          <div class="flex items-center gap-2">
+            <span class="w-1/4">Timezone:</span>
+            <input v-model="settings.working_hours.timezone" type="text" class="input input-bordered flex-grow"
+                   placeholder="Europe/Madrid" />
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-1/4">Start / end:</span>
+            <input v-model="settings.working_hours.start" type="time" class="input input-bordered w-32" />
+            <input v-model="settings.working_hours.end" type="time" class="input input-bordered w-32" />
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="w-1/4">Days:</span>
+            <div class="flex flex-wrap gap-2">
+              <label v-for="day in weekdays" :key="day.value"
+                     class="flex items-center gap-1 rounded-lg border border-base-100 px-2 py-1">
+                <input type="checkbox" class="checkbox checkbox-xs"
+                       :value="day.value" v-model="settings.working_hours.days" />
+                <span>{{ day.label }}</span>
+              </label>
+            </div>
+          </div>
+          <p class="text-[11px] opacity-50">
+            "Non-working hours" resolves to the next moment this window closes (or now,
+            when humans are already offline). The value is stored as the task's
+            <code>wake_at</code>.
+          </p>
         </div>
       </div>
       <div class="flex flex-col gap-2 text-xs">

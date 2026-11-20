@@ -15,7 +15,8 @@ export const CHAT_MODES = {
   browser: { value: 'browser', label: 'Browser', icon: 'fa-globe' },
   slides: { value: 'slides', label: 'Slides', icon: 'fa-presentation' },
   tutorial: { value: 'tutorial', label: 'Tutorial', icon: 'fa-graduation-cap' },
-  channel: { value: 'channel', label: 'Channel', icon: 'fa-hashtag' }
+  channel: { value: 'channel', label: 'Channel', icon: 'fa-hashtag' },
+  meet: { value: 'meet', label: 'Meeting', icon: 'fa-solid fa-video' }
 }
 
 // ─── Status Configuration (single source of truth) ───────────────────────────

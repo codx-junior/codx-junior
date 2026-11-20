@@ -14,6 +14,8 @@ const WorkspaceView = () => import('@/views/WorkspaceView.vue')
 const MessengerView = () => import('@/views/MessengerView.vue')
 const ChannelView = () => import('@/views/ChannelView.vue')
 const MeetView = () => import('@/views/MeetView.vue')
+const MeetSummaryView = () => import('@/views/MeetSummaryView.vue')
+const BoardManagementView = () => import('@/views/BoardManagementView.vue')
 const TeamView = () => import('@/views/TeamView.vue')
 const CompanyView = () => import('@/views/CompanyView.vue')
 const MetricsDashboard = () => import('@/components/analytics/MetricsDashboard.vue')
@@ -25,16 +27,15 @@ const ProfileEditorView = () => import('@/views/ProfileEditorView.vue')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WELCOME SCREEN
-// "/" and "/<project_name>" are the landing routes, and both render the
-// management dashboard (Pulse / Work / Blockers / Delivery / Team / Cost & AI).
-// It is resolved through <AppRouteView> exactly like any other app screen, so
-// the same key ('management-dashboard') opens a dockview panel on desktop and
-// the routed screen in single/mobile mode (see config/apps.js).
-// Its project filter is initialised from the route: opening "/<project_name>"
-// starts with that project selected (see views/management/
-// useManagementDashboard.js → initProjectFilter / syncProjectFilterWithRoute).
+// "/" and "/<project_name>" are the landing routes and both render the general
+// Tasks table (the latest tasks of every board, paged). It is resolved through
+// <AppRouteView> exactly like any other app screen, so the same key opens a
+// dockview panel on desktop and the routed screen in single/mobile mode.
+//
+// Company-mode users land in the company shell instead (see router/navigate.js
+// and App.vue): the company is the top-level element of the product.
 // ─────────────────────────────────────────────────────────────────────────────
-const WELCOME_APP = 'management-dashboard'
+const WELCOME_APP = 'task-list'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MOBILE ROUTE METADATA
@@ -163,6 +164,14 @@ const router = createRouter({
       meta: { ...mobile('Meeting', 'more', { hideTabs: true }) }
     },
     {
+      // Recap of a meeting: minutes, action items (create/run/schedule tasks)
+      // and the recorded audio.
+      path: '/:projectName/meet/:meetId/summary',
+      name: 'meet-summary',
+      component: MeetSummaryView,
+      meta: { ...mobile('Meeting summary', 'more', { hideTabs: true }) }
+    },
+    {
       // Workspace routes: router mode
       path: '/:projectName/workspaces',
       name: 'workspaces',
@@ -200,13 +209,29 @@ const router = createRouter({
       meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
     },
     {
+      // Board management: flow + responsible for every visible board.
+      path: '/:projectName/board-management',
+      name: 'board-management',
+      component: BoardManagementView,
+      meta: { ...mobile('Board management', 'tasks') }
+    },
+    {
+      // Tasks — the general table of the latest tasks from every board and
+      // project. It is the screen the Tasks item opens; clicking a board from
+      // here opens the board canvas below.
+      path: '/:projectName/tasks',
+      name: 'tasks',
+      component: AppRouteView,
+      meta: { app: 'task-list', ...mobile('Tasks', 'tasks', { hideTopBar: true }) }
+    },
+    {
       // The optional board id + name segments let the URL carry the open board,
       // so a refresh or a back-navigation (non-desktop / single mode) reopens it.
       // Both are optional: the plain "/:projectName/kanban" still works.
       path: '/:projectName/kanban/:board?/:boardName?',
       name: 'kanban',
       component: KanbanBoardView,
-      meta: { ...mobile('Task manager', 'tasks', { hideTopBar: true }) }
+      meta: { ...mobile('Board', 'tasks', { hideTopBar: true }) }
     },
     {
       path: '/:projectName/messenger',
@@ -301,14 +326,10 @@ const router = createRouter({
     { path: '/:projectName/chat-logs', name: 'chat-logs', component: AppRouteView, meta: { app: 'chat-logs' } },
     { path: '/:projectName/decision-model-logs', name: 'decision-model-logs', component: AppRouteView, meta: { app: 'decision-model-logs' } },
     { path: '/:projectName/metrics', name: 'metrics', component: AppRouteView, meta: { app: 'metrics' } },
-    // Management dashboard — the cross-project "command center" for management:
-    // work status, blockers, delivery forecast, team load and AI cost across
-    // EVERY project, for a selectable time window (last 7 days by default) and
-    // a selectable SET of projects (header filter, initialised from the route).
-    // Same pattern as the other screens: <AppRouteView> resolves meta.app from
-    // config/appComponentsMap.js and, on desktop, the very same key opens a
-    // dockview panel (config/apps.js → management-dashboard).
-    { path: '/:projectName/management-dashboard', name: 'management-dashboard', component: AppRouteView, meta: { app: 'management-dashboard', ...mobile('Management', 'home', { hideTopBar: true }) } },
+    // The Management view was removed: the company shell owns the cross-project
+    // management story. Old bookmarks land on the general Tasks table instead
+    // of a 404.
+    { path: '/:projectName/management-dashboard', redirect: { name: 'tasks' } },
     // Per-request API performance (latency / throughput / errors) recorded by the
     // backend and served from /api/api-logs/*. Same pattern as every other app:
     // <AppRouteView> resolves meta.app, and on desktop the very same key opens a

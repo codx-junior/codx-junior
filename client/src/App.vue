@@ -8,10 +8,22 @@ import DesktopSidebar from './components/layout/DesktopSidebar.vue'
 import NewProject from './components/project/NewProject.vue'
 import MobileShell from './components/mobile/MobileShell.vue'
 import NewTaskDialog from './components/kanban/NewTaskDialog.vue'
+import BoardQuickChat from './components/kanban/board/BoardQuickChat.vue'
+import NewMeetingModal from './components/meet/NewMeetingModal.vue'
+import IncomingMeetInvitation from './components/meet/IncomingMeetInvitation.vue'
 import VoiceCallOverlay from './components/voice/VoiceCallOverlay.vue'
 
 const route = useRoute()
 const router = useRouter()
+
+// New (left bar) → codx-junior assistant chat in a modal. The card lands on the
+// codx-junior board; the schedule selector decides whether it starts now, runs
+// in the human non-working hours, or at a concrete instant.
+const ASSISTANT_CHAT_COLUMNS = [{ title: 'tasks', value: 'tasks' }]
+function onAssistantChatCreated(chat) {
+  $storex.ui.showNewAssistantChat(false)
+  if (chat?.id) $storex.ui.openApp({ appKey: 'chat', payload: { chat } })
+}
 
 const uiReady = computed(() => $storex.ui.uiReady)
 const isLogin = computed(() => !$storex.users.user)
@@ -120,6 +132,10 @@ onMounted(() => {
 
       <Toast />
 
+      <!-- Meeting invitations are global: a channel or a person can call you
+           while you are on another screen, and the call must be one click away. -->
+      <IncomingMeetInvitation />
+
       <!-- Voice conversation mode: global because a call survives navigation
            between chats/panels (and can move the conversation to another chat
            while it keeps running). -->
@@ -128,6 +144,26 @@ onMounted(() => {
       <!-- Global "New task" dialog, opened from the single-mode "New" entry
            (see components/kanban/NewTaskDialog.vue). -->
       <NewTaskDialog />
+
+      <!-- New chat (left bar): codx-junior assistant chat in a modal, with the
+           task schedule selector (now / non-working hours / concrete instant). -->
+      <BoardQuickChat
+        v-if="$ui.newAssistantChat"
+        board-id="codx-junior"
+        board-name="codx-junior"
+        :columns="ASSISTANT_CHAT_COLUMNS"
+        :default-profiles="['codx-junior']"
+        mode="task"
+        schedule-enabled
+        @close="$ui.showNewAssistantChat(false)"
+        @created="onAssistantChatCreated"
+      />
+
+      <!-- Global "New meeting" dialog — opened from the main menu, the channel
+           header and the team view; participants are chosen before the call. -->
+      <modal v-if="$ui.meetingSetup" close="true" @close="$ui.closeMeetingSetup()">
+        <NewMeetingModal />
+      </modal>
 
       <!-- Global "New project" modal — opened from any launcher
            (mobile menu, sidebar AppsSection, WindowsMenu, QuickBar) through the

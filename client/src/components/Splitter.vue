@@ -35,7 +35,7 @@ export default {
     },
     showNavigationBar() {
       return !this.$ui.isMobile || !this.$chats.activeChat 
-            || this.$ui.activeTab !== 'tasks'
+            || !['tasks', 'task-list'].includes(this.$ui.activeTab)
             || this.$ui.activeApp
     }
   },

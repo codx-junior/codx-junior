@@ -4,10 +4,10 @@ import PlanningRangeFilter from './PlanningRangeFilter.vue'
 
 <template>
   <div ref="scrollEl" class="followup-view h-full overflow-y-auto bg-base-100" @scroll="onScroll">
-    <div class="p-4 lg:p-6 max-w-6xl mx-auto w-full">
+    <div class="p-4 lg:p-6 w-full">
 
       <!-- Header + filters -->
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
+      <div class="flex flex-col gap-3 mb-5">
         <div>
           <div class="flex items-center gap-2">
             <h1 class="font-semibold text-lg">Follow-up</h1>
@@ -21,8 +21,18 @@ import PlanningRangeFilter from './PlanningRangeFilter.vue'
           <p class="text-xs text-base-content/50 mt-0.5">Sprint health & attention queue</p>
         </div>
 
-        <div class="flex flex-wrap items-center gap-2">
+        <div class="flex flex-wrap items-center justify-center gap-2 w-full">
           <PlanningRangeFilter />
+
+          <button
+            type="button"
+            class="btn btn-sm btn-outline gap-1.5"
+            title="See every board and assign its responsible"
+            @click="$ui.openApp('board-management')"
+          >
+            <i class="fa-solid fa-table-columns text-xs"></i>
+            <span class="text-xs">Boards</span>
+          </button>
 
           <select
             class="select select-sm select-bordered text-xs"

@@ -361,6 +361,55 @@ class TestSmolAgentBasicChat:
         assert call_kwargs["username"] == "test_user"
         assert call_kwargs["input_tokens"] == 20
         assert call_kwargs["output_tokens"] == 10
+        # The tags header is propagated to the analytics event, followed by the
+        # tool-cache statistics appended by _record_usage.
+        assert call_kwargs["tags"].startswith("test")
+        assert "cache_hits:0" in call_kwargs["tags"]
+
+    @pytest.mark.asyncio
+    async def test_usage_recorded_without_tags_header(
+        self,
+        smol_agent,
+        mock_openai_client,
+        mock_run_context,
+        sample_messages,
+        mock_analytics,
+    ):
+        """A run with no ``tags`` header still records usage, without a leading comma."""
+        # Arrange
+        stream_chunks = [
+            make_openai_chunk(content="Test response"),
+            make_openai_chunk(
+                finish_reason="stop",
+                usage_prompt_tokens=20,
+                usage_completion_tokens=10,
+            ),
+        ]
+
+        mock_openai_client.chat.completions.create.return_value = stream_chunks
+
+        config = {
+            "chat_id": "chat-456",
+            "tools": [],
+            "headers": {"session_id": "session-789"},
+        }
+
+        with patch(
+            "codx.junior.ai.smol.smol_agent._get_analytics",
+            return_value=mock_analytics,
+        ):
+            with patch(
+                "codx.junior.ai.smol.smol_agent.AgentRunContext",
+                return_value=mock_run_context,
+            ):
+                # Act
+                await smol_agent.chat(sample_messages, config=config)
+
+        # Assert
+        mock_analytics.record_token_usage.assert_called_once()
+        recorded_tags = mock_analytics.record_token_usage.call_args[1]["tags"]
+        assert recorded_tags.startswith("cache_hits:0")
+        assert not recorded_tags.startswith(",")
 
     @pytest.mark.asyncio
     async def test_config_resolution_creates_run_context_when_missing(
@@ -647,7 +696,11 @@ class TestSmolAgentBasicChat:
         call_kwargs = mock_openai_client.chat.completions.create.call_args[1]
         assert "extra_headers" in call_kwargs
         headers = call_kwargs["extra_headers"]
-        assert "x-litellm-tags" in headers
+        # Caller headers reach the provider unchanged; LiteLLM is no longer a
+        # dependency, so no ``x-litellm-tags`` header is synthesised.
+        assert headers["tags"] == "custom-tag"
+        assert headers["session_id"] == "session-789"
+        assert "x-litellm-tags" not in headers
 
     @pytest.mark.asyncio
     async def test_no_tools_passed_when_empty_list(

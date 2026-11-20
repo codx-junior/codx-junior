@@ -4,6 +4,7 @@ import AppWindowVue from './AppWindow.vue'
 </script>
 <template>
   <VerticalSplitterVue class="w-full h-full relative" 
+      persist-key="window-navigator"
       :panels="{ left: { defaultSize: 60 }, right: { defaultSize: 40 } }"
     >
       <template v-slot:left v-if="leftWindows.length">

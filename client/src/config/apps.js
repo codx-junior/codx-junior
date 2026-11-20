@@ -59,8 +59,30 @@ export const APPS = {
     route: () => ({ name: 'solopreneur' })
   },
 
+  // Tasks — the general task table of the installation. It is the screen the
+  // "Tasks" item opens: the latest tasks of every board/project, paged, with
+  // the board and column as columns. From a row the user opens the board (the
+  // `tasks` app below), which is why both entries exist: `task-list` is the
+  // table, `tasks` is the board canvas.
+  'task-list': {
+    id: 'task-list', title: 'Tasks', component: 'global-tasks',
+    icon: 'fa-solid fa-list-check',
+    route: () => ({ name: 'tasks' })
+  },
+
+  // Board management: every board with its flow and responsible. The board
+  // responsible also manages descendant boards without an explicit one.
+  'board-management': {
+    id: 'board-management', title: 'Board management', component: 'board-management',
+    icon: 'fa-solid fa-table-columns',
+    route: () => ({ name: 'board-management' })
+  },
+
+  // Board canvas. Kept under the historical 'tasks' key so existing links,
+  // saved layouts and internal openers keep working; it is no longer the
+  // target of the "Tasks" menu.
   tasks: {
-    id: 'tasks', title: 'Task Manager', component: 'tasks', icon: 'fa-brands fa-trello',
+    id: 'tasks', title: 'Board', component: 'tasks', icon: 'fa-brands fa-trello',
     // Several Task Managers can be open at once — one per board. The board is
     // what identifies each instance, so different boards become independent
     // panels while re-opening the same board (or opening with no board at all)
@@ -113,22 +135,6 @@ export const APPS = {
     route: () => ({ name: 'ciso' })
   },
 
-  // Management dashboard — the cross-project "command center" for management.
-  // One screen that answers "what is happening, what is stuck and when will it
-  // be delivered" across EVERY project, with a time window (last 7 days by
-  // default), a left rail of sections (Pulse / Work / Blockers / Delivery /
-  // Team / Cost & AI) and an AI assistant.
-  //
-  // Desktop mode → dockview panel; single/mobile mode →
-  // "/:projectName/management-dashboard" (see router/index.ts). Data comes from
-  // src/api/modules/management.js, which is mock-backed until the backend
-  // endpoints land (only the project list is real today).
-  'management-dashboard': {
-    id: 'management-dashboard', title: 'Management', component: 'management-dashboard',
-    icon: 'fa-solid fa-table-columns',
-    route: () => ({ name: 'management-dashboard' })
-  },
-
   // Company — the top-level hybrid organization: org chart, teams of humans and
   // AI profiles, linked projects, missions and the guard-railed autopilot.
   // Desktop mode → dockview panel; single/mobile mode →
@@ -163,6 +169,16 @@ export const APPS = {
     route: p => p.meetId
       ? { name: 'meet-session', params: { meetId: p.meetId } }
       : { name: 'meet' }
+  },
+
+  // Meeting recap: transcript, minutes, recording and the "create tasks from
+  // the action items" workflow. It is a normal app so it opens as a panel in
+  // the desktop workspace and as a route on mobile.
+  'meet-summary': {
+    id: 'meet-summary', title: 'Meeting summary', component: 'meet-summary',
+    icon: 'fa-solid fa-pen-to-square',
+    desktopParams: p => ({ meetId: p.meetId }),
+    route: p => ({ name: 'meet-summary', params: { meetId: p.meetId } })
   },
 
   team: {

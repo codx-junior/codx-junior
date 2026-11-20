@@ -110,9 +110,69 @@ function userProfile() {
 }
 
 function normalizeParticipants(list) {
+  // Human peers only: AI profiles are *virtual* participants and never join
+  // the WebRTC mesh. They are kept in `profileParticipants` instead.
   return (list || [])
+    .filter(p => {
+      if (typeof p === 'string') return true
+      if (p?.kind === 'profile') return false
+      return !p?.status || p.status === 'joined'
+    })
     .map(p => (typeof p === 'string' ? p : p?.username))
     .filter(Boolean)
+}
+
+/**
+ * Normalise the virtual AI participants of a meeting.
+ * Accepts both the socket shape (`profileParticipants`) and the backend meet
+ * shape (participants with kind === 'profile').
+ */
+export function normalizeProfileParticipants(meet) {
+  const raw = meet?.profileParticipants || meet?.profile_participants ||
+    (meet?.participants || []).filter(p => typeof p === 'object' && p?.kind === 'profile')
+  const seen = new Set()
+  return (raw || [])
+    .map(p => {
+      if (typeof p === 'string') {
+        return { username: p, profileName: p, name: p, avatar: '', kind: 'profile' }
+      }
+      const profileName = p.profileName || p.profile_name || p.profile || p.username || p.name
+      if (!profileName) return null
+      return {
+        ...p,
+        kind: 'profile',
+        username: profileName,
+        profileName,
+        name: p.name || profileName,
+        avatar: p.avatar || '',
+        video: false,
+        audio: false,
+        speaking: !!p.speaking,
+        muted: true,
+        status: p.status || 'joined',
+        voice: p.voice || null
+      }
+    })
+    .filter(p => {
+      if (!p || seen.has(p.profileName)) return false
+      if (p.status && p.status !== 'joined') return false
+      seen.add(p.profileName)
+      return true
+    })
+}
+
+/** Normalise the meeting transcript (backend snake_case or socket shape). */
+export function normalizeMeetTranscript(list) {
+  return (list || []).map(entry => ({
+    entryId: entry.entryId || entry.entry_id || '',
+    at: entry.at || entry.created_at || '',
+    speaker: entry.speaker || '',
+    speakerKind: entry.speakerKind || entry.speaker_kind || 'user',
+    text: entry.text || '',
+    messageId: entry.messageId || entry.message_id || null,
+    source: entry.source || 'speech',
+    interrupted: !!entry.interrupted
+  }))
 }
 
 /**
@@ -134,8 +194,22 @@ function meetToClient(meet, fallback = {}) {
     name: meet?.name || fallback.name || `Meet ${String(meetId || '').slice(0, 8)}`,
     initiator: meet?.initiator || fallback.initiator || currentUsername(),
     participants: participants.length ? participants : (fallback.participants || [currentUsername()]),
+    profileParticipants: normalizeProfileParticipants(meet || fallback),
     status: meet?.status === 'ended' ? 'ended' : 'active',
-    chatId: fallback.chatId || null,
+    chatId: meet?.chat_id || meet?.chatId || fallback.chatId || null,
+    agenda: meet?.agenda || fallback.agenda || '',
+    source: meet?.source || fallback.source || 'manual',
+    channelId: meet?.channel_id || meet?.channelId || fallback.channelId || null,
+    channelName: meet?.channel_name || meet?.channelName || fallback.channelName || '',
+    teamId: meet?.team_id || meet?.teamId || fallback.teamId || null,
+    board: meet?.board || fallback.board || null,
+    taskIds: meet?.task_ids || meet?.taskIds || fallback.taskIds || [],
+    settings: meet?.settings || fallback.settings || {},
+    transcript: normalizeMeetTranscript(meet?.transcript || fallback.transcript),
+    minutes: meet?.minutes || fallback.minutes || { status: 'none', summary: '', action_items: [] },
+    recording: meet?.recording || fallback.recording || { status: 'none' },
+    floor: meet?.floor || fallback.floor || { holder: '', kind: 'user' },
+    profileTurns: meet?.profile_turns || meet?.profileTurns || fallback.profileTurns || {},
     // A browser session shared before we joined is part of the meet state, so a
     // late joiner lands directly in the same co-browsing session.
     sharedBrowser: normalizeSharedBrowser(meet?.shared_browser || meet?.sharedBrowser),
@@ -545,8 +619,15 @@ export const state = () => ({
   // entries: { [meetId]: { sessionId, sessionName, kind, owner, timestamp } }
   sharedBrowsers: {},
 
-  // Meet history
+  // Recent calls of this browser (local history of the live room)
   meetHistory: [],
+  // Persisted meetings of the project (minutes, recording, transcript)
+  meetingHistory: [],
+
+  // Latest profile answer that the meeting surface must speak. It is a
+  // one-shot signal: MeetView watches `profileTurnSeq` and plays the audio.
+  activeProfileTurn: null,
+  profileTurnSeq: 0,
 
   // Current active meet ID (the meet this client is actively in)
   currentMeetId: null,
@@ -582,6 +663,7 @@ export const getters = getterTree(state, {
   allIncomingInvitations: (state) => Object.values(state.incomingInvitations),
   isInMeet: (state) => state.currentMeetId !== null && state.meetStatus === 'active',
   recentMeetHistory: (state) => state.meetHistory.slice(-10),
+  persistedMeetings: (state) => state.meetingHistory,
   activeMeetCount: (_, getters) => getters.allActiveMeets.length,
   incomingInvitationCount: (_, getters) => getters.allIncomingInvitations.length,
   // Local camera on/off, independent of any active meet (works pre-join).
@@ -592,6 +674,20 @@ export const getters = getterTree(state, {
   // detected — this drives the "speaking" pulse on the mic indicator.
   isMicSpeaking: (state) => state.localMicEnabled && state.micLevel >= MIC_SPEAKING_THRESHOLD,
   meetForId: (state) => (meetId) => state.activeMeets[meetId] || null,
+  // Virtual AI participants of a meet (never WebRTC peers).
+  profileParticipantsFor: (state) => (meetId) =>
+    state.activeMeets[meetId]?.profileParticipants || [],
+  profileTurn: (state) => state.activeProfileTurn,
+  profileTurnSeq: (state) => state.profileTurnSeq,
+  // The profile currently holding the floor (the one that must stop talking
+  // when a human starts).
+  speakingProfileFor: (state) => (meetId) => {
+    const meet = state.activeMeets[meetId]
+    if (!meet) return null
+    const holder = meet.floor?.holder
+    if (!holder || meet.floor?.kind !== 'profile') return null
+    return (meet.profileParticipants || []).find(p => p.profileName === holder || p.username === holder) || null
+  },
   // Remote streams are keyed by the device-scoped peer id.
   remoteStreamsFor: (state) => (meetId) => state.activeMeets[meetId]?.remoteStreams || {},
   // Remote peers as an array of { peerId, username, stream } entries — one per
@@ -640,10 +736,24 @@ export const mutations = mutationTree(state, {
         name: meet.name || `Meet ${String(meet.meetId).slice(0, 8)}`,
         initiator: meet.initiator,
         participants: meet.participants || [meet.initiator],
+        profileParticipants: meet.profileParticipants || prev?.profileParticipants || [],
         startedAt: meet.startedAt || new Date().getTime(),
         duration: prev?.duration || 0,
         status: meet.status || 'connecting',
         chatId: meet.chatId || prev?.chatId || null,
+        agenda: meet.agenda || prev?.agenda || '',
+        source: meet.source || prev?.source || 'manual',
+        channelId: meet.channelId || prev?.channelId || null,
+        channelName: meet.channelName || prev?.channelName || '',
+        teamId: meet.teamId || prev?.teamId || null,
+        board: meet.board || prev?.board || null,
+        taskIds: meet.taskIds || prev?.taskIds || [],
+        settings: meet.settings || prev?.settings || {},
+        transcript: meet.transcript || prev?.transcript || [],
+        minutes: meet.minutes || prev?.minutes || { status: 'none', summary: '', action_items: [] },
+        recording: meet.recording || prev?.recording || { status: 'none' },
+        floor: meet.floor || prev?.floor || { holder: '', kind: 'user' },
+        profileTurns: meet.profileTurns || prev?.profileTurns || {},
         isMuted: false,
         localStream: prev?.localStream || null,
         remoteStreams: prev?.remoteStreams || {}
@@ -733,6 +843,102 @@ export const mutations = mutationTree(state, {
     if (state.activeMeets[meetId]) {
       state.activeMeets[meetId].participants = normalizeParticipants(participants)
     }
+  },
+
+  /**
+   * Merge the meeting-level fields announced by a socket event (participants,
+   * profiles, chat id, agenda, settings, minutes, recording…).
+   */
+  updateMeetFromServer(state, { meetId, meet }) {
+    const current = state.activeMeets[meetId]
+    if (!current || !meet) return
+    const participants = meet.participantsUsers || meet.participants
+    if (Array.isArray(participants) && participants.length) {
+      current.participants = normalizeParticipants(participants)
+    }
+    current.profileParticipants = normalizeProfileParticipants(meet)
+    if (meet.chatId || meet.chat_id) current.chatId = meet.chatId || meet.chat_id
+    if (meet.agenda !== undefined) current.agenda = meet.agenda || ''
+    if (meet.settings) current.settings = meet.settings
+    if (meet.status) current.status = meet.status
+    if (meet.board !== undefined) current.board = meet.board
+    if (meet.transcript) current.transcript = normalizeMeetTranscript(meet.transcript)
+    if (meet.minutes) current.minutes = meet.minutes
+    if (meet.recording) current.recording = meet.recording
+    if (meet.floor) current.floor = meet.floor
+    if (meet.profileTurns) current.profileTurns = meet.profileTurns
+  },
+
+  setProfileParticipants(state, { meetId, profiles }) {
+    if (state.activeMeets[meetId]) {
+      state.activeMeets[meetId].profileParticipants = normalizeProfileParticipants({ profileParticipants: profiles })
+    }
+  },
+
+  setTranscript(state, { meetId, transcript }) {
+    if (state.activeMeets[meetId]) {
+      state.activeMeets[meetId].transcript = normalizeMeetTranscript(transcript)
+    }
+  },
+
+  addTranscriptEntry(state, { meetId, entry }) {
+    const meet = state.activeMeets[meetId]
+    if (!meet || !entry) return
+    const normalized = normalizeMeetTranscript([entry])[0]
+    if (!normalized) return
+    const exists = (meet.transcript || []).some(item =>
+      (normalized.entryId && item.entryId === normalized.entryId) ||
+      (normalized.messageId && item.messageId === normalized.messageId)
+    )
+    if (!exists) {
+      meet.transcript = [...(meet.transcript || []), normalized]
+    }
+  },
+
+  setMinutes(state, { meetId, minutes }) {
+    if (state.activeMeets[meetId] && minutes) {
+      state.activeMeets[meetId].minutes = minutes
+    }
+  },
+
+  setMeetingSettings(state, { meetId, settings }) {
+    if (state.activeMeets[meetId] && settings) {
+      state.activeMeets[meetId].settings = settings
+    }
+  },
+
+  setRecording(state, { meetId, recording }) {
+    if (state.activeMeets[meetId] && recording) {
+      state.activeMeets[meetId].recording = recording
+    }
+  },
+
+  setFloor(state, { meetId, floor }) {
+    const meet = state.activeMeets[meetId]
+    if (!meet || !floor) return
+    meet.floor = floor
+    ;(meet.profileParticipants || []).forEach(profile => {
+      profile.speaking = !!floor.holder &&
+        floor.kind === 'profile' &&
+        (profile.profileName === floor.holder || profile.username === floor.holder)
+    })
+  },
+
+  setProfileTurn(state, turn) {
+    state.activeProfileTurn = turn
+    state.profileTurnSeq += 1
+  },
+
+  clearProfileTurn(state, turnId = null) {
+    if (turnId && state.activeProfileTurn?.turnId &&
+        state.activeProfileTurn.turnId !== turnId) {
+      return
+    }
+    state.activeProfileTurn = null
+  },
+
+  setMeetingHistory(state, meetings) {
+    state.meetingHistory = meetings || []
   },
 
   setMeetMuted(state, { meetId, muted }) {
@@ -839,6 +1045,13 @@ export const mutations = mutationTree(state, {
         from: invitation.from,
         fromName: invitation.fromName,
         fromAvatar: invitation.fromAvatar,
+        name: invitation.name || '',
+        agenda: invitation.agenda || '',
+        chatId: invitation.chatId || null,
+        source: invitation.source || 'manual',
+        channelName: invitation.channelName || '',
+        participants: invitation.participants || [],
+        profiles: invitation.profiles || [],
         timestamp: new Date().getTime(),
         status: 'pending'
       }
@@ -896,6 +1109,9 @@ export const mutations = mutationTree(state, {
     state.outgoingJoins = {}
     state.remotePresentations = {}
     state.sharedBrowsers = {}
+    state.meetingHistory = []
+    state.activeProfileTurn = null
+    state.profileTurnSeq = 0
     state.currentMeetId = null
     state.meetStatus = 'idle'
     state.isMuted = false
@@ -1274,14 +1490,45 @@ export const actions = actionTree(
      * the local session. If no `meetId` is supplied a shareable code is
      * generated, so the meet can be joined by code.
      */
-    async initiateMeet(ctx, { meetId, name, participants, chatId } = {}) {
+    async initiateMeet(ctx, {
+      meetId,
+      name,
+      participants,
+      profiles,
+      invitedUsers,
+      agenda,
+      board,
+      taskIds,
+      channelId,
+      channelName,
+      teamId,
+      source,
+      settings,
+      chatId,
+      createChat = true
+    } = {}) {
       const profile = userProfile()
       const invites = normalizeParticipants(participants)
       const id = meetId || generateMeetCode()
 
       let serverMeet = null
       try {
-        const result = await API.meets.initiateMeet({ meetId: id, name, participants: invites })
+        const result = await API.meets.initiateMeet({
+          meetId: id,
+          name,
+          participants: invites,
+          profiles: profiles || [],
+          invitedUsers: invitedUsers || [],
+          agenda: agenda || '',
+          board: board || null,
+          taskIds: taskIds || [],
+          channelId: channelId || null,
+          channelName: channelName || '',
+          teamId: teamId || null,
+          source: source || 'manual',
+          createChat,
+          settings: settings || undefined
+        })
         serverMeet = result?.meet || null
       } catch (error) {
         console.error('[meets] initiateMeet failed', error)
@@ -1292,6 +1539,14 @@ export const actions = actionTree(
         meetId: serverMeet?.meet_id || id,
         name,
         chatId,
+        agenda,
+        board,
+        taskIds,
+        channelId,
+        channelName,
+        teamId,
+        source,
+        settings,
         initiator: profile.username,
         participants: [profile.username, ...invites.filter(u => u !== profile.username)],
         startedAt: Date.now()
@@ -1303,6 +1558,7 @@ export const actions = actionTree(
       if (client.sharedBrowser) {
         ctx.commit('setSharedBrowser', { meetId: client.meetId, sharedBrowser: client.sharedBrowser })
       }
+      ctx.dispatch('_ensureMeetChat', client)
 
       await ctx.dispatch('_startDurationTimer', client.meetId)
       ctx.dispatch('_flushPendingSignals', client.meetId)
@@ -1336,10 +1592,26 @@ export const actions = actionTree(
       if (client.sharedBrowser) {
         ctx.commit('setSharedBrowser', { meetId: client.meetId, sharedBrowser: client.sharedBrowser })
       }
+      ctx.dispatch('_ensureMeetChat', client)
 
       await ctx.dispatch('_startDurationTimer', client.meetId)
       ctx.dispatch('_flushPendingSignals', client.meetId)
       return client.meetId
+    },
+
+    /**
+     * Load the meeting chat into the chats store when it is not there yet.
+     * All meeting messages (human and AI) live in that chat.
+     */
+    async _ensureMeetChat(ctx, meet) {
+      const chatId = meet?.chatId
+      if (!chatId || !$storex.chats) return
+      if ($storex.chats.chats?.[chatId]) return
+      try {
+        await $storex.chats.loadChat({ id: chatId })
+      } catch (error) {
+        console.warn('[meets] could not load the meeting chat', error)
+      }
     },
 
     /**
@@ -1386,6 +1658,111 @@ export const actions = actionTree(
       ctx.commit('removeOutgoingJoin', meetId)
       ctx.dispatch('_stopDurationTimer', meetId)
       ctx.commit('endActiveMeet', meetId)
+    },
+
+    // ─────────────────────────────────────────────────
+    // MEETING ARTIFACTS (transcript / notes / tasks / recording)
+    // ─────────────────────────────────────────────────
+
+    /**
+     * Record a spoken or typed utterance. The server stores it in the meeting
+     * chat and triggers the profile answers.
+     */
+    async sendUtterance(ctx, {
+      meetId,
+      text,
+      source = 'speech',
+      clientMessageId = null,
+      autoRespond = null
+    } = {}) {
+      if (!meetId || !String(text || '').trim()) return null
+      const result = await API.meets.sendUtterance({
+        meetId,
+        text,
+        source,
+        clientMessageId,
+        autoRespond
+      })
+      if (result?.entry) {
+        ctx.commit('addTranscriptEntry', { meetId, entry: result.entry })
+      }
+      if (result?.meet) {
+        ctx.commit('updateMeetFromServer', { meetId, meet: result.meet })
+      }
+      return result
+    },
+
+    /**
+     * Tell the server that the local microphone started/ended speech. Every
+     * client does this, which is what makes profiles stop when a human talks.
+     */
+    async reportFloor(ctx, { meetId, event, speaker = '', kind = 'user' } = {}) {
+      if (!meetId || !event) return null
+      try {
+        return await API.meets.setFloor({ meetId, event, speaker, kind })
+      } catch (error) {
+        // Barge-in is best effort: a failed report never stops local playback.
+        console.warn('[meets] floor report failed', error)
+        return null
+      }
+    },
+
+    async refreshMeetTranscript(ctx, { meetId } = {}) {
+      const result = await API.meets.getTranscript({ meetId })
+      ctx.commit('setTranscript', { meetId, transcript: result?.transcript || [] })
+      return result
+    },
+
+    async refreshMeetNotes(ctx, { meetId } = {}) {
+      const result = await API.meets.getNotes({ meetId })
+      ctx.commit('setMinutes', { meetId, minutes: result?.minutes || null })
+      return result
+    },
+
+    async generateMeetNotes(ctx, { meetId, instructions = '', force = false } = {}) {
+      const result = await API.meets.generateNotes({ meetId, instructions, force, async: true })
+      if (result?.minutes) {
+        ctx.commit('setMinutes', { meetId, minutes: result.minutes })
+      }
+      return result
+    },
+
+    async createTasksFromMinutes(ctx, {
+      meetId,
+      items = null,
+      itemIds = [],
+      board = null,
+      column = null,
+      run = false,
+      scheduleAt = null,
+      timezone = null
+    } = {}) {
+      const result = await API.meets.createTasks({
+        meetId,
+        items,
+        item_ids: itemIds,
+        board,
+        column,
+        run,
+        schedule_at: scheduleAt,
+        timezone
+      })
+      if (result?.meet) {
+        ctx.commit('updateMeetFromServer', { meetId, meet: result.meet })
+      }
+      return result
+    },
+
+    async loadMeetingHistory(ctx, { limit = 30 } = {}) {
+      try {
+        const result = await API.meets.listHistory({ limit })
+        const meetings = result?.meetings || []
+        ctx.commit('setMeetingHistory', meetings)
+        return meetings
+      } catch (error) {
+        console.warn('[meets] could not load the meeting history', error)
+        return []
+      }
     },
 
     /**
@@ -1473,18 +1850,125 @@ export const actions = actionTree(
         if (ctx.state.activeMeets[meetId]) return
         const initiatorInfo = (evt.meet?.participants || [])
           .find(p => (typeof p === 'string' ? p : p.username) === initiator)
+        const profiles = normalizeProfileParticipants(evt.meet || {})
         ctx.commit('addIncomingInvitation', {
           meetId,
           from: initiator,
           fromName: initiatorInfo?.name || initiator,
           fromAvatar: initiatorInfo?.avatar || '',
+          name: evt.meet?.name || evt.meet?.meet?.name || '',
+          agenda: evt.meet?.agenda || '',
+          chatId: evt.chatId || evt.meet?.chat_id || evt.meet?.chatId || null,
+          source: evt.meet?.source || 'manual',
+          channelName: evt.meet?.channel_name || evt.meet?.channelName || '',
+          participants: normalizeParticipants(evt.meet?.participants),
+          profiles: profiles.map(p => ({ name: p.name, avatar: p.avatar })),
           timestamp: Date.now()
         })
+        $storex.ui.addNotification({
+          text: `${initiatorInfo?.name || initiator} started a meeting${
+            evt.meet?.name ? `: ${evt.meet.name}` : ''
+          } — join from the meeting invitation`,
+          type: 'info'
+        })
+        return
+      }
+
+      // A targeted invite (channel call / late invite) reaches users that are
+      // not in the meeting yet. It must be handled before the "only our meets"
+      // guard below.
+      if (type === 'participant-invited') {
+        const invited = (evt.users || []).map(String)
+        if (!invited.includes(me)) return
+        if (ctx.state.activeMeets[meetId]) return
+        ctx.commit('addIncomingInvitation', {
+          meetId,
+          from: evt.from || evt.meet?.initiator || '',
+          fromName: evt.fromName || evt.meet?.name || evt.from || '',
+          fromAvatar: '',
+          name: evt.meet?.name || '',
+          agenda: evt.meet?.agenda || '',
+          chatId: evt.meet?.chat_id || evt.meet?.chatId || null,
+          source: evt.meet?.source || 'channel',
+          channelName: evt.meet?.channel_name || '',
+          participants: normalizeParticipants(evt.meet?.participants),
+          profiles: normalizeProfileParticipants(evt.meet || {}).map(p => ({ name: p.name, avatar: p.avatar })),
+          timestamp: Date.now()
+        })
+        $storex.session.onInfo(`${evt.fromName || evt.from || 'Someone'} invited you to a meeting`)
         return
       }
 
       // Everything else only concerns meets we are part of
       if (!ctx.state.activeMeets[meetId]) return
+
+      if (type === 'started' || type === 'settings' || type === 'participants') {
+        const meet = evt.meet || {}
+        if (evt.settings) {
+          ctx.commit('setMeetingSettings', { meetId, settings: evt.settings })
+        }
+        ctx.commit('updateMeetFromServer', { meetId, meet })
+        return
+      }
+
+      if (type === 'transcript') {
+        if (evt.meet) ctx.commit('updateMeetFromServer', { meetId, meet: evt.meet })
+        if (evt.entry) ctx.commit('addTranscriptEntry', { meetId, entry: evt.entry })
+        return
+      }
+
+      if (type === 'floor') {
+        ctx.commit('setFloor', { meetId, floor: evt.meet?.floor || {
+          holder: evt.holder || '',
+          kind: evt.kind || 'user',
+          since: evt.since || null
+        } })
+        return
+      }
+
+      if (type === 'profile-turn') {
+        if (evt.meet) ctx.commit('updateMeetFromServer', { meetId, meet: evt.meet })
+        ctx.commit('setProfileTurn', {
+          meetId,
+          profile: evt.profile,
+          text: evt.text || '',
+          speech: evt.speech || evt.text || '',
+          messageId: evt.messageId || evt.message_id || null,
+          turnId: evt.turnId || evt.turn_id || null,
+          voice: evt.voice || null,
+          interrupted: !!evt.interrupted,
+          at: Date.now()
+        })
+        return
+      }
+
+      if (type === 'profile-turn-end') {
+        if (evt.meet) ctx.commit('updateMeetFromServer', { meetId, meet: evt.meet })
+        ctx.commit('clearProfileTurn', evt.turnId || evt.turn_id || null)
+        return
+      }
+
+      if (type === 'minutes') {
+        ctx.commit('setMinutes', {
+          meetId,
+          minutes: evt.minutes || evt.meet?.minutes || null
+        })
+        return
+      }
+
+      if (type === 'recording') {
+        ctx.commit('setRecording', {
+          meetId,
+          recording: evt.recording || evt.meet?.recording || null
+        })
+        return
+      }
+
+      if (type === 'tasks-created') {
+        if (evt.meet) ctx.commit('updateMeetFromServer', { meetId, meet: evt.meet })
+        $storex.session.onInfo(`${(evt.tasks || []).length} task(s) created from the meeting`)
+        return
+      }
 
       if (type === 'browser-session') {
         // A participant started/shared a browser (or computer) session for the
@@ -1514,6 +1998,10 @@ export const actions = actionTree(
         const list = normalizeParticipants(evt.participants)
         if (list.length) ctx.commit('setParticipants', { meetId, participants: list })
         else if (from) ctx.commit('addParticipantToMeet', { meetId, userId: from })
+        if (evt.profileParticipants) {
+          ctx.commit('setProfileParticipants', { meetId, profiles: evt.profileParticipants })
+        }
+        if (evt.chatId) ctx.commit('setChatId', { meetId, chatId: evt.chatId })
         // The session shared with the meet is part of the join payload; mirror
         // it so the browser panel opens for everyone.
         const shared = normalizeSharedBrowser(evt.meet?.shared_browser || evt.sharedBrowser)

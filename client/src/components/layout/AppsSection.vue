@@ -61,9 +61,18 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
          visible, whatever the user's workspace mode is. -->
     <div v-if="primaryNavExpanded || isCollapsed" class="flex flex-col gap-1">
       
+      <!-- Company is the top-level element of the product: it owns the
+           projects, teams and boards. It comes before every project app. -->
+      <NavItem
+        icon="fas fa-building-columns"
+        label="Company"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToCompany"
+      />
+
       <NavItem
         icon="fas fa-plus"
-        label="New"
+        label="New chat"
         :is-collapsed="isCollapsed"
         :is-primary="true"
         @click="handleNavigateToNewChat"
@@ -76,11 +85,14 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         @click="handleNewProject"
       />
 
+      <!-- Tasks: the general table of the latest tasks across every board.
+           Boards are opened from a row, so the board canvas is not a separate
+           launcher item. -->
       <NavItem
         icon="fas fa-list-check"
-        label="Task Manager"
+        label="Tasks"
         :is-collapsed="isCollapsed"
-        @click="handleNavigateToKanban"
+        @click="handleNavigateToTasks"
       />
 
       <NavItem
@@ -100,18 +112,6 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         label="Calendar"
         :is-collapsed="isCollapsed"
         @click="handleNavigateToCalendar"
-      />
-
-      <!-- Cross-project management dashboard: what is happening, what is
-           stuck and when it ships — across EVERY project, with a time filter
-           (last 7 days by default), blockers, delivery forecast, team load and
-           AI cost. Opens a panel on desktop, the
-           "/:projectName/management-dashboard" route otherwise (config/apps.js). -->
-      <NavItem
-        icon="fas fa-table-columns"
-        label="Management"
-        :is-collapsed="isCollapsed"
-        @click="handleNavigateToManagementDashboard"
       />
 
       <!-- Native harness observability: runs, worker/watchdog health and the
@@ -142,15 +142,6 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         label="Team"
         :is-collapsed="isCollapsed"
         @click="handleNavigateToTeam"
-      />
-
-      <!-- Company: the top-level hybrid organization (org chart, teams of
-           humans + AI profiles, linked projects, missions and autonomy). -->
-      <NavItem
-        icon="fas fa-building-columns"
-        label="Company"
-        :is-collapsed="isCollapsed"
-        @click="handleNavigateToCompany"
       />
 
       <NavItem
@@ -305,16 +296,16 @@ export default {
       this.$emit('close')
     },
     handleNavigateToNewChat() {
-      if (this.$ui.isDesktopMode) {
-        this.$service.chat.newQuickChat()
-      } else {
-        // Single mode has no window manager to host a new-chat panel, so "New"
-        // opens the create-task dialog directly, with the codx-junior profile
-        // already selected (see components/kanban/NewTaskDialog.vue).
-        this.$ui.showNewTask(true)
-      }
+      // New = talk to codx-junior. The assistant chat opens in a modal so it
+      // works identically on desktop and mobile, and lets the user schedule the
+      // task (now / non-working hours / a concrete instant).
+      this.$storex.ui.showNewAssistantChat(true)
       this.$emit('close')
     },
+    handleNavigateToTasks() {
+      this.openApp('task-list')
+    },
+    // Board canvas (kept for callers that need to open a board directly).
     handleNavigateToKanban() {
       this.openApp('tasks')
     },
@@ -328,13 +319,6 @@ export default {
     handleNavigateToCalendar() {
       this.openApp('calendar')
     },
-    // Opens the cross-project management dashboard. It is registered as
-    // 'management-dashboard' in config/apps.js, so this single call opens a
-    // dockview panel on desktop and navigates to
-    // "/:projectName/management-dashboard" in single / mobile mode.
-    handleNavigateToManagementDashboard() {
-      this.openApp('management-dashboard')
-    },
     // Opens the native harness observability view (runs, worker/watchdog
     // health, audit journal). Registered as 'harness' in config/apps.js.
     handleNavigateToHarness() {
@@ -346,7 +330,17 @@ export default {
       this.openApp('ciso')
     },
     handleNavigateToCompany() {
-      this.openApp('company')
+      // Company mode has its own project-independent shell. Opening the
+      // Company entry must land there (not in a project-scoped panel).
+      if (this.$storex.users.isCompanyMode) {
+        const companyId = this.$storex.users.primaryCompanyId
+        this.$storex.$router.push({
+          name: 'company-home',
+          params: companyId ? { companyId } : {}
+        }).catch(() => {})
+      } else {
+        this.openApp('company')
+      }
       this.$emit('close')
     },
     handleNavigateToMessenger() {

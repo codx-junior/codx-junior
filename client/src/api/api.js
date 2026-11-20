@@ -11,6 +11,7 @@ import { teamsModule } from './modules/teams'
 import { effortsModule } from './modules/efforts'
 import { actorsModule } from './modules/actors'
 import { companiesModule } from './modules/companies'
+import { tasksModule } from './modules/tasks'
 import { mcpModule } from './modules/mcp'
 import { workspacesModule } from './modules/workspaces'
 import { browsersModule } from './modules/browsers'
@@ -852,6 +853,17 @@ const initializeAPI = ({ project, user } = {}) => {
         API._companiesModule = companiesModule(API)
       }
       return API._companiesModule
+    },
+
+    /**
+     * Cross-project task table: the latest tasks of every board/project, plus
+     * the board ownership data (team + lead). See `api/modules/tasks.js`.
+     */
+    get tasks() {
+      if (!API._tasksModule) {
+        API._tasksModule = tasksModule(API)
+      }
+      return API._tasksModule
     },
 
     /**

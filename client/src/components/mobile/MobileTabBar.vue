@@ -57,7 +57,7 @@ const activeTab = computed(() => {
   const name = route.name
   if (name === 'home' || name === 'root') return 'home'
   if (name === 'chats' || name === 'chat' || name === 'chat-workspace' || name === 'new-chat') return 'chats'
-  if (name === 'kanban') return 'tasks'
+  if (name === 'tasks' || name === 'kanban') return 'tasks'
   return 'more'
 })
 

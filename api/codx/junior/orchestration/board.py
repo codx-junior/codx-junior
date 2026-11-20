@@ -8,8 +8,9 @@ work can be followed:
 
 * on the run board — columns describe the orchestration phases
   (Backlog → In progress → Done / Blocked),
-* on the run sprint — columns describe the task status
-  (To do → Doing → Done), exactly like any other sprint in codx-junior.
+* on the run sprint board — a regular board used as a sprint by the run,
+  whose columns describe the task status (To do → Doing → Done). There is no
+  separate sprint board type: any board can be used as a sprint.
 
 Cards are created through :class:`~codx.junior.task_manager.TaskManager` (the
 canonical task factory) and updated through the regular ``ChatManager``, so the
@@ -159,21 +160,13 @@ class RunBoard:
                 sprint_title = f"{sprint_title} (sprint)"
             sprint = boards.get(sprint_title)
             if not isinstance(sprint, dict):
-                sprint = {"title": sprint_title, "type": "sprint", "columns": []}
+                # A sprint is a regular board used for a time-boxed goal. The
+                # dedicated sprint board type was removed, so the run board and
+                # its sprint board are both ordinary kanban boards.
+                sprint = {"title": sprint_title, "type": "kanban", "columns": []}
                 boards[sprint_title] = sprint
             sprint.setdefault("title", sprint_title)
-            # A sprint is a board whose type is sprint. If the name collides
-            # with a regular kanban board, keep its configuration but make it a
-            # sprint so the run cards grouped by status are visible.
-            existing_type = str(sprint.get("type") or "").strip().lower()
-            if existing_type and existing_type != "sprint":
-                logger.warning(
-                    "Orchestration: board '%s' has type '%s'; using it as the run "
-                    "sprint and switching its type to sprint",
-                    sprint_title,
-                    existing_type,
-                )
-            sprint["type"] = "sprint"
+            sprint["type"] = "kanban"
             sprint.setdefault("columns", [])
             self._ensure_columns(sprint, list(C.SPRINT_COLUMN_TITLES))
 

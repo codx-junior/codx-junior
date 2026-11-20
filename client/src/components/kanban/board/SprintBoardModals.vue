@@ -632,38 +632,25 @@ defineExpose({
           New Board
         </h2>
 
-        <!-- Board type -->
+        <!-- Owning team -->
         <div class="form-control mb-3">
           <label class="label py-1">
-            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Board type</span>
+            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Owning team</span>
+            <span class="label-text-alt text-[10px] text-base-content/40">Optional</span>
           </label>
-          <div class="flex gap-2">
-            <label
-              v-for="bt in boardTypes"
-              :key="bt.value"
-              class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border cursor-pointer transition-all text-xs"
-              :class="newBoard.type === bt.value
-                ? 'border-primary/40 bg-primary/10 text-primary'
-                : 'border-base-100 text-base-content/50 hover:border-base-content/20'"
-            >
-              <input type="radio" :value="bt.value" v-model="newBoard.type" class="hidden" />
-              <i :class="bt.icon + ' text-xs'"></i>
-              {{ bt.label }}
-            </label>
-          </div>
-          <div v-if="newBoard.type === 'sprint'" class="flex gap-2 items-start p-2.5 rounded-lg bg-info/5 border border-info/15 mt-2">
-            <i class="fa-solid fa-circle-info text-info text-xs mt-0.5 shrink-0"></i>
-            <span class="text-xs text-base-content/50">
-              Sprint columns map a name, an icon and a color to a chat status (starting from the task statuses).
-              Add, rename, recolor or remove them directly on the board.
+          <select v-model="newBoard.team_id" class="select select-bordered select-sm w-full">
+            <option value="">— no team —</option>
+            <option v-for="team in teams" :key="team.id" :value="team.id">
+              {{ team.name }}{{ team.lead_name ? ` · lead ${team.lead_name}` : '' }}
+            </option>
+          </select>
+          <p class="text-[10px] text-base-content/40 mt-1.5 flex items-start gap-1">
+            <i class="fa-solid fa-circle-info text-[10px] mt-0.5 shrink-0"></i>
+            <span>
+              Boards are managed by teams: the team lead is the responsible person for this board.
+              A sprint is just a board used by its team for a time-boxed goal.
             </span>
-          </div>
-          <div v-else class="flex gap-2 items-start p-2.5 rounded-lg bg-info/5 border border-info/15 mt-2">
-            <i class="fa-solid fa-circle-info text-info text-xs mt-0.5 shrink-0"></i>
-            <span class="text-xs text-base-content/50">
-              Kanban columns can be freely created, renamed and reordered on the board.
-            </span>
-          </div>
+          </p>
         </div>
 
         <!-- Board name -->
@@ -786,6 +773,25 @@ defineExpose({
             class="mt-3 h-24 rounded bg-cover bg-center opacity-60"
             :style="{ backgroundImage: `url(${editBoardForm.background})` }"
           ></div>
+        </div>
+
+        <!-- Owning team: its lead is responsible for the board -->
+        <div class="form-control mb-3">
+          <label class="label py-1">
+            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Owning team</span>
+            <span class="label-text-alt text-[10px] text-base-content/40">
+              {{ teamLead(editBoardForm.team_id) ? `lead · ${teamLead(editBoardForm.team_id)}` : 'unassigned' }}
+            </span>
+          </label>
+          <select v-model="editBoardForm.team_id" class="select select-bordered select-sm w-full">
+            <option value="">— no team —</option>
+            <option v-for="team in teams" :key="team.id" :value="team.id">
+              {{ team.name }}{{ team.lead_name ? ` · lead ${team.lead_name}` : '' }}
+            </option>
+          </select>
+          <p class="text-[10px] text-base-content/40 mt-1.5">
+            The team lead is the person responsible for this board.
+          </p>
         </div>
 
         <!-- Board assistant: the profile that answers the board chat -->
@@ -1002,6 +1008,7 @@ defineExpose({
 
 <script>
 import ChatAttachment from '@/api/model/ChatAttachment.js'
+import { API } from '@/api/api'
 
 // Attachments travel inline as base64 — keep them reasonably small
 const MAX_ATTACHMENT_SIZE_MB = 50
@@ -1054,6 +1061,8 @@ const DEFAULT_NEW_BOARD = () => ({
   title: '',
   description: '',
   background: '',
+  // A board is managed by a team; its lead is the responsible person.
+  team_id: '',
   type: 'kanban'
 })
 
@@ -1062,6 +1071,8 @@ const DEFAULT_EDIT_BOARD = () => ({
   title: '',
   description: '',
   background: '',
+  // Owning team: its lead is the responsible person for the board.
+  team_id: '',
   // Profile name the board is assigned to (its chat assistant) — optional
   assignee: null,
   // Background board manager configuration (opt-in)
@@ -1116,6 +1127,7 @@ export default {
       columnError: null,
       columnColors: COLUMN_COLORS,
       boardTypes: BOARD_TYPES,
+      teams: [],
       candidateSearch: '',
       selected: [],
       // Mirror of the composer text so the "Run" button knows when there is
@@ -1140,6 +1152,7 @@ export default {
     if (!this.$storex.users.users?.length) {
       this.$storex.users.loadUsers().catch(() => {})
     }
+    this.loadTeams()
   },
   unmounted() {
     clearTimeout(this.intelliSenseDebounce)
@@ -1831,6 +1844,21 @@ export default {
       this.closeNewColumn()
     },
 
+    // Teams that can own a board. The team lead is responsible for it, so the
+    // picker shows the lead next to the team name. Company data is optional:
+    // without it the board still works (unassigned team).
+    async loadTeams() {
+      try {
+        const data = await API.tasks.boards()
+        this.teams = data?.teams || []
+      } catch (error) {
+        this.teams = []
+      }
+    },
+    teamLead(teamId) {
+      const team = this.teams.find(item => item.id === teamId)
+      return team ? (team.lead_name || '') : ''
+    },
     // ── New Board ────────────────────────────────────────────────────────────
     openNewBoard({ type } = {}) {
       this.newBoard = { ...DEFAULT_NEW_BOARD(), type: type || 'kanban' }
@@ -1842,11 +1870,14 @@ export default {
     },
     confirmNewBoard() {
       if (!this.newBoard.title?.trim()) return
+      const team = this.teams.find(item => item.id === this.newBoard.team_id)
       this.$emit('board-created', {
         title: this.newBoard.title.trim(),
         description: this.newBoard.description?.trim() || '',
         background: this.newBoard.background?.trim() || '',
-        type: this.newBoard.type || 'kanban'
+        team_id: this.newBoard.team_id || '',
+        team_name: team?.name || '',
+        type: 'kanban'
       })
       this.closeNewBoard()
     },
@@ -1861,6 +1892,7 @@ export default {
         title: board.title || '',
         description: board.description || '',
         background: board.background || '',
+        team_id: board.team_id || '',
         // Profile the board is assigned to (its chat assistant) — single name
         assignee: board.assignee || null,
         // Background review policy (keep it when the board settings dialog is
@@ -1896,12 +1928,16 @@ export default {
     confirmEditBoard() {
       const title = this.editBoardForm.title?.trim()
       if (!title) return
+      const team = this.teams.find(item => item.id === this.editBoardForm.team_id)
       this.$emit('board-updated', {
         originalTitle: this.editBoardForm.originalTitle,
         board: {
           title,
           description: this.editBoardForm.description?.trim() || '',
           background: this.editBoardForm.background?.trim() || '',
+          // Owning team: its lead is the responsible person for the board
+          team_id: this.editBoardForm.team_id || '',
+          team_name: team?.name || '',
           // Profile that answers the board chat (null ⇒ ProjectManager)
           assignee: this.editBoardForm.assignee || null,
           // Background review policy (the dedicated modal edits it, but the

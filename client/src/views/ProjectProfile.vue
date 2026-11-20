@@ -36,7 +36,7 @@ import Markdown from '../components/Markdown.vue'
               </div>
             </div>
           </div>
-          <div class="alert click flex gap-2" @click="$ui.setActiveTab('tasks')" v-else>
+          <div class="alert click flex gap-2" @click="$ui.setActiveTab('task-list')" v-else>
             <i class="fa-solid fa-list-check"></i>
             No recent activity! Go and create your first task
           </div>

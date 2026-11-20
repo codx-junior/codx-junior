@@ -1,233 +1,260 @@
 <script setup>
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { API } from '@/api/api'
+import { $storex } from '@/store'
+import { formatMeetCode } from '@/utils/meetCode'
+
+const props = defineProps({
+  meetId: { type: String, default: '' }
+})
+const emit = defineEmits(['close', 'invites-sent'])
+
+const selectedUsers = ref([])
+const selectedProfiles = ref([])
+const profiles = ref([])
+const users = ref([])
+const currentMeet = ref(null)
+const loading = ref(true)
+const sending = ref(false)
+const error = ref('')
+const copied = ref(false)
+const copiedLink = ref(false)
+let copyTimeout = null
+
+const meetCode = computed(() => formatMeetCode(props.meetId))
+const inviteLink = computed(() => {
+  const { origin } = window.location
+  const projectName = $storex.projects.activeProject?.project_name
+  const base = projectName ? `${origin}/${projectName}` : origin
+  return `${base}/meet/${props.meetId}`
+})
+const onlineUsers = computed(() => {
+  const online = $storex.users.onlineUsers || {}
+  const current = $storex.users.user?.username
+  return Object.values(online).filter(user => user.username && user.username !== current)
+})
+const availableUsers = computed(() => {
+  const merged = new Map()
+  ;[...(users.value || []), ...onlineUsers.value].forEach(user => {
+    const username = user.username || user.name
+    if (!username) return
+    merged.set(username, { ...merged.get(username), ...user, username })
+  })
+  const current = $storex.users.user?.username
+  return [...merged.values()].filter(user => user.username !== current)
+})
+const alreadyInvited = computed(() => {
+  const humans = new Set((currentMeet.value?.participantsUsers || []).map(String))
+  const profilesSet = new Set(
+    (currentMeet.value?.profileParticipants || []).map(profile => profile.profileName || profile.username)
+  )
+  return { humans, profiles: profilesSet }
+})
+
+function avatarFor(value) {
+  return value?.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(value?.username || value?.name || value)}`
+}
+
+function toggle(list, value) {
+  const index = list.indexOf(value)
+  if (index >= 0) list.splice(index, 1)
+  else list.push(value)
+}
+
+function isSelected(list, value) {
+  return list.includes(value)
+}
+
+async function load() {
+  loading.value = true
+  try {
+    const project = $storex.projects.activeProject
+    const results = await Promise.allSettled([
+      API.meets.getMeetInfo({ meetId: props.meetId }),
+      project ? $storex.profiles.loadProjectProfiles(project) : Promise.resolve([]),
+      ($storex.users.users || []).length ? Promise.resolve() : $storex.users.loadUsers()
+    ])
+    if (results[0].status === 'fulfilled') {
+      currentMeet.value = results[0].value?.meet || null
+    }
+    profiles.value = results[1].status === 'fulfilled' ? (results[1].value || []) : []
+    users.value = $storex.users.users || []
+  } catch (err) {
+    console.warn('[meeting] invite catalogue failed', err)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function sendInvites() {
+  if (sending.value || (!selectedUsers.value.length && !selectedProfiles.value.length)) return
+  sending.value = true
+  error.value = ''
+  try {
+    const result = await API.meets.addParticipants({
+      meetId: props.meetId,
+      users: selectedUsers.value,
+      profiles: selectedProfiles.value
+    })
+    currentMeet.value = result?.meet || currentMeet.value
+    emit('invites-sent', {
+      users: selectedUsers.value,
+      profiles: selectedProfiles.value
+    })
+    $storex.session.onInfo(
+      `Invited ${selectedUsers.value.length} person(s) and ${selectedProfiles.value.length} profile(s)`
+    )
+    selectedUsers.value = []
+    selectedProfiles.value = []
+  } catch (err) {
+    console.error('[meeting] invite failed', err)
+    error.value = err?.message || 'Could not invite participants'
+  } finally {
+    sending.value = false
+  }
+}
+
+function copyMeetId() {
+  navigator.clipboard.writeText(meetCode.value)
+  copied.value = true
+  clearTimeout(copyTimeout)
+  copyTimeout = setTimeout(() => { copied.value = false }, 2000)
+}
+
+function copyInviteLink() {
+  navigator.clipboard.writeText(inviteLink.value)
+  copiedLink.value = true
+  clearTimeout(copyTimeout)
+  copyTimeout = setTimeout(() => { copiedLink.value = false }, 2000)
+}
+
+function shareViaClipboard() {
+  navigator.clipboard.writeText(`Join my meeting: ${inviteLink.value}\nCode: ${meetCode.value}`)
+  $storex.session.onInfo('Invite link copied to clipboard')
+}
+
+onMounted(load)
+
+onBeforeUnmount(() => {
+  clearTimeout(copyTimeout)
+})
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4" @keydown.esc="$emit('close')">
-    <div class="bg-base-200 border border-base-content/10 rounded-xl w-full max-w-sm shadow-xl">
-      <!-- Header -->
-      <div class="flex items-center justify-between px-6 py-4 border-b border-base-content/10">
-        <h2 class="text-base font-semibold flex items-center gap-2">
-          <i class="fa-solid fa-share-nodes text-primary"></i>
-          Invite to Meet
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm" @keydown.esc="$emit('close')">
+    <div class="flex max-h-[88vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-base-content/10 bg-base-200 shadow-xl">
+      <div class="flex items-center justify-between border-b border-base-content/10 px-6 py-4">
+        <h2 class="flex items-center gap-2 text-base font-semibold">
+          <i class="fa-solid fa-user-plus text-primary"></i>
+          Invite to the meeting
         </h2>
-        <button @click="$emit('close')" class="btn btn-ghost btn-sm btn-circle">
+        <button class="btn btn-ghost btn-sm btn-circle" @click="$emit('close')">
           <i class="fa-solid fa-xmark"></i>
         </button>
       </div>
 
-      <!-- Content -->
-      <div class="px-6 py-4 space-y-4">
-
-        <!-- Meeting code -->
-        <div class="p-3 rounded-lg bg-base-content/5 border border-base-content/10 space-y-2">
-          <div class="text-xs font-semibold text-base-content/60 uppercase">Meeting code</div>
+      <div class="flex-1 space-y-4 overflow-y-auto px-6 py-4">
+        <div class="space-y-2 rounded-lg border border-base-content/10 bg-base-content/5 p-3">
+          <div class="text-xs font-semibold uppercase text-base-content/60">Meeting code</div>
           <div class="flex items-center gap-2">
-            <code class="flex-1 text-lg font-mono tracking-[0.25em] bg-base-300 px-3 py-2 rounded text-center">{{ meetCode }}</code>
-            <button @click="copyMeetId" class="btn btn-ghost btn-sm btn-square" title="Copy code">
+            <code class="flex-1 rounded bg-base-300 px-3 py-2 text-center font-mono text-lg tracking-[0.25em]">{{ meetCode }}</code>
+            <button class="btn btn-ghost btn-sm btn-square" title="Copy code" @click="copyMeetId">
               <i :class="copied ? 'fa-solid fa-check text-success' : 'fa-regular fa-copy'"></i>
             </button>
           </div>
-          <div class="text-[11px] text-base-content/40">Share this code — anyone can join with it.</div>
+          <div class="text-[11px] text-base-content/40">Anyone with the code or the link can ask to join.</div>
         </div>
 
-        <!-- Copy invite link -->
-        <div class="space-y-2">
-          <div class="text-xs font-semibold text-base-content/60 uppercase">Invite Link</div>
+        <div class="space-y-1">
+          <div class="text-xs font-semibold uppercase text-base-content/60">Invite link</div>
           <div class="flex items-center gap-2">
-            <input
-              type="text"
-              :value="inviteLink"
-              readonly
-              class="input input-bordered input-sm flex-1 text-xs"
-            />
-            <button @click="copyInviteLink" class="btn btn-ghost btn-sm btn-square" title="Copy link">
+            <input :value="inviteLink" readonly class="input input-bordered input-sm min-w-0 flex-1 text-xs" />
+            <button class="btn btn-ghost btn-sm btn-square" title="Copy link" @click="copyInviteLink">
               <i :class="copiedLink ? 'fa-solid fa-check text-success' : 'fa-regular fa-copy'"></i>
             </button>
           </div>
         </div>
 
-        <!-- Send to online users -->
-        <div class="space-y-2">
-          <div class="text-xs font-semibold text-base-content/60 uppercase">Send to</div>
-          <div v-if="onlineUsers.length > 0" class="space-y-2 max-h-40 overflow-y-auto">
-            <button
-              v-for="user in onlineUsers"
-              :key="user.username"
-              @click="selectUser(user.username)"
-              class="w-full flex items-center gap-3 p-2.5 rounded-lg border transition-all text-left"
-              :class="isSelectedUser(user.username)
-                ? 'bg-primary/10 border-primary/40'
-                : 'bg-base-content/5 border-base-content/10 hover:border-base-content/20'"
-            >
-              <div class="relative w-8 h-8 shrink-0">
-                <img
-                  :src="user.avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${user.username}`"
-                  :alt="user.username"
-                  class="w-8 h-8 rounded-full"
-                />
-                <div class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-success rounded-full border border-base-200"></div>
-              </div>
-              <div class="flex-1 min-w-0 text-sm font-medium truncate">{{ user.username }}</div>
-              <i v-if="isSelectedUser(user.username)" class="fa-solid fa-check text-primary text-xs shrink-0"></i>
-            </button>
-          </div>
-          <div v-else class="text-center py-4 text-base-content/40 text-sm">
-            <i class="fa-solid fa-users block text-lg mb-1"></i>
-            No other users online
-          </div>
+        <div v-if="loading" class="py-6 text-center">
+          <span class="loading loading-spinner loading-sm"></span>
         </div>
 
-        <!-- Share options -->
-        <div class="space-y-2">
-          <div class="text-xs font-semibold text-base-content/60 uppercase">Share via</div>
-          <div class="flex gap-2">
-            <button
-              @click="shareViaClipboard"
-              class="flex-1 btn btn-ghost btn-sm gap-2 border border-base-content/20"
-              title="Copy to clipboard"
-            >
-              <i class="fa-regular fa-clipboard"></i>
-              Clipboard
-            </button>
-            <button
-              @click="shareViaEmail"
-              class="flex-1 btn btn-ghost btn-sm gap-2 border border-base-content/20"
-              title="Share via email"
-              disabled
-            >
-              <i class="fa-regular fa-envelope"></i>
-              Email
-            </button>
+        <template v-else>
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="text-xs font-semibold uppercase text-base-content/60">People</div>
+              <span class="text-[11px] text-base-content/40">{{ selectedUsers.length }} selected</span>
+            </div>
+            <div class="max-h-44 space-y-1 overflow-y-auto">
+              <button
+                v-for="user in availableUsers"
+                :key="user.username"
+                class="flex w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors"
+                :class="isSelected(selectedUsers, user.username)
+                  ? 'border-primary/40 bg-primary/10'
+                  : 'border-base-content/10 bg-base-content/5 hover:border-base-content/20'"
+                :disabled="alreadyInvited.humans.has(user.username)"
+                @click="toggle(selectedUsers, user.username)"
+              >
+                <img :src="avatarFor(user)" class="h-8 w-8 shrink-0 rounded-full" alt="" />
+                <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ user.name || user.username }}</span>
+                <span v-if="alreadyInvited.humans.has(user.username)" class="badge badge-xs badge-ghost">already in</span>
+                <i v-else-if="isSelected(selectedUsers, user.username)" class="fa-solid fa-check text-primary text-xs"></i>
+              </button>
+              <p v-if="!availableUsers.length" class="py-3 text-center text-xs text-base-content/40">No other users available.</p>
+            </div>
           </div>
-        </div>
 
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <div class="text-xs font-semibold uppercase text-base-content/60">AI profiles</div>
+              <span class="text-[11px] text-base-content/40">camera off</span>
+            </div>
+            <div class="max-h-48 space-y-1 overflow-y-auto">
+              <button
+                v-for="profile in profiles"
+                :key="profile.name"
+                class="flex w-full items-center gap-3 rounded-lg border p-2 text-left transition-colors"
+                :class="isSelected(selectedProfiles, profile.name)
+                  ? 'border-secondary/40 bg-secondary/10'
+                  : 'border-base-content/10 bg-base-content/5 hover:border-base-content/20'"
+                :disabled="alreadyInvited.profiles.has(profile.name)"
+                @click="toggle(selectedProfiles, profile.name)"
+              >
+                <img :src="avatarFor(profile)" class="h-8 w-8 shrink-0 rounded-full" alt="" />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm font-medium">{{ profile.name }}</span>
+                  <span class="block truncate text-[11px] text-base-content/40">{{ profile.description || 'AI teammate' }}</span>
+                </span>
+                <span v-if="alreadyInvited.profiles.has(profile.name)" class="badge badge-xs badge-ghost">in meeting</span>
+                <i v-else-if="isSelected(selectedProfiles, profile.name)" class="fa-solid fa-check text-secondary text-xs"></i>
+              </button>
+              <p v-if="!profiles.length" class="py-3 text-center text-xs text-base-content/40">No profiles in this project.</p>
+            </div>
+          </div>
+        </template>
+
+        <p v-if="error" class="rounded-lg bg-error/10 p-2 text-xs text-error">{{ error }}</p>
+
+        <div class="flex gap-2">
+          <button class="btn btn-ghost btn-sm flex-1 border border-base-content/20" @click="shareViaClipboard">
+            <i class="fa-regular fa-clipboard"></i> Copy invitation
+          </button>
+        </div>
       </div>
 
-      <!-- Actions -->
-      <div class="flex gap-3 px-6 py-4 border-t border-base-content/10">
-        <button @click="$emit('close')" class="flex-1 btn btn-ghost btn-sm">
-          Close
-        </button>
+      <div class="flex gap-3 border-t border-base-content/10 px-6 py-4">
+        <button class="btn btn-ghost btn-sm flex-1" @click="$emit('close')">Close</button>
         <button
+          class="btn btn-primary btn-sm flex-1 gap-2"
+          :disabled="sending || (!selectedUsers.length && !selectedProfiles.length)"
           @click="sendInvites"
-          :disabled="selectedUsers.length === 0"
-          class="flex-1 btn btn-primary btn-sm gap-2"
         >
-          <i class="fa-solid fa-send"></i>
-          Send Invites
+          <span v-if="sending" class="loading loading-spinner loading-xs"></span>
+          <i v-else class="fa-solid fa-paper-plane"></i>
+          Send invites
         </button>
       </div>
     </div>
   </div>
 </template>
-
-<script>
-import { formatMeetCode } from '@/utils/meetCode'
-
-export default {
-  name: 'MeetInviteModal',
-  props: {
-    meetId: { type: String, default: '' }
-  },
-  emits: ['close', 'invites-sent'],
-  data() {
-    return {
-      selectedUsers: [],
-      copied: false,
-      copiedLink: false,
-      copyTimeout: null
-    }
-  },
-  computed: {
-    // Human-friendly code (grouped xxx-xxxx-xxx) derived from the meet id.
-    meetCode() {
-      return formatMeetCode(this.meetId)
-    },
-    inviteLink() {
-      const { origin } = window.location
-      // Meet routes are project-scoped: /:projectName/meet/:meetId
-      const projectName = this.$storex.projects.activeProject?.project_name
-      const base = projectName ? `${origin}/${projectName}` : origin
-      return `${base}/meet/${this.meetId}`
-    },
-    onlineUsers() {
-      const onlineMap = this.$storex.users.onlineUsers || {}
-      const currentUser = this.$storex.users.user?.username
-      return Object.values(onlineMap)
-        .filter(u => u.username && u.username !== currentUser)
-        .slice(0, 15)
-    }
-  },
-  methods: {
-    selectUser(username) {
-      const idx = this.selectedUsers.indexOf(username)
-      if (idx > -1) {
-        this.selectedUsers.splice(idx, 1)
-      } else {
-        this.selectedUsers.push(username)
-      }
-    },
-    isSelectedUser(username) {
-      return this.selectedUsers.includes(username)
-    },
-    copyMeetId() {
-      navigator.clipboard.writeText(this.meetCode)
-      this.copied = true
-      clearTimeout(this.copyTimeout)
-      this.copyTimeout = setTimeout(() => {
-        this.copied = false
-      }, 2000)
-    },
-    copyInviteLink() {
-      navigator.clipboard.writeText(this.inviteLink)
-      this.copiedLink = true
-      clearTimeout(this.copyTimeout)
-      this.copyTimeout = setTimeout(() => {
-        this.copiedLink = false
-      }, 2000)
-    },
-    shareViaClipboard() {
-      const text = `Join my meet: ${this.inviteLink}\nCode: ${this.meetCode}`
-      navigator.clipboard.writeText(text)
-      this.$storex.session.onInfo('Invite link copied to clipboard')
-    },
-    shareViaEmail() {
-      // Not implemented yet
-      this.$storex.session.onWarning('Email sharing coming soon')
-    },
-    async sendInvites() {
-      if (this.selectedUsers.length === 0) return
-
-      try {
-        const from = this.$storex.users.user?.username
-        // Best-effort targeted invite (the meets API currently has no invite
-        // endpoint) — the broadcast `initiated` event and the shared code/link
-        // are the primary invitation paths.
-        this.selectedUsers.forEach(username => {
-          this.$storex.session.emit({
-            event: 'meet-invitation',
-            data: {
-              meetId: this.meetId,
-              code: this.meetCode,
-              to: username,
-              from,
-              inviteLink: this.inviteLink,
-              timestamp: new Date().getTime()
-            }
-          })
-        })
-
-        this.$storex.session.onInfo(`Invite sent to ${this.selectedUsers.length} user(s)`)
-        this.$emit('invites-sent', this.selectedUsers)
-        this.$emit('close')
-      } catch (error) {
-        console.error('Failed to send invites:', error)
-        this.$storex.session.onError('Failed to send invites')
-      }
-    }
-  },
-  beforeUnmount() {
-    clearTimeout(this.copyTimeout)
-  }
-}
-</script>

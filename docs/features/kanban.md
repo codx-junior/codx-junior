@@ -148,3 +148,59 @@ The manager is disabled by default. Enable it explicitly per board. The
 background loop is controlled by `CODX_JUNIOR_BOARD_MANAGER` and
 `CODX_JUNIOR_BOARD_MANAGER_TICK_SECONDS`; it can be turned off without disabling
 the rest of the background services.
+
+## Follow-up task queue
+
+The **Follow-up** view is the cross-board queue of work: it is not a single
+board but the latest tasks of the selected projects, ordered by recent activity.
+
+* **Every filter is a checkable, searchable multi-select**: projects, boards,
+  columns, statuses, priorities and assignees. They sit in one horizontal row
+  and empty selection means "no filter".
+* **Projects** start with the active project **and its children** selected;
+  clearing the selection means "all visible projects".
+* **Boards** lists only the boards of the selected projects, so the board filter
+  can never point at a project that is out of scope.
+* Every row shows the **latest message**, its author and time, an **unread
+  replies** badge, and a **stopped/error** badge when the execution did not end
+  cleanly (orchestration `run_status`, harness/execution status or the last
+  assistant message error).
+* Rows with no activity for `OLD_TASK_DAYS` (7 days) are dimmed and carry an
+  `Nd` age badge; the exact timestamp stays in the `Last update` column. Age is
+  never signalled by colour alone.
+
+Unread and process state are computed while the task file is read in
+`ChatManager` and carried as transient, non-persisted `Chat.task_*` fields. That
+keeps the shared task files free of one user's read state.
+
+## Board management and responsibility
+
+Open **Board management** from the Follow-up toolbar, the Team view or the
+kanban board's Follow-up panel. It lists every board of the selected projects
+with its flow, effective responsible, task count, overdue count and unassigned
+count.
+
+Every board has a **responsible** (`responsible_kind` = `user` or `profile`,
+`responsible_name`) and a **flow**:
+
+| Flow | Statuses |
+| --- | --- |
+| `agile` (default) | `todo`, `doing`, `done`, `rejected`, `onhold` |
+| `delivery` | `backlog`, `todo`, `doing`, `review`, `done`, `rejected` |
+| `support` | `new`, `triage`, `waiting`, `resolved`, `closed` |
+| `custom` | whatever the board defines |
+
+Responsibility is **inherited**: a board without its own responsible uses the
+nearest ancestor board's responsible. The effective source is shown in the UI
+(`board`, `parent`, `assignee`, `team`, `default`), and the last fallback is the
+`ProjectManager` profile, so no board is ever left without a responsible.
+
+The board manager uses the responsible profile as its default reviewer and
+receives the board flow in its instructions (agile/delivery/support rules and
+the requirement that every task ends the review with a responsible, a next step,
+or a terminal status). A human responsible is the accountable owner; only a
+profile can run the background review automatically.
+
+The API surface is `GET /api/tasks/boards` (boards + teams + effective
+responsibility) and `PUT /api/tasks/boards` with
+`{board_id, flow, responsible_kind, responsible_name, propagate_children}`.

@@ -23,9 +23,18 @@ import ContentCreatorPanel from '@/components/channel/ContentCreatorPanel.vue'
              but it is not one of the five public sections, so it lives on the
              header instead of the tab bars. -->
         <button
+          type="button"
+          class="ml-auto flex min-h-[44px] items-center gap-2 rounded-lg bg-primary/10 px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary/20"
+          title="Start a meeting for this channel"
+          @click="startChannelMeeting"
+        >
+          <i class="fa-solid fa-video" aria-hidden="true"></i>
+          <span class="hidden sm:inline">Meet</span>
+        </button>
+        <button
           v-if="isAdmin && activeTab !== 'creator'"
           type="button"
-          class="ml-auto flex min-h-[44px] items-center gap-2 rounded-lg px-3 text-xs font-semibold text-base-content/70 transition-colors hover:bg-base-content/5"
+          class="flex min-h-[44px] items-center gap-2 rounded-lg px-3 text-xs font-semibold text-base-content/70 transition-colors hover:bg-base-content/5"
           title="Create content"
           @click="selectTab('creator')"
         >
@@ -511,6 +520,21 @@ export default {
     }
   },
   methods: {
+    /**
+     * Call the channel: the project profiles join as AI participants and the
+     * setup dialog lets the host invite people. The meeting chat is created in
+     * this project.
+     */
+    startChannelMeeting() {
+      const project = this.$storex.projects.activeProject
+      this.$storex.ui.openMeetingSetup({
+        source: 'channel',
+        channelId: project?.project_id ? `project:${project.project_id}` : null,
+        channelName: this.channelName,
+        name: `${this.channelName} – team meeting`,
+        profiles: (this.$storex.profiles.profiles || []).map(profile => profile.name)
+      })
+    },
     isKnownTab(tab) {
       return typeof tab === 'string' && this.allTabs.some(item => item.id === tab)
     },

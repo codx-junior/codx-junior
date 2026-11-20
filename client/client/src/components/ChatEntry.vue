@@ -56,7 +56,7 @@ import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
           class="flex items-center gap-2 leading-none flex-wrap px-1"
           :class="isChannel
             ? 'pb-1.5 gap-x-2'
-            : 'sticky top-0 z-20 focus-within:z-30 -mt-1 pb-1.5 @lg/panel:pb-3 bg-base-100 border-b border-base-content/10 @lg/panel:border-base-content/30'"
+            : 'sticky top-0 z-20 focus-within:z-30 -mt-1 pb-1.5 @lg/panel:pb-3 border-b border-base-content/10 @lg/panel:border-base-content/30'"
         >
 
           <!-- ─────────────────────────── LEFT: identity + state ─────────────────────────── -->
@@ -90,7 +90,7 @@ import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
           >
             <i class="fa-solid fa-check-double text-sm"></i>
           </button>
-
+          
           <!-- Events & tools trigger (assistant only).
                ONE trigger for every panel width and every state:
                - visible while the message is still streaming (spinner instead of

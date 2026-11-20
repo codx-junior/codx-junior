@@ -4,9 +4,9 @@
 <template>
   <!--
     Single, repeatable way to say "this row comes from <project>".
-    Every table cell / list item / card in the management dashboard renders one
-    of these, so the source project is never implied: it is always visible
-    (colour dot or icon) AND named when there is horizontal space.
+    Shared by the task table and the project pickers so the source project is
+    never implied: it is always visible (colour dot or icon) AND named when
+    there is horizontal space.
   -->
   <span class="inline-flex items-center gap-1 min-w-0 align-middle" :class="sizeClasses" :title="title">
     <img v-if="iconUrl" :src="iconUrl" :alt="theProject.name"

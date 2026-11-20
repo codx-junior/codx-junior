@@ -57,6 +57,17 @@ import {
           </button>
         </div>
 
+        <!-- Board management: who is responsible for each board -->
+        <button
+          type="button"
+          class="btn btn-sm btn-ghost shrink-0 gap-1"
+          title="Manage boards and their responsible"
+          @click="$ui.openApp('board-management')"
+        >
+          <i class="fa-solid fa-table-columns"></i>
+          <span class="hidden md:inline">Boards</span>
+        </button>
+
         <!-- Reload teams + members from the API -->
         <button
           type="button"

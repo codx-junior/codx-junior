@@ -23,6 +23,7 @@ const messages = {
     'nav.overview': 'Overview',
     'nav.work': 'Goals & work',
     'nav.team': 'Team',
+    'nav.projects': 'Projects',
     'nav.business': 'Business',
     'nav.activity': 'Activity',
     'nav.security': 'Security',
@@ -192,7 +193,7 @@ const messages = {
     'settings.keySet': 'Key set'
   },
   es: {
-    'nav.overview': 'Resumen', 'nav.work': 'Metas y trabajo', 'nav.team': 'Equipo', 'nav.business': 'Negocio',
+    'nav.overview': 'Resumen', 'nav.work': 'Metas y trabajo', 'nav.team': 'Equipo', 'nav.projects': 'Proyectos', 'nav.business': 'Negocio',
     'nav.activity': 'Actividad', 'nav.security': 'Seguridad', 'nav.settings': 'Ajustes', 'nav.meet': 'Reuniones',
     'nav.coworking': 'Coworking', 'nav.calendar': 'Calendario', 'nav.channels': 'Canales', 'nav.allChannels': 'Todos los canales',
     'group.workspace': 'Espacio de trabajo', 'group.business': 'Negocio', 'group.governance': 'Gobierno',
@@ -262,7 +263,7 @@ const messages = {
     'settings.noKey': 'Sin clave', 'settings.keySet': 'Clave configurada'
   },
   fr: {
-    'nav.overview': 'Aperçu', 'nav.work': 'Objectifs et travail', 'nav.team': 'Équipe', 'nav.business': 'Activité',
+    'nav.overview': 'Aperçu', 'nav.work': 'Objectifs et travail', 'nav.team': 'Équipe', 'nav.projects': 'Projets', 'nav.business': 'Activité',
     'nav.activity': 'Journal', 'nav.security': 'Sécurité', 'nav.settings': 'Réglages', 'nav.meet': 'Réunions',
     'nav.coworking': 'Coworking', 'nav.calendar': 'Calendrier', 'nav.channels': 'Canaux', 'nav.allChannels': 'Tous les canaux',
     'group.workspace': 'Espace de travail', 'group.business': 'Activité', 'group.governance': 'Gouvernance',
@@ -331,7 +332,7 @@ const messages = {
     'settings.noKey': 'Aucune clé', 'settings.keySet': 'Clé configurée'
   },
   de: {
-    'nav.overview': 'Übersicht', 'nav.work': 'Ziele & Arbeit', 'nav.team': 'Team', 'nav.business': 'Geschäft',
+    'nav.overview': 'Übersicht', 'nav.work': 'Ziele & Arbeit', 'nav.team': 'Team', 'nav.projects': 'Projekte', 'nav.business': 'Geschäft',
     'nav.activity': 'Aktivität', 'nav.security': 'Sicherheit', 'nav.settings': 'Einstellungen', 'nav.meet': 'Meetings',
     'nav.coworking': 'CoWorking', 'nav.calendar': 'Kalender', 'nav.channels': 'Kanäle', 'nav.allChannels': 'Alle Kanäle',
     'group.workspace': 'Arbeitsbereich', 'group.business': 'Geschäft', 'group.governance': 'Governance',
@@ -400,7 +401,7 @@ const messages = {
     'settings.noKey': 'Kein Schlüssel', 'settings.keySet': 'Schlüssel gesetzt'
   },
   hi: {
-    'nav.overview': 'अवलोकन', 'nav.work': 'लक्ष्य और काम', 'nav.team': 'टीम', 'nav.business': 'व्यवसाय',
+    'nav.overview': 'अवलोकन', 'nav.work': 'लक्ष्य और काम', 'nav.team': 'टीम', 'nav.projects': 'प्रोजेक्ट्स', 'nav.business': 'व्यवसाय',
     'nav.activity': 'गतिविधि', 'nav.security': 'सुरक्षा', 'nav.settings': 'सेटिंग्स', 'nav.meet': 'मीटिंग',
     'nav.coworking': 'कोवर्किंग', 'nav.calendar': 'कैलेंडर', 'nav.channels': 'चैनल', 'nav.allChannels': 'सभी चैनल',
     'group.workspace': 'वर्कस्पेस', 'group.business': 'व्यवसाय', 'group.governance': 'गवर्नेंस',

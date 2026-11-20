@@ -127,18 +127,71 @@ class BoardManagerService:
 
     # -- catalogue --------------------------------------------------------
 
-    def boards(self) -> Dict[str, Dict[str, Any]]:
-        """Return the boards of the project keyed by title."""
-        kanban = self._manager().load_kanban() or {}
-        boards = kanban.get("boards")
-        if isinstance(boards, list):
-            # Newer catalogues keep the boards in a list.
+    @staticmethod
+    def _inherited_responsible(
+        board: Dict[str, Any],
+        boards: Dict[str, Dict[str, Any]],
+        seen: Optional[set] = None,
+    ) -> Dict[str, str]:
+        """Resolve the responsible inherited from the nearest ancestor board."""
+        seen = set(seen or set())
+        reference = str(board.get("parent_id") or "").strip().lower()
+        if not reference or reference in seen:
+            return {}
+        seen.add(reference)
+        parent = None
+        for title, candidate in boards.items():
+            if not isinstance(candidate, dict):
+                continue
+            keys = {
+                str(candidate.get("id") or "").strip().lower(),
+                str(candidate.get("title") or title or "").strip().lower(),
+            }
+            if reference in keys:
+                parent = candidate
+                break
+        if parent is None:
+            return {}
+        name = str(parent.get("responsible_name") or "").strip()
+        if name:
             return {
+                "responsible_kind": str(parent.get("responsible_kind") or "profile"),
+                "responsible_name": name,
+            }
+        return BoardManagerService._inherited_responsible(parent, boards, seen)
+
+    def boards(self) -> Dict[str, Dict[str, Any]]:
+        """Return the boards of the project keyed by title.
+
+        The effective responsible is inherited from the nearest ancestor board
+        when the board does not declare one, exactly like the Follow-up and
+        board-management views show it. The copy is enriched in memory only;
+        the persisted board keeps its own (empty) value.
+        """
+        kanban = self._manager().load_kanban() or {}
+        raw = kanban.get("boards")
+        if isinstance(raw, list):
+            # Newer catalogues keep the boards in a list.
+            raw = {
                 str(board.get("name") or board.get("title") or index): board
-                for index, board in enumerate(boards)
+                for index, board in enumerate(raw)
                 if isinstance(board, dict)
             }
-        return boards if isinstance(boards, dict) else {}
+        if not isinstance(raw, dict):
+            return {}
+        boards: Dict[str, Dict[str, Any]] = {}
+        for title, candidate in raw.items():
+            board = candidate if isinstance(candidate, dict) else {"title": str(title)}
+            if not str(board.get("responsible_name") or "").strip():
+                inherited = self._inherited_responsible(board, raw)
+                if inherited.get("responsible_name"):
+                    board = {
+                        **board,
+                        "responsible_kind": inherited.get("responsible_kind") or "profile",
+                        "responsible_name": inherited["responsible_name"],
+                    }
+            boards[str(title)] = board
+        return boards
 
     def resolve_board(self, board_id: str) -> Tuple[str, Dict[str, Any]]:
         """
@@ -219,7 +272,9 @@ class BoardManagerService:
                 state = ManagerState(**(stored_states.get(key) or {}))
             except (TypeError, ValueError):
                 state = ManagerState(board_id=key)
-            actor = config.to_actor_config(str(title))
+            actor = config.to_actor_config(
+                str(title), str(board.get("flow") or "agile")
+            )
             entries.append({
                 "board": str(title),
                 "board_id": key,
@@ -345,7 +400,9 @@ class BoardManagerService:
                 return self._payload(title, key, config, self.store.get_state(key))
 
             profile = self._profile(config.profile)
-            actor = config.to_actor_config(title)
+            actor = config.to_actor_config(
+                title, str(board.get("flow") or "agile")
+            )
 
             def _start(current: ManagerState) -> ManagerState:
                 current.mark_run_started(title, key, config.profile)

@@ -103,7 +103,7 @@ import Wall from '../components/wall/Wall.vue'
 
         <!-- Tasks pane -->
         <div v-if="activePane === 'tasks'" class="flex-1 overflow-y-auto p-3 flex flex-col gap-2">
-          <button class="btn btn-primary btn-sm w-full gap-2" @click="$ui.setActiveTab('tasks')">
+          <button class="btn btn-primary btn-sm w-full gap-2" @click="$ui.setActiveTab('task-list')">
             <i class="fa-brands fa-trello"></i> Open Task Manager
           </button>
           <div class="text-xs text-base-content-ERROR-40 text-center mt-2">View boards and manage tasks</div>
@@ -182,11 +182,11 @@ export default {
     },
     gotoProject(project) {
       this.$projects.activeProjectChanged(project)
-      this.$ui.setActiveTab('tasks')
+      this.$ui.setActiveTab('task-list')
     },
     openChat(chat) {
       this.$chats.setActiveChat(chat)
-      this.$ui.setActiveTab('tasks')
+      this.$ui.setActiveTab('task-list')
     }
   }
 }

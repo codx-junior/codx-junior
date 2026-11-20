@@ -472,6 +472,39 @@ class Chat(BaseModel):
         )
     )
     messages: List[Message] = Field(default=[])
+    # ── Transient task-table annotations ──────────────────────────────────
+    # Computed while a chat file is read (see ChatManager.load_chat_from_path)
+    # and NEVER persisted: the value is user-scoped (unread) or derived. They
+    # are excluded from model_dump so saving a chat can never leak one user's
+    # unread state into the shared task file.
+    task_latest_message: Optional[Dict[str, Any]] = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "Newest visible message of the task as a compact row "
+            "(role/user/content/created_at/error), used by Follow-up."
+        ),
+    )
+    task_unread_count: int = Field(
+        default=0,
+        exclude=True,
+        description="Unread assistant replies for the requesting user.",
+    )
+    task_process_state: str = Field(
+        default="",
+        exclude=True,
+        description="Execution state: idle | running | stopped | error.",
+    )
+    task_process_error: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description="Human readable reason of a stopped/failed process.",
+    )
+    task_last_activity_at: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description="Creation time of the newest message (falls back to updated_at).",
+    )
     created_at: str = Field(default_factory=lambda: str(datetime.now()))
     updated_at: str = Field(default_factory=lambda: str(datetime.now()))
     mode: str = Field(default='chat')
@@ -482,10 +515,11 @@ class Chat(BaseModel):
     sprints: List[str] = Field(
         default=[],
         description=(
-            "Identifiers of the sprint boards this chat belongs to. "
-            "A chat/task can be part of multiple sprints; membership is used to "
-            "filter which cards are shown on a 'sprint' type board. Persisted "
-            "through the existing /api/chats/metadata endpoint."
+            "DEPRECATED: legacy membership of the removed sprint boards. "
+            "Sprint boards no longer exist (any board can be used as a sprint); "
+            "readers map the first entry to `board` and its status to a column so "
+            "old tasks keep showing up. New tasks never set this field. Persisted "
+            "through the existing /api/chats/metadata endpoint for compatibility."
         )
     )
 

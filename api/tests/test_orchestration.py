@@ -742,7 +742,8 @@ def test_board_ensures_board_sprint_and_columns(tmp_path):
     titles = [column["title"] for column in board_entry["columns"]]
     assert "Backlog" in titles and "In progress" in titles
     sprint = kanban["boards"]["Run: My Run"]
-    assert sprint["type"] == "sprint"
+    # A sprint is a regular board used by the run; there is no sprint board type.
+    assert sprint["type"] == "kanban"
     assert [column["title"] for column in sprint["columns"]] == list(C.SPRINT_COLUMN_TITLES)
 
 

@@ -118,11 +118,14 @@ export function createVoicePlayer({ onStateChange = () => {} } = {}) {
     }
   }
 
-  async function playBlob(blob) {
+  async function playBlob(blob, onAudioElement = null) {
     cleanupAudio()
     if (!blob || !blob.size) throw new Error('empty audio')
     audioUrl = URL.createObjectURL(blob)
     audio = new Audio(audioUrl)
+    // Optional sink used by the meeting recorder: it can route the element
+    // through Web Audio to capture the profile voice.
+    try { onAudioElement?.(audio) } catch (error) { /* listener error */ }
     await new Promise((resolve, reject) => {
       audioResolve = resolve
       audio.onended = () => {
@@ -188,6 +191,8 @@ export function createVoicePlayer({ onStateChange = () => {} } = {}) {
      * @param {string} [options.voiceName]
      * @param {number} [options.rate]
      * @param {() => Promise<Blob|null>} [options.serverAudio] - optional server TTS.
+     * @param {(audio: HTMLAudioElement) => void} [options.onAudioElement]
+     *   - optional sink for the server-voice element (recording).
      * @returns {Promise<void>}
      */
     async speak(text, options = {}) {
@@ -204,7 +209,7 @@ export function createVoicePlayer({ onStateChange = () => {} } = {}) {
             const blob = await options.serverAudio(value)
             if (isCancelled()) return
             if (blob) {
-              await playBlob(blob)
+              await playBlob(blob, options.onAudioElement || null)
               return
             }
           } catch (error) {

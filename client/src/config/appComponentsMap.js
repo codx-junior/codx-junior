@@ -36,6 +36,9 @@ export const APP_COMPONENTS_MAP = {
   'docs': lazy(() => import('../views/DocsView.vue')),
   'global-settings': lazy(() => import('../views/GlobalSettings.vue')),
   'tasks': lazy(() => import('../components/kanban/board/KanbanBoardView.vue')),
+  // Cross-project task table (see views/GlobalTasksView.vue).
+  'global-tasks': lazy(() => import('../views/GlobalTasksView.vue')),
+  'board-management': lazy(() => import('../views/BoardManagementView.vue')),
   'calendar': lazy(() => import('../views/CalendarView.vue')),
   'harness': lazy(() => import('../views/HarnessView.vue')),
   'ciso': lazy(() => import('../views/CisoView.vue')),
@@ -46,6 +49,7 @@ export const APP_COMPONENTS_MAP = {
   'git-view': lazy(() => import('../components/repo/GitView.vue')),
   'messenger': lazy(() => import('../views/MessengerView.vue')),
   'meet': lazy(() => import('../views/MeetView.vue')),
+  'meet-summary': lazy(() => import('../views/MeetSummaryView.vue')),
   'projects': lazy(() => import('../components/project/ProjectOverview.vue')),
   'chat': lazy(() => import('../views/ChatView.vue')),
   'analytics': lazy(() => import('../components/analytics/MetricsDashboard.vue')),
@@ -58,11 +62,8 @@ export const APP_COMPONENTS_MAP = {
   'vibe-coding': lazy(() => import('../views/VibeCodingView.vue')),
   'workspaces': lazy(() => import('../components/workspaces/WorkspacesManager.vue')),
   'infra': lazy(() => import('../views/infra/InfraView.vue')),
-  // Cross-project management dashboard (Pulse / Work / Blockers / Delivery /
-  // Team / Cost & AI). Same component in both modes: a dockview panel on
-  // desktop and the "/:projectName/management-dashboard" route in single/mobile
-  // mode (see router/index.ts + config/apps.js).
-  'management-dashboard': lazy(() => import('../views/ManagementDashboardView.vue')),
+  // Company shell (team/people/missions/settings). Same component in both
+  // modes: a dockview panel on desktop and the company route otherwise.
   'company': lazy(() => import('../views/CompanyView.vue')),
   // Solopreneur mode as a desktop panel (single/mobile mode uses the
   // "/solopreneur" route — see router/index.ts).

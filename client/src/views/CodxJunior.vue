@@ -105,8 +105,8 @@ export default {
       const chat = this.$chats.chats[id];
       if (chat) {
         this.$chats.setActiveChat(chat)
-        if (!this.$ui.activeTab !== 'tasks') {
-          this.$ui.setActiveTab('tasks')
+        if (this.$ui.activeTab !== 'task-list') {
+          this.$ui.setActiveTab('task-list')
         }
       }
     },
@@ -143,7 +143,7 @@ export default {
       this.setActiveTab('home')
     },
     openTask(task) {
-      this.setActiveTab('tasks')
+      this.setActiveTab('task-list')
       this.$chats.setActiveChat(task)
     },
     removeNotification(notification) {

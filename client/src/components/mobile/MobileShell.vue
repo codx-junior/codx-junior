@@ -27,6 +27,7 @@ const fullScreen = computed(() => !!meta.value.fullScreen)
 // with a back arrow. A route can override this with `meta.mobile.back`.
 const showBack = computed(() => meta.value.back ?? ![
   'home',
+  'tasks',
   'chats',
   'kanban',
   'messenger',

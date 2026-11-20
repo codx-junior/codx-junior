@@ -288,6 +288,31 @@ class DshSettings(BaseModel):
     )
 
 
+class HumanWorkingHours(BaseModel):
+    """
+    When humans (the people using codx-junior) are working.
+
+    Tasks can be scheduled for the **non-working hours** so autonomous agents
+    do not compete with the daily work of the team. The window is
+    installation-wide: ``enabled`` turns the concept on, ``timezone`` is the
+    IANA zone used to read it and ``days``/``start``/``end`` describe the daily
+    window. Outside it (and on weekends by default) is "non-working".
+
+    Attributes:
+        enabled: Whether the working window is enforced.
+        timezone: IANA zone (default UTC).
+        days: Weekdays humans work (``mon``..``sun``).
+        start: Opening time ``HH:MM``.
+        end: Closing time ``HH:MM``.
+    """
+
+    enabled: bool = Field(default=True)
+    timezone: str = Field(default="UTC")
+    days: List[str] = Field(default_factory=lambda: ["mon", "tue", "wed", "thu", "fri"])
+    start: str = Field(default="09:00")
+    end: str = Field(default="18:00")
+
+
 class GlobalSettings(BaseModel):
     log_ai: bool = Field(default=True)
     
@@ -324,6 +349,11 @@ class GlobalSettings(BaseModel):
     )
 
     git: GitSettings = Field(default=GitSettings())
+
+    # When humans work. Used to resolve the "non-working-hours" task schedule:
+    # autonomous work is moved out of this window so profiles never collide
+    # with the team's daily work.
+    working_hours: HumanWorkingHours = Field(default_factory=HumanWorkingHours)
 
     agent_settings: AgentSettings = Field(description="Agent settings", default=AgentSettings())
 

@@ -182,6 +182,10 @@ export default {
     calculateUnreadCount() {
       const currentUsername = this.$user?.username
       if (!currentUsername) return 0
+      if (Object.prototype.hasOwnProperty.call(this.chat || {}, 'unread_count')) {
+        const stored = Number(this.chat.unread_count)
+        if (Number.isFinite(stored)) return Math.max(0, stored)
+      }
       
       return (this.chat.messages || []).filter(msg => {
         const isAssistantMsg = msg.role === 'assistant'

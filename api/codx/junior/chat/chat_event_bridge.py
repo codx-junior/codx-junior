@@ -21,8 +21,10 @@ Tool output
 TOOL_END events carry the dual-response tool's user-facing ``output``
 (``ToolResponse.user_response``). The bridge stores it on the matching
 :class:`ToolEvent` (``ToolEvent.output``) instead of it being merged into the
-chat content, so the client decides how to display it. Cached tool calls do not
-re-emit output (the first execution already delivered it).
+chat content, so the client decides how to display it. Output larger than
+``CODX_JUNIOR_CHAT_TOOL_OUTPUT_INLINE_BYTES`` is written to the project blob
+store and the event keeps a preview + ``output_ref`` (see ``chat/blobs.py``).
+Cached tool calls do not re-emit output (the first execution delivered it).
 
 Crash-safety guarantee
 ----------------------
@@ -89,6 +91,7 @@ they are known, not only at the end of the turn.
     ```
 """
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Dict, Optional, Set
@@ -107,6 +110,20 @@ logger = logging.getLogger(__name__)
 
 # Maximum characters of a tool response stored in the ToolEvent.
 TOOL_RESPONSE_MAX_CHARS: int = 4000
+
+def _env_int(name: str, default: int) -> int:
+    """Read an integer environment setting without crashing on a bad value."""
+    try:
+        return int(str(os.environ.get(name, default)).strip() or default)
+    except (TypeError, ValueError):
+        logger.warning("Invalid integer for %s, using %s", name, default)
+        return default
+
+
+# Tool output larger than this is stored in the project blob store and the
+# ToolEvent keeps a preview + output_ref. Set to 0 to disable externalization.
+TOOL_OUTPUT_INLINE_BYTES: int = _env_int("CODX_JUNIOR_CHAT_TOOL_OUTPUT_INLINE_BYTES", 32768)
+TOOL_OUTPUT_PREVIEW_CHARS: int = _env_int("CODX_JUNIOR_CHAT_TOOL_OUTPUT_PREVIEW_CHARS", 4000)
 
 # ADDED: Minimum seconds between throttled streamed-content persists.
 # Bounds disk I/O while guaranteeing a hard kill loses at most this many
@@ -370,11 +387,12 @@ class ChatEventBridge:
             tool_event.response = _truncate(str(payload.get("result") or ""))
             # Tool output (dual-response user_response) is attached as a
             # collapsible message property instead of being merged into the
-            # chat content. Stored UNTRUNCATED so generated code/blocks are not
-            # lost. Cached tool calls do not carry an output (see SmolAgent).
+            # chat content. Large output goes to the project blob store with a
+            # preview + reference, so generated code/blocks are not lost and
+            # the task JSON stays small. Cached calls carry no output.
             output = payload.get("output")
             if output:
-                tool_event.output = str(output)
+                tool_event.output = self._store_tool_output(str(output), tool_event)
 
         logger.info(
             "ChatEventBridge: tool '%s' %s in %.0f ms (chat='%s')",
@@ -384,6 +402,43 @@ class ChatEventBridge:
             self.chat.id,
         )
         self.publish()
+
+    def _store_tool_output(self, text: str, tool_event: ToolEvent) -> str:
+        """Return the inline preview, externalizing large output to a blob.
+
+        The task JSON stays small (and every save/redaction pass stays cheap)
+        while the full, redacted output remains available by reference. Any
+        failure keeps the old inline behaviour: losing a tool output is worse
+        than a large file.
+        """
+        limit = TOOL_OUTPUT_INLINE_BYTES
+        if not limit or len(text) <= limit:
+            return text
+        try:
+            from codx.junior.chat.blobs import BlobStore
+
+            tasks_path = getattr(self.chat_manager, "chat_path", None)
+            if not tasks_path:
+                return text
+            stored = BlobStore(tasks_path).put_text(text)
+            if not stored:
+                return text
+            preview_chars = max(200, min(limit, TOOL_OUTPUT_PREVIEW_CHARS))
+            preview = text[:preview_chars].rstrip()
+            tool_event.output_ref = str(stored["ref"])
+            tool_event.output_bytes = int(stored["bytes"])
+            tool_event.output_sha256 = str(stored["sha256"])
+            tool_event.output_truncated = True
+            return (
+                f"{preview}\n\n… [{stored['bytes']} bytes; "
+                f"full output: {stored['ref']}]"
+            )
+        except Exception as ex:  # pragma: no cover - best effort
+            logger.warning(
+                "ChatEventBridge: cannot externalize tool output (%s); keeping it inline",
+                ex,
+            )
+            return text
 
     # ── Phase events (what the turn is WAITING for) ────────────────────────────
 

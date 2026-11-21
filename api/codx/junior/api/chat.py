@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, Response, Depends, HTTPException
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Any, List, Optional
 
@@ -125,6 +126,58 @@ def _draft_response(chat_id: Optional[str], message) -> dict:
         "author": message.user,
         "updated_at": message.updated_at,
     }
+
+
+def _chat_summary_payload(chat) -> dict:
+    """Serialize a list/board chat with the index annotations.
+
+    ``Chat.model_dump()`` deliberately excludes the transient task fields; a
+    list response needs them (unread, message count, process state, preview),
+    so they are added here without persisting them in the task file.
+    """
+    payload = chat.model_dump() if hasattr(chat, "model_dump") else dict(chat)
+    payload.update(
+        {
+            "message_count": int(getattr(chat, "message_count", 0) or 0),
+            "pending_count": int(getattr(chat, "pending_count", 0) or 0),
+            "unread_count": int(getattr(chat, "task_unread_count", 0) or 0),
+            "last_message": getattr(chat, "task_latest_message", None),
+            "process_state": getattr(chat, "task_process_state", "") or "idle",
+            "process_error": getattr(chat, "task_process_error", None),
+            "last_activity_at": getattr(chat, "task_last_activity_at", None),
+            "cover_image": getattr(chat, "cover_image", None),
+        }
+    )
+    return payload
+
+
+def _summary_payload_from_dict(data: dict) -> dict:
+    """Normalize an index/search projection dict for the client."""
+    payload = dict(data or {})
+    # Strip index-internal columns: search results are built from the row
+    # projection, not from the Chat model.
+    for internal in (
+        "path", "file_mtime", "file_size", "sig", "content_hash",
+        "board_folder", "column_folder", "column_name", "parse_error",
+        "index_rev", "indexed_at",
+    ):
+        payload.pop(internal, None)
+    if "column" not in payload:
+        payload["column"] = payload.get("column_name") or ""
+    if "file_path" not in payload:
+        payload["file_path"] = payload.get("path") or ""
+    if "last_message" not in payload:
+        payload["last_message"] = payload.get("task_latest_message")
+    if "messages" not in payload and payload.get("last_message"):
+        # List/search consumers still read `messages` for the preview.
+        payload["messages"] = [payload["last_message"]]
+    payload.setdefault("unread_count", int(payload.get("task_unread_count") or 0))
+    payload.setdefault("message_count", int(payload.get("message_count") or 0))
+    payload.setdefault("pending_count", int(payload.get("pending_count") or 0))
+    payload.setdefault("process_state", payload.get("task_process_state") or "idle")
+    payload.setdefault("process_error", payload.get("task_process_error"))
+    payload.setdefault("last_activity_at", payload.get("task_last_activity_at"))
+    return payload
 
 
 def _seal_dead_responses(chat, chat_manager, settings) -> int:
@@ -625,7 +678,10 @@ def chat_turn_rerun(request: Request, data: Optional[dict] = None):
 
 
 @router.get("/chats/recent")
-def api_get_recent_chats(request: Request):
+def api_get_recent_chats(
+    request: Request,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
     """
     Get recent chats with optional filtering and pagination.
 
@@ -652,7 +708,9 @@ def api_get_recent_chats(request: Request):
         codx_junior_session = request.state.codx_junior_session
         chat_manager = codx_junior_session.get_chat_manager()
 
-        user_id = request.query_params.get("user_id")
+        user_id = (user.username if user else None) or request.query_params.get(
+            "user_id"
+        )
         board = request.query_params.get("board")
         column = request.query_params.get("column")
         chat_type = request.query_params.get("chat_type")
@@ -683,6 +741,11 @@ def api_get_recent_chats(request: Request):
             page=page,
             page_size=page_size,
         )
+        results["chats"] = [
+            _chat_summary_payload(chat) if hasattr(chat, "model_dump")
+            else _summary_payload_from_dict(chat)
+            for chat in results.get("chats") or []
+        ]
 
         logger.info(
             "api_get_recent_chats: user_id=%s board=%s column=%s chat_type=%s "
@@ -709,6 +772,49 @@ def api_get_recent_chats(request: Request):
             "has_next": False,
             "has_prev": False,
         }
+
+
+@router.get("/chats/index/health")
+def api_chat_index_health(
+    request: Request,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Report the derived chat index status (rebuildable cache)."""
+    try:
+        chat_manager = request.state.codx_junior_session.get_chat_manager()
+        store = chat_manager._chat_index_store()
+        if store is None:
+            return {"enabled": False, "reason": "index disabled"}
+        health = store.health()
+        health["mode"] = chat_manager._chat_index_mode()
+        return health
+    except Exception as ex:
+        logger.error("api_chat_index_health: %s", ex)
+        return {"error": str(ex)}
+
+
+@router.get("/chats/blob")
+def api_get_chat_blob(request: Request, ref: str = ""):
+    """Return the full text of an externalized tool output.
+
+    Large tool output is stored under ``tasks/.blobs`` and referenced from the
+    ``ToolEvent.output_ref`` field. The reference is validated against the
+    project's blob store, so it cannot be used to read another file.
+    """
+    try:
+        codx_junior_session = request.state.codx_junior_session
+        chat_manager = codx_junior_session.get_chat_manager()
+        from codx.junior.chat.blobs import BlobStore
+
+        text = BlobStore(chat_manager.chat_path).get_text(ref)
+        if text is None:
+            raise HTTPException(status_code=404, detail="blob not found")
+        return Response(content=text, media_type="text/plain; charset=utf-8")
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.error("api_get_chat_blob: %s", ex)
+        raise HTTPException(status_code=400, detail="invalid blob reference")
 
 
 @router.get("/chats/archived")
@@ -1127,7 +1233,10 @@ def api_get_chat_logs(request: Request):
 
 
 @router.get("/chats/draft")
-def api_get_chat_draft(request: Request):
+def api_get_chat_draft(
+    request: Request,
+    authenticated: Optional[CodxUser] = Depends(get_authenticated_user),
+):
     """
     Return the unsent draft of a chat (the text its composer is still typing).
 
@@ -1150,7 +1259,12 @@ def api_get_chat_draft(request: Request):
 
     try:
         chat_manager = request.state.codx_junior_session.get_chat_manager()
-        message = get_unsent_message(chat_id, chat_manager=chat_manager)
+        # Per-user drafts: the client sends its user id; without it the API
+        # keeps the legacy shared draft behaviour.
+        user = (authenticated.username if authenticated else None) or request.query_params.get(
+            "user"
+        )
+        message = get_unsent_message(chat_id, chat_manager=chat_manager, user=user)
         return _draft_response(chat_id, message)
     except Exception as ex:
         logger.error("api_get_chat_draft: unexpected error: %s", ex)
@@ -1158,7 +1272,10 @@ def api_get_chat_draft(request: Request):
 
 
 @router.put("/chats/draft")
-async def api_save_chat_draft(request: Request):
+async def api_save_chat_draft(
+    request: Request,
+    authenticated: Optional[CodxUser] = Depends(get_authenticated_user),
+):
     """
     Create or update the unsent draft of a chat (debounced while typing).
 
@@ -1191,15 +1308,15 @@ async def api_save_chat_draft(request: Request):
         logger.error("api_save_chat_draft: missing chat_id")
         raise HTTPException(status_code=422, detail="'chat_id' is required")
 
-    user = getattr(request.state, "user", None)
+    user = authenticated or getattr(request.state, "user", None)
     author = data.get("author") or getattr(user, "username", None)
 
     try:
         chat_manager = request.state.codx_junior_session.get_chat_manager()
-        # Saving the draft reloads and rewrites the whole chat file. In the
-        # event loop that blocked EVERY request while the user was typing
-        # (the header is called once per debounced keystroke), which is exactly
-        # what made clicking "send" feel unresponsive. Run it in the pool.
+        # The draft now lives in the per-user index table (no chat file
+        # rewrite). Keep the work in the thread pool: the fallback path (index
+        # disabled) still parses and writes the chat, and must never block the
+        # event loop while the user is typing.
         message = await run_in_threadpool(
             upsert_unsent_message,
             chat_id=chat_id,
@@ -1217,7 +1334,10 @@ async def api_save_chat_draft(request: Request):
 
 
 @router.delete("/chats/draft")
-def api_delete_chat_draft(request: Request):
+def api_delete_chat_draft(
+    request: Request,
+    authenticated: Optional[CodxUser] = Depends(get_authenticated_user),
+):
     """
     Discard the unsent draft of a chat.
 
@@ -1240,7 +1360,12 @@ def api_delete_chat_draft(request: Request):
 
     try:
         chat_manager = request.state.codx_junior_session.get_chat_manager()
-        deleted = delete_unsent_message(chat_id, chat_manager=chat_manager)
+        user = (authenticated.username if authenticated else None) or request.query_params.get(
+            "user"
+        )
+        deleted = delete_unsent_message(
+            chat_id, chat_manager=chat_manager, user=user
+        )
         logger.info(
             "api_delete_chat_draft: chat='%s' deleted=%s", chat_id, deleted
         )
@@ -1317,7 +1442,10 @@ async def api_add_message(request: Request):
                 from codx.junior.db import delete_unsent_message
 
                 await run_in_threadpool(
-                    delete_unsent_message, chat_id, chat_manager=chat_manager
+                    delete_unsent_message,
+                    chat_id,
+                    chat_manager=chat_manager,
+                    user=getattr(message, "user", None),
                 )
             except Exception as draft_ex:  # pragma: no cover - best effort
                 logger.warning(
@@ -1597,7 +1725,10 @@ async def api_schedule_chat(request: Request):
 
 
 @router.get("/chats")
-def api_list_chats(request: Request):
+def api_list_chats(
+    request: Request,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
     """
     List chats with optional filtering and export.
 
@@ -1689,7 +1820,17 @@ def api_list_chats(request: Request):
             return chat
 
         if file_path:
-            chat = chat_manager.load_chat_from_path(chat_file=file_path)
+            # The file must live inside this project's tasks tree: the old
+            # endpoint accepted any path (path traversal / arbitrary read).
+            tasks_root = os.path.realpath(chat_manager.chat_path)
+            candidate = os.path.realpath(file_path)
+            if not (candidate == tasks_root or candidate.startswith(tasks_root + os.sep)):
+                logger.warning(
+                    "api_list_chats: rejected file_path outside tasks tree: %s",
+                    file_path,
+                )
+                return {"error": "file_path is outside the project tasks tree"}
+            chat = chat_manager.load_chat_from_path(chat_file=candidate)
             if not chat:
                 logger.error('Chat not found. file_path: %s, project: %s', file_path, codx_junior_session.settings.project_name)
             if chat is not None:
@@ -1715,11 +1856,20 @@ def api_list_chats(request: Request):
             date_from or "all",
             date_to or "open",
         )
-        return chat_manager.list_chats(
+        unread_for = (user.username if user else None) or request.query_params.get(
+            "unread_for"
+        )
+        chats = chat_manager.list_chats(
             from_date=date_from,
             to_date=date_to,
             include_archived=include_archived,
+            unread_for=unread_for,
         )
+        return [
+            _chat_summary_payload(chat) if hasattr(chat, "model_dump")
+            else _summary_payload_from_dict(chat)
+            for chat in chats
+        ]
     except ValueError as ex:
         logger.error("api_list_chats: invalid date format: %s", ex)
         return {"error": "Invalid date format (use ISO format: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)"}
@@ -1729,7 +1879,10 @@ def api_list_chats(request: Request):
 
 
 @router.post("/chats/search")
-async def api_search_chats(request: Request):
+async def api_search_chats(
+    request: Request,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
     """
     Search chats with full-text search, field-level filtering, user filtering,
     project filtering, and pagination.
@@ -1783,8 +1936,9 @@ async def api_search_chats(request: Request):
                 "has_prev": False,
             }
 
-        # Get user from session for permission-based project loading
-        user = getattr(request.state, 'user', None)
+        # Get user for permission-based project loading. The dependency also
+        # works when authentication is disabled (returns None).
+        user = user or getattr(request.state, "user", None)
 
         # Delegate search to chat_manager with project_ids and user context
         results = chat_manager.search_chats(
@@ -1796,7 +1950,16 @@ async def api_search_chats(request: Request):
             page=page,
             page_size=page_size,
             user=user,
+            filters=filters_data,
         )
+        for item in results.get("results") or []:
+            if not isinstance(item, dict):
+                continue
+            chat = item.get("chat")
+            if hasattr(chat, "model_dump"):
+                item["chat"] = _chat_summary_payload(chat)
+            elif isinstance(chat, dict):
+                item["chat"] = _summary_payload_from_dict(chat)
 
         logger.info(
             "api_search_chats: query='%s' user_id=%s project_ids=%s returned %d results, page %d of %d",
@@ -2119,64 +2282,6 @@ def api_delete_kanban(request: Request):
     except Exception as ex:
         logger.error("api_delete_kanban: unexpected error: %s", ex)
         return {"error": f"Failed to delete kanban: {str(ex)}"}
-
-@router.put("/chats/mark-seen/{chat_id}/{message_id}")
-def api_mark_message_as_seen(
-    request: Request, 
-    chat_id: str, 
-    message_id: str,
-    user: CodxUser = Depends(get_authenticated_user)):
-    """
-    Mark a message as seen by the current user.
-    
-    Called when a message receives focus and the user is not already in read_by list.
-    
-    Path parameters:
-        - chat_id: UUID of the chat
-        - message_id: UUID of the message
-    
-    Returns:
-        { "success": true, "read_by": [...usernames] }
-        { "error": "...", "success": false }
-    """
-    try:
-        codx_junior_session = request.state.codx_junior_session
-        chat_manager = codx_junior_session.get_chat_manager()
-        
-        if not user or not user.username:
-            logger.error("api_mark_message_as_seen: no user in request")
-            return {"error": "user not found", "success": False}
-        
-        username = user.username
-        
-        chat = chat_manager.find_by_id(chat_id=chat_id)
-        if not chat:
-            logger.error("api_mark_message_as_seen: chat not found: %s", chat_id)
-            return {"error": f"chat '{chat_id}' not found", "success": False}
-        
-        message = next((m for m in chat.messages if m.doc_id == message_id), None)
-        if not message:
-            logger.error("api_mark_message_as_seen: message not found: %s in chat %s", message_id, chat_id)
-            return {"error": f"message '{message_id}' not found", "success": False}
-        
-        read_by = chat_manager.mark_message_as_seen(
-            chat=chat,
-            message=message,
-            username=username
-        )
-        
-        logger.info(
-            "api_mark_message_as_seen: chat='%s' message='%s' user='%s' read_by=%s",
-            chat_id,
-            message_id,
-            username,
-            read_by,
-        )
-        return {"success": True, "read_by": read_by}
-    
-    except Exception as ex:
-        logger.error("api_mark_message_as_seen: unexpected error: %s", ex)
-        return {"error": f"Failed to mark message as seen: {str(ex)}", "success": False}
 
 @router.put("/chats/mark-seen/{chat_id}/{message_id}")
 def api_mark_message_as_seen(

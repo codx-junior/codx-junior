@@ -745,7 +745,11 @@ export const actions = actionTree(
       const activeProject = $storex.projects.activeProject
       if (!activeProject?.$api) return
 
-      const chats = await activeProject.$api.chats.list()
+      const account = $storex.users?.user
+      const user = account?.username || account?.id
+      const chats = await activeProject.$api.chats.list(
+        user ? { unread_for: user } : undefined
+      )
       chats.forEach(chat => registerChatSummary(state, chat))
     },
     async loadRecentChats({ state }, { userId, page, pageSize, append = false } = {}) {
@@ -1613,7 +1617,9 @@ export const actions = actionTree(
       const project = getChatProject(state.chats[chatId] || { id: chatId })
       if (!project?.$api) return null
       try {
-        return await project.$api.chats.getChatDraft(chatId)
+        const account = $storex.users?.user
+        const user = account?.username || account?.id
+        return await project.$api.chats.getChatDraft(chatId, user)
       } catch (error) {
         console.error('[chats store] Failed to load chat draft:', error)
         return null
@@ -1624,7 +1630,9 @@ export const actions = actionTree(
       const project = getChatProject(state.chats[chatId] || { id: chatId })
       if (!project?.$api) return null
       try {
-        return await project.$api.chats.saveChatDraft(chatId, content)
+        const account = $storex.users?.user
+        const user = account?.username || account?.id
+        return await project.$api.chats.saveChatDraft(chatId, content, user)
       } catch (error) {
         console.error('[chats store] Failed to save chat draft:', error)
         return null
@@ -1635,7 +1643,9 @@ export const actions = actionTree(
       const project = getChatProject(state.chats[chatId] || { id: chatId })
       if (!project?.$api) return null
       try {
-        return await project.$api.chats.deleteChatDraft(chatId)
+        const account = $storex.users?.user
+        const user = account?.username || account?.id
+        return await project.$api.chats.deleteChatDraft(chatId, user)
       } catch (error) {
         console.error('[chats store] Failed to delete chat draft:', error)
         return null

@@ -124,8 +124,28 @@ class ToolEvent(BaseModel):
         description=(
             "User-facing output produced by the tool (ToolResponse.user_response). "
             "Kept OUT of Message.content so clients can render tool output collapsed "
-            "or hidden. Only dual-response tools populate this field."
+            "or hidden. Only dual-response tools populate this field. When the "
+            "output is large this holds a preview plus the full-output reference."
         )
+    )
+    output_ref: Optional[str] = Field(
+        default=None,
+        description=(
+            "Relative reference to the full output in the project blob store "
+            "('.blobs/<sha[:2]>/<sha>.txt'); read it with GET /api/chats/blob."
+        )
+    )
+    output_bytes: Optional[int] = Field(
+        default=None,
+        description="Size of the full output in bytes when output_ref is set."
+    )
+    output_sha256: Optional[str] = Field(
+        default=None,
+        description="SHA-256 of the full stored output (content-addressed blob)."
+    )
+    output_truncated: Optional[bool] = Field(
+        default=None,
+        description="True when output is a preview and output_ref holds the rest."
     )
     duration_ms: Optional[float] = Field(default=None, description="Execution time in milliseconds")
     error: Optional[str] = Field(default=None, description="Error details when status is 'error'")
@@ -504,6 +524,24 @@ class Chat(BaseModel):
         default=None,
         exclude=True,
         description="Creation time of the newest message (falls back to updated_at).",
+    )
+    # ── Transient list projections (index-backed) ─────────────────────────
+    # Populated from the chat index for list/board responses; never persisted
+    # (they are derived and would be stale in the shared file).
+    message_count: int = Field(
+        default=0,
+        exclude=True,
+        description="Total messages in the chat (list projection only).",
+    )
+    pending_count: int = Field(
+        default=0,
+        exclude=True,
+        description="Messages still running (done=false), list projection only.",
+    )
+    cover_image: Optional[str] = Field(
+        default=None,
+        exclude=True,
+        description="First conversation image, precomputed for task cards.",
     )
     created_at: str = Field(default_factory=lambda: str(datetime.now()))
     updated_at: str = Field(default_factory=lambda: str(datetime.now()))
@@ -923,7 +961,11 @@ def _resolve_chat_manager(chat_id: str, chat_manager: Any = None) -> Any:
     return None
 
 
-def get_unsent_message(chat_id: str, chat_manager: Any = None) -> Optional[Message]:
+def get_unsent_message(
+    chat_id: str,
+    chat_manager: Any = None,
+    user: Optional[str] = None,
+) -> Optional[Message]:
     """
     Return the unsent draft of *chat_id*.
 
@@ -932,11 +974,33 @@ def get_unsent_message(chat_id: str, chat_manager: Any = None) -> Optional[Messa
 
     :param chat_id: Chat whose draft is requested.
     :param chat_manager: Optional already-resolved ``ChatManager``.
+    :param user: User that owns the draft. When provided and the chat index is
+        enabled, the draft is read from the per-user index table instead of
+        parsing the whole chat file.
     :return: The draft message, or ``None`` when the chat has no draft.
     """
     if not chat_id:
         return None
     manager = _resolve_chat_manager(chat_id, chat_manager)
+    if manager is not None and user:
+        try:
+            store = manager._chat_index_store()
+        except Exception:  # pragma: no cover - defensive
+            store = None
+        if store is not None and store.is_ready():
+            draft = manager.get_chat_draft(chat_id, user)
+            if draft:
+                return Message(
+                    doc_id=draft.get("doc_id"),
+                    role=ROLE_USER,
+                    content=draft.get("content") or "",
+                    user=user,
+                    unsent=True,
+                    updated_at=draft.get("updated_at"),
+                )
+            # The index is authoritative for drafts: never fall back to a
+            # whole-file parse just because this user has no draft.
+            return None
     chat = manager.find_by_id(chat_id) if manager else None
     if chat is None:
         return None
@@ -966,6 +1030,36 @@ def upsert_unsent_message(
         raise ValueError("upsert_unsent_message requires a chat_id")
 
     manager = _resolve_chat_manager(chat_id, chat_manager)
+    if manager is not None and author:
+        try:
+            store = manager._chat_index_store()
+        except Exception:  # pragma: no cover - defensive
+            store = None
+        if store is not None and store.is_ready():
+            # The path lookup is O(1); no need to parse the chat to validate it.
+            if not manager.find_chat_path(chat_id):
+                raise ValueError(
+                    f"upsert_unsent_message: chat '{chat_id}' not found"
+                )
+            draft = manager.save_chat_draft(chat_id, author, content or "")
+            if draft:
+                return Message(
+                    doc_id=draft.get("doc_id"),
+                    role=ROLE_USER,
+                    content=draft.get("content") or "",
+                    user=author,
+                    unsent=True,
+                    updated_at=draft.get("updated_at"),
+                )
+            # Empty content removes the draft; return a transient message so
+            # the API keeps its response shape.
+            return Message(
+                doc_id=str(uuid.uuid4()),
+                role=ROLE_USER,
+                content="",
+                user=author,
+                unsent=True,
+            )
     chat = manager.find_by_id(chat_id) if manager else None
     if chat is None:
         raise ValueError(f"upsert_unsent_message: chat '{chat_id}' not found")
@@ -991,7 +1085,11 @@ def upsert_unsent_message(
     return message
 
 
-def delete_unsent_message(chat_id: str, chat_manager: Any = None) -> bool:
+def delete_unsent_message(
+    chat_id: str,
+    chat_manager: Any = None,
+    user: Optional[str] = None,
+) -> bool:
     """
     Remove the unsent draft of *chat_id*.
 
@@ -1002,6 +1100,15 @@ def delete_unsent_message(chat_id: str, chat_manager: Any = None) -> bool:
     if not chat_id:
         return False
     manager = _resolve_chat_manager(chat_id, chat_manager)
+    if manager is not None and user:
+        try:
+            store = manager._chat_index_store()
+        except Exception:  # pragma: no cover - defensive
+            store = None
+        if store is not None and store.is_ready():
+            deleted = manager.delete_chat_draft(chat_id, user)
+            if deleted is not None:
+                return bool(deleted)
     chat = manager.find_by_id(chat_id) if manager else None
     if chat is None:
         return False

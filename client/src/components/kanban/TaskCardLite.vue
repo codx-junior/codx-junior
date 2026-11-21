@@ -60,6 +60,14 @@ export default {
       return this.$storex.api.userNetwork.filter(({ username }) => this.task.users?.includes(username))
     },
     image() {
+      const cover = this.task.cover_image
+      if (cover) {
+        try {
+          return typeof cover === 'string' ? JSON.parse(cover) : cover
+        } catch (ex) {
+          return { src: cover }
+        }
+      }
       let image = this.task.messages?.find(m => m.images?.length)?.images[0]
       return image ? JSON.parse(image) : null
     },

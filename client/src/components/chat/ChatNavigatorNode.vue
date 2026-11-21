@@ -21,7 +21,7 @@ import ChatIcon from '@/components/chat/ChatIcon.vue'
             {{ chat.description }}
           </div>
         </div>
-        <span class="text-xs text-base-content/40 shrink-0">{{ chat.messages?.length || 0 }}</span>
+        <span class="text-xs text-base-content/40 shrink-0">{{ chat.message_count ?? (chat.messages?.length || 0) }}</span>
       </div>
 
       <!-- Right Actions (visible on hover) -->

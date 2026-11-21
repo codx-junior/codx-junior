@@ -293,10 +293,14 @@ export default {
     // NOTE: chats coming from `chats.list()` carry only the last message until
     // fully loaded, so this count can be optimistic (1) on first paint.
     messageCount() {
+      const stored = Number(this.task?.message_count)
+      if (Number.isFinite(stored)) return Math.max(0, stored)
       return (this.task.messages || []).length
     },
     // Messages awaiting an answer: not-done messages, or the chat is streaming
     pendingCount() {
+      const stored = Number(this.task?.pending_count)
+      if (Number.isFinite(stored)) return Math.max(0, stored)
       const notDone = (this.task.messages || []).filter(m => m.done === false).length
       if (notDone > 0) return notDone
       return this.isProcessing ? 1 : 0
@@ -306,6 +310,12 @@ export default {
     // authored by me, not flagged as read by me, finished (done !== false) and
     // not hidden. Still-streaming replies never count.
     unreadCount() {
+      // Index-backed summaries carry `unread_count` and only a last-message
+      // preview; fall back to the message list for full chats.
+      if (this.task && Object.prototype.hasOwnProperty.call(this.task, 'unread_count')) {
+        const stored = Number(this.task.unread_count)
+        if (Number.isFinite(stored)) return Math.max(0, stored)
+      }
       return countUnreadMessages(this.task.messages, this.$user?.username)
     },
     hasUnread() {

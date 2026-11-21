@@ -96,16 +96,18 @@ export const chatsModule = (API) => ({
   // The draft is an "unsent" message the API keeps out of the conversation:
   // it never reaches the message list, the LLM prompt or the socket events.
   // Only the composer that owns it reads/updates it through these three calls.
-  async getChatDraft(chatId) {
-    return API.get(`/api/chats/draft?chat_id=${chatId}`)
+  async getChatDraft(chatId, user = '') {
+    const owner = user ? `&user=${encodeURIComponent(user)}` : ''
+    return API.get(`/api/chats/draft?chat_id=${chatId}${owner}`)
   },
 
-  async saveChatDraft(chatId, content) {
-    return API.put('/api/chats/draft', { chat_id: chatId, content })
+  async saveChatDraft(chatId, content, user = '') {
+    return API.put('/api/chats/draft', { chat_id: chatId, content, author: user || undefined })
   },
 
-  async deleteChatDraft(chatId) {
-    return API.delete(`/api/chats/draft?chat_id=${chatId}`)
+  async deleteChatDraft(chatId, user = '') {
+    const owner = user ? `?user=${encodeURIComponent(user)}` : ''
+    return API.delete(`/api/chats/draft?chat_id=${chatId}${owner}`)
   },
 
   async markMessageAsSeen({ chat_id, message_id, username }) {

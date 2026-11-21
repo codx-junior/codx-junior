@@ -118,6 +118,7 @@ DATA_PLANE_ENTRIES = (
     "autonomy",
     "atlas",
     "ciso",
+    "index",
     "task_workspaces",
     "db",
     "logs",

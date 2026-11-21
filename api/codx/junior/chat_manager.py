@@ -120,6 +120,7 @@ import json
 import uuid
 import shutil
 import threading
+import time
 
 from slugify import slugify
 
@@ -139,6 +140,7 @@ from codx.junior.kanban.store import KanbanStore
 from codx.junior.profiling.profiler import profile_function
 
 from codx.junior.chat.chat_export import ChatExport, ExportedDocument
+from codx.junior.chat.chat_index import ChatIndexStore
 
 from codx.junior.events.collection_events import (
     ACTION_CHANGED,
@@ -169,6 +171,15 @@ logger = logging.getLogger(__name__)
 _CHAT_INFO_CACHE: Dict[str, Any] = {}
 _CHAT_INFO_CACHE_MAX = 5000
 _CHAT_INFO_CACHE_LOCK = threading.Lock()
+
+# Process-wide guards for index maintenance. A ChatManager is created per
+# session/request in several code paths; without these, every request would
+# start its own rebuild/reconcile for the same project.
+_CHAT_INDEX_MAINTENANCE_LOCK = threading.Lock()
+_CHAT_INDEX_BUILDING: set = set()
+_CHAT_INDEX_RECONCILING: set = set()
+_CHAT_INDEX_DIRTY: set = set()
+_CHAT_INDEX_LAST_RECONCILE: Dict[str, float] = {}
 
 
 def _chat_file_signature(file_path: str):
@@ -357,6 +368,18 @@ def _annotate_task_activity(chat: Chat, unread_for: Optional[str] = None) -> Cha
     """Fill the transient Follow-up fields of *chat* before messages are cut."""
     messages = list(getattr(chat, "messages", None) or [])
     latest = _task_latest_message(messages)
+    chat.message_count = len(messages)
+    chat.pending_count = sum(1 for message in messages if getattr(message, "done", True) is False)
+    for message in messages:
+        images = getattr(message, "images", None) or []
+        if images:
+            first = images[0]
+            if isinstance(first, str):
+                chat.cover_image = first
+            elif isinstance(first, dict):
+                chat.cover_image = first.get("url") or first.get("path")
+            if chat.cover_image:
+                break
     chat.task_latest_message = latest
     chat.task_unread_count = _task_unread_count(messages, unread_for)
     chat.task_process_state, chat.task_process_error = _task_process_state(chat, messages)
@@ -462,6 +485,425 @@ class ChatManager:
         self.task_archive = TaskArchive(tasks_path=self.chat_path)
         os.makedirs(self.chat_path, exist_ok=True)
         os.makedirs(f"{self.chat_path}/{DEFAULT_BOARD}/{DEFAULT_COLUMN}", exist_ok=True)
+        # Derived read model (SQLite). Created lazily so a ChatManager that is
+        # only used for a single write does not pay for a schema creation.
+        self._chat_index: Optional[ChatIndexStore] = None
+        self._chat_index_lock = threading.Lock()
+        self._chat_index_build_started = False
+        self._chat_index_build_error = 0.0
+        self._chat_index_reconcile_started = False
+        self._chat_index_last_reconcile = 0.0
+
+    # -------------------------------------------------------------------------
+    # Derived chat index
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _chat_index_mode() -> str:
+        """Return the configured index mode: ``off``, ``shadow`` or ``on``.
+
+        ``CODX_JUNIOR_CHAT_INDEX`` accepts ``off/false/0``, ``shadow`` (build
+        and compare, read files) and any other value (``on``/``auto``). The
+        default is ``on``: reads use the index when it is ready and fall back to
+        the files otherwise.
+        """
+        value = str(os.environ.get("CODX_JUNIOR_CHAT_INDEX", "on")).strip().lower()
+        if value in ("0", "false", "no", "off", "disabled"):
+            return "off"
+        if value == "shadow":
+            return "shadow"
+        return "on"
+
+    def _chat_index_db_path(self) -> str:
+        """Absolute path of the project index database."""
+        return os.path.join(
+            str(self.settings.codx_path or self.chat_path), "index", "chats.db"
+        )
+
+    def _chat_index_store(self) -> Optional[ChatIndexStore]:
+        """Return the lazily created index store (None when disabled)."""
+        if self._chat_index_mode() == "off":
+            return None
+        with self._chat_index_lock:
+            if self._chat_index is None:
+                mode = str(
+                    os.environ.get("CODX_JUNIOR_CHAT_INDEX_SEARCH", "contentless")
+                ).strip().lower()
+                db_path = self._chat_index_db_path()
+                try:
+                    self._chat_index = ChatIndexStore(
+                        tasks_path=self.chat_path,
+                        db_path=db_path,
+                        search_mode=mode,
+                    )
+                except Exception as ex:  # pragma: no cover - defensive
+                    logger.warning(
+                        "Chat index unavailable for '%s': %s", self.chat_path, ex
+                    )
+                    self._chat_index = None
+            return self._chat_index
+
+    def _chat_index_ready(self) -> bool:
+        """True when the index is built and can serve reads."""
+        if self._chat_index_mode() not in ("on", "shadow"):
+            return False
+        store = self._chat_index_store()
+        try:
+            return bool(store and store.is_ready())
+        except Exception:  # pragma: no cover - defensive
+            return False
+
+    def _start_chat_index_build(self) -> None:
+        """Build the index once, in a daemon thread (never blocks a request)."""
+        if self._chat_index_mode() not in ("on", "shadow"):
+            return
+        store = self._chat_index_store()
+        if store is None or store.is_ready() or store.is_building():
+            return
+        key = os.path.abspath(self.chat_path)
+        with _CHAT_INDEX_MAINTENANCE_LOCK:
+            if key in _CHAT_INDEX_BUILDING:
+                return
+            # Do not hammer a broken build on every request.
+            if self._chat_index_build_error and (
+                time.time() - self._chat_index_build_error < 60
+            ):
+                return
+            _CHAT_INDEX_BUILDING.add(key)
+        thread = threading.Thread(
+            target=self._build_chat_index,
+            name=f"chat-index-{getattr(self.settings, 'project_id', 'project')}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception as ex:  # pragma: no cover - extremely unlikely
+            with _CHAT_INDEX_MAINTENANCE_LOCK:
+                _CHAT_INDEX_BUILDING.discard(key)
+            logger.warning("Cannot start chat index build for '%s': %s", self.chat_path, ex)
+
+    def _build_chat_index(self) -> None:
+        """Parse every chat file and replace the index (background)."""
+        try:
+            store = self._chat_index_store()
+            if store is None:
+                return
+            count = store.rebuild(self._iter_chat_documents())
+            logger.info(
+                "Chat index ready for '%s': %d chats", self.chat_path, count
+            )
+        except Exception as ex:  # pragma: no cover - defensive
+            self._chat_index_build_error = time.time()
+            logger.exception("Chat index build failed for '%s': %s", self.chat_path, ex)
+        finally:
+            self._chat_index_build_started = False
+            key = os.path.abspath(self.chat_path)
+            dirty = False
+            with _CHAT_INDEX_MAINTENANCE_LOCK:
+                _CHAT_INDEX_BUILDING.discard(key)
+                dirty = key in _CHAT_INDEX_DIRTY
+                _CHAT_INDEX_DIRTY.discard(key)
+                if dirty:
+                    _CHAT_INDEX_LAST_RECONCILE[key] = 0.0
+            if dirty:
+                self._maybe_start_reconcile()
+
+    def _iter_chat_documents(self):
+        """Yield ``(path, document)`` for every parseable chat file.
+
+        Corrupt files are recovered from their valid JSON prefix when possible
+        (the store contains two such files) and annotated with
+        ``__parse_error__``; they are never silently dropped.
+        """
+        for file_path in self.chat_paths():
+            try:
+                with open(file_path, "r", encoding="utf-8") as handle:
+                    document = json.load(handle)
+            except json.JSONDecodeError as ex:
+                try:
+                    with open(file_path, "r", encoding="utf-8") as handle:
+                        document, _ = json.JSONDecoder().raw_decode(handle.read())
+                    document["__parse_error__"] = str(ex)
+                except Exception:
+                    logger.warning("Chat index: cannot parse %s: %s", file_path, ex)
+                    continue
+            except OSError as ex:
+                logger.warning("Chat index: cannot read %s: %s", file_path, ex)
+                continue
+            if isinstance(document, dict) and document.get("id"):
+                yield file_path, document
+
+    def _index_upsert_payload(self, payload: Dict[str, Any], file_path: str) -> None:
+        """Write one chat to the index; never fail the canonical write."""
+        if self._chat_index_mode() == "off" or not payload:
+            return
+        key = os.path.abspath(self.chat_path)
+        with _CHAT_INDEX_MAINTENANCE_LOCK:
+            # A full rebuild owns the database for several seconds. Do not
+            # block a user write behind it: remember that the file changed and
+            # reconcile once the rebuild finishes (the file is the truth).
+            if key in _CHAT_INDEX_BUILDING:
+                _CHAT_INDEX_DIRTY.add(key)
+                return
+        try:
+            store = self._chat_index_store()
+            if store is None:
+                return
+            if store.is_building():
+                _CHAT_INDEX_DIRTY.add(key)
+                _CHAT_INDEX_LAST_RECONCILE[key] = 0.0
+                return
+            store.upsert_chat(payload, file_path)
+            # First write of a project: build the rest of the index in the
+            # background so the next read is already fast.
+            if not store.is_ready():
+                self._start_chat_index_build()
+        except Exception as ex:  # pragma: no cover - defensive
+            _CHAT_INDEX_DIRTY.add(key)
+            logger.warning("Chat index upsert failed for %s: %s", file_path, ex)
+
+    def _mark_index_dirty_if_building(self) -> None:
+        """Remember a change that a full rebuild may have missed."""
+        key = os.path.abspath(self.chat_path)
+        with _CHAT_INDEX_MAINTENANCE_LOCK:
+            if key in _CHAT_INDEX_BUILDING:
+                _CHAT_INDEX_DIRTY.add(key)
+
+    def _wait_for_index_idle(self, timeout: float = 60.0) -> None:
+        """Wait (bounded) for a rebuild to finish before a rare mutation.
+
+        Archive/restore are not hot paths, but they change which file exists.
+        Waiting avoids a rebuild that is already reading the tree re-adding the
+        row we are about to delete (or missing the file we just restored).
+        """
+        deadline = time.time() + max(0.0, timeout)
+        key = os.path.abspath(self.chat_path)
+        while time.time() < deadline:
+            with _CHAT_INDEX_MAINTENANCE_LOCK:
+                building = key in _CHAT_INDEX_BUILDING
+            store = self._chat_index
+            if not building and not (store is not None and store.is_building()):
+                return
+            time.sleep(0.05)
+
+    def _index_delete(self, chat_id: Optional[str]) -> None:
+        """Remove a chat from the index (best effort)."""
+        if not chat_id or self._chat_index_mode() == "off":
+            return
+        key = os.path.abspath(self.chat_path)
+        with _CHAT_INDEX_MAINTENANCE_LOCK:
+            if key in _CHAT_INDEX_BUILDING:
+                _CHAT_INDEX_DIRTY.add(key)
+                return
+        try:
+            store = self._chat_index_store()
+            if store is not None:
+                if store.is_building():
+                    _CHAT_INDEX_DIRTY.add(key)
+                    _CHAT_INDEX_LAST_RECONCILE[key] = 0.0
+                    return
+                store.delete_chat(str(chat_id))
+        except Exception as ex:  # pragma: no cover - defensive
+            _CHAT_INDEX_DIRTY.add(key)
+            logger.warning("Chat index delete failed for %s: %s", chat_id, ex)
+
+    def _chat_from_index(self, row: Dict[str, Any]) -> Chat:
+        """Build a slim ``Chat`` from an index projection row.
+
+        Only the last message is attached (as a 280-char preview); the full
+        conversation is still loaded from the file by
+        :meth:`load_chat_from_path` when a client opens the chat.
+        """
+        data: Dict[str, Any] = {}
+        for name in Chat.model_fields:
+            # Drop NULLs: a missing file field must fall back to the model
+            # default instead of failing pydantic validation.
+            if row.get(name) is not None:
+                data[name] = row[name]
+        # The index stores the board column as ``column_name`` (SQL keyword
+        # safety); the model field is ``column``.
+        data["column"] = row.get("column_name") or row.get("column") or ""
+        last = row.get("last_message") or row.get("task_latest_message")
+        if last:
+            try:
+                data["messages"] = [Message.model_validate(last)]
+            except Exception:
+                data["messages"] = []
+        else:
+            data["messages"] = []
+        chat = Chat.model_validate(data)
+        chat.file_path = row.get("path") or chat.file_path
+        if not chat.owner_project_id:
+            chat.owner_project_id = self.settings.project_id
+        chat.message_count = int(row.get("message_count") or 0)
+        chat.pending_count = int(row.get("pending_count") or 0)
+        chat.cover_image = row.get("cover_image")
+        chat.task_latest_message = last
+        chat.task_unread_count = int(row.get("unread_count") or 0)
+        chat.task_process_state = row.get("process_state") or "idle"
+        chat.task_process_error = row.get("process_error")
+        chat.task_last_activity_at = row.get("last_activity_at")
+        return chat
+
+    def _chat_index_search(
+        self,
+        query: str,
+        user_id: Optional[str] = None,
+        from_date: Optional[str] = None,
+        to_date: Optional[str] = None,
+        filters: Optional[Dict[str, Any]] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Optional[Dict[str, Any]]:
+        """Search this project's index, or None when it is not ready."""
+        if self._chat_index_mode() != "on":
+            return None
+        if not self._chat_index_ready():
+            self._start_chat_index_build()
+            return None
+        store = self._chat_index_store()
+        if store is None:
+            return None
+        try:
+            return store.search(
+                query=query,
+                user_id=user_id,
+                from_date=from_date,
+                to_date=to_date,
+                filters=filters,
+                page=page,
+                page_size=page_size,
+            )
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Chat index search failed for '%s': %s", self.chat_path, ex)
+            return None
+
+    def _maybe_start_reconcile(self) -> None:
+        """Reconcile the index with external file changes at most every 60 s.
+
+        Local writes are write-through; this catches ``git checkout``, editor
+        changes and deletions made outside the API. It runs in a daemon thread
+        and never blocks a request.
+        """
+        if self._chat_index_mode() not in ("on", "shadow") or not self._chat_index_ready():
+            return
+        store = self._chat_index_store()
+        if store is not None and store.is_building():
+            return
+        now = time.time()
+        key = os.path.abspath(self.chat_path)
+        with _CHAT_INDEX_MAINTENANCE_LOCK:
+            if key in _CHAT_INDEX_RECONCILING:
+                return
+            if now - _CHAT_INDEX_LAST_RECONCILE.get(key, 0.0) < 60:
+                return
+            _CHAT_INDEX_RECONCILING.add(key)
+        thread = threading.Thread(
+            target=self._reconcile_chat_index,
+            name=f"chat-index-reconcile-{getattr(self.settings, 'project_id', 'project')}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception as ex:  # pragma: no cover - extremely unlikely
+            with _CHAT_INDEX_MAINTENANCE_LOCK:
+                _CHAT_INDEX_RECONCILING.discard(key)
+            logger.warning("Cannot start chat index reconcile for '%s': %s", self.chat_path, ex)
+
+    def _reconcile_chat_index(self) -> None:
+        """Stat the task tree, reindex changed/new files, drop missing ones."""
+        try:
+            store = self._chat_index_store()
+            if store is None:
+                return
+            current: Dict[str, str] = {}
+            for path in self.chat_paths():
+                try:
+                    stat = os.stat(path)
+                    current[path] = f"{stat.st_mtime_ns}:{stat.st_size}"
+                except OSError:
+                    continue
+            indexed = store.signatures()
+            changed = [
+                path for path, sig in current.items()
+                if indexed.get(path) != sig
+            ]
+            for path in changed:
+                try:
+                    with open(path, "r", encoding="utf-8") as handle:
+                        document = json.load(handle)
+                except json.JSONDecodeError as ex:
+                    try:
+                        with open(path, "r", encoding="utf-8") as handle:
+                            document, _ = json.JSONDecoder().raw_decode(handle.read())
+                        document["__parse_error__"] = str(ex)
+                    except Exception:
+                        logger.warning("Chat reconcile: cannot parse %s", path)
+                        continue
+                except OSError:
+                    continue
+                if isinstance(document, dict) and document.get("id"):
+                    store.upsert_chat(document, path)
+            known = {path: chat_id for chat_id, path in store.paths().items()}
+            for path in set(known) - set(current):
+                store.delete_chat(known[path])
+            store.set_meta("last_reconcile_at", datetime.now().isoformat())
+            if changed or set(known) - set(current):
+                logger.info(
+                    "Chat index reconciled for '%s': %d changed/new, %d removed",
+                    self.chat_path,
+                    len(changed),
+                    len(set(known) - set(current)),
+                )
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Chat index reconcile failed for '%s': %s", self.chat_path, ex)
+        finally:
+            self._chat_index_last_reconcile = time.time()
+            self._chat_index_reconcile_started = False
+            with _CHAT_INDEX_MAINTENANCE_LOCK:
+                _CHAT_INDEX_LAST_RECONCILE[os.path.abspath(self.chat_path)] = time.time()
+                _CHAT_INDEX_RECONCILING.discard(os.path.abspath(self.chat_path))
+
+    # -------------------------------------------------------------------------
+    # Per-user drafts (index-backed; no chat file rewrite)
+    # -------------------------------------------------------------------------
+    def get_chat_draft(self, chat_id: str, user: str) -> Optional[Dict[str, Any]]:
+        """Return a user's composer draft (None when the index is disabled)."""
+        store = self._chat_index_store()
+        if store is None or self._chat_index_mode() == "off":
+            return None
+        try:
+            return store.get_draft(chat_id, user)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Chat index draft read failed for %s: %s", chat_id, ex)
+            return None
+
+    def save_chat_draft(
+        self,
+        chat_id: str,
+        user: str,
+        content: str,
+        doc_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a user's composer draft without touching the chat file."""
+        store = self._chat_index_store()
+        if store is None or self._chat_index_mode() == "off":
+            return None
+        try:
+            return store.save_draft(chat_id, user, content, doc_id=doc_id)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Chat index draft write failed for %s: %s", chat_id, ex)
+            return None
+
+    def delete_chat_draft(self, chat_id: str, user: str) -> Optional[bool]:
+        """Delete a user's composer draft (None when the index is disabled)."""
+        store = self._chat_index_store()
+        if store is None or self._chat_index_mode() == "off":
+            return None
+        try:
+            return store.delete_draft(chat_id, user)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Chat index draft delete failed for %s: %s", chat_id, ex)
+            return None
 
     # -------------------------------------------------------------------------
     # Path helpers
@@ -603,7 +1045,56 @@ class ChatManager:
         :param page_size: Number of results per page.
         :return: Dict with paginated results and metadata.
         """
-        all_chats = self.list_chats(include_archived=include_archived)
+        # Fast path: the index applies user/board/column/type filters in SQL
+        # and returns the page projection (no file parse).
+        if (
+            self._chat_index_mode() == "on"
+            and self._chat_index_ready()
+            and not include_archived
+        ):
+            try:
+                store = self._chat_index_store()
+                total = store.count_chats(
+                    include_archived=False,
+                    user_id=user_id,
+                    board=board,
+                    column=column,
+                    chat_type=chat_type,
+                ) if store is not None else 0
+                rows = store.list_chats(
+                    user_id=user_id,
+                    board=board,
+                    column=column,
+                    chat_type=chat_type,
+                    include_archived=False,
+                    unread_for=user_id,
+                    limit=page_size,
+                    offset=(page - 1) * page_size,
+                ) if store is not None else []
+                chats = [self._chat_from_index(row) for row in rows]
+                total_pages = (total + page_size - 1) // page_size if total else 0
+                return {
+                    "chats": chats,
+                    "total": total,
+                    "page": page,
+                    "page_size": page_size,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1,
+                }
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning(
+                    "Chat index recent failed for '%s', falling back: %s",
+                    self.chat_path,
+                    ex,
+                )
+        elif self._chat_index_mode() == "on":
+            self._start_chat_index_build()
+
+        all_chats = self.list_chats(
+            include_archived=include_archived,
+            unread_for=user_id,
+        )
 
         # Apply filters
         filtered_chats = all_chats
@@ -669,18 +1160,30 @@ class ChatManager:
         if not chat or not user_id:
             return False
 
-        # Check if user created the chat
-        if chat.created_by == user_id:
+        # Chat has no ``created_by`` field (the old code assumed one and raised
+        # AttributeError for every chat). Participation is expressed by the
+        # users/assignees lists, the profiles and the messages.
+        if user_id in (getattr(chat, "users", None) or []):
+            return True
+        if user_id in (getattr(chat, "assignees", None) or []):
             return True
 
-        # Check if user is in profiles
-        if chat.profiles and isinstance(chat.profiles, list):
-            if any(p and (p.get("id") == user_id or p.get("user_id") == user_id) for p in chat.profiles):
+        # Profiles have historically been either names or {id,user_id} dicts.
+        for profile in getattr(chat, "profiles", None) or []:
+            if isinstance(profile, dict):
+                if user_id in (profile.get("id"), profile.get("user_id")):
+                    return True
+            elif str(profile) == str(user_id):
                 return True
 
-        # Check if user has messages in chat
-        if chat.messages and isinstance(chat.messages, list):
-            if any(m and (m.created_by == user_id or m.user_id == user_id) for m in chat.messages):
+        # Check if user has messages in chat (``user`` is the model field;
+        # ``created_by``/``user_id`` were never fields on Message).
+        for message in getattr(chat, "messages", None) or []:
+            if not message:
+                continue
+            if getattr(message, "user", None) == user_id:
+                return True
+            if getattr(message, "created_by", None) == user_id:
                 return True
 
         return False
@@ -737,6 +1240,36 @@ class ChatManager:
         """
         last_update = datetime.fromisoformat(from_date) if from_date else None
         before_update = datetime.fromisoformat(to_date) if to_date else None
+
+        # Fast path: the derived index already has the projection (metadata +
+        # last-message preview + unread). No chat file is parsed here.
+        if self._chat_index_mode() == "on" and self._chat_index_ready():
+            self._maybe_start_reconcile()
+            try:
+                store = self._chat_index_store()
+                rows = store.list_chats(
+                    from_date=from_date,
+                    to_date=to_date,
+                    include_archived=include_archived,
+                    unread_for=unread_for,
+                ) if store is not None else []
+                chats = [self._chat_from_index(row) for row in rows]
+                if include_archived:
+                    chats = chats + self.archived_chats()
+                return sorted(
+                    chats,
+                    key=lambda x: str(x.chat_index or x.updated_at),
+                    reverse=True,
+                )
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning(
+                    "Chat index list failed for '%s', falling back to files: %s",
+                    self.chat_path,
+                    ex,
+                )
+        else:
+            self._start_chat_index_build()
+
         file_paths = self.chat_paths(
             last_update=last_update,
             before_update=before_update,
@@ -792,6 +1325,7 @@ class ChatManager:
         page: int = 1,
         page_size: int = 20,
         user: Optional[object] = None,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Search chats with full-text search, user filtering, project filtering,
@@ -826,8 +1360,26 @@ class ChatManager:
         projects_to_search = []
         
         if project_ids is not None:
-            # Use explicitly provided project_ids
+            # Never trust caller-supplied project ids blindly: intersect them
+            # with the projects the authenticated user can access. Without a
+            # user (demo / auth disabled) the old behaviour is preserved.
+            allowed_ids = None
+            if user is not None:
+                try:
+                    allowed_ids = {
+                        str(project.project_id)
+                        for project in find_all_user_projects(user)
+                    }
+                except Exception as ex:  # pragma: no cover - defensive
+                    logger.warning("search_chats: cannot resolve accessible projects: %s", ex)
+                    allowed_ids = set()
             for proj_id in project_ids:
+                if allowed_ids is not None and str(proj_id) not in allowed_ids:
+                    logger.warning(
+                        "search_chats: project '%s' is not accessible to the user",
+                        proj_id,
+                    )
+                    continue
                 proj = find_project_by_id(proj_id)
                 if proj:
                     projects_to_search.append(proj)
@@ -863,6 +1415,102 @@ class ChatManager:
                 "has_next": False,
                 "has_prev": False,
             }
+
+        query_text = str(query or "").strip()
+
+        # Fast path: each project's index searches its whole history (the file
+        # path can only search the last message, because list_chats truncates).
+        if query_text:
+            from codx.junior.chat_searcher import ChatSearcher, SearchFilters
+
+            # Single-project search (the common case): let the index paginate
+            # directly, without the cross-project merge cap.
+            if len(projects_to_search) == 1:
+                single = ChatManager(
+                    settings=projects_to_search[0], event_manager=self.event_manager
+                )
+                direct = single._chat_index_search(
+                    query=query,
+                    user_id=user_id,
+                    from_date=from_date,
+                    to_date=to_date,
+                    filters=filters,
+                    page=page,
+                    page_size=page_size,
+                )
+                if direct is not None:
+                    return direct
+
+            index_results: List[Dict[str, Any]] = []
+            index_total = 0
+            fallback_chats: List[Chat] = []
+            used_index = False
+            for proj_settings in projects_to_search:
+                try:
+                    proj_manager = ChatManager(
+                        settings=proj_settings, event_manager=self.event_manager
+                    )
+                    result = proj_manager._chat_index_search(
+                        query=query,
+                        user_id=user_id,
+                        from_date=from_date,
+                        to_date=to_date,
+                        filters=filters,
+                        page=1,
+                        page_size=1000,
+                    )
+                    if result is not None:
+                        used_index = True
+                        index_total += int(result.get("total") or 0)
+                        index_results.extend(result.get("results") or [])
+                        continue
+                    prefiltered = proj_manager.list_chats()
+                    if user_id:
+                        prefiltered = [
+                            chat for chat in prefiltered
+                            if self._user_involved_in_chat(chat, user_id)
+                        ]
+                    fallback_chats.extend(prefiltered)
+                except Exception as ex:
+                    logger.warning(
+                        "search_chats: index search failed for '%s': %s",
+                        proj_settings.project_name,
+                        ex,
+                    )
+
+            if used_index or fallback_chats:
+                if fallback_chats:
+                    legacy = ChatSearcher().search(
+                        chats=fallback_chats,
+                        query=query,
+                        from_date=from_date,
+                        to_date=to_date,
+                        page=1,
+                        page_size=1000,
+                        filters=SearchFilters.from_dict(filters),
+                    )
+                    index_total += int(legacy.get("total") or 0)
+                    index_results.extend(legacy.get("results") or [])
+                if index_results:
+                    index_results.sort(
+                        key=lambda item: (
+                            float(item.get("relevance_score") or 0),
+                            str((item.get("chat") or {}).get("updated_at") or ""),
+                        ),
+                        reverse=True,
+                    )
+                total = index_total
+                total_pages = (total + page_size - 1) // page_size if total else 0
+                start = max(0, (page - 1) * page_size)
+                return {
+                    "results": index_results[start:start + page_size],
+                    "total": total,
+                    "page": page,
+                    "page_size": page_size,
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
+                    "has_prev": page > 1,
+                }
 
         # Load chats from all accessible projects
         all_project_chats: List[Chat] = []
@@ -913,7 +1561,7 @@ class ChatManager:
             }
 
         # Perform full-text search
-        from codx.junior.chat_searcher import ChatSearcher
+        from codx.junior.chat_searcher import ChatSearcher, SearchFilters
 
         searcher = ChatSearcher()
         results = searcher.search(
@@ -923,6 +1571,7 @@ class ChatManager:
             to_date=to_date,
             page=page,
             page_size=page_size,
+            filters=SearchFilters.from_dict(filters),
         )
 
         logger.info(
@@ -1567,13 +2216,14 @@ class ChatManager:
                 "Save chat, current_chat %s at %s", current_chat.id, current_chat.file_path
             )
             if chat.file_path != current_chat.file_path:
-                self.delete_chat(current_chat.file_path)
+                self.delete_chat(current_chat.file_path, delete_index=False)
+                self._mark_index_dirty_if_building()
 
         self.event_manager.chat_event(chat=chat, event_type="changed")
 
         return chat
 
-    def store_chat(self, chat: Chat) -> None:
+    def store_chat(self, chat: Chat) -> Dict[str, Any]:
         """
         Write *chat* to its ``file_path`` as JSON.
 
@@ -1591,6 +2241,8 @@ class ChatManager:
         recorded by the gate that produced it.
 
         :param chat: The chat to write.
+        :return: The sanitized payload that was written (also used to update
+            the derived index without serializing the chat twice).
         """
         logger.info("Save chat: %s", chat.file_path)
         os.makedirs(os.path.dirname(chat.file_path), exist_ok=True)
@@ -1623,27 +2275,43 @@ class ChatManager:
                     os.remove(tmp_path)
                 except OSError:
                     logger.warning("Could not remove temp chat file %s", tmp_path)
+        # Write-through index. The file is the truth and has been replaced
+        # atomically; a failure here only leaves the index stale until the
+        # reconciler runs, so it must never fail the save.
+        self._index_upsert_payload(payload, chat.file_path)
+        return payload
 
-    def delete_chat(self, file_path: Optional[str] = None, chat_id: Optional[str] = None) -> None:
+    def delete_chat(
+        self,
+        file_path: Optional[str] = None,
+        chat_id: Optional[str] = None,
+        delete_index: bool = True,
+    ) -> None:
         """
         Delete a chat file from disk.
 
         :param file_path: Direct path to the chat file.
-        :param chat_id: Chat ID; resolved to a path via :meth:`find_by_id`.
+        :param chat_id: Chat ID; resolved to a path via :meth:`find_chat_path`.
+        :param delete_index: Remove the row from the derived index too. Set to
+            False when *file_path* is the previous location of a chat that is
+            being moved (the new row has already been written).
         """
         logger.info("Removing chat by file_path: %s  - chat_id: %s", file_path, chat_id)
 
         if chat_id:
-            chat = self.find_by_id(chat_id)
-            # FIXED: guard against a missing chat to avoid AttributeError
-            if not chat:
+            # O(1) path lookup; deleting a chat does not need its messages.
+            file_path = self.find_chat_path(chat_id)
+            if not file_path:
                 logger.error("delete_chat: chat_id '%s' not found, nothing to delete", chat_id)
                 return
-            file_path = chat.file_path
 
         if file_path and os.path.isfile(file_path) and file_path.startswith(self.chat_path):
             logger.info("Removing chat at %s", file_path)
             os.remove(file_path)
+            if delete_index:
+                removed_id = chat_id or _extract_id_from_filename(file_path)
+                self._wait_for_index_idle()
+                self._index_delete(removed_id)
         else:
             logger.error("Removing chat error %s", file_path)
     # -------------------------------------------------------------------------
@@ -1756,6 +2424,13 @@ class ChatManager:
 
     def chat_count(self) -> int:
         """Return the total number of chat files on disk."""
+        if self._chat_index_mode() == "on" and self._chat_index_ready():
+            try:
+                store = self._chat_index_store()
+                if store is not None:
+                    return store.count_chats()
+            except Exception:  # pragma: no cover - defensive
+                pass
         return len(self.chat_paths())
 
     def last_chats(self) -> List[Chat]:
@@ -1797,6 +2472,24 @@ class ChatManager:
         if not wanted:
             return None
 
+        # O(1) id -> path when the index is available. When the index is
+        # complete, a miss is authoritative (a new chat does not need a tree
+        # scan); when it is still building, a miss falls back to the tree.
+        if self._chat_index_mode() == "on" and (
+            self._chat_index is not None or os.path.exists(self._chat_index_db_path())
+        ):
+            store = self._chat_index_store()
+            if store is not None:
+                try:
+                    indexed_path = store.find_path(wanted)
+                except Exception:  # pragma: no cover - defensive
+                    indexed_path = None
+                if indexed_path and os.path.isfile(indexed_path):
+                    return self.load_chat_from_path(chat_file=indexed_path)
+                # A miss is not authoritative: a file may have just been added
+                # by git/another process before reconciliation. Fall through to
+                # the exact filename scan (cheap on a miss, and only on a miss).
+
         all_paths = self.chat_paths()
         file_path = next(
             (
@@ -1831,6 +2524,17 @@ class ChatManager:
         wanted = str(chat_id or "").strip()
         if not wanted:
             return None
+        if self._chat_index_mode() == "on" and (
+            self._chat_index is not None or os.path.exists(self._chat_index_db_path())
+        ):
+            store = self._chat_index_store()
+            if store is not None:
+                try:
+                    indexed_path = store.find_path(wanted)
+                except Exception:  # pragma: no cover - defensive
+                    indexed_path = None
+                if indexed_path and os.path.isfile(indexed_path):
+                    return indexed_path
         return next(
             (
                 path for path in self.chat_paths()
@@ -1943,6 +2647,8 @@ class ChatManager:
                 "project_id": chat.project_id,
             },
         )
+        self._wait_for_index_idle()
+        self._index_delete(chat.id or chat_id)
         self._emit_archive_event(chat, archived=True)
         logger.info("Archived task '%s' (%s)", chat.id, chat.name)
         return entry
@@ -1973,6 +2679,11 @@ class ChatManager:
             chat_id=str(chat_id), target_dir=target_dir
         )
         chat = self.load_chat_from_path(chat_file=file_path)
+        try:
+            self._wait_for_index_idle()
+            self._index_upsert_payload(chat.model_dump(), file_path)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Chat index restore upsert failed for %s: %s", chat_id, ex)
         self._emit_archive_event(chat, archived=False)
         logger.info(
             "Restored task '%s' (%s) to %s/%s by %s",
@@ -2076,6 +2787,16 @@ class ChatManager:
         :param last_update: Return chats updated since this date.
         :return: List of Chat objects.
         """
+        if self._chat_index_mode() == "on" and self._chat_index_ready():
+            try:
+                store = self._chat_index_store()
+                if store is not None:
+                    rows = store.list_chats(
+                        from_date=last_update.isoformat() if last_update else None,
+                    )
+                    return [self._chat_from_index(row) for row in rows]
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning("Chat index find_chats failed: %s", ex)
         filtered_chats: List[Chat] = []
         for file_path in self.chat_paths(last_update=last_update):
             chat = self.load_chat_from_path(chat_file=file_path)
@@ -2180,6 +2901,14 @@ class ChatManager:
         if username not in message.read_by:
             message.read_by.append(username)
             message.updated_at = datetime.now().isoformat()
+            # Advance the per-user read cursor before the (compatibility) file
+            # update so unread counts are correct even if the write is slow.
+            try:
+                store = self._chat_index_store()
+                if store is not None and self._chat_index_mode() == "on":
+                    store.mark_read(chat.id, username, message.doc_id)
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning("Chat index mark_read failed: %s", ex)
             self.update_message(chat=chat, message=message)
             logger.info(
                 "mark_message_as_seen: chat='%s' message='%s' user='%s'",
@@ -2208,6 +2937,22 @@ class ChatManager:
             message.read_by.remove(username)
             message.updated_at = datetime.now().isoformat()
             self.update_message(chat=chat, message=message)
+            # Recompute the cursor from the remaining read_by markers. The
+            # write-through import only raises the cursor, so lower it after
+            # the update to honour the undo.
+            try:
+                store = self._chat_index_store()
+                if store is not None and self._chat_index_mode() == "on":
+                    max_seq = 0
+                    for index, current in enumerate(chat.messages or []):
+                        if username in (getattr(current, "read_by", None) or []):
+                            max_seq = max(max_seq, index)
+                    if max_seq == 0:
+                        # No marker left: start before the first message.
+                        max_seq = -1
+                    store.set_read(chat.id, username, max_seq)
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning("Chat index unmark_read failed: %s", ex)
             logger.info(
                 "unmark_message_as_seen: chat='%s' message='%s' user='%s'",
                 chat.id,

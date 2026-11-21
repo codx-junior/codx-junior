@@ -23,7 +23,7 @@ import ProjectIcon from '../ProjectIcon.vue'
         </div>
         <div class="text-xs text-base-content/60 font-medium flex items-center gap-1">
           <i class="fa-solid fa-message text-xs"></i>
-          <span>{{ chat.messages?.length || 0 }} messages</span>
+          <span>{{ chat.message_count ?? (chat.messages?.length || 0) }} messages</span>
         </div>
       </div>
 

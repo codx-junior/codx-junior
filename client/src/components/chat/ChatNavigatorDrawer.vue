@@ -102,7 +102,7 @@ import TaskSettings from '@/components/kanban/TaskSettings.vue'
                 <div class="flex items-center gap-2 mb-1">
                   <ChatIcon :mode="rootChat.mode" class="text-sm" />
                   <span class="font-bold text-sm truncate flex-1">{{ rootChat.name }}</span>
-                  <span class="text-xs text-base-content/40">{{ rootChat.messages?.length || 0 }}</span>
+                  <span class="text-xs text-base-content/40">{{ rootChat.message_count ?? (rootChat.messages?.length || 0) }}</span>
                 </div>
                 <div v-if="rootChat.description" class="text-xs text-base-content/60 line-clamp-2">
                   {{ rootChat.description }}

@@ -256,7 +256,12 @@ export function chatToPost(chat, project, currentUser = null) {
     projectIcon: project?.project_icon || null,
     profiles: resolveProfiles(chat, project),
     // Unread assistant replies addressed to the current user (0 for other users).
-    unreadCount: countUnreadMessages(messages, currentUser),
+    // Index-backed summaries carry the count; only full chats have messages.
+    unreadCount: (
+      Number.isFinite(Number(chat.unread_count))
+        ? Math.max(0, Number(chat.unread_count))
+        : countUnreadMessages(messages, currentUser)
+    ),
     wallPost: wall,
     likedBy: likes
   }

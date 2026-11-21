@@ -156,6 +156,16 @@ export default {
       return `${this.harnessLabel} · ${instance} · ${session}`
     },
     image() {
+      // Index-backed summaries precompute the first conversation image; only
+      // full chats still carry the message list.
+      const cover = this.task.cover_image
+      if (cover) {
+        try {
+          return typeof cover === 'string' ? JSON.parse(cover) : cover
+        } catch (ex) {
+          return { src: cover }
+        }
+      }
       const image = this.task.messages?.find(m => m.images?.length)?.images[0]
       return image ? JSON.parse(image) : null
     },

@@ -33,7 +33,7 @@ import ChatIcon from './ChatIcon.vue'
             <ChatIcon :mode="chat.mode" :attention="chatNeedsUser" class="text-xs shrink-0" />
             <span class="font-bold text-sm truncate">{{ chat.name }}</span>
             <span class="text-xs text-base-content/40 shrink-0 tabular-nums">
-              {{ chat.messages?.length || 0 }}
+              {{ chat.message_count ?? (chat.messages?.length || 0) }}
             </span>
             <!-- Cost chip -->
             <span v-if="chat.cost"

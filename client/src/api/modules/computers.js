@@ -157,6 +157,17 @@ export const computersModule = (API) => ({
     return API.get(`/api/computers/library/custom/${imageId}/file?${params.toString()}`)
   },
 
+  /**
+   * Authenticated blob of an icon/preview of the definition folder.
+   *
+   * The media route sits behind the API auth, so cards cannot use it as a plain
+   * `<img src>`: the blob is turned into an object URL by the caller.
+   */
+  async coworkingImageMedia(imageId, path) {
+    const params = new URLSearchParams({ path })
+    return API.connection.getBlob(`/api/computers/library/custom/${imageId}/media?${params.toString()}`)
+  },
+
   /** Write one file of the definition folder (Dockerfile, support files...). */
   async writeCoworkingImageFile(imageId, path, content) {
     return API.put(`/api/computers/library/custom/${imageId}/file`, { path, content })

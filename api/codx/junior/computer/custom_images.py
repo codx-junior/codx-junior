@@ -96,6 +96,24 @@ def _safe_relative(relative_path: str) -> str:
     return "/".join(parts)
 
 
+class ImageEnvField(BaseModel):
+    """One ENV entry an image expects from the session.
+
+    The manifest declares them so the coworking form can render the right
+    inputs (masked for secrets, select for choices) instead of an empty
+    ``KEY=VALUE`` textarea.
+    """
+
+    name: str = Field(description="ENV variable name, e.g. OPENAI_API_KEY")
+    label: Optional[str] = Field(default=None, description="Label shown in the form")
+    description: Optional[str] = Field(default=None, description="What the value is used for")
+    placeholder: Optional[str] = Field(default=None, description="Hint shown in the empty input")
+    default: Optional[str] = Field(default=None, description="Value used when the field is empty")
+    required: bool = Field(default=False, description="The image does not work without it")
+    secret: bool = Field(default=False, description="Masked input; never echoed back")
+    choices: List[str] = Field(default_factory=list, description="Allowed values (renders a select)")
+
+
 class CoworkingImage(BaseModel):
     """One custom desktop image of the coworking gallery."""
 
@@ -114,6 +132,10 @@ class CoworkingImage(BaseModel):
     media: List[str] = Field(default_factory=list, description="Icon/screenshot paths inside the folder")
     icon_url: Optional[str] = Field(default=None, description="Icon shown in the gallery")
     screenshot_url: Optional[str] = Field(default=None, description="Preview shown in the gallery")
+    env: List[ImageEnvField] = Field(
+        default_factory=list,
+        description="ENV entries the session provides; drives the create-session form",
+    )
     tags: List[str] = Field(default_factory=list, description="Search/filter tags")
     visibility: str = Field(default="project", description="user, project, custom or global")
     projects: List[str] = Field(default_factory=list, description="Projects allowed to see it (visibility=custom)")
@@ -155,6 +177,7 @@ class CreateCoworkingImageRequest(BaseModel):
     media: List[str] = Field(default_factory=list, description="Icon/screenshot paths")
     icon_url: Optional[str] = Field(default=None, description="Icon URL")
     screenshot_url: Optional[str] = Field(default=None, description="Preview URL")
+    env: List[ImageEnvField] = Field(default_factory=list, description="ENV entries the session provides")
     visibility: str = Field(default="project", description="user, project, custom or global")
     projects: List[str] = Field(default_factory=list, description="Projects allowed to see it (visibility=custom)")
     live_port: Optional[int] = Field(default=None, description="Live-view port")
@@ -173,6 +196,7 @@ class UpdateCoworkingImageRequest(BaseModel):
     media: Optional[List[str]] = None
     icon_url: Optional[str] = None
     screenshot_url: Optional[str] = None
+    env: Optional[List[ImageEnvField]] = None
     visibility: Optional[str] = None
     projects: Optional[List[str]] = None
     status: Optional[str] = None
@@ -547,6 +571,11 @@ class CoworkingImageLibrary:
             media=[entry for entry in (req.media or []) if entry],
             icon_url=req.icon_url or None,
             screenshot_url=req.screenshot_url or None,
+            env=[
+                entry
+                for entry in (req.env or [])
+                if (entry.name or "").strip()
+            ],
             tags=[entry for entry in (req.tags or []) if entry],
             visibility=visibility,
             projects=projects,

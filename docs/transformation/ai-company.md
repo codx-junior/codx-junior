@@ -15,6 +15,12 @@
 
 > **One sentence.** codx-junior already has the atoms of an AI company — profiles, hybrid teams, missions, autonomous shifts, budgets, approvals and an audit trail — but it has no **company operating system**: no reporting lines, no team inbox, no manager that answers, no escalation protocol, no cross-team work objects, no authority model, and no place where a human can stand next to an AI teammate and work. This document defines that operating system and the path to build it.
 
+> **Product-facing companion.** [ai-cofounder-product.md](ai-cofounder-product.md)
+> turns this operating model into the entrepreneur experience, the example
+> codx-junior-cloud company, the tool platform and the phased capability
+> backlog. Read it for *what the owner sees and in what order*; this document
+> remains the deep design of *how the company runs*.
+
 > **Decision requested.** Approve the target operating model and [decisions 1–3 and 6–8](#11-open-decisions); sponsor [phase 0](#102-phases); nominate the internal IT/QA/PM/Management company as pilot A. The first proof — QA escalating to IT, IT to Project Management, Project Management to Management, with the clock and the audit visible — is six weeks away; the enforced pilot (policy + approvals) is nine.
 
 ---

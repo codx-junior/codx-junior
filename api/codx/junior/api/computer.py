@@ -282,6 +282,17 @@ def _request_identity(session_ctx) -> tuple[Optional[str], bool]:
     return username, role in ("admin", "owner")
 
 
+#: Content types of the gallery media (icon / preview).
+_MEDIA_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+
 def _gallery(session_ctx):
     manager = _browser_manager(session_ctx)
     return coworking_image_library(manager.settings), getattr(manager.settings, "project_id", None)
@@ -471,6 +482,42 @@ async def read_coworking_image_file(request: Request, image_id: str, path: str =
         raise HTTPException(status_code=400, detail=str(ex))
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.get(
+    "/library/custom/{image_id}/media",
+    summary="Serve the icon or preview of a custom coworking image",
+)
+async def get_coworking_image_media(
+    request: Request,
+    image_id: str,
+    path: str = Query(..., description="Folder-relative media path, e.g. media/icon.svg"),
+):
+    """
+    Stream one media file of the definition folder.
+
+    The manifest declares ``media``, ``icon_url`` and ``screenshot_url`` as
+    folder-relative paths; this endpoint turns them into URLs the gallery can
+    render, so a card shows the real icon and preview of the image.
+    """
+    session_ctx = await get_session_context(request)
+    library, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+    item = await asyncio.to_thread(library.get, image_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Coworking image not found")
+    if not visible_to(item, username=username, project_id=project_id, is_admin=is_admin):
+        raise HTTPException(status_code=403, detail="This image is not shared with you")
+    try:
+        media_path = await asyncio.to_thread(library.file_path, image_id, path)
+    except ValueError as ex:
+        raise HTTPException(status_code=400, detail=str(ex))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Media not found")
+    if not os.path.isfile(media_path):
+        raise HTTPException(status_code=404, detail="Media not found")
+    media_type = _MEDIA_TYPES.get(os.path.splitext(media_path)[1].lower(), "application/octet-stream")
+    return FileResponse(media_path, media_type=media_type)
 
 
 @router.put(

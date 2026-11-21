@@ -727,6 +727,80 @@ import {
               </span>
             </label>
 
+            <!-- ENV preset declared by the manifest of the chosen image -->
+            <div
+              v-if="imageEnvFields.length"
+              class="flex flex-col gap-1.5 rounded-xl border border-primary/25 bg-primary/5 p-2"
+            >
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="text-xs font-semibold">Image settings</span>
+                <span class="badge badge-xs badge-outline">{{ imageEnvFields.length }}</span>
+                <span class="ml-auto flex items-center gap-1">
+                  <input
+                    ref="envFileInput"
+                    type="file"
+                    accept=".env,text/plain"
+                    class="hidden"
+                    @change="applyEnvFile"
+                  />
+                  <button type="button" class="btn btn-xs btn-outline" @click="$refs.envFileInput?.click()">
+                    <i class="fa-solid fa-file-arrow-up mr-1"></i>Map .env
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-xs btn-ghost btn-square"
+                    title="Reset to the image defaults"
+                    @click="resetEnvPreset"
+                  >
+                    <i class="fa-solid fa-eraser"></i>
+                  </button>
+                </span>
+              </div>
+              <label
+                v-for="field in imageEnvFields"
+                :key="field.name"
+                class="flex flex-col gap-0.5"
+              >
+                <span class="flex flex-wrap items-center gap-1 text-[11px] font-medium">
+                  <span>{{ field.label || field.name }}</span>
+                  <span v-if="field.required" class="text-error">*</span>
+                  <code class="text-[10px] text-base-content/40">{{ field.name }}</code>
+                  <span v-if="field.secret" class="badge badge-xs badge-ghost">secret</span>
+                </span>
+                <select
+                  v-if="field.choices && field.choices.length"
+                  v-model="envPreset[field.name]"
+                  class="select select-xs select-bordered"
+                >
+                  <option value="">Image default</option>
+                  <option v-for="choice in field.choices" :key="choice" :value="choice">{{ choice }}</option>
+                </select>
+                <input
+                  v-else
+                  v-model="envPreset[field.name]"
+                  :type="field.secret ? 'password' : 'text'"
+                  :autocomplete="field.secret ? 'new-password' : 'off'"
+                  :placeholder="field.placeholder || field.name"
+                  class="input input-xs input-bordered font-mono"
+                  spellcheck="false"
+                />
+                <span v-if="field.description" class="text-[10px] leading-snug text-base-content/50">
+                  {{ field.description }}
+                </span>
+              </label>
+              <p v-if="envFileInfo" class="text-[10px] leading-snug text-base-content/50">
+                <i class="fa-solid fa-check mr-1 text-success"></i>
+                {{ envFileInfo.filled }} value(s) mapped from <code>{{ envFileInfo.name }}</code>
+                <template v-if="envFileInfo.ignored.length">
+                  · ignored: <code>{{ envFileInfo.ignored.join(', ') }}</code>
+                </template>
+              </p>
+              <p class="text-[10px] leading-snug text-base-content/40">
+                Declared by the image manifest and sent as the session
+                <code>extra_env</code>. Secret values are never shown again.
+              </p>
+            </div>
+
             <!-- Extra image environment -->
             <label class="flex flex-col gap-1">
               <span class="text-xs font-semibold">Environment variables</span>
@@ -856,6 +930,14 @@ const DOWNLOADS_FOLDER = '.codx/browser_downloads'
 const COMPUTER_DOWNLOADS_FOLDER = '.codx/computer_downloads'
 
 import { SESSION_LABELS } from '@/utils/sessionLabels'
+import {
+  declaredEnv,
+  mapDotEnv,
+  missingRequired,
+  parseDotEnv,
+  presetDefaults,
+  presetValues
+} from '@/utils/imageEnv'
 
 export default {
   name: 'BrowserSessionCreateModal',
@@ -870,7 +952,11 @@ export default {
       step: 1,
       view: null, // null | 'library' | 'folders' | 'downloads'
       recent: loadRecentImages(),
-      selectedLibraryImage: null
+      selectedLibraryImage: null,
+      // Values of the ENV preset declared by the chosen coworking image.
+      envPreset: {},
+      // Summary of the .env file mapped onto the preset (name/filled/ignored).
+      envFileInfo: null
     }
   },
   watch: {
@@ -890,6 +976,10 @@ export default {
       if (this.selectedLibraryImage && value !== this.selectedLibraryImage.image) {
         this.selectedLibraryImage = null
       }
+    },
+    selectedLibraryImage() {
+      // A different image means a different ENV preset and form.
+      this.resetEnvPreset()
     }
   },
   computed: {
@@ -917,6 +1007,17 @@ export default {
         windows: 'dockurr/windows',
         macos: 'dockurr/macos'
       }[this.form.kind] || ''
+    },
+    /**
+     * ENV preset declared by the manifest of the chosen coworking image
+     * (`env` in `image.json`): it drives the form of the settings step.
+     */
+    imageEnvFields() {
+      return declaredEnv(this.selectedLibraryImage)
+    },
+    /** Values of the declared fields that will be sent as `extra_env`. */
+    imageEnvValues() {
+      return presetValues(this.imageEnvFields, this.envPreset)
     },
     /** Library selection (or the default image) shown in the main dialog. */
     imageSelectionTitle() {
@@ -1238,6 +1339,35 @@ export default {
     focusNameInput() {
       this.$nextTick(() => this.$refs.nameInput?.focus())
     },
+    /** Fill the preset fields with the defaults declared by the image. */
+    resetEnvPreset() {
+      this.envPreset = presetDefaults(this.imageEnvFields)
+      this.envFileInfo = null
+    },
+    /**
+     * Map an `.env` file onto the declared fields.
+     *
+     * Only the keys the image declares are kept; the rest are reported as
+     * ignored. Nothing is uploaded: the file is read in the browser and only
+     * the resulting values travel with the session as `extra_env`.
+     */
+    async applyEnvFile(event) {
+      const file = event?.target?.files?.[0]
+      if (event?.target) event.target.value = ''
+      if (!file) return
+      let text = ''
+      try {
+        text = await file.text()
+      } catch {
+        this.error = 'Could not read the .env file.'
+        return
+      }
+      const { values, mapped, ignored } = mapDotEnv(this.imageEnvFields, parseDotEnv(text))
+      // Precedence: manifest default < .env file < value typed in the form
+      // (typing happens after the import, in the same fields).
+      this.envPreset = { ...this.envPreset, ...values }
+      this.envFileInfo = { name: file.name, filled: mapped.length, ignored }
+    },
     /** Parse the advanced environment textarea into an object. */
     parseEnv() {
       const env = {}
@@ -1255,6 +1385,9 @@ export default {
         }
         env[key] = line.slice(separator + 1).trim()
       })
+      // The form built from the image manifest is authoritative for the keys the
+      // image declares; the textarea keeps the free-form extras.
+      Object.assign(env, this.imageEnvValues)
       return env
     },
     /** Validate the advanced form; returns an error message or null. */
@@ -1290,6 +1423,10 @@ export default {
         if (this.form.desktopHeight && (!Number.isInteger(height) || height < 480 || height > 4320)) {
           return 'Desktop height must be a whole number between 480 and 4320.'
         }
+      }
+      const missing = missingRequired(this.imageEnvFields, this.imageEnvValues)
+      if (missing.length) {
+        return `Set ${missing.join(', ')} before creating the machine.`
       }
       let env = {}
       try {

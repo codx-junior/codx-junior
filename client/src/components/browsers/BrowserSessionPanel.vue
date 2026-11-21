@@ -1349,7 +1349,7 @@ export default {
         </template>
 
         <template #right>
-          <div ref="chatPane" class="h-full min-h-0 flex flex-col bg-base-100 border-base-content/10 md:border-l">
+          <div ref="chatPane" class="h-full min-h-0 flex flex-col bg-base-300 border-base-content/10 md:border-l">
             <div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
               <button v-if="isMobile" class="btn btn-xs btn-ghost btn-circle" @click="closeChat" title="Back">
                 <i class="fa-solid fa-arrow-left"></i>

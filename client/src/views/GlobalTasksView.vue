@@ -90,8 +90,6 @@ let searchTimer = null
 
 // ── Project scope ──────────────────────────────────────────────────────────
 const activeProject = computed(() => $storex.projects.activeProject || null)
-const childProjects = computed(() => $storex.projects.childProjects || [])
-const hasActiveProject = computed(() => !!activeProject.value?.project_id)
 
 // The active project plus its children: the default Follow-up scope.
 function defaultProjectIds() {

@@ -21,6 +21,8 @@
  * Routes: `GET/POST /api/computers/library/custom`,
  * `POST /library/custom/import`, `GET/PUT/DELETE /library/custom/{id}`.
  */
+import { declaredEnv } from '../../utils/imageEnv'
+
 const VISIBILITY_OPTIONS = [
   { value: 'user', label: 'Only me', hint: 'Only its creator sees it' },
   { value: 'project', label: 'Project', hint: 'Every user of this project' },
@@ -56,6 +58,8 @@ export default {
       formError: null,
       // Image whose assistant prompt is expanded.
       promptImage: null,
+      // Object URLs of the icons served by `/library/custom/{id}/media`.
+      mediaUrls: {},
       form: {
         name: '',
         description: '',
@@ -95,6 +99,9 @@ export default {
   mounted() {
     this.load()
   },
+  beforeUnmount() {
+    this.releaseMedia()
+  },
   methods: {
     // ── data ───────────────────────────────────────────────────────────────
     async load() {
@@ -103,12 +110,46 @@ export default {
       try {
         const response = await this.$storex.api.computers.coworkingImages()
         this.images = response?.images || []
+        this.loadMedia()
       } catch (error) {
         this.error = error?.response?.data?.detail || error.message || 'Could not load the custom images'
         this.images = []
       } finally {
         this.loading = false
       }
+    },
+    /**
+     * Load the icon declared by the manifest (`media` / `icon_url`) as a blob.
+     *
+     * The endpoint is authenticated, so an `<img src>` cannot hit it directly:
+     * object URLs are created here and released on unmount.
+     */
+    async loadMedia() {
+      this.releaseMedia()
+      const api = this.$storex.api.computers
+      await Promise.all(this.images.map(async image => {
+        const path = image.icon_url || (image.media || [])[0]
+        if (!path) return
+        try {
+          const blob = await api.coworkingImageMedia(image.id, path)
+          this.mediaUrls = { ...this.mediaUrls, [image.id]: URL.createObjectURL(blob) }
+        } catch {
+          // A missing asset falls back to the generic icon; never break the list.
+        }
+      }))
+    },
+    releaseMedia() {
+      Object.values(this.mediaUrls).forEach(url => URL.revokeObjectURL(url))
+      this.mediaUrls = {}
+    },
+    /** ENV entries declared by the manifest of a card (badge + tooltip). */
+    envFields(image) {
+      return declaredEnv(image)
+    },
+    envNames(image) {
+      return declaredEnv(image)
+        .map(field => field.name)
+        .join(', ')
     },
     dockerRef(image) {
       return `codx-coworking/${image.slug}:latest`
@@ -437,8 +478,21 @@ export default {
           class="rounded-xl border border-base-content/10 bg-base-100 p-2.5 flex flex-col gap-1"
         >
           <div class="flex flex-wrap items-center gap-1.5">
-            <i class="fa-solid fa-image text-primary" aria-hidden="true"></i>
+            <img
+              v-if="mediaUrls[image.id]"
+              :src="mediaUrls[image.id]"
+              :alt="image.name"
+              class="h-7 w-7 shrink-0 rounded-md border border-base-content/10 bg-base-200 object-cover"
+            />
+            <i v-else class="fa-solid fa-image text-primary" aria-hidden="true"></i>
             <span class="text-xs font-semibold">{{ image.name }}</span>
+            <span
+              v-if="envFields(image).length"
+              class="badge badge-xs badge-ghost"
+              :title="envNames(image)"
+            >
+              <i class="fa-solid fa-sliders mr-0.5"></i>{{ envFields(image).length }} env
+            </span>
             <span class="badge badge-xs" :class="visibilityClass(image.visibility)">
               <i class="fa-solid fa-eye mr-0.5"></i>{{ visibilityLabel(image.visibility) }}
             </span>

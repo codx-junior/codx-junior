@@ -96,10 +96,14 @@ def run_once() -> Dict[str, Any]:
         return {"skipped": True, "reason": "another autopilot owns the lock"}
     try:
         manager = CompanyManager(root_path=root_path)
+        # Sync FIRST and unconditionally: a human-dispatched mission must move
+        # to review/blocked when its run ends even if the company autopilot is
+        # off. Otherwise the goal stays "running" forever after the work is done.
+        synced = manager.sync_all_missions(actor="autopilot-sync")
         reports = manager.run_due_cycles(actor="autopilot")
         if reports:
             logger.info("Company autopilot: %d cycle(s) ran", len(reports))
-        return {"skipped": False, "reports": reports}
+        return {"skipped": False, "reports": reports, "synced": synced}
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Company autopilot pass failed: %s", ex)
         return {"skipped": False, "error": str(ex), "reports": []}

@@ -35,8 +35,16 @@ const company = computed(() => props.snapshot?.company || {})
 const missions = computed(() => props.snapshot?.missions || [])
 const teams = computed(() => props.snapshot?.teams || [])
 const projects = computed(() => props.snapshot?.projects || [])
+const autonomy = computed(() => props.snapshot?.autonomy || {})
 
 const form = reactive(emptyForm())
+
+/** New goals inherit the autonomy of the company/team instead of defaulting to manual. */
+function defaultDispatchMode() {
+  const autonomyOn = Boolean(autonomy.value.enabled) && autonomy.value.level !== 'off'
+  const team = teams.value.find(item => item.id === form.team_id)
+  return autonomyOn || (team && team.autonomy !== 'manual') ? 'auto' : 'manual'
+}
 
 function emptyForm() {
   return {
@@ -69,6 +77,7 @@ function openCreate() {
   Object.assign(form, emptyForm())
   form.team_id = teams.value[0]?.id || ''
   form.project_id = projects.value[0]?.project_id || ''
+  form.dispatch_mode = defaultDispatchMode()
   formError.value = ''
   dialog.value = true
 }

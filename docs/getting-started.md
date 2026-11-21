@@ -48,7 +48,25 @@ It runs one container (API + background worker + web client), needs no domain,
 no Traefik, no Milvus and no local model server, and codx-junior configures the
 provider, the models and the model slots by itself. Every setting is documented
 in [demo/README.md](https://github.com/gbrian/codx-junior/blob/main/codx-junior-installer/demo/README.md).
-The rest of this page describes the full self-hosted stack.
+The rest of this page covers development from a checkout and the full self-hosted stack.
+
+## Development (from a checkout)
+
+Working on codx-junior itself? The dev installer builds the current tree and runs
+the same single-container stack with the checkout mounted live:
+
+```sh
+git clone https://github.com/codx-junior/codx-junior.git
+cd codx-junior
+./dev-install.sh --provider deepseek --key sk-xxxxxxxx
+# -> http://localhost:19981
+```
+
+It needs only Docker and the compose v2 plugin: no clone inside the installer, no
+Docker install, no TLS, no firewall and no cloud setup. API code is live from the
+mount; add `--reload` for `uvicorn --reload`, `--build` after Dockerfile or
+`pyproject.toml` changes, and `--logs`/`--down`/`--purge` to operate it. The SPA
+is the image's compiled build, so a client change also needs `--build`.
 
 ## Requirements
 

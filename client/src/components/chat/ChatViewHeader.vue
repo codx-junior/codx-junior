@@ -361,7 +361,28 @@ import ProjectDetailt from '../ProjectDetailt.vue'
 
         <!-- Settings Toggles + Mode Selector (Right) -->
         <div class="flex items-center gap-1.5 ml-auto shrink-0" :class="{ hidden: isChannel }">
-          
+
+          <!-- Coworking session(s): the shared computer this chat is connected
+               to (Chromium page, Linux desktop, VM or remote host). One quiet
+               chip per session, linking to its live view. -->
+          <a
+            v-for="session in coworkingSessions"
+            :key="session.id"
+            :href="session.vnc_url || session.live_view || null"
+            target="_blank"
+            rel="noopener"
+            class="tooltip tooltip-bottom flex items-center gap-1.5 max-w-[16rem] rounded px-1.5 py-0.5 text-xs text-info hover:bg-info/10 focus:ring-2 focus:ring-primary/50 outline-none"
+            :data-tip="`Coworking session connected to this chat: ${session.name || session.id}`"
+            :aria-label="`Coworking session ${session.name || session.id}`"
+          >
+            <i class="fa-solid fa-desktop text-sm"></i>
+            <span class="truncate">{{ session.name || session.id }}</span>
+            <span
+              class="badge badge-xs badge-outline shrink-0"
+              :class="session.status === 'running' ? 'badge-success' : 'badge-ghost'"
+            >{{ session.kind || 'computer' }}</span>
+          </a>
+
           <!-- Voice call: call codx-junior from this conversation -->
           <button
             @click="$emit('start-voice-call')"
@@ -419,6 +440,8 @@ import ProjectDetailt from '../ProjectDetailt.vue'
 </template>
 
 <script>
+import API from '@/api/api'
+
 export default {
   props: {
     chat: { type: Object, required: true },
@@ -463,7 +486,11 @@ export default {
   data() {
     return {
       editingTitle: false,
-      workingChatName: ''
+      workingChatName: '',
+      // Coworking sessions (shared computer/browser/desktop) connected to this
+      // chat. Filled from the computers API because the link (`chat_ids`) lives
+      // on the session, not on the chat.
+      coworkingSessions: []
     }
   },
   computed: {
@@ -497,9 +524,39 @@ export default {
       handler(newVal) {
         this.workingChatName = newVal?.name || ''
       }
+    },
+    'chat.id': {
+      immediate: true,
+      handler() {
+        this.loadCoworkingSessions()
+      }
     }
   },
   methods: {
+    /**
+     * Resolve the coworking sessions attached to this chat.
+     *
+     * A session knows its chats (`chat_ids`), the chat does not know its
+     * sessions, so the header lists the sessions and keeps the ones naming this
+     * chat. Any failure just hides the badge: the header must never break
+     * because the computers API is unavailable.
+     */
+    async loadCoworkingSessions() {
+      const chatId = this.chat?.id
+      if (!chatId || !API?.computers?.list) {
+        this.coworkingSessions = []
+        return
+      }
+      try {
+        const result = await API.computers.list()
+        const sessions = Array.isArray(result)
+          ? result
+          : (result?.sessions || result?.items || [])
+        this.coworkingSessions = sessions.filter((s) => (s.chat_ids || []).includes(chatId))
+      } catch (error) {
+        this.coworkingSessions = []
+      }
+    },
     saveTitle() {
       if (this.workingChatName.trim()) {
         this.chat.name = this.workingChatName

@@ -82,9 +82,11 @@ _remove_package_stubs()
 
 # ── AGILE tier: the DEFAULT for the ``codx-junior`` harness profile ──────────
 def test_agile_budget_is_small_and_int():
-    assert constants.AGILE_MAX_ITERATIONS == 10
-    assert constants.AGILE_MAX_TOOL_CALLS == 5
-    assert constants.AGILE_MAX_TOOL_ROUNDS == 12
+    # HIGH effort: enough room to finish normal multi-step work in one turn,
+    # while staying clearly below the max tier.
+    assert constants.AGILE_MAX_ITERATIONS == 30
+    assert constants.AGILE_MAX_TOOL_CALLS == 8
+    assert constants.AGILE_MAX_TOOL_ROUNDS == 60
     for value in (
         constants.AGILE_MAX_ITERATIONS,
         constants.AGILE_MAX_TOOL_CALLS,
@@ -95,7 +97,7 @@ def test_agile_budget_is_small_and_int():
 
 def test_agile_continues_after_a_tool_limit():
     """A budget limit must never dead-end a task: agile gets corrections too."""
-    assert constants.AGILE_CONTINUATIONS == constants.TOOL_LIMIT_CONTINUATIONS
+    assert constants.AGILE_CONTINUATIONS == 3
     assert constants.AGILE_CONTINUATIONS > 0
 
 
@@ -109,18 +111,17 @@ def test_agile_wall_clock_is_short_and_overridable_by_env():
 
 # ── MAX tier: the ONLY tier allowed to run unbounded (``codx-junior-max``) ───
 def test_max_budget_is_larger_than_agile():
-    # Deliberate product decision: the max tier runs 24 tool iterations with 6
-    # calls per round, 80 rounds and 4 course corrections. The old 40/8 pair was
-    # a draft that never reached ``constants.py`` nor the resolved policy
-    # (``codx.junior.ai.smol.effort.max_policy``), so the code is the contract.
-    assert constants.MAX_MAX_ITERATIONS == 24
-    assert constants.MAX_MAX_TOOL_CALLS == 6
-    assert constants.MAX_MAX_TOOL_ROUNDS == 80
+    # Deliberate product decision: the max tier runs 80 tool iterations with 12
+    # calls per round, 160 rounds and 6 course corrections. It is a long-horizon
+    # tier, not "agile with bigger numbers".
+    assert constants.MAX_MAX_ITERATIONS == 80
+    assert constants.MAX_MAX_TOOL_CALLS == 12
+    assert constants.MAX_MAX_TOOL_ROUNDS == 160
 
     assert constants.MAX_MAX_ITERATIONS > constants.AGILE_MAX_ITERATIONS
     assert constants.MAX_MAX_TOOL_ROUNDS > constants.AGILE_MAX_TOOL_ROUNDS
     # Its own course corrections: a phased plan is not collapsed by a limit.
-    assert constants.MAX_CONTINUATIONS == 4
+    assert constants.MAX_CONTINUATIONS == 6
     assert constants.MAX_CONTINUATIONS > constants.TOOL_LIMIT_CONTINUATIONS
     assert (
         constants.MAX_CONTINUATION_MAX_ITERATIONS

@@ -170,15 +170,22 @@ TOOL_LIMIT_RETHINK_TEMPLATE: str = (
 # can still opt into an enforced clock with
 # ``settings={"stop_on_wall_clock": True}``; nothing enables it by default.
 # Resolution lives in ``codx.junior.ai.smol.effort``.
-AGILE_MAX_ITERATIONS: int = 10
-AGILE_MAX_TOOL_CALLS: int = 5
-AGILE_MAX_TOOL_ROUNDS: int = 12
+# Reasoning effort sent to the provider. This is what makes the two
+# harness profiles behave like DSH's high/max efforts: the profile selects the
+# effort and the agent forwards it as `reasoning_effort` (DeepSeek also gets
+# `thinking: enabled`). An explicit model/provider value still wins.
+AGILE_REASONING_EFFORT: str = "high"
+MAX_REASONING_EFFORT: str = "max"
+
+AGILE_MAX_ITERATIONS: int = 30
+AGILE_MAX_TOOL_CALLS: int = 8
+AGILE_MAX_TOOL_ROUNDS: int = 60
 # An agile turn is NEVER dead-ended by its budget. Reaching the tool limit
 # grants the same bounded course correction the harness always had (the facts
 # already collected + a smaller renewed budget); the tier stays agile because
 # the base budget and the continuations are smaller than max's. A limit is a
 # pacing signal, not the end of the task.
-AGILE_CONTINUATIONS: int = TOOL_LIMIT_CONTINUATIONS
+AGILE_CONTINUATIONS: int = 3
 # First agility checkpoint of an agile turn (5 min): it only produces a notice,
 # it never stops the turn. Kept as a float and overridable by env.
 AGILE_WALL_CLOCK_SECONDS: float = 300.0
@@ -308,14 +315,14 @@ AGILE_OVERTIME_USER_MESSAGE: str = (
 # parallel. That is why its budget, its course corrections and its clock are
 # declared here independently instead of being derived from the agile tier:
 # ``codx-junior-max`` inherits nothing from ``codx-junior``.
-MAX_MAX_ITERATIONS: int = 24
-MAX_MAX_TOOL_CALLS: int = 6
-MAX_MAX_TOOL_ROUNDS: int = 80
+MAX_MAX_ITERATIONS: int = 80
+MAX_MAX_TOOL_CALLS: int = 12
+MAX_MAX_TOOL_ROUNDS: int = 160
 # A limit must not collapse a multi-phase plan, so max grants MORE course
 # corrections than agile (4 instead of 2) and each one renews a bigger budget.
-MAX_CONTINUATIONS: int = 4
-MAX_CONTINUATION_MAX_ITERATIONS: int = 12
-MAX_CONTINUATION_MAX_CALLS: int = 6
+MAX_CONTINUATIONS: int = 6
+MAX_CONTINUATION_MAX_ITERATIONS: int = 20
+MAX_CONTINUATION_MAX_CALLS: int = 8
 # ADVISORY target of a max turn (2 h) inside a first checkpoint at 4 h, NOT a
 # deadline: a waterfall run is expected to be long. Past the target the turn is
 # told to close the current phase and the response is marked, but only the user

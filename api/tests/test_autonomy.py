@@ -403,6 +403,23 @@ def test_future_manual_wake_is_not_due_yet():
     assert service.is_due(ActorConfig(enabled=True), state, now=now) is True
 
 
+def test_wake_now_clears_a_future_scheduled_wake(tmp_path):
+    """Pressing "Run now" must not be ignored by a future wake_at."""
+    from codx.junior.autonomy.store import AutonomyStore
+
+    store = AutonomyStore(str(tmp_path))
+    future = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    store.set_wake_at("actor", future)
+
+    store.request_wake("actor")
+
+    state = store.get_state("actor")
+    assert state.wake_requested is True
+    assert state.wake_at == ""
+    service = _service()
+    assert service.is_due(ActorConfig(enabled=True), state) is True
+
+
 def test_next_wake_is_measured_from_the_shift_finish():
     """A shift longer than the cadence must not be due again immediately."""
 

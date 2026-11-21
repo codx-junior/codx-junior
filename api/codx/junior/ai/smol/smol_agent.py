@@ -1571,11 +1571,6 @@ class SmolAgent:
             pass
 
         send_callback = self._make_callback_sender(config.get("callbacks"))
-        kwargs = self._build_request_kwargs(
-            config.get("tools", []),
-            profile_names=profile_names,
-            orchestration_info=orchestration_info,
-        )
         # ── Effort policy: the ONLY source of the turn budget ────────────────
         # The tier comes from the profile names (codx.junior.ai.smol.effort):
         # ``codx-junior`` is agile (ADVISORY clock) and ``codx-junior-max`` has
@@ -1597,10 +1592,11 @@ class SmolAgent:
             settings=effort_settings,
         )
         logger.info(
-            "SmolAgent: effort tier=%s max_iterations=%d max_tool_calls=%d "
-            "continuations=%d wall_clock_s=%.0f validation=%s "
+            "SmolAgent: effort tier=%s reasoning_effort=%s max_iterations=%d "
+            "max_tool_calls=%d continuations=%d wall_clock_s=%.0f validation=%s "
             "profile_overrides=%s",
             effort_policy.name,
+            effort_policy.reasoning_effort or "-",
             effort_policy.max_iterations,
             effort_policy.max_tool_calls,
             effort_policy.continuations,
@@ -1608,6 +1604,22 @@ class SmolAgent:
             effort_policy.validation,
             sorted(effort_settings) if effort_settings else "none",
         )
+        # The request kwargs are built AFTER the policy so the tier's
+        # ``reasoning_effort`` (high for codx-junior, max for codx-junior-max)
+        # reaches the provider unless the model/provider explicitly defines one.
+        kwargs = self._build_request_kwargs(
+            config.get("tools", []),
+            profile_names=profile_names,
+            orchestration_info=orchestration_info,
+            effort_policy=effort_policy,
+        )
+        if cancellation_token is not None:
+            # Bridge the API/UI token onto the loop token for the WHOLE turn,
+            # not only while a stream is being read: a stop that arrives during
+            # a long tool must also end the waiting tool and the next round.
+            cancellation_token.add_callback(
+                lambda: run_context.cancel("user_requested")
+            )
 
         # ── Agile clock: pressure the model, never kill the turn ─────────────
         # The agile tier promises an increment in ``AGILE_TARGET_SECONDS`` (20
@@ -1765,6 +1777,12 @@ class SmolAgent:
         # Iterative tool loop: keep streaming completions until the model
         # produces a final answer (no more tool_calls finish reason).
         while True:
+            # A stop request must win BEFORE the next model round: the legacy
+            # token is the one the API/UI cancels, while ``run_context`` is the
+            # loop's own token.
+            if cancellation_token is not None and cancellation_token.is_cancelled:
+                run_context.cancel("user_requested")
+                run_context.checkpoint()
             # Time pressure first: an ENFORCING tier (max) must not start
             # another round once its deadline is gone (breaking instead of
             # raising keeps the partial increment deliverable), while an
@@ -2952,6 +2970,10 @@ class SmolAgent:
         Raises:
             AgentCancelled: If cancellation is requested mid-stream.
         """
+        if cancellation_token is not None and cancellation_token.is_cancelled:
+            run_context.cancel("user_requested")
+            run_context.checkpoint()
+
         # ADDED: Validate vision content before merging
         if vision_content:
             if not self._validate_vision_content(vision_content):
@@ -3046,6 +3068,21 @@ class SmolAgent:
             if inspect.isawaitable(response_stream):
                 response_stream = await response_stream
             request_headers_ms = (time.monotonic() - request_started) * 1000
+            # Stop must not wait for the current read to return. Closing the
+            # provider stream from the cancellation thread unblocks the socket
+            # read immediately; the run context is cancelled as well so the
+            # loop does not start another round.
+            if cancellation_token is not None:
+                def _abort_stream(_stream: Any = response_stream) -> None:
+                    run_context.cancel("user_requested")
+                    for closer in ("close",):
+                        method = getattr(_stream, closer, None)
+                        if callable(method):
+                            try:
+                                method()
+                            except Exception:  # pragma: no cover - best effort
+                                pass
+                cancellation_token.add_callback(_abort_stream)
         except Exception as ex:
             # VERBOSE AI ERROR LOGGING (request phase): without this a failed
             # connection produced nothing diagnosable — the raised message is a
@@ -3129,6 +3166,13 @@ class SmolAgent:
             send_callback("", True)
             raise
         except Exception as ex:
+            # Closing the stream on cancellation makes the blocking read raise a
+            # provider error. That is a STOP, not a failure: do not log it as an
+            # AI error nor show it to the user.
+            if run_context.token.cancelled or (
+                cancellation_token is not None and cancellation_token.is_cancelled
+            ):
+                raise AgentCancelled("user_requested")
             # VERBOSE AI ERROR LOGGING (stream phase): connection dropped,
             # read timeout, malformed stream payload, etc. Log the full context
             # + traceback, notify the client, then let the error propagate.
@@ -3408,6 +3452,43 @@ class SmolAgent:
             daemon=True,
         ).start()
         return await future
+
+    async def _await_with_cancellation(
+        self,
+        awaitable: Any,
+        run_context: AgentRunContext,
+        poll_seconds: float = 0.25,
+    ) -> Any:
+        """
+        Await a tool while observing cancellation every *poll_seconds*.
+
+        A sync tool runs in a daemon thread: cancelling the asyncio task stops
+        WAITING for it (the thread may finish in the background), which is what
+        makes the "stop" button immediate instead of waiting for the tool
+        timeout. Async tools receive ``task.cancel()`` as well.
+
+        Args:
+            awaitable: Coroutine/future of the tool invocation.
+            run_context: Run context whose token carries the stop request.
+            poll_seconds: Cancellation polling interval.
+
+        Returns:
+            The tool result.
+
+        Raises:
+            AgentCancelled: When the run is cancelled while the tool is running.
+        """
+        task = asyncio.ensure_future(awaitable)
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=poll_seconds)
+                if task in done:
+                    return task.result()
+                run_context.checkpoint()
+        except AgentCancelled:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
 
     async def _invoke_tool(
         self,
@@ -3913,12 +3994,15 @@ class SmolAgent:
                     func_name,
                     tool_timeout_seconds,
                 )
-            result = await self._invoke_tool(
-                func=tool["tool_call"],
-                params=params,
-                is_async=is_async_tool,
-                timeout_seconds=tool_timeout_seconds,
-                func_name=func_name,
+            result = await self._await_with_cancellation(
+                self._invoke_tool(
+                    func=tool["tool_call"],
+                    params=params,
+                    is_async=is_async_tool,
+                    timeout_seconds=tool_timeout_seconds,
+                    func_name=func_name,
+                ),
+                run_context,
             )
 
             # Redaction net (belt and braces): a tool echoes its environment, a
@@ -4731,14 +4815,19 @@ class SmolAgent:
 
     # ── Request building helpers ───────────────────────────────────────────────
 
-    def _apply_reasoning_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    def _apply_reasoning_kwargs(
+        self,
+        kwargs: Dict[str, Any],
+        effort_policy: Optional[EffortPolicy] = None,
+    ) -> Dict[str, Any]:
         """
         Translate the configured reasoning controls into provider request fields.
 
         The Harness exposes a per-model reasoning effort (``off``/``low``/
-        ``high``/``max``) and an explicit thinking switch. codx-junior ignored
-        both, so every DeepSeek round ran with the provider's default thinking
-        policy and the user could not trade latency for depth.
+        ``high``/``max``) and an explicit thinking switch. The active harness
+        effort is the fallback: ``codx-junior`` selects ``high`` and
+        ``codx-junior-max`` selects ``max``, so both profiles behave like the
+        matching DSH effort out of the box. A model/provider value always wins.
 
         DeepSeek's OpenAI-compatible endpoint takes the switch in ``extra_body``
         (``thinking: {type: disabled}``) and the effort as ``reasoning_effort``.
@@ -4747,6 +4836,8 @@ class SmolAgent:
 
         Args:
             kwargs: Request kwargs being built (mutated and returned).
+            effort_policy: Resolved effort of the turn; its ``reasoning_effort``
+                is used when the model/provider does not define one.
 
         Returns:
             The same dict with the reasoning fields applied.
@@ -4757,6 +4848,8 @@ class SmolAgent:
         thinking = str(
             getattr(self.llm_settings, "thinking", "") or ""
         ).strip().lower()
+        if not effort and effort_policy is not None:
+            effort = str(effort_policy.reasoning_effort or "").strip().lower()
 
         if not effort and not thinking:
             return kwargs
@@ -4764,6 +4857,8 @@ class SmolAgent:
         if thinking in ("disabled", "off", "false", "0"):
             effort = "off"
         elif thinking in ("enabled", "on", "true", "1") and effort in ("", "auto"):
+            # Thinking is on but no explicit/profile effort was selected: let
+            # the provider use its own default (no reasoning_effort field).
             effort = ""
 
         deepseek = self._uses_thinking_dialect([])
@@ -4797,6 +4892,7 @@ class SmolAgent:
         selected_tools: List[str],
         profile_names: Optional[List[str]] = None,
         orchestration_info: Optional[Dict[str, Any]] = None,
+        effort_policy: Optional[EffortPolicy] = None,
     ) -> Dict[str, Any]:
         """
         Build the base kwargs for the OpenAI completion request.
@@ -4831,7 +4927,7 @@ class SmolAgent:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        self._apply_reasoning_kwargs(kwargs)
+        self._apply_reasoning_kwargs(kwargs, effort_policy=effort_policy)
 
         # A plain completion never receives tool schemas: there is no tool
         # loop for it, so a tool call would be unexecutable.

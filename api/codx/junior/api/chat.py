@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, Response, Depends, HTTPException
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from starlette.concurrency import run_in_threadpool
 
@@ -271,6 +271,60 @@ def _resolve_chat_manager(request: Request, data: Optional[dict] = None):
     return None, None
 
 
+def _find_chat_by_cancellation_token(
+    request: Request, token_id: str
+) -> Optional[dict]:
+    """
+    Locate the active durable turn that owns *token_id*.
+
+    The client only receives the cancellation token in the response metadata;
+    the turn may run in the background worker, so the API process often cannot
+    resolve ``token_id`` through ``CANCELLATION_REGISTRY``. The token is stored
+    on the durable turn record exactly for this case.
+
+    Args:
+        request: Incoming request (its session narrows the search).
+        token_id: Cancellation token UUID.
+
+    Returns:
+        ``{"chat_id": ..., "codx_path": ...}`` when a live turn owns the token,
+        ``None`` otherwise.
+    """
+    wanted = str(token_id or "").strip()
+    if not wanted:
+        return None
+    candidates: List[Any] = []
+    session = getattr(request.state, "codx_junior_session", None)
+    if session is not None:
+        candidates.append(getattr(session, "settings", None))
+    try:
+        from codx.junior.project.project_discover import find_all_projects
+
+        candidates.extend(find_all_projects().values())
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.warning(
+            "chat_cancel: could not scan projects for token '%s': %s", wanted, ex
+        )
+    seen: set = set()
+    from codx.junior.chat.turn_store import get_turn_store
+
+    for settings in candidates:
+        codx_path = str(getattr(settings, "codx_path", "") or "")
+        if not codx_path or codx_path in seen:
+            continue
+        seen.add(codx_path)
+        try:
+            record = get_turn_store(codx_path).find_by_cancellation_token(wanted)
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.debug(
+                "chat_cancel: cannot read turns of '%s': %s", codx_path, ex
+            )
+            continue
+        if record is not None:
+            return {"chat_id": record.chat_id, "codx_path": codx_path}
+    return None
+
+
 @router.post("/chat/cancel")
 def chat_cancel(request: Request, data: Optional[dict] = None):
     """
@@ -303,7 +357,7 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
           "stopped_turns": n, "repaired_messages": n [, "already_stopped": true] }
         { "cancelled": false, "error": "..." } (only when nothing can be resolved)
     """
-    data = data or {}
+    data = dict(data or {})
     chat_id = data.get("chat_id") or request.query_params.get("chat_id")
     token_id = data.get("token_id") or request.query_params.get("token_id")
     method = None
@@ -311,6 +365,21 @@ def chat_cancel(request: Request, data: Optional[dict] = None):
     if not chat_id and not token_id:
         logger.warning("chat_cancel: missing 'chat_id' and 'token_id' in payload")
         return {"cancelled": False, "error": "missing chat_id or token_id"}
+
+    # Token-only stop from another process: resolve the chat through the
+    # durable turn record (the in-memory registry is process-local).
+    if not chat_id and token_id:
+        located = _find_chat_by_cancellation_token(request, token_id)
+        if located:
+            chat_id = located["chat_id"]
+            data["codx_path"] = located["codx_path"]
+            method = "token_id"
+            logger.info(
+                "chat_cancel: token '%s' resolved to chat '%s' via the durable "
+                "turn record",
+                token_id,
+                chat_id,
+            )
 
     cancelled = False
     if chat_id:

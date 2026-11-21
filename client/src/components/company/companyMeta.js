@@ -265,6 +265,7 @@ export function attentionLabel(reason) {
     blocked: 'Blocked',
     error: 'Needs a fix',
     overdue: 'Overdue',
+    autopilot_off: 'Autopilot off',
     unassigned_team: 'No team',
     unassigned_project: 'No project',
     project_missing: 'Project unavailable'

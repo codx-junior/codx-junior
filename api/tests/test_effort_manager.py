@@ -236,6 +236,26 @@ def test_max_tier_does_not_inherit_agile():
     assert maximum.validation == MAX_VALIDATION
 
 
+def test_refreshing_a_builtin_updates_the_linked_profiles(manager):
+    """A revision bump must reach the materialized ``Profile.effort`` copy."""
+    manager.ensure_builtins()
+    path = manager.definition_path("agile")
+    with open(path, encoding="utf-8") as file:
+        payload = json.load(file)
+    payload["revision"] = BUILTIN_REVISION - 1
+    payload["values"]["reasoning_effort"] = "low"
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file)
+    profile_path = write_profile(manager, "software_developer", effort_name="agile")
+
+    manager.ensure_builtins()
+
+    with open(profile_path, encoding="utf-8") as file:
+        profile = json.load(file)
+    assert profile["effort"]["reasoning_effort"] == "high"
+    assert profile["effort"]["max_iterations"] == agile_policy().max_iterations
+
+
 def test_builtins_are_refreshed_when_the_revision_changes(manager):
     """A built-in is owned by codx-junior: a bumped revision refreshes it."""
     manager.ensure_builtins()

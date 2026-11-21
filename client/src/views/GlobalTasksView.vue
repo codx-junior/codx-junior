@@ -97,11 +97,6 @@ const hasActiveProject = computed(() => !!activeProject.value?.project_id)
 function defaultProjectIds() {
   const ids = []
   if (activeProject.value?.project_id) ids.push(activeProject.value.project_id)
-  childProjects.value.forEach(project => {
-    if (project?.project_id && !ids.includes(project.project_id)) {
-      ids.push(project.project_id)
-    }
-  })
   return ids
 }
 

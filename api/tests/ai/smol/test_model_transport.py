@@ -287,6 +287,16 @@ def test_no_reasoning_fields_when_not_configured(agent):
     assert "reasoning_effort" not in kwargs
     assert "extra_body" not in kwargs
 
+def test_effort_tier_supplies_reasoning_effort(agent):
+    """codx-junior -> high, codx-junior-max -> max (DSH parity)."""
+    agile = agent._build_request_kwargs([], effort_policy=agile_policy())
+    assert agile["reasoning_effort"] == "high"
+    assert agile["extra_body"]["thinking"] == {"type": "enabled"}
+
+    maximum = agent._build_request_kwargs([], effort_policy=max_policy())
+    assert maximum["reasoning_effort"] == "max"
+    assert maximum["extra_body"]["thinking"] == {"type": "enabled"}
+
 
 def _settings_with_effort(model_effort=None, provider_effort=None):
     return GlobalSettings(
@@ -390,8 +400,8 @@ def test_loop_limit_notice_for_max_tier(agent):
 
 def test_loop_limits_come_from_the_effort_policy(agent):
     assert agent._resolve_loop_limits(default_policy()) == (10, 5)
-    assert agent._resolve_loop_limits(agile_policy()) == (10, 5)
-    assert agent._resolve_loop_limits(max_policy()) == (24, 6)
+    assert agent._resolve_loop_limits(agile_policy()) == (30, 8)
+    assert agent._resolve_loop_limits(max_policy()) == (80, 12)
 
 
 def test_profile_effort_overrides_the_tier_defaults(agent):

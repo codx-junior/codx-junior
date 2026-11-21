@@ -110,6 +110,13 @@ class ProfileEffortSettings(BaseModel):
         default=None,
         description="Validation breadth expected before delivery.",
     )
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider reasoning effort: off | low | high | max. Inherited from "
+            "the effort definition (high/max) when unset."
+        ),
+    )
     tool_allowlist: Optional[List[str]] = Field(
         default=None,
         description="Granted tools; None means every enabled tool.",

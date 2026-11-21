@@ -197,3 +197,20 @@ def test_recovery_gives_up_after_max_attempts(tmp_path, monkeypatch):
     assert result["failed"] == [record.turn_id]
     assert store.list_active() == []
 
+
+
+def test_cancellation_runs_the_abort_hooks_immediately():
+    """Stop closes the in-flight provider stream instead of waiting for a chunk."""
+    from codx.junior.ai.cancellation import CancellationToken
+
+    token = CancellationToken(chat_id="chat-1")
+    calls = []
+    token.add_callback(lambda: calls.append("closed"))
+
+    assert calls == []
+    token.cancel()
+    assert calls == ["closed"]
+
+    # A hook registered after cancellation runs immediately too.
+    token.add_callback(lambda: calls.append("late"))
+    assert calls == ["closed", "late"]

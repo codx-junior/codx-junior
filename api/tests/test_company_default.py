@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from codx.junior.company.manager import CompanyManager
+from codx.junior.company.models import CompanyProject, CompanyTeam
 from codx.junior.company.store import CompanyStore
 
 
@@ -119,3 +120,92 @@ def test_existing_installation_adopts_its_first_company(tmp_path, projects):
     assert adopted.is_default is True
     # Adoption never silently rewrites the project list.
     assert adopted.projects == []
+
+
+def _company_with_team(manager):
+    """A company with an autonomous team and one linked project."""
+    company = manager.create_company(
+        {
+            "name": "Autonomous Co",
+            "projects": [CompanyProject(project_id="p-api", name="API")],
+            "teams": [
+                CompanyTeam(
+                    id="team-1",
+                    name="Delivery",
+                    autonomy="autonomous",
+                    project_ids=["p-api"],
+                )
+            ],
+        },
+        actor="alice",
+    )
+    return company
+
+
+def test_goal_created_in_an_autonomous_company_starts_itself(manager):
+    """A goal must not stay 'manual' when the company already runs autonomously."""
+    company = _company_with_team(manager)
+    manager.update_autonomy(
+        company.id, {"enabled": True, "level": "supervised"}, actor="alice"
+    )
+
+    updated = manager.add_mission(
+        company.id,
+        {
+            "title": "Ship the customer flow",
+            "objective": "A customer can sign up and create a task",
+            "team_id": "team-1",
+            "project_id": "p-api",
+            "status": "ready",
+        },
+        actor="alice",
+    )
+
+    mission = updated.missions[0]
+    assert mission.dispatch_mode == "auto"
+    # The autopilot now sees it as a candidate instead of ignoring it.
+    assert manager._dispatchable_missions(updated) == [mission]
+
+
+def test_sync_all_missions_closes_a_finished_run_without_a_cycle(manager):
+    """A human-dispatched run must not leave its goal 'running' forever."""
+    company = _company_with_team(manager)
+    updated = manager.add_mission(
+        company.id,
+        {
+            "title": "Ship the customer flow",
+            "objective": "create a task on the deployed workspace",
+            "team_id": "team-1",
+            "project_id": "p-api",
+            "status": "ready",
+            "dispatch_mode": "manual",
+            "run_id": "run-1",
+        },
+        actor="alice",
+    )
+    updated.missions[0].status = "running"
+    manager.store.save(updated)
+    manager._run_status_provider = lambda project_id, run_id: {
+        "status": "completed",
+        "progress": 100,
+    }
+
+    reports = manager.sync_all_missions(actor="test")
+
+    synced = manager.get_company(company.id).missions[0]
+    assert synced.status == "review"
+    assert synced.progress == 100
+    assert reports and reports[0]["changed"] == 1
+
+
+def test_choosing_an_autonomy_level_enables_the_autopilot(manager):
+    """Clicking "Autonomous" must enable dispatch, not just set a label."""
+    company = _company_with_team(manager)
+
+    updated = manager.update_autonomy(
+        company.id, {"level": "autonomous"}, actor="alice"
+    )
+
+    assert updated.autonomy.level == "autonomous"
+    assert updated.autonomy.enabled is True
+    assert updated.autonomy.is_due() is True

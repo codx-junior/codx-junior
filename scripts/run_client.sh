@@ -15,11 +15,24 @@ nvm install v24.12.0
 
 cd ${CODX_JUNIOR_PATH}/client
 
-if [ "$DEBUG" != "" ]; then
-  echo "*********** codx-junior client DEBUG ************"
-  npm install
-  npm run dev
-else
-  echo "*********** codx-junior client PRODUCTION ************"
-  npm run preview
-fi
+# `DEBUG=0` is a value, not "unset": the old test ([ "$DEBUG" != "" ]) treated
+# every non-empty value as debug, so a container configured for production ran
+# `npm install` and the Vite dev server on every restart. That is what blocks a
+# restart: the install needs the network and the UI stays down until it ends.
+case "${DEBUG:-0}" in
+  1|true|TRUE|yes|on)
+    echo "*********** codx-junior client DEBUG ************"
+    # Dependencies belong to the image/build, not to every start. Install only
+    # for a fresh checkout that has no node_modules yet.
+    [ -d node_modules ] || npm install
+    npm run dev
+    ;;
+  *)
+    echo "*********** codx-junior client PRODUCTION ************"
+    if [ ! -f dist/index.html ]; then
+      echo "ERROR: client/dist is missing; build it once with: npm run build-only" >&2
+      exit 1
+    fi
+    npm run preview
+    ;;
+esac

@@ -20,26 +20,27 @@ Node server, and restarting it installs nothing.
 
 ### Developer flavour: `./up.sh --dev`
 
-A developer wants the *real* control plane of the checkout being worked on
-(tasks, boards, profiles, chat turns) and wants it live, without rebuilding the
-image each time one of those files changes. `--dev` does exactly that:
+A developer wants the *real* control plane of the checkout being worked on and
+wants it live, without rebuilding the image each time a file changes. The
+recommended entry point is the repo-root dev installer, which builds only when
+needed and applies the provider:
 
 ```bash
-./up.sh --dev        # builds codxjunior/codx-junior:dev from this checkout
+../../dev-install.sh --provider deepseek --key sk-xxxxxxxx
 ```
 
-* it builds the image locally (`:dev`) instead of pulling a release artifact;
-* it adds `docker-compose.dev.yaml`, which mounts the **whole `<repo>/.codx`**
-  over the container's control plane, read/write;
-* `up.sh` fills `CODX_JUNIOR_BUILD_*` from `git describe`, so the dev image also
-  reports a real `version`/`ref`/`commit` on `/api/health`.
+`./up.sh --dev` is the demo-level equivalent: it builds
+`codxjunior/codx-junior:dev` and adds `docker-compose.dev.yaml`. That overlay
+mounts the **whole checkout** (API, scripts and `.codx`), so code edits are live;
+`./dev-install.sh --reload` (or `CODX_JUNIOR_API_RELOAD=1`) makes uvicorn watch
+`api/`. The SPA still comes from the image, so a client change needs `--build`.
 
 Nothing is removed from the repository and nothing is untracked: the tracked
 control plane stays in git. Only the *generated* data plane (`.codx/db`,
 `.codx/atlas`, `.codx/chat_turns`, browser sessions, logs…) is ignored by git and
 kept out of the **release** image build context: it is runtime state, it is
 large, and the release image recreates it at first boot inside the
-`codx-junior-settings` volume. `--dev` still sees all of it, through the mount.
+`codx-junior-settings` volume. The dev mount still sees all of it.
 
 ### On a remote / cloud server
 
@@ -216,22 +217,12 @@ needs: [`ENVIRONMENT.md`](ENVIRONMENT.md).
 
 ---
 
-## 5. Development deployment (unchanged)
+## 5. Development deployment
 
-The watch/reload deployment is `codx-junior/docker-compose.yaml` (+ the
-`docker-compose.build.yaml` overlay when the images still have to be built). There
-is **no `docker-compose.dev.yaml`**: the source mount and `DEBUG=1` are hardcoded in
-that compose file, `scripts/run_api.sh` syncs the environment on start, and the web
-client only runs the Vite dev server when you switch its service to `DEBUG=1`
-(it ships with `DEBUG=0`, i.e. `npm run preview`). Use it when you hack on
-codx-junior itself, not to show it to a user.
-
-Two knobs make the source deployment behave like this one:
-
-* `CODX_JUNIOR_SKIP_INSTALL=1` — skip the recursive `chown` and `uv sync` that
-  `scripts/run_api.sh` runs on every start.
-* `CODX_JUNIOR_API_EXTRAS` — extras installed by `scripts/install_api.sh`
-  (default `local-models,browser`, empty for a slim install).
+Use the repo-root [`dev-install.sh`](../../dev-install.sh): it builds the current
+tree, runs this single-container stack with `docker-compose.dev.yaml` and mounts
+the checkout live. It is documented in [`../README.md` §5](../README.md#5-development-deployment-live-source-one-container).
+The full-stack `codx-junior/` compose is the server tier, not the dev path.
 
 ---
 

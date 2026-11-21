@@ -1624,7 +1624,7 @@ export default {
       const tokenId = this.cancellationTokenId
       if (!tokenId) return
       try {
-        await this.$storex.api.chats.cancelMessage(tokenId)
+        await this.$storex.api.chats.cancelMessage(tokenId, this.chat?.id)
       } catch (ex) {
         console.error('Failed to cancel message', ex)
       }

@@ -232,8 +232,11 @@ class AutonomyStore:
             if board:
                 state.board = board
             state.wake_requested = True
-            if wake_at:
-                state.wake_at = wake_at
+            # "Wake now" means NOW. Keeping a previously scheduled future
+            # instant made the button a no-op: is_due() honoured the future
+            # wake_at and the shift never started. An explicit `when` still
+            # schedules instead of running immediately.
+            state.wake_at = str(wake_at or "")
             return state
 
         return self.mutate_state(agent, _wake)

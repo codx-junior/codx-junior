@@ -315,6 +315,32 @@ def test_stopping_a_chat_closes_a_stalled_response_whose_lock_is_held(tmp_path):
         store.finalize(record, "cancelled", error="test cleanup")
 
 
+def test_token_only_stop_resolves_the_durable_turn(tmp_path):
+    """The UI knows only token_id; the owning process may be the worker."""
+    codx_path = str(tmp_path)
+    store = get_turn_store(codx_path)
+    record = store.begin(chat=_chat())
+    record.cancellation_token_id = "tok-cross-process"
+    store.mark_running(record)
+    _age_heartbeat(store, record)
+
+    chat = _chat(messages=[_open_response(turn_id=record.turn_id)])
+    manager = _manager(codx_path, chat)
+
+    try:
+        result = chat_cancel(
+            _request(codx_path, manager), {"token_id": "tok-cross-process"}
+        )
+
+        assert result["cancelled"] is True
+        assert result["method"] == "token_id"
+        assert result["repaired_messages"] == 1
+        assert chat.messages[0].done is True
+        assert store.cancel_requested(record.turn_id) is True
+    finally:
+        store.finalize(record, "cancelled", error="test cleanup")
+
+
 def test_stopping_a_chat_twice_is_idempotent(tmp_path):
     codx_path = str(tmp_path)
     store = get_turn_store(codx_path)

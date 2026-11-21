@@ -136,6 +136,27 @@ def test_max_wins_over_agile_when_both_are_present():
     assert effort_for(["codx-junior", "codx-junior-max"]).name == "max"
 
 
+# ── Reasoning effort (DSH parity) ───────────────────────────────────────────
+def test_codx_junior_is_high_and_max_is_max():
+    """The shipped selectors map to the DSH high/max reasoning efforts."""
+    assert effort_for(["codx-junior"]).reasoning_effort == "high"
+    assert effort_for(["codx-junior-max"]).reasoning_effort == "max"
+    assert effort_for(None).reasoning_effort is None
+
+
+def test_reasoning_effort_can_be_overridden_or_inherited():
+    assert effort_for(
+        ["codx-junior"], settings={"reasoning_effort": "max"}
+    ).reasoning_effort == "max"
+    # Explicitly clearing it inherits the tier again; junk is ignored.
+    assert effort_for(
+        ["codx-junior"], settings={"reasoning_effort": None}
+    ).reasoning_effort == "high"
+    assert effort_for(
+        ["codx-junior"], settings={"reasoning_effort": "turbo"}
+    ).reasoning_effort == "high"
+
+
 # ── Plain chat (no effort profile) ───────────────────────────────────────────
 @pytest.mark.parametrize("names", [None, [], ["some-other-profile"]])
 def test_plain_chat_gets_the_default_tier(names):
@@ -203,7 +224,7 @@ def test_explicit_true_grants_the_continuation_to_an_agile_turn():
     policy = effort_for(["codx-junior"], explicit=True)
 
     assert policy.continue_on_tool_limit is True
-    assert policy.continuations == constants.TOOL_LIMIT_CONTINUATIONS
+    assert policy.continuations == constants.AGILE_CONTINUATIONS
     assert is_agile(["codx-junior"]) is True
 
 

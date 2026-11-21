@@ -136,8 +136,14 @@ export const chatsModule = (API) => ({
     return API.delete(`/api/chats?chat_id=${chat.id}`)
   },
 
-  cancelMessage(cancellationTokenId) {
-    return API.post(`/api/chat/cancel`, { token_id: cancellationTokenId })
+  cancelMessage(cancellationTokenId, chatId) {
+    // Send BOTH keys: the turn may run in the background worker, where the API
+    // process cannot resolve the token, and the chat id is what allows the
+    // durable stop to find and close it.
+    return API.post(`/api/chat/cancel`, {
+      token_id: cancellationTokenId,
+      chat_id: chatId || undefined
+    })
   },
 
   // Live state of the project's chat turns (running / stalled / orphaned).

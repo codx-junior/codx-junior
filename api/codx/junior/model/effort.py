@@ -34,17 +34,17 @@ BUILTIN_EFFORTS: tuple = ("agile", "max", "default")
 #: One-line description of each seeded effort.
 BUILTIN_DESCRIPTIONS: Dict[str, str] = {
     "agile": (
-        "Small, bounded increments: a short budget with course corrections and "
-        "an advisory clock. A partial increment closed with its own summary is a "
-        "valid outcome. This is the default for the codx-junior harness."
+        "HIGH effort: the codx-junior harness profile. It runs the model at "
+        "reasoning_effort=high, gives it room to finish a normal task in one "
+        "turn (several tool rounds and course corrections) and keeps the clock "
+        "advisory. A partial increment closed with its own summary is valid."
     ),
     "max": (
-        "WATERFALL tier: the objective is planned as phases and each phase is "
-        "closed behind its own gate (tests, review, evidence) before the next "
-        "one starts. Long-horizon work: several hours per run, more course "
-        "corrections than agile, full-suite + coverage + security validation "
-        "and parallel workstreams for complex systems. Used by the "
-        "codx-junior-max harness; it inherits nothing from codx-junior."
+        "MAX effort: the codx-junior-max harness profile. It runs the model at "
+        "reasoning_effort=max and plans the objective as phases, closing each "
+        "one behind its own gate (tests, review, evidence) before the next one "
+        "starts. Long-horizon work with more course corrections than high, "
+        "full-suite + coverage + security validation and parallel workstreams."
     ),
     "default": (
         "Plain chat behaviour: moderate rounds, one tool batch and no course "
@@ -58,7 +58,7 @@ BUILTIN_DESCRIPTIONS: Dict[str, str] = {
 #: the definition on disk, so an existing installation receives the new method
 #: instead of keeping the file created on its first run. A built-in is owned by
 #: codx-junior: clone it under another name to keep a customized copy.
-BUILTIN_REVISION: int = 3
+BUILTIN_REVISION: int = 4
 
 
 # ── Base effort types ───────────────────────────────────────────────────────
@@ -146,13 +146,14 @@ EFFORT_TYPE_DOCS: List[Dict[str, str]] = [
 BASE_EFFORT_VALUES: Dict[str, Dict[str, Any]] = {
     "agile": {
         "strategy": "agile",
-        "max_iterations": 10,
-        "max_tool_calls": 5,
-        "max_tool_rounds": 12,
+        "reasoning_effort": "high",
+        "max_iterations": 30,
+        "max_tool_calls": 8,
+        "max_tool_rounds": 60,
         "continue_on_tool_limit": True,
-        "continuations": 2,
-        "continuation_max_iterations": 6,
-        "continuation_max_calls": 3,
+        "continuations": 3,
+        "continuation_max_iterations": 8,
+        "continuation_max_calls": 4,
         "wall_clock_seconds": 300.0,
         "target_seconds": 1200.0,
         "stop_on_wall_clock": False,
@@ -168,13 +169,14 @@ BASE_EFFORT_VALUES: Dict[str, Dict[str, Any]] = {
     },
     "waterfall": {
         "strategy": "waterfall",
-        "max_iterations": 40,
-        "max_tool_calls": 8,
-        "max_tool_rounds": 80,
+        "reasoning_effort": "max",
+        "max_iterations": 80,
+        "max_tool_calls": 12,
+        "max_tool_rounds": 160,
         "continue_on_tool_limit": True,
-        "continuations": 4,
-        "continuation_max_iterations": 12,
-        "continuation_max_calls": 6,
+        "continuations": 6,
+        "continuation_max_iterations": 20,
+        "continuation_max_calls": 8,
         "wall_clock_seconds": 14400.0,
         "target_seconds": 7200.0,
         "stop_on_wall_clock": False,
@@ -190,13 +192,14 @@ BASE_EFFORT_VALUES: Dict[str, Dict[str, Any]] = {
     },
     "obsessed": {
         "strategy": "obsessed",
-        "max_iterations": 60,
-        "max_tool_calls": 10,
-        "max_tool_rounds": 120,
+        "reasoning_effort": "max",
+        "max_iterations": 100,
+        "max_tool_calls": 16,
+        "max_tool_rounds": 200,
         "continue_on_tool_limit": True,
-        "continuations": 6,
-        "continuation_max_iterations": 16,
-        "continuation_max_calls": 8,
+        "continuations": 8,
+        "continuation_max_iterations": 24,
+        "continuation_max_calls": 10,
         "wall_clock_seconds": 21600.0,
         "target_seconds": 10800.0,
         "stop_on_wall_clock": False,
@@ -212,7 +215,8 @@ BASE_EFFORT_VALUES: Dict[str, Dict[str, Any]] = {
     },
     "fire-department": {
         "strategy": "fire-department",
-        "max_iterations": 8,
+        "reasoning_effort": "high",
+        "max_iterations": 12,
         "max_tool_calls": 6,
         "max_tool_rounds": 10,
         "continue_on_tool_limit": True,
@@ -326,6 +330,13 @@ class EffortValues(BaseModel):
     validation: Optional[str] = Field(
         default=None,
         description="Validation breadth expected before delivery.",
+    )
+    reasoning_effort: Optional[str] = Field(
+        default=None,
+        description=(
+            "Provider reasoning effort: off | low | high | max. None inherits "
+            "the base tier (high for agile, max for max)."
+        ),
     )
     tool_allowlist: Optional[List[str]] = Field(
         default=None,
@@ -562,6 +573,22 @@ EFFORT_FIELD_DOCS: List[Dict[str, Any]] = [
         ),
     },
     {
+        "key": "reasoning_effort",
+        "label": "Reasoning effort",
+        "group": "Model thinking",
+        "control": "text",
+        "unit": "off | low | high | max",
+        "summary": (
+            "How hard the model thinks before answering: the DSH-style effort "
+            "forwarded as reasoning_effort."
+        ),
+        "effect": (
+            "high is the codx-junior default and max is the codx-junior-max "
+            "default. An explicit model/provider reasoning_effort still wins; "
+            "leave it empty to inherit the tier. off disables DeepSeek thinking."
+        ),
+    },
+    {
         "key": "tool_allowlist",
         "label": "Tool allowlist",
         "group": "Validation",
@@ -709,6 +736,7 @@ EFFORT_FIELD_DOCS: List[Dict[str, Any]] = [
 #: Groups in the order the editor shows them.
 EFFORT_FIELD_GROUPS: List[str] = [
     "Method",
+    "Model thinking",
     "Turn budget",
     "Course corrections",
     "Clock",

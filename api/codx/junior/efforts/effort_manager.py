@@ -130,6 +130,7 @@ class EffortManager:
             target_seconds=policy.target_seconds,
             stop_on_wall_clock=policy.stop_on_wall_clock,
             validation=policy.validation,
+            reasoning_effort=policy.reasoning_effort,
             tool_allowlist=list(policy.tool_allowlist) if policy.tool_allowlist else None,
         )
 
@@ -169,6 +170,12 @@ class EffortManager:
             if existing and existing.created_at:
                 definition.created_at = existing.created_at
             self._write(definition)
+            # A revision bump changes the VALUES of a built-in. Profiles keep a
+            # materialized copy of the linked effort (``Profile.effort``), so
+            # without this refresh an existing installation would keep running
+            # the old budget even though the definition on disk is new.
+            if existing:
+                self.sync_profiles_using(name)
             logger.info(
                 "%s built-in effort '%s' (revision %s)",
                 "Refreshed" if existing else "Seeded",

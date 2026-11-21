@@ -2829,6 +2829,14 @@ class ChatEngine:
                     turn_record.chat_mode = chat_mode
                     turn_record.system = system
                 if turn_record is not None:
+                    if cancellation_token is not None:
+                        # Persist the token the client will receive in the
+                        # response metadata: a stop request can arrive in
+                        # another process (API vs background worker), where the
+                        # in-memory registry cannot resolve token_id -> chat.
+                        turn_record.cancellation_token_id = (
+                            cancellation_token.token_id
+                        )
                     turn_store.mark_running(
                         turn_record,
                         attempts=turn_attempt or None,

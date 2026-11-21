@@ -1,7 +1,9 @@
 # Fast deployment analysis — codx-junior
 
-Status: **partly implemented.** The demo tier (§7) is in the tree and on `main`;
-the rest of the change list is still a proposal — see §7.5 for what is open.
+Status: **historical analysis.** The demo and dev tiers are in the tree and on
+`main`; the remaining change list is a proposal — see §7.5 for what is open.
+Current commands live in [`README.md`](README.md), [`demo/README.md`](demo/README.md)
+and the repository-root `dev-install.sh`, not in this document.
 
 Scope: `codx-junior-installer/*`, `scripts/install_*.sh`, `scripts/run_*.sh`,
 `api/pyproject.toml`, `api/codx/junior/bootstrap.py`.
@@ -21,7 +23,7 @@ How to deploy: [`README.md`](README.md) (quick start) and [`demo/README.md`](dem
 | Vector store | **LanceDB replaces Milvus** as the default for the trial/local tiers. Embedded: no container, still native BM25 + dense + RRF. Milvus only for the server tier. | ✅ implemented — `knowledge_lancedb.py` behind `CODX_JUNIOR_KNOWLEDGE_BACKEND` (default `lancedb`), 15 tests |
 | LocalAI | Replaced by "bring a provider key": `bootstrap.py` presets fill the base URL, the models and the five global slots. `localai` stays as an opt-in profile for offline demos | ✅ implemented |
 | Traefik | Opt-in `--profile proxy` only; the demo serves the SPA through nginx in-process instead | ⏳ demo done, server compose not split yet |
-| DEV deployment | Kept — as an overlay/profile, never the default | ⏳ DEV is still the only compose that mounts the source |
+| DEV deployment | Kept — as an overlay, never the default: `demo/docker-compose.dev.yaml` mounts the checkout live and `dev-install.sh` builds/reuses it | ✅ implemented |
 | Client container | Gone: builder stage + nginx inside the single image | ✅ implemented in the demo tier |
 
 > **Knowledge is built in.** The vector store is LanceDB, embedded in the API
@@ -187,13 +189,11 @@ Medium:
    `workspaces`. Default `up` should start only what is needed to see the UI.
 9. **Remove the dev bind mount** `../../.:/home/codx-junior/codx-junior` from the
    production compose (keep it in an override file for development).
-10. **Real installer script.** `installer.sh` (root) currently is 3 commands with no
-    error handling: `docker-compose up codx-junior-build` (foreground, old binary
-    name), then `docker network create` (fails if it exists), then `up -d`.
-    Replace with: preflight (docker/compose version, ports, RAM), `.env` bootstrap
-    from `.env.example`, `pull` by default / `--build` opt-in, `docker network create … || true`,
-    `up -d --wait`, then print the URL. `install.sh`/`install_api.sh`/`install_client.sh`
-    become build-time only.
+10. ~~**Real installer script.**~~ **Done.** The stale root `installer.sh` is gone.
+    `install.sh` → `cloud/bootstrap.sh` → `demo/up.sh` is the production path, and
+    `dev-install.sh` is the small, pull-free, build-once dev path. The remaining
+    `scripts/install_*.sh` files are build-time helpers of the full-stack/server
+    tier only.
 
 Later (needs design + tests):
 
@@ -310,11 +310,10 @@ in-flight agent turns.
 Design — one compose base, additive overlays:
 
 * **default (`prod`)**: pull-only image, source *not* mounted, no Node, no install on start.
-* **`dev`** (`docker-compose.dev.yaml` — **not created yet: today the source mount and `DEBUG=1` are hardcoded in `docker-compose.yaml`**): source mounted, `DEBUG=1`, Vite dev server with
-  HMR (`server.watch` already ignores `**/.codx/**`), `CODX_JUNIOR_API_RELOAD=1` per
-  service choice, `node_modules`/venv in named volumes (or a `dev` build target) so
-  restarts never reinstall, several projects mounted at once (multi-project watch),
-  `docker.sock` for workspaces.
+* **`dev`** (`docker-compose.dev.yaml` — **implemented**): mounts the whole checkout
+  (source and `.codx`), `DEBUG=1`, `CODX_JUNIOR_API_RELOAD=1` opt-in, and the
+  repo-root `dev-install.sh` is the single entry point. It builds only when the
+  image is missing (or `--build`), otherwise it reuses `codxjunior/codx-junior:dev`.
 * **`proxy`**, **`local-models`**, **`anthropic`**: additive.
 
 So the DEV stack keeps every project, watcher and hot reload, while the trial path

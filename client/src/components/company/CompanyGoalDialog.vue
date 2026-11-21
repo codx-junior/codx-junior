@@ -26,6 +26,19 @@ const error = ref('')
 const teams = computed(() => props.snapshot?.teams || [])
 const projects = computed(() => props.snapshot?.projects || [])
 const editing = computed(() => Boolean(props.mission?.id))
+const autonomy = computed(() => props.snapshot?.autonomy || {})
+const selectedTeam = computed(() => teams.value.find(team => team.id === form.team_id))
+
+/**
+ * A goal created in an autonomous company (or for an autonomous team) starts
+ * itself. Defaulting every new goal to "manual" is why goals created after the
+ * autopilot was enabled never started: the autopilot only dispatches `auto`.
+ */
+function defaultDispatchMode() {
+  const autonomyOn = Boolean(autonomy.value.enabled) && autonomy.value.level !== 'off'
+  const team = selectedTeam.value
+  return autonomyOn || (team && team.autonomy !== 'manual') ? 'auto' : 'manual'
+}
 
 const form = reactive({
   title: '',
@@ -52,7 +65,7 @@ function reset() {
     priority: mission.priority || 'medium',
     due_date: (mission.due_date || '').slice(0, 10),
     budget_cxjcoins: Number(mission.budget_cxjcoins || 0),
-    dispatch_mode: mission.dispatch_mode || 'manual',
+    dispatch_mode: mission.dispatch_mode || defaultDispatchMode(),
     requires_approval: Boolean(mission.requires_approval),
     status: mission.status || 'draft'
   })
@@ -191,6 +204,13 @@ async function save() {
               <option value="manual">I will start it</option>
               <option value="auto">Start automatically when ready</option>
             </select>
+            <span
+              v-if="form.dispatch_mode === 'auto' && !autonomy.enabled"
+              class="mt-1 block text-[10px] text-warning"
+            >
+              Autopilot is off: the goal waits in the queue. Enable autonomy in
+              Company settings to let it start by itself.
+            </span>
           </label>
         </div>
 

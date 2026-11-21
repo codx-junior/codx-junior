@@ -29,6 +29,7 @@ from codx.junior.ai.smol.constants import (
     AGILE_MAX_ITERATIONS,
     AGILE_MAX_TOOL_CALLS,
     AGILE_MAX_TOOL_ROUNDS,
+    AGILE_REASONING_EFFORT,
     AGILE_TARGET_SECONDS,
     AGILE_WALL_CLOCK_SECONDS,
     DEFAULT_MAX_ITERATIONS,
@@ -41,6 +42,7 @@ from codx.junior.ai.smol.constants import (
     MAX_MAX_ITERATIONS,
     MAX_MAX_TOOL_CALLS,
     MAX_MAX_TOOL_ROUNDS,
+    MAX_REASONING_EFFORT,
     MAX_TARGET_SECONDS,
     MAX_TOOL_ROUNDS,
     MAX_WALL_CLOCK_SECONDS,
@@ -79,6 +81,7 @@ _OVERRIDABLE_FIELDS: Tuple[str, ...] = (
     "stop_on_wall_clock",
     "validation",
     "tool_allowlist",
+    "reasoning_effort",
 )
 
 
@@ -110,6 +113,9 @@ class EffortPolicy:
                                    ``stop_on_wall_clock`` is set; otherwise it
                                    is the first "hurry up" checkpoint.
         validation:                Validation breadth expected before delivery.
+        reasoning_effort:          Provider reasoning effort selected by the
+                                   tier (``high`` for agile, ``max`` for max);
+                                   ``None`` keeps the model/provider default.
         tool_allowlist:            Granted tools; ``None`` means every tool
                                    (the future prompt-size lever).
         target_seconds:            Advisory target of the turn (the agile
@@ -134,6 +140,7 @@ class EffortPolicy:
     continuation_max_calls: int
     wall_clock_seconds: float
     validation: str
+    reasoning_effort: Optional[str] = None
     tool_allowlist: Optional[Tuple[str, ...]] = None
     target_seconds: float = 0.0
     stop_on_wall_clock: bool = False
@@ -244,10 +251,27 @@ def _apply_overrides(
         value = overrides[key]
         if value is None:
             continue
+        if key == "reasoning_effort":
+            normalized = _normalize_reasoning_effort(value)
+            if normalized is None:
+                continue
+            changes[key] = normalized
+            continue
         changes[key] = _as_allowlist(value) if key == "tool_allowlist" else value
     if not changes:
         return policy
     return replace(policy, **changes)
+
+
+_REASONING_EFFORTS = ("off", "low", "high", "max")
+
+
+def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+    """Normalize a reasoning effort value; ``None`` disables the override."""
+    text = str(value or "").strip().lower()
+    if not text or text in ("inherit", "default", "auto"):
+        return None
+    return text if text in _REASONING_EFFORTS else None
 
 
 def agile_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy:
@@ -280,6 +304,7 @@ def agile_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy:
         continuation_max_calls=TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
         wall_clock_seconds=deadline,
         validation=AGILE_VALIDATION,
+        reasoning_effort=AGILE_REASONING_EFFORT,
         tool_allowlist=None,
         # ADVISORY clock: the agile target is a promise, not a deadline. The
         # turn is stressed (notices + metadata) and never stopped.
@@ -318,6 +343,7 @@ def max_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy:
         continuation_max_calls=MAX_CONTINUATION_MAX_CALLS,
         wall_clock_seconds=MAX_WALL_CLOCK_SECONDS,
         validation=MAX_VALIDATION,
+        reasoning_effort=MAX_REASONING_EFFORT,
         tool_allowlist=None,
         # A 2 h ADVISORY target inside a 4 h first checkpoint: reaching it
         # stresses the model and marks the response, it never stops the task.
@@ -350,6 +376,7 @@ def default_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy
         continuation_max_calls=TOOL_LIMIT_CONTINUATION_MAX_TOOL_CALLS,
         wall_clock_seconds=0.0,
         validation=AGILE_VALIDATION,
+        reasoning_effort=None,
         tool_allowlist=None,
     )
     return _apply_overrides(policy, settings)

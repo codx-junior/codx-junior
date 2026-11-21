@@ -214,6 +214,14 @@ class ChatTurnRecord(BaseModel):
     append_references: bool = Field(default=True, description="Turn option to replay.")
     chat_mode: Optional[str] = Field(default=None, description="Turn mode override to replay.")
     system: Optional[str] = Field(default=None, description="Extra system prompt to replay.")
+    cancellation_token_id: str = Field(
+        default="",
+        description=(
+            "Token stamped in the response meta_data. It lets /api/chat/cancel "
+            "find this turn from another process, where the in-memory token "
+            "registry of the owning process is not reachable."
+        ),
+    )
     status: str = Field(default=STATUS_QUEUED, description="queued | running | completed | failed | cancelled")
     attempts: int = Field(default=0, description="How many times the turn was started.")
     max_attempts: int = Field(default=DEFAULT_MAX_ATTEMPTS, description="Retry bound for restarts.")
@@ -323,6 +331,21 @@ class ChatTurnStore:
     def find_active(self, chat_id: str) -> List[ChatTurnRecord]:
         """Return the active turn(s) of *chat_id*."""
         return [record for record in self.list_active() if record.chat_id == chat_id]
+
+    def find_by_cancellation_token(self, token_id: str) -> Optional[ChatTurnRecord]:
+        """Return the active turn owning *token_id*, if any.
+
+        The client only knows the cancellation token it received in the
+        response metadata. When the turn runs in another process, the in-memory
+        registry cannot resolve it; the durable record can.
+        """
+        wanted = str(token_id or "").strip()
+        if not wanted:
+            return None
+        for record in self.list_active():
+            if record.cancellation_token_id == wanted:
+                return record
+        return None
 
     # -- locking ----------------------------------------------------------
 

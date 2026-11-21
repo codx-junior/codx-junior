@@ -10,7 +10,7 @@ import PlanningRangeFilter from './PlanningRangeFilter.vue'
       <div class="flex flex-col gap-3 mb-5">
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="font-semibold text-lg">Follow-up</h1>
+            <h1 class="font-semibold text-lg">Follow-up fwqefq</h1>
             <span
               v-if="totalCount"
               class="badge badge-sm badge-ghost text-base-content/50 font-normal"

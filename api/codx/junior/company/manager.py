@@ -2033,6 +2033,7 @@ class CompanyManager:
         payload = self._patch_dict(mission)
         payload["id"] = new_id("mission")
         payload.setdefault("created_by", actor)
+        explicit_dispatch = "dispatch_mode" in payload
         try:
             company_mission = Mission(**payload)
         except Exception as ex:
@@ -2044,6 +2045,16 @@ class CompanyManager:
             )
         with self.store.lock(self._company_id(company_id)):
             company = self.get_company(company_id)
+            if not explicit_dispatch:
+                # A goal created while the company runs autonomously (or owned
+                # by an autonomous team) starts itself. Without this inference
+                # every goal stayed "manual" and the autopilot never saw it.
+                team = company.team(company_mission.team_id)
+                if (
+                    (company.autonomy.enabled and company.autonomy.level != "off")
+                    or (team is not None and team.autonomy == "autonomous")
+                ):
+                    company_mission.dispatch_mode = "auto"
             self._validate_mission_destination(company, company_mission)
             if (
                 self._mission_needs_approval(company, company_mission)
@@ -2529,8 +2540,11 @@ class CompanyManager:
             changed = self._apply(company.autonomy, values, AUTONOMY_EDITABLE_FIELDS)
             if company.autonomy.level == "off":
                 company.autonomy.enabled = False
-            if company.autonomy.enabled and company.autonomy.level == "off":
-                company.autonomy.level = "supervised"
+            elif "enabled" not in values and "level" in values:
+                # Choosing a level is the user turning the autopilot on. Before,
+                # clicking "Autonomous" left `enabled=False`, so the goal panel
+                # said autonomous while nothing was ever dispatched.
+                company.autonomy.enabled = True
             if company.autonomy.last_cycle_at:
                 last = parse_iso(company.autonomy.last_cycle_at) or self._now()
                 company.autonomy.next_cycle_at = (
@@ -2800,6 +2814,33 @@ class CompanyManager:
             "autonomy": company.autonomy.model_dump(),
             "summary": summary,
         }
+
+    def sync_all_missions(self, actor: str = "autopilot-sync") -> List[Dict[str, Any]]:
+        """
+        Mirror every orchestration run onto its company mission.
+
+        The autopilot cycle already syncs the companies it processes, but a
+        company with the autopilot disabled still needs this: its runs are
+        started by a human and would otherwise stay ``running`` forever after
+        the project worker finished them. The background loop calls this on
+        every tick, so mission state follows the run even when no cycle runs.
+
+        Args:
+            actor: Username recorded in the journal.
+
+        Returns:
+            One sync report per company (failures included).
+        """
+        reports: List[Dict[str, Any]] = []
+        for summary in self.list_companies():
+            company_id = summary["id"]
+            try:
+                reports.append(self.sync_missions(company_id, actor=actor))
+            except Exception as ex:  # pragma: no cover - defensive
+                logger.warning(
+                    "Company sync failed for '%s': %s", company_id, ex
+                )
+        return reports
 
     def run_due_cycles(self, actor: str = "autopilot") -> List[Dict[str, Any]]:
         """
@@ -3594,6 +3635,12 @@ class CompanyManager:
                 reason = "approval"
             elif mission.status == "blocked":
                 reason = "blocked"
+            elif (
+                mission.status == "ready"
+                and mission.dispatch_mode == "auto"
+                and not company.autonomy.enabled
+            ):
+                reason = "autopilot_off"
             elif mission.last_error:
                 reason = "error"
             elif mission.due_date:

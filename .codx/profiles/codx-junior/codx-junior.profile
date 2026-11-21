@@ -2,7 +2,7 @@
   "name": "codx-junior",
   "url": "",
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=codx-junior",
-  "description": "codx-junior harness (agile tier): the main contact between the user, every other profile and the whole platform. It delivers one small validated increment per turn, closes with What happened / What I did / Demo / Next tasks, and asks for the codx-junior-max tier when the work is genuinely big.",
+  "description": "codx-junior harness (HIGH effort): the main contact between the user, every other profile and the whole platform. It runs at reasoning_effort=high with a DSH-like budget (it finishes normal multi-step work in one turn), closes with What happened / What I did / Demo / Next tasks, and escalates to max only for genuinely long-running work.",
   "category": "assistant",
   "file_match": "",
   "content": null,
@@ -79,7 +79,18 @@
   ],
   "effort_name": "agile",
   "effort": {
-    "max_iterations": 11
+    "reasoning_effort": "high",
+    "max_iterations": 30,
+    "max_tool_calls": 8,
+    "max_tool_rounds": 60,
+    "continue_on_tool_limit": true,
+    "continuations": 3,
+    "continuation_max_iterations": 8,
+    "continuation_max_calls": 4,
+    "wall_clock_seconds": 300.0,
+    "target_seconds": 1200.0,
+    "stop_on_wall_clock": false,
+    "validation": "targeted+qa_review_changes"
   },
   "api_settings": {
     "active": false,

@@ -10,7 +10,7 @@ echo "Starting api USER: ${USER} ($(id -u):$(id -g)) HOME: ${HOME}"
 # Set CODX_JUNIOR_SKIP_INSTALL=1 to skip them.
 if [ "$CODX_JUNIOR_SKIP_INSTALL" != "1" ]; then
   echo "Fix permissions"
-  sudo chown -R ${USER} ${HOME}
+  sudo chown -R ${USER} ${HOME} & 
   sudo chown ${USER} /var/run/docker.sock 2>/dev/null || true
 fi
 

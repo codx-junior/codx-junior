@@ -1,18 +1,18 @@
 # =============================================================================
-# codx-junior — DEV overlay (used by `./up.sh --dev`, never by an install)
+# codx-junior — DEV overlay (used by ./dev-install.sh, never by an install)
 #
-# The release image carries no control plane on purpose: `.codx` is state, it is
-# created at first boot and it persists in the `codx-junior-settings` volume.
-# A developer, on the other hand, wants the real thing — tasks, boards, profiles
-# and chat turns of the checkout he is working on — without baking 1.5 GB of
-# runtime data into an image and without rebuilding every time it changes.
+# The release image is a built artifact: no source, no control plane. A
+# developer wants the opposite — the checkout being edited, live, with the real
+# `.codx` (tasks, boards, profiles, chat turns) and without rebuilding the image
+# every time a Python file changes.
 #
-# So the `-dev` flavour mounts the repository instead of copying it:
-#   * build from this checkout            -> `codxjunior/codx-junior:dev`
-#   * <repo>/.codx -> the app's `.codx`   -> live control plane, read/write
-#
-# `up.sh --dev` sets CODX_JUNIOR_BUILD_* from `git describe`, so the dev image
-# reports a real `version`/`ref`/`commit` on /api/health too.
+# So this overlay:
+#   * builds codxjunior/codx-junior:dev from the checkout;
+#   * mounts the repository at the app path, so api/, scripts/, set_env.sh and
+#     .codx are the working tree (no rebuild for a code change);
+#   * turns on DEBUG logging. Source reload is opt-in through
+#     CODX_JUNIOR_API_RELOAD=1 (`./dev-install.sh --reload`), because a reload
+#     interrupts in-flight agent turns.
 # =============================================================================
 services:
   codx-junior:
@@ -23,9 +23,11 @@ services:
         CODX_JUNIOR_BUILD_VERSION: ${CODX_JUNIOR_BUILD_VERSION:-unknown}
         CODX_JUNIOR_BUILD_REF: ${CODX_JUNIOR_BUILD_VERSION:-unknown}
         CODX_JUNIOR_BUILD_COMMIT: ${CODX_JUNIOR_BUILD_COMMIT:-unknown}
+    environment:
+      DEBUG: "1"
+      CODX_JUNIOR_SKIP_INSTALL: "1"
     volumes:
-      # The control plane of this checkout, live. Anything the container writes
-      # (chat turns, boards, profiles) lands in the repository: that is the
-      # point of the dev flavour, and it is also why the release image does not
-      # do this.
-      - ../../.codx:/home/codx-junior/codx-junior/.codx
+      # The whole checkout, not just .codx: the API imports its code from this
+      # path (scripts/run_api.sh puts api/ on PYTHONPATH), so an edit is live as
+      # soon as the process restarts — or immediately with --reload.
+      - ../../:/home/codx-junior/codx-junior

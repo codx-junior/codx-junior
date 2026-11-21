@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,22 +34,56 @@ class CancellationToken:
         self.token_id: str = str(uuid.uuid4())
         self.cancelled_at: Optional[datetime] = None
         self._event = asyncio.Event()
+        # Abort hooks run when the token is cancelled: the agent registers one
+        # to close the in-flight provider stream, which is what makes "stop"
+        # immediate instead of waiting for the next chunk (or the whole model
+        # round) to arrive.
+        self._callbacks: List[Callable[[], None]] = []
+        self._callbacks_lock = threading.Lock()
 
     @property
     def is_cancelled(self) -> bool:
         return self.cancelled_at is not None
 
+    def add_callback(self, callback: Callable[[], None]) -> None:
+        """Run *callback* on cancellation (immediately when already cancelled)."""
+        if not callable(callback):
+            return
+        run_now = False
+        with self._callbacks_lock:
+            if self.is_cancelled:
+                run_now = True
+            else:
+                self._callbacks.append(callback)
+        if run_now:
+            self._run_callback(callback)
+
+    @staticmethod
+    def _run_callback(callback: Callable[[], None]) -> None:
+        """Invoke one abort hook, never letting it break cancellation."""
+        try:
+            callback()
+        except Exception:  # pragma: no cover - abort hooks are best effort
+            logger.exception("CancellationToken callback failed")
+
     def cancel(self) -> None:
-        """Mark this token as cancelled."""
-        if not self.is_cancelled:
+        """Mark this token as cancelled and run every abort hook."""
+        callbacks: List[Callable[[], None]] = []
+        with self._callbacks_lock:
+            if self.is_cancelled:
+                return
             self.cancelled_at = datetime.now(tz=timezone.utc)
-            self._event.set()
-            logger.info(
-                "CancellationToken cancelled for chat_id='%s' token_id='%s' at %s",
-                self.chat_id,
-                self.token_id,
-                self.cancelled_at,
-            )
+            callbacks = list(self._callbacks)
+            self._callbacks.clear()
+        self._event.set()
+        logger.info(
+            "CancellationToken cancelled for chat_id='%s' token_id='%s' at %s",
+            self.chat_id,
+            self.token_id,
+            self.cancelled_at,
+        )
+        for callback in callbacks:
+            self._run_callback(callback)
 
     def check(self) -> None:
         """
@@ -63,7 +98,13 @@ class CancellationToken:
 
     async def wait_for_cancellation(self) -> datetime:
         """Async wait until the token is cancelled. Returns the cancellation time."""
-        await self._event.wait()
+        # ``cancel()`` may run in the watcher thread, so polling the flag is the
+        # only loop-safe way to observe it from the event loop.
+        while not self.is_cancelled:
+            try:
+                await asyncio.wait_for(self._event.wait(), timeout=0.25)
+            except asyncio.TimeoutError:
+                continue
         return self.cancelled_at
 
 

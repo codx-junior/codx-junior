@@ -5,7 +5,7 @@ Three deployments, one command each. Pick the one that matches what you are doin
 | You want to… | Deployment | Where | Containers |
 |---|---|---|---|
 | **try codx-junior**, show it to somebody, evaluate it | **demo** | [`demo/`](demo/) | **1** |
-| hack on codx-junior itself (watch + hot reload) | **dev** | `codx-junior/` + `docker-compose.dev.yaml` | 2 + tools |
+| hack on codx-junior itself (live source) | **dev** | `./dev-install.sh` (repository root) | **1** |
 | run it for a team (TLS, workspaces, local models) | **server** | `codx-junior/` + profiles | up to 8 |
 
 Start with the demo. It is the only path that needs no domain, no TLS, no vector
@@ -199,45 +199,42 @@ CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus
 CODX_JUNIOR_MILVUS_URL=http://my-milvus:19530
 ```
 
-## 5. Development deployment (watch + hot reload)
+## 5. Development deployment (live source, one container)
 
-Use this when you change codx-junior itself, not to show it to users.
-
-There is **no `docker-compose.dev.yaml`**: the source mount and `DEBUG` are hardcoded
-in `docker-compose.yaml`, where the api and api-background services run with `DEBUG=1`
-and mount `../../.` over the image. That compose file *is* the dev setup.
+Use this when you change codx-junior itself, not to show it to users. The dev
+installer is the small counterpart of `install.sh`: it builds the current tree,
+runs the same single-container stack as the demo and mounts the checkout — API,
+scripts and the `.codx` control plane — into the container.
 
 ```bash
-cd codx-junior-installer/codx-junior
-cp .env.example .env
-docker compose -f docker-compose.yaml up -d              # images must exist already
-docker compose -f docker-compose.yaml -f docker-compose.build.yaml up -d --build
+# from the repository root
+./dev-install.sh --provider deepseek --key sk-xxxxxxxx
+# -> http://localhost:19981
 ```
 
-What it gives you: the source tree mounted over the image, `DEBUG=1` on the API,
-`uv sync` + the recursive `chown` on every start, and the API watching when
-`CODX_JUNIOR_API_RELOAD=1`. Every project folder under
-`CODX_JUNIOR_PROJECTS_PATH` is visible at once.
+It only needs Docker and the compose v2 plugin. Unlike `install.sh` it never
+clones, never installs Docker, and has no TLS, domain, firewall, cloud-init,
+admin bootstrap or operations CLI.
 
-> The **web client** runs `npm run preview` (a production build in a Node server)
-> because its service sets `DEBUG=0`. Set `DEBUG=1` on `codx-junior-client` in
-> `docker-compose.yaml` to get the Vite dev server and HMR instead.
-
-That deployment is deliberately generous with resources. To stop paying for the
-installs on every restart, and to make the images slimmer, set:
-
-| Variable | Effect |
+| Flag | Effect |
 |---|---|
-| `CODX_JUNIOR_SKIP_INSTALL=1` | skip the recursive `chown` + `uv sync` that `scripts/run_api.sh` runs on every start |
-| `CODX_JUNIOR_API_EXTRAS` | extras installed by `scripts/install_api.sh` (default `local-models,browser`, empty for a slim install) |
-| `CODX_JUNIOR_API_RELOAD=1` | uvicorn `--reload`; off by default because a reload interrupts in-flight agent turns |
+| `--reload` | `uvicorn --reload` on `api/` changes (off by default: a reload interrupts agent turns) |
+| `--build` | rebuild `codxjunior/codx-junior:dev` after Dockerfile/pyproject changes |
+| `--port`, `--projects` | published port, host projects folder |
+| `--logs`, `--down`, `--purge` | follow logs, stop keeping data, stop and delete the volumes |
+
+API code is live because [`demo/docker-compose.dev.yaml`](demo/docker-compose.dev.yaml)
+mounts the repository at the app path (`scripts/run_api.sh` puts `api/` on
+`PYTHONPATH`). The SPA is still the image's compiled build, so a client change
+needs `--build`. The full-stack `codx-junior/` compose below is the **server**
+tier, not the dev path.
 
 If you only need the **full feature set** (local embeddings, Playwright, TeX, OCR)
 without editing the source, that is the server tier below.
 
 ## 6. Server deployment (TLS, workspaces, local models)
 
-Same compose project as the dev deployment, without the build overlay:
+This is the full-stack compose, not the dev path:
 
 ```bash
 cd codx-junior-installer/codx-junior

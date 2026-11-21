@@ -62,12 +62,6 @@ export const APP_COMPONENTS_MAP = {
   'vibe-coding': lazy(() => import('../views/VibeCodingView.vue')),
   'workspaces': lazy(() => import('../components/workspaces/WorkspacesManager.vue')),
   'infra': lazy(() => import('../views/infra/InfraView.vue')),
-  // Company shell (team/people/missions/settings). Same component in both
-  // modes: a dockview panel on desktop and the company route otherwise.
-  'company': lazy(() => import('../views/CompanyView.vue')),
-  // Solopreneur mode as a desktop panel (single/mobile mode uses the
-  // "/solopreneur" route — see router/index.ts).
-  'solopreneur': lazy(() => import('../views/SolopreneurView.vue'))
 }
 
 // Additional components not mapped to apps

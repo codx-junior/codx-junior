@@ -1,16 +1,22 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // Project links
 //
-// One project == one URL: "${origin}/${project_name}". Switching project inside
-// the app replaces the document with exactly that URL (see
-// layout/AppsSection.vue), so opening a project in a NEW browser tab only needs
-// to reuse it.
+// One project == one URL: "${origin}/${companySlug}/workspace/${project_name}".
+// Switching project inside the app replaces the document with exactly that URL
+// (see layout/AppsSection.vue), so opening a project in a NEW browser tab only
+// needs to reuse it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Absolute URL of a project's workspace, or null when it can't be resolved
+import { $storex } from '@/store'
+
+// Absolute URL of a project's workspace, or null when it can't be resolved.
+// The company is the root: /<companySlug>/workspace/<projectName>.
 export function projectUrl(project) {
   if (!project?.project_name) return null
-  return `${window.location.origin}/${project.project_name}`
+  const companySlug = $storex.company?.activeCompany?.slug ||
+    $storex.company?.defaultCompany?.slug
+  if (!companySlug) return null
+  return `${window.location.origin}/${encodeURIComponent(companySlug)}/workspace/${encodeURIComponent(project.project_name)}`
 }
 
 // Whether the event is the browser's "open in a new tab" gesture:

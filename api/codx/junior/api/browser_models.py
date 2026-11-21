@@ -205,6 +205,14 @@ class BrowserSessionCreateRequest(BaseModel):
     guest_share_path: Optional[str] = Field(
         default=None, description="Where the shared folder appears in the VM guest"
     )
+    background: bool = Field(
+        default=False,
+        description=(
+            "Accept the order and start the machine in background: the response "
+            "carries the session in status 'creating' and the progress travels "
+            "through the computer_sessions collection event"
+        ),
+    )
 
 
 class BrowserSessionUpdateRequest(BaseModel):

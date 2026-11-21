@@ -362,6 +362,7 @@ class BrowserManager:
         extra_env: Optional[Dict[str, str]] = None,
         desktop_width: Optional[int] = None,
         desktop_height: Optional[int] = None,
+        defer_start: bool = False,
     ) -> BrowserSession:
         """
         Create and start a new browser session.
@@ -570,6 +571,32 @@ class BrowserManager:
                 self.delete_session(session.id)
                 raise
 
+        if defer_start:
+            # Two-phase creation: everything above is fast (the record, the
+            # mounts and the profile are ready) and the slow half — image pull,
+            # ``docker run`` and readiness polling — is done by
+            # :meth:`start_session` on a background thread.  The record is
+            # persisted as ``creating`` so every client can render the card and
+            # follow the status events while the machine boots.
+            session.status = "creating"
+            self._save_session_file(session)
+            self.log_activity(
+                session,
+                actor="system",
+                action="create",
+                chat_id=chat_id,
+                params={
+                    "name": session.name,
+                    "kind": session.kind,
+                    "background": True,
+                },
+            )
+            logger.info(
+                "Created %s session %s ('%s') in background for chat %s",
+                session.kind, session.id[:8], session.name, chat_id,
+            )
+            return session
+
         logger.info(
             "Creating %s session %s ('%s') for chat %s",
             session.kind, session.id[:8], session.name, chat_id,
@@ -599,6 +626,80 @@ class BrowserManager:
             title=session.current_title,
         )
         return session
+
+    def start_session(self, session_id: str) -> Optional[BrowserSession]:
+        """
+        Start the machine of a session created with ``defer_start=True``.
+
+        This is the second half of a background creation: the slow steps (image
+        pull, ``docker run`` and readiness polling) run here, off the request
+        that accepted the order.  The record is persisted again on success and
+        on failure, so a client polling the session never stays stuck in
+        ``creating``.
+
+        Args:
+            session_id: Session created with ``defer_start``.
+
+        Returns:
+            The started session, or ``None`` when it no longer exists (it was
+            deleted while the background start was queued).
+
+        Raises:
+            Exception: whatever the container start raised, after the session is
+                persisted with ``status='error'``.
+        """
+        session = self.get_session(session_id)
+        if not session:
+            logger.warning("start_session: session %s not found", session_id[:8])
+            return None
+        try:
+            started = self.docker_manager.start_container(session)
+            self._save_session_file(started)
+            self.log_activity(
+                started,
+                actor="system",
+                action="start",
+                params={"name": started.name, "background": True},
+                url=started.current_url,
+                title=started.current_title,
+            )
+            logger.info("Started session %s in background", session_id[:8])
+            return started
+        except Exception as ex:
+            logger.exception("Could not start session %s: %s", session_id[:8], ex)
+            session.status = "error"
+            try:
+                self._save_session_file(session)
+            except Exception:  # pragma: no cover - best effort while failing
+                logger.exception("Could not persist the failed session %s", session_id[:8])
+            raise
+
+    def mark_session_deleting(self, session: BrowserSession) -> None:
+        """
+        Persist the ``deleting`` status and remove the session in background.
+
+        Stopping the container and moving the profile to trash take seconds and
+        depend on Docker: the request that accepted the order answers at once
+        and the removal continues on a daemon thread.
+
+        Args:
+            session: Session to delete.
+        """
+        session.status = "deleting"
+        self._save_session_file(session)
+        threading.Thread(
+            target=self._delete_session_in_background,
+            args=(session.id,),
+            daemon=True,
+        ).start()
+
+    def _delete_session_in_background(self, session_id: str) -> None:
+        """Worker of :meth:`mark_session_deleting` (never raises)."""
+        try:
+            self.delete_session(session_id)
+            logger.info("Deleted session %s in background", session_id[:8])
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.exception("Background deletion of session %s failed: %s", session_id[:8], ex)
 
     def update_session(
         self,

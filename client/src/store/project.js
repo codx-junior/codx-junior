@@ -627,39 +627,57 @@ export const actions = actionTree(
     },
     async restoreLastActiveProject({ state }) {
       try {
-        // 1) Prefer the project encoded in the URL base path (deep link / refresh)
-        //    e.g. "/my.project/chats" → "my.project"
         const base = import.meta.env.BASE_URL || '/'
         let pathname = window.location.pathname
         if (base !== '/' && pathname.startsWith(base)) {
           pathname = pathname.slice(base.length - 1)
         }
-        const segment = pathname.split('/').filter(Boolean)[0]
+        const segments = pathname.split('/').filter(Boolean)
+        const sections = new Set([
+          'home', 'work', 'team', 'projects', 'business', 'activity',
+          'security', 'settings', 'meet', 'coworking', 'calendar',
+          'auth', 'company', 'solopreneur'
+        ])
 
-        // Top-level screens that are NOT project-scoped:
-        //   • "/auth/:provider" — OAuth callbacks, owned by the router guard.
-        //   • "/solopreneur"    — Solopreneur mode (see views/SolopreneurView.vue).
-        //   • "/company"        — the company shell (see views/CompanyView.vue).
-        // They must not be resolved as a project name: an unknown segment would
-        // activate a fallback project AND replace the deep link with the project
-        // home, so a reload of "/company" would bounce away from the screen.
-        const unscopedSegments = ['auth', 'solopreneur', 'company']
-
-        if (segment && !unscopedSegments.includes(segment)) {
-          const urlProjectName = decodeURIComponent(segment)
-          const urlProject = state.allProjects?.find(p => p.project_name === urlProjectName)
-          if (urlProject) {
-            await $storex.projects.activeProjectChanged(urlProject)
+        // New company URL: /<companySlug>/workspace/<projectName>/...
+        const workspaceIndex = segments.indexOf('workspace')
+        if (workspaceIndex >= 0) {
+          const projectName = decodeURIComponent(segments[workspaceIndex + 1] || '')
+          const project = state.allProjects?.find(item =>
+            item.project_name === projectName || item.project_id === projectName
+          )
+          if (project) {
+            await $storex.projects.activeProjectChanged(project)
             return
           }
-
-          // URL points to an unknown project → activate a fallback and go home.
           await $storex.projects.activateFallbackProject()
-          $storex.$router?.replace({ name: 'home' })?.catch(() => {})
           return
         }
 
-        // 2) No project in the URL → fall back to the last project used on this browser
+        // Company shell: /<companySlug> or /<companySlug>/<section>. No URL
+        // project to activate; keep a fallback for company actions that still
+        // need one, but never redirect the company route away.
+        const isCompanyPath = segments.length === 1 ||
+          (segments.length > 1 && sections.has(segments[1]))
+        if (isCompanyPath) {
+          await $storex.projects.activateFallbackProject()
+          return
+        }
+
+        // Legacy /<projectName>/... URL. The router guard redirects it to the
+        // canonical company/workspace path; activate the project now so the
+        // destination has the right context.
+        const legacyName = decodeURIComponent(segments[0] || '')
+        if (legacyName) {
+          const project = state.allProjects?.find(item =>
+            item.project_name === legacyName || item.project_id === legacyName
+          )
+          if (project) {
+            await $storex.projects.activeProjectChanged(project)
+            return
+          }
+        }
+
         await $storex.projects.activateFallbackProject()
       } catch (error) {
         console.error('Failed to restore last active project:', error)

@@ -28,8 +28,10 @@ function toQuery(params = {}) {
 export const tasksModule = (API) => ({
   /**
    * One page of the global task table.
-   * @param {Object} params - q, project_id, board, column, status, priority,
-   *   team_id, include_done, page, page_size, sort, direction.
+   * @param {Object} params - q, project_id, project_ids, board, board_ids,
+   *   column, columns, status, statuses, priority, priorities, team_id,
+   *   assignee, assignees, from_date, to_date, include_done, page, page_size,
+   *   sort, direction.
    */
   list(params = {}) {
     return API.get(`${BASE}${toQuery(params)}`)

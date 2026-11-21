@@ -69,7 +69,10 @@ export default {
   },
   computed: {
     pinnedProjects() {
-      return this.$storex.ui.pinnedProjectsList || []
+      const pinned = this.$storex.ui.pinnedProjectsList || []
+      if (!this.$storex.company?.loaded) return pinned
+      const visible = new Set((this.$storex.company.visibleProjectIds || []).map(String))
+      return pinned.filter(project => visible.has(String(project.project_id)))
     },
     activeProjectId() {
       return this.$storex.projects.activeProject?.project_id

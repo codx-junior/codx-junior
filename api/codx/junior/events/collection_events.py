@@ -79,6 +79,11 @@ COLLECTION_BOARDS = "boards"
 # are installation-wide, so the project travels in the payload when it matters.
 COLLECTION_CALENDARS = "calendars"
 COLLECTION_CALENDAR_EVENTS = "calendar_events"
+# Coworking (co-desktop) sessions. Creating one pulls an image and runs a
+# container, deleting one stops it: both take seconds. The order is answered
+# immediately and the machine reports every status change here, so the client
+# keeps a "creating"/"deleting" card instead of blocking on the request.
+COLLECTION_COMPUTER_SESSIONS = "computer_sessions"
 
 COLLECTIONS = frozenset({
     COLLECTION_PROJECTS,
@@ -87,6 +92,7 @@ COLLECTIONS = frozenset({
     COLLECTION_BOARDS,
     COLLECTION_CALENDARS,
     COLLECTION_CALENDAR_EVENTS,
+    COLLECTION_COMPUTER_SESSIONS,
 })
 
 

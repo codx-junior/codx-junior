@@ -36,7 +36,10 @@ export default {
   },
   computed: {
     filteredProjects() {
-      const projects = this.$projects.allProjects.sort((a, b) => 
+      const visible = this.$storex.company?.loaded
+        ? (this.$storex.company.companyProjects || [])
+        : (this.$projects.allProjects || [])
+      const projects = [...visible].sort((a, b) => 
         Object.keys(a.metrics?.heatmap || {}).length > Object.keys(b.metrics?.heatmap || {}).length ? -1 : 1 
       )
       return this.filterQuery ? projects.filter(project =>

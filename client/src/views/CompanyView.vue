@@ -36,16 +36,16 @@ const route = useRoute()
 const router = useRouter()
 const api = API.companies
 
-const STORAGE_KEY = 'codx.company.id'
-const SECTION_KEY = 'codx.company.section'
 const THEME_KEY = 'codx.company.theme'
 const SIDEBAR_KEY = 'codx.company.sidebar'
 
 const loading = ref(true)
 const busy = ref(false)
-const companies = ref([])
-const activeId = ref('')
-const snapshot = ref(null)
+// The company store is the single source of truth for the active company and
+// its snapshot; the URL slug is resolved by the router guard.
+const companies = computed(() => $storex.company.companies)
+const activeId = computed(() => $storex.company.activeId)
+const snapshot = computed(() => $storex.company.snapshot)
 const companyActors = ref({ actors: [], counts: {} })
 const companyReferences = ref({ projects: [], users: [], profiles: [] })
 const companyChats = ref([])
@@ -221,19 +221,37 @@ function notifyError(error) {
 
 // ── Loading ────────────────────────────────────────────────────────────────
 
-async function loadCompanies() {
-  companies.value = await api.list()
-  if (!companies.value.length) {
-    activeId.value = ''
-    snapshot.value = null
-    return
+async function loadActiveCompany() {
+  loading.value = true
+  try {
+    await $storex.company.ensureLoaded()
+    const slug = String(route.params.companySlug || '')
+    const company = companies.value.find(item => item.slug === slug) ||
+      $storex.company.defaultCompany
+    if (!company) return
+    if (slug && company.slug !== slug) {
+      router.replace({ name: 'company-home', params: { companySlug: company.slug } }).catch(() => {})
+      return
+    }
+    if ($storex.company.activeId !== company.id || !$storex.company.snapshot) {
+      await $storex.company.select({ companyId: company.id, skipList: true })
+    }
+    // Never keep a project from another company active in the company shell.
+    const active = $storex.projects.activeProject
+    if (active && !$storex.company.hasProject(active.project_id)) {
+      const first = $storex.company.companyProjects[0]
+      if (first) {
+        await $storex.projects.activeProjectChanged(first).catch(() => {})
+      }
+    }
+    await loadCompanyActors(company.id)
+    await loadCompanyChats()
+    await loadCompanyReferences()
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    loading.value = false
   }
-  const routeCompany = String(route.query.company || route.params.companyId || '')
-  const stored = localStorage.getItem(STORAGE_KEY) || ''
-  const candidate = companies.value.find(item => item.id === routeCompany)
-    || companies.value.find(item => item.id === stored)
-    || companies.value[0]
-  await selectCompany(candidate.id, { skipList: true })
 }
 
 async function loadCompanyActors(companyId) {
@@ -263,7 +281,7 @@ async function loadCompanyReferences() {
 async function refreshSnapshot() {
   if (!activeId.value) return
   try {
-    snapshot.value = await api.snapshot(activeId.value)
+    await $storex.company.refresh()
     await loadCompanyActors(activeId.value)
     await loadCompanyChats()
     await loadCompanyReferences()
@@ -274,8 +292,8 @@ async function refreshSnapshot() {
 
 // ── Projects ──────────────────────────────────────────────────────────────
 // The project list is a company setting: it is what the company "can work
-// with". The default company starts linked to every project, and the user can
-// change the list here or create another company with its own list.
+// with". The default company starts with every project (`all_projects`), and
+// the user can change the list here or create another company with its own list.
 async function linkCompanyProject({ project_id, payload } = {}) {
   if (!activeId.value || !project_id) return
   busy.value = true
@@ -304,15 +322,56 @@ async function unlinkCompanyProject(projectId) {
   }
 }
 
+async function setAllCompanyProjects(value) {
+  if (!activeId.value) return
+  busy.value = true
+  try {
+    await $storex.company.setAllProjects(value)
+    await loadCompanyReferences()
+    notify(value ? 'Company sees all projects' : 'Company sees the selected projects', 'success')
+  } catch (error) {
+    notifyError(error)
+  } finally {
+    busy.value = false
+  }
+}
+
+function companySlug() {
+  return $storex.company.activeCompany?.slug || $storex.company.activeSlug || String(route.params.companySlug || '')
+}
+
 async function openProjectByName(projectName) {
   if (!projectName) return
   const project = ($storex.projects.allProjects || []).find(item =>
     item.project_name === projectName || item.project_id === projectName
   )
+  const slug = companySlug()
+  if (!slug) return
   if (project) {
     await $storex.projects.activeProjectChanged(project).catch(() => {})
   }
-  router.push({ name: 'home', params: { projectName } }).catch(() => {})
+  router.push({
+    name: 'home',
+    params: { companySlug: slug, projectName }
+  }).catch(() => {})
+}
+
+function openAdvancedView() {
+  const slug = companySlug()
+  if (!slug) return
+  exitOpen.value = false
+  const selected = ($storex.projects.activeProject &&
+    $storex.company.hasProject($storex.projects.activeProject.project_id))
+    ? $storex.projects.activeProject
+    : $storex.company.companyProjects[0]
+  if (!selected) {
+    setSection('projects')
+    notify('Link or create a project before opening the advanced view.', 'error')
+    return
+  }
+  router.push(
+    `/${encodeURIComponent(slug)}/workspace/${encodeURIComponent(selected.project_name)}/desktop`
+  ).catch(() => {})
 }
 
 function openNewCompany() {
@@ -335,8 +394,12 @@ async function createCompany() {
       description: newCompanyForm.value.description.trim()
     })
     newCompanyOpen.value = false
-    companies.value = await api.list()
-    await selectCompany(created.id, { skipList: true })
+    await $storex.company.loadCompanies()
+    const company = $storex.company.companies.find(item => item.id === created.id) || created
+    await router.push({
+      name: 'company-home',
+      params: { companySlug: company.slug }
+    }).catch(() => {})
     notify('Company created ✓', 'success')
   } catch (error) {
     newCompanyError.value = errorMessage(error)
@@ -347,33 +410,34 @@ async function createCompany() {
 
 async function selectCompany(companyId, { skipList = false } = {}) {
   if (!companyId) return
-  activeId.value = companyId
-  localStorage.setItem(STORAGE_KEY, companyId)
-  busy.value = true
-  try {
-    if (!skipList) companies.value = await api.list()
-    snapshot.value = await api.snapshot(companyId)
-    await loadCompanyActors(companyId)
-    await loadCompanyChats()
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    busy.value = false
-  }
+  const company = companies.value.find(item => item.id === companyId)
+  if (!company) return
+  const targetSection = section.value && section.value !== 'home' ? section.value : undefined
+  await router.push({
+    name: 'company-home',
+    params: {
+      companySlug: company.slug,
+      ...(targetSection ? { section: targetSection } : {})
+    }
+  }).catch(() => {})
 }
 
 function setSection(id, { updateRoute = true } = {}) {
   const next = SECTIONS.some(item => item.id === id) ? id : 'home'
   section.value = next
-  localStorage.setItem(SECTION_KEY, next)
   navOpen.value = false
   if (updateRoute) {
-    const query = { ...route.query, section: next }
-    delete query.tab
-    router.replace({ query }).catch(() => {})
+    const slug = companySlug()
+    if (!slug) return
+    router.push({
+      name: 'company-home',
+      params: {
+        companySlug: slug,
+        ...(next !== 'home' ? { section: next } : {})
+      }
+    }).catch(() => {})
   }
 }
-
 // ── Assistant ──────────────────────────────────────────────────────────────
 
 function askAssistant(prompt = '') {
@@ -491,54 +555,44 @@ function openAssistantFor(prompt) {
 }
 
 async function onCompanyDeleted() {
-  snapshot.value = null
-  activeId.value = ''
   notify('Company deleted', 'info')
-  await loadCompanies()
+  $storex.company.reset()
+  await $storex.company.loadCompanies()
+  const company = $storex.company.defaultCompany
+  if (company?.slug) {
+    router.replace({ name: 'company-home', params: { companySlug: company.slug } }).catch(() => {})
+  } else {
+    router.replace('/').catch(() => {})
+  }
 }
 
-async function leaveCompany(mode) {
-  exitOpen.value = false
-  try {
-    // Leave the company shell explicitly. Without this preference the app
-    // would route the next page back into company mode.
-    await $storex.users.setWorkspaceMode('work')
-  } catch (error) {
-    // The destination is still useful even if the preference cannot persist.
-  }
-  if (mode === 'simple') {
-    router.push({ name: 'solopreneur' }).catch(() => {})
-    return
-  }
-  const project = workingProject.value
-  router.push(project ? `/${project.project_name || project.project_id}` : '/').catch(() => {})
-}
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
 onMounted(async () => {
-  loading.value = true
-  try {
-    await loadCompanies()
-    await loadCompanyReferences()
-    const preferredLanguage = $storex.api.user?.language
-    if (preferredLanguage && preferredLanguage !== 'auto') setCompanyLanguage(preferredLanguage)
-  } catch (error) {
-    notifyError(error)
-  } finally {
-    loading.value = false
-    const requested = String(route.query.section || route.query.tab || localStorage.getItem(SECTION_KEY) || 'home')
-    setSection(legacySection(requested), { updateRoute: false })
-    const intent = route.query.assistant
-    if (intent) {
-      nextTick(() => askAssistant(String(intent)))
-      const rest = { ...route.query }
-      delete rest.assistant
-      delete rest.tab
-      router.replace({ query: rest }).catch(() => {})
-    }
+  const requested = String(route.params.section || route.query.section || route.query.tab || 'home')
+  section.value = legacySection(requested)
+  await loadActiveCompany()
+  const preferredLanguage = $storex.api.user?.language
+  if (preferredLanguage && preferredLanguage !== 'auto') setCompanyLanguage(preferredLanguage)
+  const intent = route.query.assistant
+  if (intent) {
+    nextTick(() => askAssistant(String(intent)))
+    const rest = { ...route.query }
+    delete rest.assistant
+    delete rest.tab
+    router.replace({ query: rest }).catch(() => {})
   }
 })
+
+watch(
+  () => [route.params.companySlug, route.params.section],
+  async ([slug, requested]) => {
+    if (!slug) return
+    section.value = legacySection(requested || 'home')
+    await loadActiveCompany()
+  }
+)
 
 function legacySection(value) {
   const map = {
@@ -562,7 +616,7 @@ function legacySection(value) {
 }
 
 watch(() => route.query.section, value => {
-  if (value && value !== section.value) setSection(legacySection(value), { updateRoute: false })
+  if (value) setSection(legacySection(value))
 })
 
 watch(() => route.query.assistant, value => {
@@ -599,7 +653,7 @@ watch(() => route.query.assistant, value => {
         </div>
 
         <div v-if="!sidebarCollapsed" class="flex items-center gap-1 px-3 pb-1.5">
-          <label v-if="companies.length > 1" class="relative block min-w-0 flex-1">
+          <label v-if="companies.length" class="relative block min-w-0 flex-1">
             <select
               class="w-full appearance-none rounded-[9px] border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-1.5 pl-2.5 pr-7 text-[10.5px] font-semibold text-[var(--cp-text)] outline-none transition hover:border-[var(--cp-border-strong)]"
               :value="activeId"
@@ -734,11 +788,11 @@ watch(() => route.query.assistant, value => {
             type="button"
             class="cp-nav-item !py-1.5"
             :class="sidebarCollapsed ? 'justify-center' : ''"
-            :title="t('shell.exitCompany')"
+            :title="'Advanced view'"
             @click="exitOpen = true"
           >
-            <i class="fa-solid fa-arrow-right-from-bracket w-4 text-center text-[10px]"></i>
-            <span v-if="!sidebarCollapsed" class="text-[10px]">{{ t('shell.exitCompany') }}</span>
+            <i class="fa-solid fa-desktop w-4 text-center text-[10px]"></i>
+            <span v-if="!sidebarCollapsed" class="text-[10px]">Advanced view</span>
           </button>
 
           <button
@@ -769,7 +823,7 @@ watch(() => route.query.assistant, value => {
             </div>
             <button class="cp-icon-btn" aria-label="Close menu" @click="navOpen = false"><i class="fa-solid fa-xmark text-[13px]"></i></button>
           </div>
-          <div v-if="companies.length > 1" class="pb-2">
+          <div v-if="companies.length" class="pb-2">
             <select
               class="w-full rounded-[9px] border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-2.5 py-1.5 text-[11px] font-semibold outline-none"
               :value="activeId"
@@ -838,7 +892,7 @@ watch(() => route.query.assistant, value => {
             </div>
             <button type="button" class="cp-nav-item" @click="exitOpen = true; navOpen = false">
               <span class="cp-nav-icon"><i class="fa-solid fa-arrow-right-from-bracket text-[11px]"></i></span>
-              <span class="flex-1 text-[12px]">{{ t('shell.exitCompany') }}</span>
+              <span class="flex-1 text-[12px]">Advanced view</span>
             </button>
           </div>
         </aside>
@@ -990,7 +1044,7 @@ watch(() => route.query.assistant, value => {
                   {{ t('shell.createWorkspace') }}
                 </p>
                 <button class="cp-cta mx-auto mt-5 h-10 px-4" @click="exitOpen = true">
-                  <i class="fa-solid fa-arrow-right-from-bracket text-[10px]"></i> {{ t('shell.exitCompany') }}
+                  <i class="fa-solid fa-desktop text-[10px]"></i> Advanced view
                 </button>
               </div>
             </div>
@@ -1045,6 +1099,7 @@ watch(() => route.query.assistant, value => {
                     @save="linkCompanyProject"
                     @delete="unlinkCompanyProject"
                     @open-project="openProjectByName"
+                    @set-all-projects="setAllCompanyProjects"
                   />
                   <CompanyBusiness
                     v-else-if="section === 'business'"
@@ -1173,36 +1228,29 @@ watch(() => route.query.assistant, value => {
       @changed="onChatsChanged"
     />
 
-    <!-- ── Exit company ─────────────────────────────────────────────────── -->
-    <div v-if="exitOpen" class="fixed inset-0 z-[95] grid place-items-center bg-black/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Leave company">
+    <!-- ── Advanced view ────────────────────────────────────────────────── -->
+    <div v-if="exitOpen" class="fixed inset-0 z-[95] grid place-items-center bg-black/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Open advanced view">
       <div class="cp-card w-full max-w-[390px] p-4 md:p-5">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <p class="cp-eyebrow">{{ t('shell.exitCompany') }}</p>
-            <h2 class="mt-1 text-base font-extrabold">{{ t('shell.leaveTitle') }}</h2>
-            <p class="mt-1 text-[10px] leading-relaxed cp-muted">{{ t('shell.leaveHint') }}</p>
+            <p class="cp-eyebrow">Advanced view</p>
+            <h2 class="mt-1 text-base font-extrabold">Open the project workspace</h2>
+            <p class="mt-1 text-[10px] leading-relaxed cp-muted">
+              The company keeps running. Use the advanced view for projects, files,
+              boards and technical settings; come back here any time.
+            </p>
           </div>
           <button class="cp-icon-btn !h-7 !w-7" aria-label="Close" @click="exitOpen = false"><i class="fa-solid fa-xmark text-[11px]"></i></button>
         </div>
-        <div class="mt-3 grid gap-2">
-          <button class="flex items-start gap-3 rounded-xl border border-[var(--cp-border)] p-3 text-left transition hover:border-[var(--cp-border-strong)] hover:bg-[var(--cp-surface-soft)]" @click="leaveCompany('simple')">
-            <span class="cp-icon-tile cp-icon-tile--lime !h-8 !w-8"><i class="fa-solid fa-rocket text-[10px]"></i></span>
-            <span class="min-w-0">
-              <span class="block text-[11px] font-bold">{{ t('shell.simpleMode') }}</span>
-              <span class="mt-0.5 block text-[9px] cp-muted">{{ t('shell.simpleHint') }}</span>
-            </span>
-            <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[9px] cp-muted-soft"></i>
-          </button>
-          <button class="flex items-start gap-3 rounded-xl border border-[var(--cp-border)] p-3 text-left transition hover:border-[var(--cp-border-strong)] hover:bg-[var(--cp-surface-soft)]" @click="leaveCompany('desktop')">
-            <span class="cp-icon-tile !h-8 !w-8"><i class="fa-solid fa-desktop text-[10px]"></i></span>
-            <span class="min-w-0">
-              <span class="block text-[11px] font-bold">{{ t('shell.desktop') }}</span>
-              <span class="mt-0.5 block text-[9px] cp-muted">{{ t('shell.desktopHint') }}</span>
-            </span>
-            <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[9px] cp-muted-soft"></i>
-          </button>
-        </div>
-        <button class="cp-chip mt-3 w-full justify-center" @click="exitOpen = false">{{ t('shell.stay') }}</button>
+        <button class="mt-3 flex w-full items-start gap-3 rounded-xl border border-[var(--cp-border)] p-3 text-left transition hover:border-[var(--cp-border-strong)] hover:bg-[var(--cp-surface-soft)]" @click="openAdvancedView">
+          <span class="cp-icon-tile !h-8 !w-8"><i class="fa-solid fa-desktop text-[10px]"></i></span>
+          <span class="min-w-0">
+            <span class="block text-[11px] font-bold">Advanced view</span>
+            <span class="mt-0.5 block text-[9px] cp-muted">Projects, files, boards and tools.</span>
+          </span>
+          <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[9px] cp-muted-soft"></i>
+        </button>
+        <button class="cp-chip mt-3 w-full justify-center" @click="exitOpen = false">Stay in the company</button>
       </div>
     </div>
 

@@ -3,6 +3,7 @@
 from codx.junior.browser.model import BrowserSession
 from codx.junior.computer.images import (
     DEFAULT_KASM_TAG,
+    all_catalog_images,
     list_images,
     list_image_tags,
     resolve_image,
@@ -19,6 +20,31 @@ def test_library_offers_kasmweb_and_linuxserver():
     assert any(image.tag == "debian-kde" for image in linuxserver)
     assert {image.live_view for image in kasm} == {"kasmvnc"}
     assert {image.live_view for image in linuxserver} == {"selkies"}
+
+
+def test_library_offers_browseruse_as_a_headless_screenshot_image():
+    """The official browser-use image has no display and no noVNC."""
+    images = list_images(provider="browseruse")
+
+    assert images and all(image.provider == "browseruse" for image in images)
+    entry = images[0]
+    assert entry.repository == "browseruse/browseruse"
+    assert entry.live_view == "screenshot"
+    assert entry.live_port is None
+
+
+def test_resolve_browseruse_keeps_it_screenshot_only():
+    spec = resolve_image("browseruse/browseruse")
+
+    assert spec.provider == "browseruse"
+    assert spec.image == "browseruse/browseruse:latest"
+    assert spec.live_view == "screenshot"
+    assert spec.live_port is None
+    assert spec.strip_prefix is False
+
+
+def test_browseruse_is_part_of_the_unfiltered_catalog():
+    assert any(image.provider == "browseruse" for image in all_catalog_images())
 
 
 def test_legacy_kasm_images_pin_their_last_published_tag():

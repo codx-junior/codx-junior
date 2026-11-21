@@ -9,13 +9,11 @@ import { $storex } from '@/store'
 // product shells (company and working mode). Apps that are simplified out of
 // the company sidebar remain reachable from here.
 function openCompanyWorkspace() {
-  const companyId = $storex.users.primaryCompanyId
-  const companyMode = $storex.users.isCompanyMode
+  const company = $storex.company?.activeCompany || $storex.company?.defaultCompany
+  if (!company?.slug) return
   $storex.$router.push({
-    name: companyMode ? 'company-home' : 'company',
-    params: companyMode
-      ? (companyId ? { companyId } : {})
-      : {}
+    name: 'company-home',
+    params: { companySlug: company.slug }
   })
 }
 
@@ -24,11 +22,11 @@ function openProjects() {
 }
 
 function openCompanySettings() {
-  // Company settings live inside the assistant window: open the company shell
-  // with a one-shot query flag that CompanyView turns into an assistant turn.
+  const company = $storex.company?.activeCompany || $storex.company?.defaultCompany
+  if (!company?.slug) return
   $storex.$router.push({
     name: 'company-home',
-    query: { assistant: 'settings' }
+    params: { companySlug: company.slug, section: 'settings' }
   })
 }
 </script>

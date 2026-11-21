@@ -18,9 +18,17 @@
   opens as a normal chat route because there is no room for a split pane.
 
 API additions: `GET /api/tasks` accepts `project_ids` (comma separated),
-`assignee`, and returns the `metrics` block; `GET /api/tasks/boards` still
-returns board/team ownership. `owner_project_id` and `wake_at` are included so
-the right pane can load a task from a child project.
+`assignee`, `from_date`/`to_date`, and returns the `metrics` block;
+`GET /api/tasks/boards` still returns board/team ownership.
+`owner_project_id` and `wake_at` are included so the right pane can load a task
+from a child project.
+
+The kanban **Follow-up** view (`components/kanban/board/FollowupView.vue`) uses
+the same paged endpoint for its general task review: it requests
+`/api/tasks?project_ids=<active project + children>` page by page, keeps the
+server counters/metrics, and loads the next page on scroll. Its date-range
+filter is sent as `from_date`/`to_date`, so the review never falls back to
+“every project the user can access”.
 
 ## New chat → codx-junior assistant, in a modal
 

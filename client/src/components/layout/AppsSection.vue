@@ -4,7 +4,7 @@ import ProjectDetailt from '../ProjectDetailt.vue'
 import ViewModeToggle from './ViewModeToggle.vue'
 import PinnedProjectsSwitcher from './PinnedProjectsSwitcher.vue';
 import { isMultiInstance } from '@/config/apps'
-import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
+import { isOpenInNewTabEvent, openProjectInNewTab, projectUrl } from '@/utils/projectLinks'
 import { SESSION_LABELS } from '@/utils/sessionLabels'
 </script>
 
@@ -256,7 +256,7 @@ export default {
         return
       }
 
-      window.location.href = `${window.location.origin}/${project.project_name}`
+      window.location.href = projectUrl(project) || window.location.origin
     },
     // Single entry point for opening an app from this menu.
     // On desktop a multi-instance app (declared in config/apps.js) opens a NEW
@@ -330,16 +330,13 @@ export default {
       this.openApp('ciso')
     },
     handleNavigateToCompany() {
-      // Company mode has its own project-independent shell. Opening the
-      // Company entry must land there (not in a project-scoped panel).
-      if (this.$storex.users.isCompanyMode) {
-        const companyId = this.$storex.users.primaryCompanyId
+      // Company is the root shell, never a project panel.
+      const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
+      if (company?.slug) {
         this.$storex.$router.push({
           name: 'company-home',
-          params: companyId ? { companyId } : {}
+          params: { companySlug: company.slug }
         }).catch(() => {})
-      } else {
-        this.openApp('company')
       }
       this.$emit('close')
     },

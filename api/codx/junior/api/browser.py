@@ -188,6 +188,95 @@ def _recording_events(manager, state: RecordingState) -> List[Dict[str, Any]]:
 
 
 # ============================================================================
+# Background lifecycle (create / delete orders)
+# ============================================================================
+def _emit_session_status(browser_session, action, status=None, message=None, settings=None):
+    """
+    Announce the status of a co-desktop to every connected client.
+
+    Creating one (image pull + ``docker run``) and deleting one take seconds,
+    so the request only accepts the order: the card stays in ``creating`` /
+    ``deleting`` until this event says what actually happened.
+
+    Args:
+        browser_session: Session whose status changed.
+        action: Collection action (``created``, ``updated``, ``deleted``...).
+        status: New status when it cannot be read from the record yet.
+        message: Human-readable progress line for the UI.
+        settings: Project settings used to scope the event.
+    """
+    try:
+        from codx.junior.events.collection_events import (
+            COLLECTION_COMPUTER_SESSIONS,
+            emit_collection_event,
+        )
+
+        emit_collection_event(
+            COLLECTION_COMPUTER_SESSIONS,
+            action,
+            item={
+                "id": getattr(browser_session, "id", None),
+                "name": getattr(browser_session, "name", None),
+                "kind": getattr(browser_session, "kind", None),
+                "status": status or getattr(browser_session, "status", None),
+            },
+            settings=settings,
+            source="computer_session",
+            message=message,
+        )
+    except Exception as ex:  # never break a lifecycle for a status message
+        logger.debug("Could not emit the session status event: %s", ex)
+
+
+async def _start_session_in_background(browser_manager, browser_session, settings=None):
+    """
+    Start a session created with ``background=True`` and report its status.
+
+    Runs as an asyncio task right after the create order was answered, so the
+    slow half of the creation (image pull, container run, readiness polling)
+    never blocks the frontend.
+    """
+    from codx.junior.events.collection_events import ACTION_UPDATED
+
+    session_id = browser_session.id
+    _emit_session_status(
+        browser_session,
+        ACTION_UPDATED,
+        status="starting",
+        message="Starting the machine (image pull and boot)…",
+        settings=settings,
+    )
+    try:
+        started = await asyncio.to_thread(browser_manager.start_session, session_id)
+    except Exception as ex:
+        logger.exception("create_session: background start of %s failed: %s", session_id[:8], ex)
+        _emit_session_status(
+            browser_session,
+            ACTION_UPDATED,
+            status="error",
+            message=f"Could not start the machine: {ex}",
+            settings=settings,
+        )
+        return None
+    if not started:
+        return None
+    # The recorder/watcher is warm from the first client connection anyway: it is
+    # best effort here, never a reason to report a failed creation.
+    try:
+        await browser_manager.warm_runtime(started)
+    except Exception as ex:
+        logger.debug("warm_runtime after a background start failed: %s", ex)
+    _emit_session_status(
+        started,
+        ACTION_UPDATED,
+        status=started.status,
+        message="Machine ready",
+        settings=settings,
+    )
+    return started
+
+
+# ============================================================================
 # REST Endpoints
 # ============================================================================
 
@@ -292,6 +381,7 @@ async def create_session(request: Request, req: BrowserSessionCreateRequest):
             extra_env=req.extra_env,
             desktop_width=req.desktop_width,
             desktop_height=req.desktop_height,
+            defer_start=bool(getattr(req, "background", False)),
         )
 
         if chat and chat_manager:
@@ -300,12 +390,34 @@ async def create_session(request: Request, req: BrowserSessionCreateRequest):
             # the event loop, the single worker must stay responsive.
             await asyncio.to_thread(chat_manager.save_chat, chat)
 
-        # Start the recorder/watcher without blocking the response.  If the
-        # user drives before the AI, their actions must still be visible.
-        try:
-            asyncio.create_task(browser_manager.warm_runtime(browser_session))
-        except RuntimeError:
-            pass
+        # A remote session is already "running": only a machine that is still
+        # pending has a slow half left to run in background.
+        if getattr(req, "background", False) and browser_session.status == "creating":
+            # The order is accepted: the record already exists in "creating" and
+            # the machine starts behind the response, reporting every status
+            # change through the computer_sessions collection event.  The client
+            # keeps the card as "creating" and follows those messages.
+            from codx.junior.events.collection_events import ACTION_CREATED
+
+            _emit_session_status(
+                browser_session,
+                ACTION_CREATED,
+                status=browser_session.status,
+                message="Creating the machine…",
+                settings=session.settings,
+            )
+            asyncio.create_task(
+                _start_session_in_background(
+                    browser_manager, browser_session, session.settings
+                )
+            )
+        else:
+            # Start the recorder/watcher without blocking the response.  If the
+            # user drives before the AI, their actions must still be visible.
+            try:
+                asyncio.create_task(browser_manager.warm_runtime(browser_session))
+            except RuntimeError:
+                pass
 
         logger.info(
             "create_session: created browser session %s ('%s') for chat %s with %d shared folder(s)",
@@ -516,8 +628,14 @@ async def open_session_chat(
         500: {"description": "Server error"},
     },
 )
-async def delete_session(request: Request, session_id: str):
-    """Stop the Docker container and delete a browser session."""
+async def delete_session(request: Request, session_id: str, background: bool = False):
+    """
+    Stop the Docker container and delete a browser session.
+
+    ``background=true`` accepts the order and returns immediately: the session
+    is persisted as ``deleting`` and a daemon thread stops the container and
+    moves the profile to trash, so the frontend never waits for Docker.
+    """
     try:
         session = await get_session_context(request)
         browser_manager = _browser_manager(session)
@@ -527,7 +645,28 @@ async def delete_session(request: Request, session_id: str):
             logger.error("delete_session: session not found: %s", session_id)
             raise HTTPException(status_code=404, detail="Session not found")
 
+        from codx.junior.events.collection_events import ACTION_DELETED
+
+        if background:
+            await asyncio.to_thread(browser_manager.mark_session_deleting, browser_session)
+            _emit_session_status(
+                browser_session,
+                ACTION_DELETED,
+                status="deleting",
+                message="Deleting the machine…",
+                settings=session.settings,
+            )
+            logger.info("delete_session: queued session %s for deletion", session_id[:8])
+            return None
+
         await asyncio.to_thread(browser_manager.delete_session, session_id)
+        _emit_session_status(
+            browser_session,
+            ACTION_DELETED,
+            status="deleted",
+            message="Machine deleted",
+            settings=session.settings,
+        )
         logger.info("delete_session: deleted session %s", session_id[:8])
 
     except HTTPException:

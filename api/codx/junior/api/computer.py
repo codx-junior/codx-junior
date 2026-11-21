@@ -100,6 +100,11 @@ from codx.junior.computer.images import (
     list_image_tags,
     list_images,
 )
+from codx.junior.computer.catalog import (
+    CatalogImageListResponse,
+    build_catalog,
+    filter_catalog,
+)
 from codx.junior.computer.library import (
     SaveComputerRequest,
     SavedComputer,
@@ -253,6 +258,69 @@ async def list_computer_image_tags(
         count=len(tags),
         tags=tags,
     )
+
+
+@router.get(
+    "/images/catalog",
+    response_model=CatalogImageListResponse,
+    summary="Merged catalog of the image library",
+)
+async def list_image_catalog(
+    request: Request,
+    provider: Optional[str] = None,
+    q: Optional[str] = None,
+    type: Optional[str] = None,
+    tag: Optional[str] = None,
+    visibility: Optional[str] = None,
+    status: Optional[str] = None,
+    source: Optional[str] = None,
+    refresh: bool = False,
+):
+    """
+    One merged feed for the image grid.
+
+    Provider images (linuxserver / kasmweb / browseruse), the project's saved
+    computers and the custom coworking gallery come back as a single list of
+    cards already filtered server-side: one grid, one request.  Custom images
+    keep their whole manifest nested under ``coworking_image`` so the
+    create-session form keeps its ENV fields.
+    """
+    session_ctx = await get_session_context(request)
+    library = saved_library_for(_browser_manager(session_ctx))
+    gallery, project_id = _gallery(session_ctx)
+    username, is_admin = _request_identity(session_ctx)
+
+    provider_images, saved_computers, custom_images = await asyncio.gather(
+        asyncio.to_thread(
+            list_images,
+            provider=provider,
+            query=q,
+            category=None,
+            kind="linux",
+            refresh=refresh,
+        ),
+        asyncio.to_thread(library.list),
+        asyncio.to_thread(
+            gallery.list_visible,
+            username=username,
+            project_id=project_id,
+            is_admin=is_admin,
+            q=q,
+            visibility=visibility,
+            tag=tag,
+        ),
+    )
+    items = build_catalog(provider_images, saved_computers, custom_images)
+    images = filter_catalog(
+        items,
+        query=q,
+        type=type,
+        tag=tag,
+        visibility=visibility,
+        status=status,
+        source=source,
+    )
+    return CatalogImageListResponse(count=len(images), images=images)
 
 
 @router.get(
@@ -621,9 +689,15 @@ async def update_computer(request: Request, session_id: str, req: BrowserSession
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a computer session")
-async def delete_computer(request: Request, session_id: str):
-    """Stop and delete a session (profile/storage is moved to trash)."""
-    return await delete_session(request, session_id)
+async def delete_computer(request: Request, session_id: str, background: bool = False):
+    """
+    Stop and delete a session (profile/storage is moved to trash).
+
+    ``background=true`` accepts the order and answers at once: the frontend can
+    continue while the container is stopped and the profile is removed, and the
+    progress travels through the ``computer_sessions`` collection event.
+    """
+    return await delete_session(request, session_id, background=background)
 
 
 @router.post("/{session_id}/chat", response_model=BrowserSessionChatResponse, summary="Open the session chat")

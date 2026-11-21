@@ -50,6 +50,27 @@ export const computersModule = (API) => ({
     return API.get(`/api/computers/images/tags?${params.toString()}`)
   },
 
+  /**
+   * One feed behind the image grid.
+   *
+   * Merges the provider catalog (linuxserver / kasmweb / browseruse), the saved
+   * computers and the custom coworking gallery into a single list of cards, so
+   * the grid needs one request instead of four.
+   *
+   * @param {Object} [filters] - provider, q, type, tag, visibility, status,
+   *   source, refresh.
+   */
+  async imageCatalog(filters = {}) {
+    const params = new URLSearchParams()
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        params.set(key, String(value))
+      }
+    })
+    const qs = params.toString()
+    return API.get(`/api/computers/images/catalog${qs ? `?${qs}` : ''}`)
+  },
+
   /** Credentials for the embedded KasmVNC live view. */
   async viewerCredentials(sessionId) {
     return API.post(`/api/computers/${sessionId}/viewer-credentials`, {})
@@ -175,6 +196,14 @@ export const computersModule = (API) => ({
 
   // ── CRUD & lifecycle ────────────────────────────────────────────────────
 
+  /**
+   * Create a co-desktop.
+   *
+   * With `background: true` the backend accepts the order and starts the
+   * machine (image pull + `docker run`) behind the response: the session comes
+   * back with `status: 'creating'` and the progress arrives as a
+   * `computer_sessions` collection event, so the caller can keep going.
+   */
   async create(payload) {
     return API.post('/api/computers', payload)
   },
@@ -183,8 +212,16 @@ export const computersModule = (API) => ({
     return API.put(`/api/computers/${sessionId}`, payload)
   },
 
-  async delete(sessionId) {
-    return API.delete(`/api/computers/${sessionId}`)
+  /**
+   * Delete a co-desktop.
+   *
+   * With `background: true` the order is accepted and answered at once: the
+   * container is stopped and the profile moved to trash by the backend, while
+   * the screen keeps working.
+   */
+  async delete(sessionId, background = false) {
+    const qs = background ? '?background=true' : ''
+    return API.delete(`/api/computers/${sessionId}${qs}`)
   },
 
   async restart(sessionId) {

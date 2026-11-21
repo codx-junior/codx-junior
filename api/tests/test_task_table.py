@@ -170,6 +170,57 @@ def test_metrics_and_project_scope(service):
     assert {task.id for task in page.tasks} == {"done", "todo"}
 
 
+def test_date_range_filter_pages_the_general_task_review(service):
+    """The Follow-up review can page a date-scoped, project-scoped result."""
+    project = {"id": "p1", "name": "Project One", "color": "#fff"}
+    boards = service._board_catalog(service._projects[0])
+    service._tasks = [
+        service._task_from_chat(
+            fake_chat("old", updated_at=datetime(2026, 1, 1, 10, 0, 0)),
+            project,
+            boards,
+        ),
+        service._task_from_chat(
+            fake_chat("middle", updated_at=datetime(2026, 1, 10, 10, 0, 0)),
+            project,
+            boards,
+        ),
+        service._task_from_chat(
+            fake_chat("newer", updated_at=datetime(2026, 1, 12, 10, 0, 0)),
+            project,
+            boards,
+        ),
+        service._task_from_chat(
+            fake_chat("new", updated_at=datetime(2026, 1, 20, 10, 0, 0)),
+            project,
+            boards,
+        ),
+    ]
+
+    first = service.tasks(
+        project_ids=["p1"],
+        from_date="2026-01-05",
+        to_date="2026-01-15",
+        page=1,
+        page_size=1,
+    )
+    second = service.tasks(
+        project_ids=["p1"],
+        from_date="2026-01-05",
+        to_date="2026-01-15",
+        page=2,
+        page_size=1,
+    )
+
+    assert first.total == 2
+    assert first.total_pages == 2
+    assert first.page_size == 1
+    assert first.has_next is True
+    assert [task.id for task in first.tasks] == ["newer"]
+    assert second.has_prev is True
+    assert [task.id for task in second.tasks] == ["middle"]
+
+
 def test_team_filter_uses_the_board_owner(service):
     project = {"id": "p1", "name": "Project One", "color": "#fff"}
     boards = service._board_catalog(service._projects[0])

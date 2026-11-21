@@ -1,6 +1,6 @@
 # Company-first shell — review & refactor proposal
 
-**Status:** DRAFT for validation · 2026-11-21 · **no code changed**
+**Status:** IMPLEMENTED (first landing) · 2026-11-21 · proposal retained as the design/status note
 **Scope:** make the company the top-level product surface for a solopreneur,
 remove the solopreneur shell, define child-project visibility, scope the global
 Follow-up view and add a simplified setup/settings experience.
@@ -16,6 +16,15 @@ improvement backlog live in
 [ai-cofounder-product.md](ai-cofounder-product.md). The shell refactor is the
 foundation that makes the co-founder the home of the product; it is not the
 whole product.
+
+**Implementation status (2026-11-21):** the company-first structure is in place:
+`/` resolves the default company, `/<slug>` and `/<slug>/<section>` render the
+company shell, advanced screens live under
+`/<slug>/workspace/<project>/...`, legacy URLs redirect, the default company
+starts with `all_projects`, child associations carry `include_children`,
+Solopreneur is removed, Follow-up/Tasks are company-root scoped, and company
+settings expose Company / AI / People / Projects / Advanced. Known follow-ups
+are listed at the end of this document.
 
 This document is deliberately a *review first*: it inventories what exists,
 proposes a target model, lists the changes and ends with the decisions I need
@@ -138,15 +147,15 @@ rewrites the store.
 ### 1.5 Global views
 
 - **Kanban → Follow-up** (`components/kanban/board/FollowupView.vue`) is the
-  “global, not board scoped” view. Its data comes from
-  `store/planning.js`, which calls `POST /api/chats/search` with a date range
-  but **no `project_ids`** (`store/planning.js:483`). The backend then searches
-  every project the authenticated user can access
-  (`api/codx/junior/chat_manager.py:834`), including child projects.
+  “global, not board scoped” view. Its general task review is loaded from the
+  paged `GET /api/tasks` endpoint with `project_ids` set to the active project
+  plus its children (the date-range filter maps to `from_date`/`to_date`); the
+  view no longer walks `POST /api/chats/search` itself, so the server owns the
+  scope, ordering and pagination.
 - **Tasks** (`views/GlobalTasksView.vue`) is a second global table. Its project
-  filter lists every project; its default scope is only the active project
-  (the comment says “+ children” but the code only pushes the active project —
-  `views/GlobalTasksView.vue:96`), and “All projects” means all user projects.
+  filter lists every project; its default scope is the active project plus its
+  children (`views/GlobalTasksView.vue` `defaultProjectIds`), and “All projects”
+  means all user projects.
 - Board management and calendar have their own project filters; they are
   global too, but are not named in the request.
 
@@ -454,10 +463,13 @@ that is where you actually open a project.
 The **Follow-up** view is the one explicitly named. It should be company-scoped
 end to end, and **roots only** (decided):
 
-- `store/planning.js` sends the active company’s **root project ids** with the
-  search. Recommended: a backend `company_id` parameter with a `roots_only`
-  scope (or simply `project_ids = company.rootProjectIds`), so the server never
-  falls back to “every project the user can access”.
+- `store/planning.js` remains the data source of the Planning view; the
+  Follow-up review already sends `project_ids` to `/api/tasks`, so company
+  scoping becomes “send the active company’s **root project ids** instead of the
+  active project + children”. Recommended: a backend `company_id` parameter
+  with a `roots_only` scope (or simply
+  `project_ids = company.rootProjectIds`), so the server never falls back to
+  “every project the user can access”.
 - Changing company resets the planning store (`loadToken`, tasks, filters), so
   no tasks from the previous company leak in.
 - The view shows the company name in its header (“Follow-up · ACME”) and the
@@ -841,11 +853,34 @@ impression.
   `api/codx/junior/chat_manager.py`.
 - Project lists: `ProjectDetailt.vue`, `ProjectList.vue`, `ProjectTreeSelect.vue`,
   `ProjectOverview.vue`, `PinnedProjectsSwitcher.vue`, `ChatSelector.vue`.
-- Solopreneur: `views/SolopreneurView.vue`, `components/solopreneur/**`,
-  `config/apps.js`, `config/appComponentsMap.js`, `config/mobile.js`.
+- Solopreneur: **removed** (`views/SolopreneurView.vue` and
+  `components/solopreneur/**` are deleted; `/solopreneur/*` redirects).
 - Existing notes: `docs/transformation/company-top-element.md`,
   `docs/transformation/company-ui.md`.
 
 ---
 
-*Draft for discussion. No code has been changed by this document.*
+## Implementation follow-ups
+
+These are deliberately not part of the first landing:
+
+1. **Slug lifecycle**: slug aliases for explicit renames, reserved-slug
+   validation (`company`, `workspace`, `auth`, section names).
+2. **Read authorization everywhere**: the list and main document/snapshot are
+   membership-scoped; actors, security, journal, members and chats should use
+   the same helper.
+3. **Setup wizard + tool platform**: the wizard, business blueprint and tool
+   catalog/install/MCP flows are the Phase 1–2 work in
+   [ai-cofounder-product.md](ai-cofounder-product.md), not the shell landing.
+4. **Company home density**: decide whether Today becomes the default company
+   home (product §8) or the current dashboard stays.
+5. **Legacy login edge**: a legacy project URL opened while logged out re-runs
+   the guard after login; verify in a real browser.
+6. **Tests**: company manager visibility/default tests pass; the client passes
+   `vue-tsc` and `vite build`; add route-level unit tests when a frontend test
+   runner is available.
+
+---
+
+*Company-first structure implemented. This document started as a proposal and
+now doubles as the design/status note.*

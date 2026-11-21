@@ -53,15 +53,20 @@ defineExpose({
               @select="onProjectSelected"
             />
           </div>
-          <input
+          <!-- Multiline brief: the first line titles the card, the lines below
+               become the task's first message. Enter submits (quick capture),
+               Shift+Enter adds a line and the field grows with the content. -->
+          <textarea
             ref="taskNameInput"
             v-model="newTask.name"
-            type="text"
+            :rows="nameRows"
             :placeholder="compact ? 'What needs to be done?' : 'Describe what needs to be done…'"
-            class="grow input"
-            :class="compact ? 'input-sm' : null"
-            @keydown.enter="addNewTask"
-          />
+            class="grow textarea resize-none leading-snug"
+            :class="compact ? 'textarea-sm' : null"
+            @keydown.enter.exact.prevent="addNewTask"
+            @keydown.ctrl.enter.prevent="addNewTask"
+            @keydown.meta.enter.prevent="addNewTask"
+          ></textarea>
           <!-- Mode: board tasks only. A quick ticket is always a chat, so the
                compact dialog drops the selector and keeps the "chat" default. -->
           <div v-if="!compact" class="">
@@ -199,6 +204,21 @@ defineExpose({
             <i class="fa-solid fa-bolt text-xs"></i>
             Urgent
           </button>
+          <!-- Non urgent: the task is created as usual but armed outside the
+               human working window, so the agent works on it off-hours -->
+          <button
+            type="button"
+            class="btn btn-sm gap-1.5"
+            :class="newTask.nonUrgent ? 'btn-info' : 'btn-ghost border border-base-100'"
+            :aria-pressed="newTask.nonUrgent"
+            :title="newTask.nonUrgent
+              ? 'Non urgent · worked on outside working hours (click to clear)'
+              : 'Non urgent: let the agent work on it outside working hours'"
+            @click="toggleNonUrgent"
+          >
+            <i class="fa-solid fa-moon text-xs"></i>
+            Non urgent
+          </button>
           <ChatCostSelector
             variant="chip"
             class="ml-auto"
@@ -290,6 +310,21 @@ defineExpose({
                 @click="newTask.deadline = null"
               >
                 <i class="fa-solid fa-xmark text-xs"></i>
+              </button>
+              <!-- Non urgent: independent of the deadline, it only decides
+                   *when* the agent works on the task -->
+              <button
+                type="button"
+                class="btn btn-xs gap-1 ml-auto"
+                :class="newTask.nonUrgent ? 'btn-info' : 'btn-ghost border border-base-100'"
+                :aria-pressed="newTask.nonUrgent"
+                :title="newTask.nonUrgent
+                  ? 'Non urgent · worked on outside working hours (click to clear)'
+                  : 'Non urgent: let the agent work on it outside working hours'"
+                @click="toggleNonUrgent"
+              >
+                <i class="fa-solid fa-moon text-[10px]"></i>
+                Non urgent
               </button>
             </div>
           </div>
@@ -1035,6 +1070,9 @@ const DEFAULT_NEW_TASK = () => ({
   project_id: null,
   users: [],
   deadline: null,
+  // "Non urgent": arm the task outside the human working window instead of
+  // expecting it to be worked on now (independent of the deadline)
+  nonUrgent: false,
   estimation_cost: null,
   // Files referenced from the message (dropped on the composer or @filename)
   files: [],
@@ -1282,6 +1320,16 @@ export default {
     // The "Urgent" shortcut is on while the task is due tomorrow
     isUrgent() {
       return !!this.newTask.deadline && this.newTask.deadline === this.dateISO(1)
+    },
+    // The name field is a multiline brief, so it grows with the content
+    // (capped, otherwise a pasted document would push the actions off-screen)
+    nameRows() {
+      // Explicit newlines plus the wrapped length of long lines: a one-line
+      // brief stays one row, a pasted document is capped so the dialog fits.
+      const wrapped = String(this.newTask.name || '')
+        .split('\n')
+        .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 68)), 0)
+      return Math.min(6, Math.max(1, wrapped))
     }
   },
   watch: {
@@ -1655,14 +1703,22 @@ export default {
     // files and attachments) and (when `run` is set) processing it immediately.
     submitNewTask(run) {
       if (!this.newTask.name?.trim() || this.creating) return
-      const message = (this.$refs.composer?.getEditorText() || '').trim()
+      // Multiline brief: the first line titles the card, the remaining lines are
+      // the task's first message, ahead of whatever the composer holds.
+      const [title, ...brief] = String(this.newTask.name).split('\n')
+      const name = title.trim()
+      if (!name) return
+      const message = [
+        brief.join('\n').trim(),
+        (this.$refs.composer?.getEditorText() || '').trim()
+      ].filter(Boolean).join('\n\n')
       const files = this.resolveFiles(message)
       const attachments = this.newTask.attachments.map(a => a.toJSON?.() || a)
       const hasContent = !!(message || files.length || attachments.length)
       this.creating = true
       try {
         this.$emit('task-created', {
-          name: this.newTask.name.trim(),
+          name,
           mode: this.newTask.mode,
           status: this.newTask.status || 'todo',
           // Kanban destination column (ignored by sprint boards)
@@ -1674,6 +1730,8 @@ export default {
           users: [...this.newTask.users],
           deadline: this.newTask.deadline || null,
           estimation_cost: this.normalizeCost(this.newTask.estimation_cost),
+          // "Non urgent": the board arms `wake_at` outside working hours
+          nonUrgent: !!this.newTask.nonUrgent,
           message,
           files,
           attachments,
@@ -1725,6 +1783,11 @@ export default {
     // "Urgent" is a due-date shortcut: on ⇒ due tomorrow, off ⇒ no deadline
     toggleUrgent() {
       this.newTask.deadline = this.isUrgent ? null : this.dateISO(1)
+    },
+    // "Non urgent" never touches the deadline: it only decides *when* the agent
+    // works on the task (outside the human working window)
+    toggleNonUrgent() {
+      this.newTask.nonUrgent = !this.newTask.nonUrgent
     },
 
     // ── Add existing ─────────────────────────────────────────────────────────

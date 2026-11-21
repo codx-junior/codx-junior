@@ -578,6 +578,16 @@ class TaskBoardService:
             for name in (task.get("assignees") or [])
         ):
             return False
+        from_date = _date(filters.get("from_date"))
+        to_date = _date(filters.get("to_date"))
+        if from_date or to_date:
+            activity = _date(task.get("last_activity_at") or task.get("updated_at"))
+            if activity is None:
+                return False
+            if from_date and activity < from_date:
+                return False
+            if to_date and activity > to_date:
+                return False
         query = (filters.get("q") or "").strip().lower()
         if query:
             haystack = " ".join(
@@ -621,6 +631,8 @@ class TaskBoardService:
         assignee: str = "",
         assignees: Optional[List[str]] = None,
         team_id: str = "",
+        from_date: str = "",
+        to_date: str = "",
         include_done: bool = True,
         page: int = 1,
         page_size: int = DEFAULT_PAGE_SIZE,
@@ -638,6 +650,8 @@ class TaskBoardService:
             status: Restrict to one task status.
             priority: Restrict to one priority.
             team_id: Restrict to the boards owned by one team.
+            from_date: Only tasks with activity on/after this date (YYYY-MM-DD).
+            to_date: Only tasks with activity on/before this date (YYYY-MM-DD).
             include_done: Include closed tasks (default true).
             page: 1-based page number.
             page_size: Rows per page (max :data:`MAX_PAGE_SIZE`).
@@ -670,6 +684,8 @@ class TaskBoardService:
             "assignee": assignee,
             "assignees": assignees or [],
             "team_id": team_id,
+            "from_date": from_date,
+            "to_date": to_date,
             "include_done": include_done,
         }
         filtered = [task for task in rows if self._matches(task, filters)]

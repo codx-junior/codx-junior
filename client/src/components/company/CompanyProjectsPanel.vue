@@ -8,13 +8,14 @@ const props = defineProps({
   busy: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['save', 'delete', 'open-project'])
+const emit = defineEmits(['save', 'delete', 'open-project', 'set-all-projects'])
 
 const dialog = ref(false)
 const formError = ref('')
 const editing = ref(false)
 
 const company = computed(() => props.snapshot?.company || {})
+const allProjects = computed(() => Boolean(company.value.all_projects))
 const projects = computed(() => props.snapshot?.projects || [])
 const teams = computed(() => props.snapshot?.teams || [])
 const missions = computed(() => props.snapshot?.missions || [])
@@ -27,7 +28,8 @@ const form = reactive({
   team_id: '',
   priority: 'medium',
   status: 'active',
-  budget_cxjcoins: 0
+  budget_cxjcoins: 0,
+  include_children: true
 })
 
 const linkedIds = computed(() => new Set(projects.value.map(project => project.project_id)))
@@ -44,7 +46,8 @@ function reset() {
     team_id: '',
     priority: 'medium',
     status: 'active',
-    budget_cxjcoins: 0
+    budget_cxjcoins: 0,
+    include_children: true
   })
   formError.value = ''
 }
@@ -64,7 +67,8 @@ function openEdit(project) {
     team_id: project.team_id || '',
     priority: project.priority || 'medium',
     status: project.status || 'active',
-    budget_cxjcoins: project.budget_cxjcoins || 0
+    budget_cxjcoins: project.budget_cxjcoins || 0,
+    include_children: project.include_children !== false
   })
   formError.value = ''
   editing.value = true
@@ -96,7 +100,8 @@ function submit() {
       team_id: form.team_id,
       priority: form.priority,
       status: form.status,
-      budget_cxjcoins: Number(form.budget_cxjcoins) || 0
+      budget_cxjcoins: Number(form.budget_cxjcoins) || 0,
+      include_children: Boolean(form.include_children)
     }
   })
   close()
@@ -127,11 +132,27 @@ function openMissions(projectId) {
           The codx-junior projects this company runs. Missions are dispatched into these projects.
         </p>
       </div>
-      <button class="btn btn-sm btn-primary" :disabled="busy" @click="openLink">
+      <button v-if="!allProjects" class="btn btn-sm btn-primary" :disabled="busy" @click="openLink">
         <i class="fa-solid fa-link"></i> Link project
       </button>
     </header>
 
+    <div v-if="allProjects" class="rounded-2xl border border-primary/20 bg-primary/5 p-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="text-sm font-bold"><i class="fa-solid fa-asterisk text-primary mr-1"></i>All projects (*)</p>
+          <p class="mt-1 text-xs text-base-content/60">
+            This company sees every discovered project, including projects added later.
+            Switch to a selected list to choose roots and child visibility.
+          </p>
+        </div>
+        <button class="btn btn-sm" :disabled="busy" @click="emit('set-all-projects', false)">
+          Choose projects
+        </button>
+      </div>
+    </div>
+
+    <template v-else>
     <div v-if="!projects.length" class="rounded-2xl border border-dashed border-base-content/20 p-8 text-center">
       <i class="fa-solid fa-cubes text-3xl text-base-content/20 mb-2 block"></i>
       <p class="text-sm text-base-content/50">No projects linked yet.</p>
@@ -183,6 +204,10 @@ function openMissions(projectId) {
           <span v-if="project.team_id" class="badge badge-xs badge-secondary">
             <i class="fa-solid fa-people-group text-[8px] mr-1"></i>{{ teamName(project.team_id) }}
           </span>
+          <span v-if="project.include_children" class="badge badge-xs badge-info">
+            <i class="fa-solid fa-sitemap text-[8px] mr-1"></i>{{ (project.children || []).length }} children seen
+          </span>
+          <span v-else class="badge badge-xs badge-ghost">children not included</span>
         </div>
 
         <div class="mt-auto flex items-center justify-between border-t border-base-content/5 pt-2 text-[10px] text-base-content/40">
@@ -191,6 +216,7 @@ function openMissions(projectId) {
         </div>
       </article>
     </div>
+    </template>
 
     <!-- Link / edit -->
     <div v-if="dialog" class="modal modal-open" role="dialog" aria-modal="true">
@@ -254,6 +280,16 @@ function openMissions(projectId) {
           <label class="form-control">
             <span class="label-text text-xs">Budget (cxjcoins)</span>
             <input v-model="form.budget_cxjcoins" type="number" min="0" class="input input-sm input-bordered" />
+          </label>
+          <label class="form-control md:col-span-2 flex flex-row items-start gap-2 rounded-xl border border-base-content/10 p-3">
+            <input v-model="form.include_children" type="checkbox" class="checkbox checkbox-sm mt-0.5" />
+            <span>
+              <span class="block text-xs font-semibold">Include its child projects</span>
+              <span class="block text-[10px] text-base-content/50">
+                Child projects discovered under this project are seen by the company by default.
+                Turn this off to add them manually.
+              </span>
+            </span>
           </label>
         </div>
 

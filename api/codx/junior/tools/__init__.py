@@ -79,6 +79,16 @@ from .voice_tools import (
     VOICE_SWITCH_CHAT_TOOL_JSON,
 )
 from .process_task_tool import process_task, PROCESS_TASK_TOOL_JSON
+from .ticket_tools import (
+    ticket_create,
+    ticket_update,
+    ticket_query,
+    ticket_abandon,
+    TICKET_CREATE_TOOL_JSON,
+    TICKET_UPDATE_TOOL_JSON,
+    TICKET_QUERY_TOOL_JSON,
+    TICKET_ABANDON_TOOL_JSON,
+)
 from .orchestration_tools import (
     orchestrator,
     delegate,
@@ -799,6 +809,35 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat").dict(),
         "tags": ["task-management", "creation", "workflow"],
         "tool_call": create_task
+    },
+    # -- Ticketing: cross-project requests (a ticket IS a chat) --------------
+    # Source of truth: codx/junior/tools/ticket_tools.py and
+    # codx/junior/ticketing/service.py. A project places a ticket on a CHILD or
+    # a READ/WRITE LINKED project and keeps control of it by id; the target owns
+    # the queue and decides (accept / decline / done) on its own board.
+    {
+        "tool_json": TICKET_CREATE_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["ticket", "ticketing", "cross-project", "request", "bug", "feature"],
+        "tool_call": ticket_create
+    },
+    {
+        "tool_json": TICKET_UPDATE_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["ticket", "ticketing", "cross-project", "comment", "status"],
+        "tool_call": ticket_update
+    },
+    {
+        "tool_json": TICKET_QUERY_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["ticket", "ticketing", "cross-project", "query", "queue"],
+        "tool_call": ticket_query
+    },
+    {
+        "tool_json": TICKET_ABANDON_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["ticket", "ticketing", "cross-project", "abandon", "withdraw"],
+        "tool_call": ticket_abandon
     },
     {
         "tool_json": SCHEDULE_TASK_TOOL_JSON,

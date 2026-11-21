@@ -45,7 +45,8 @@ export default {
   },
   computed: {
     projects() {
-      return this.$storex.projects.allProjects
+      if (this.$storex.company?.loaded) return this.$storex.company.companyProjects || []
+      return this.$storex.projects.allProjects || []
     },
     chats() {
       return this.selectedProject?.allChats

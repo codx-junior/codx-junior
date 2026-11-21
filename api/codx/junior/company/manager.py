@@ -82,6 +82,7 @@ COMPANY_EDITABLE_FIELDS = (
     "owner",
     "tags",
     "business",
+    "all_projects",
 )
 
 TEAM_EDITABLE_FIELDS = (
@@ -130,11 +131,11 @@ AUTONOMY_EDITABLE_FIELDS = (
 
 #: Name of the company created automatically on a fresh installation.
 #: Deployments can override it with ``CODX_JUNIOR_DEFAULT_COMPANY_NAME``.
-DEFAULT_COMPANY_NAME = "My Company"
+DEFAULT_COMPANY_NAME = "ACME"
 
 #: Slug of the default company. It is stable so a deep link can address it
 #: before the user has had any chance to rename it.
-DEFAULT_COMPANY_SLUG = "default"
+DEFAULT_COMPANY_SLUG = "acme"
 
 #: Environment variable that overrides the default company name.
 DEFAULT_COMPANY_NAME_ENV = "CODX_JUNIOR_DEFAULT_COMPANY_NAME"
@@ -735,6 +736,13 @@ class CompanyManager:
                 logger.warning("Company '%s' skipped during bootstrap: %s", company_id, ex)
                 continue
             if company.is_default:
+                # Existing default companies created before ``all_projects``
+                # existed keep their behaviour: they saw every project through
+                # auto-sync, so promote that to the first-class flag.
+                if company.auto_sync_projects and not company.all_projects:
+                    company.all_projects = True
+                    company.updated_at = now_iso()
+                    company = self.store.save(company)
                 return self._sync_default_company_projects(company, actor=actor)
 
         if ids:
@@ -772,6 +780,7 @@ class CompanyManager:
             owner="" if (actor or "system") == "system" else actor,
             is_default=True,
             auto_sync_projects=True,
+            all_projects=True,
             tags=["default"],
         )
         for project in catalog:
@@ -803,6 +812,37 @@ class CompanyManager:
             len(saved.projects),
         )
         return saved
+
+    def lookup_companies_for_project(self, project_id: str) -> List[Dict[str, Any]]:
+        """
+        Return the companies that can see *project_id*.
+
+        Used by the router to resolve legacy ``/<project>/...`` URLs to the
+        canonical ``/<company>/workspace/<project>/...`` path. A company sees a
+        project when it is a direct link, a visible child (``include_children``)
+        or when it sees all projects.
+        """
+        project_id = self._clean(project_id)
+        if not project_id:
+            return []
+        found: List[Dict[str, Any]] = []
+        for company_id in self._company_ids():
+            try:
+                company = self.store.load(company_id)
+            except Exception:
+                continue
+            if company.status == "archived":
+                continue
+            if company.all_projects or project_id in set(self.visible_project_ids(company)):
+                found.append(
+                    {
+                        "id": company.id,
+                        "name": company.name,
+                        "slug": company.slug,
+                        "is_default": company.is_default,
+                    }
+                )
+        return found
 
     def list_companies(
         self,
@@ -997,6 +1037,11 @@ class CompanyManager:
                 if not name:
                     raise CompanyValidationError("company name is required")
                 values["name"] = name
+            if "all_projects" in values and values["all_projects"] is not None:
+                # The wildcard and the auto-sync flag are the same behaviour for
+                # the default company: switching to an explicit list must stop
+                # new projects from being linked behind the owner's back.
+                company.auto_sync_projects = bool(values["all_projects"])
             changed = self._apply(company, values, COMPANY_EDITABLE_FIELDS)
             saved = self.store.save(company)
             if changed:
@@ -1549,6 +1594,10 @@ class CompanyManager:
                 "status": options.get(
                     "status", existing.status if existing else "active"
                 ),
+                "include_children": options.get(
+                    "include_children",
+                    existing.include_children if existing else True,
+                ),
             }
             if payload["team_id"] and not company.team(payload["team_id"]):
                 raise CompanyValidationError(
@@ -1568,6 +1617,7 @@ class CompanyManager:
                 message = f"Project '{existing.name}' updated"
             # An explicit link/unlink means the user manages the project list.
             company.auto_sync_projects = False
+            company.all_projects = False
             saved = self.store.save(company)
             self._event(
                 saved,
@@ -1630,6 +1680,7 @@ class CompanyManager:
             # An explicit unlink is a user decision: stop the default company
             # from auto-linking the project again on the next request.
             company.auto_sync_projects = False
+            company.all_projects = False
             saved = self.store.save(company)
             self._event(
                 saved,
@@ -1667,12 +1718,14 @@ class CompanyManager:
         """
         catalog = {project["project_id"]: project for project in self._project_catalog()}
         wanted: List[str] = []
+        include_children: Dict[str, bool] = {}
         for project_id in project_ids or []:
-            value = self._clean(
-                project_id.get("project_id")
-                if isinstance(project_id, dict)
-                else project_id
-            )
+            if isinstance(project_id, dict):
+                value = self._clean(project_id.get("project_id"))
+                if "include_children" in project_id:
+                    include_children[value] = bool(project_id.get("include_children"))
+            else:
+                value = self._clean(project_id)
             if not value or value in wanted:
                 continue
             self._validate_project(value, projects=list(catalog.values()))
@@ -1686,12 +1739,15 @@ class CompanyManager:
             removed: List[str] = []
             for project_id in wanted:
                 project = previous.get(project_id)
+                if project is not None and project_id in include_children:
+                    project.include_children = include_children[project_id]
                 if project is None:
                     discovered = catalog.get(project_id, {})
                     project = CompanyProject(
                         project_id=project_id,
                         name=discovered.get("project_name") or project_id,
                         role="",
+                        include_children=include_children.get(project_id, True),
                     )
                     added.append(project_id)
                 projects.append(project)
@@ -1701,6 +1757,7 @@ class CompanyManager:
             company.projects = projects
             # From now on the user owns the project list.
             company.auto_sync_projects = False
+            company.all_projects = False
             # Detach removed projects from teams (missions keep their reference
             # and are handled by the dedicated mission routes).
             for team in company.teams:
@@ -2896,37 +2953,128 @@ class CompanyManager:
         Returns:
             Child project descriptors with their parent reference.
         """
-        catalog = self._project_catalog()
+    @staticmethod
+    def _is_path_child_of(child_path: str, parent_path: str) -> bool:
+        """Return True when *child_path* is strictly inside *parent_path*."""
+        child_path = os.path.normpath(child_path or "")
+        parent_path = os.path.normpath(parent_path or "")
+        if not child_path or not parent_path or child_path == parent_path:
+            return False
+        try:
+            return os.path.commonpath([child_path, parent_path]) == parent_path
+        except ValueError:
+            return False
 
-        def is_path_child_of(child_path: str, parent_path: str) -> bool:
-            """True when child_path is strictly inside parent_path."""
-            child_path = os.path.normpath(child_path or "")
-            parent_path = os.path.normpath(parent_path or "")
-            if not child_path or not parent_path or child_path == parent_path:
-                return False
-            try:
-                return os.path.commonpath([child_path, parent_path]) == parent_path
-            except ValueError:
-                return False
+    def _descendant_projects(
+        self, catalog: List[Dict[str, Any]], project_id: str
+    ) -> List[Dict[str, Any]]:
+        """Return every discovered project nested under *project_id* by path."""
+        by_id = {project["project_id"]: project for project in catalog}
+        parent = by_id.get(project_id)
+        parent_path = (parent or {}).get("project_path") or ""
+        if not parent_path:
+            return []
+        return [
+            candidate
+            for candidate in catalog
+            if candidate.get("project_id") != project_id
+            and self._is_path_child_of(
+                candidate.get("project_path") or "", parent_path
+            )
+        ]
+
+    def root_project_ids(self, company: Company) -> List[str]:
+        """
+        Return the company's root projects (the ones the owner associates).
+
+        In ``all_projects`` mode the roots are the top-level discovered
+        projects; otherwise they are the direct company links, including a
+        child project the owner added manually.
+        """
+        catalog = self._project_catalog()
+        if not catalog:
+            return []
+        if not company.all_projects:
+            return [
+                project.project_id
+                for project in company.projects
+                if project.project_id
+            ]
+        # all_projects: only the top-level discovered projects are roots.
+        roots = []
+        for project in catalog:
+            path = project.get("project_path") or ""
+            has_parent = any(
+                other.get("project_id") != project.get("project_id")
+                and self._is_path_child_of(path, other.get("project_path") or "")
+                for other in catalog
+            )
+            if not has_parent:
+                roots.append(project["project_id"])
+        return roots
+
+    def visible_project_ids(self, company: Company) -> List[str]:
+        """
+        Return every project the company can see.
+
+        ``all_projects`` sees the whole discovered catalog. A selected company
+        sees its direct links plus the descendants of links whose
+        ``include_children`` flag is on.
+        """
+        catalog = self._project_catalog()
+        if not catalog:
+            return []
+        if company.all_projects:
+            return [project["project_id"] for project in catalog]
+        visible: List[str] = []
+        seen = set()
+
+        def add(project_id: str) -> None:
+            if project_id and project_id not in seen:
+                seen.add(project_id)
+                visible.append(project_id)
+
+        for linked in company.projects:
+            add(linked.project_id)
+            if linked.include_children:
+                for child in self._descendant_projects(catalog, linked.project_id):
+                    add(child["project_id"])
+        # Keep the catalog order for a stable UI (unknown links appended).
+        order = {project["project_id"]: index for index, project in enumerate(catalog)}
+        visible.sort(key=lambda project_id: order.get(project_id, len(order)))
+        return visible
+
+    def child_projects(self, company: Company) -> List[Dict[str, Any]]:
+        """
+        Return the child projects the company actually sees.
+
+        A child is visible only when its parent link has ``include_children``
+        on (or the company sees all projects). Children added as direct links
+        are company projects, not inherited children, and are excluded here.
+        """
+        catalog = self._project_catalog()
         by_id = {project["project_id"]: project for project in catalog}
         linked_ids = {project.project_id for project in company.projects}
         children: Dict[str, Dict[str, Any]] = {}
         for linked in company.projects:
+            if not company.all_projects and not linked.include_children:
+                continue
             parent = by_id.get(linked.project_id)
             parent_path = (parent or {}).get("project_path") or ""
             if not parent_path:
                 continue
             for candidate in catalog:
-                child_path = candidate.get("project_path") or ""
                 child_id = candidate.get("project_id") or ""
                 if not child_id or child_id in linked_ids or child_id == linked.project_id:
                     continue
-                if not is_path_child_of(child_path, parent_path):
+                if not self._is_path_child_of(
+                    candidate.get("project_path") or "", parent_path
+                ):
                     continue
                 entry = {
                     "project_id": child_id,
                     "project_name": candidate.get("project_name") or child_id,
-                    "project_path": child_path,
+                    "project_path": candidate.get("project_path") or "",
                     "parent_project_id": linked.project_id,
                     "parent_project_name": linked.name or linked.project_id,
                 }
@@ -3073,6 +3221,8 @@ class CompanyManager:
         """
         company = self.get_company(company_id)
         catalog = {project["project_id"]: project for project in self._project_catalog()}
+        visible_project_ids = self.visible_project_ids(company)
+        root_project_ids = self.root_project_ids(company)
         budget = self.budget_state(company)
         budget_by_project = {
             row["project_id"]: row for row in budget.get("projects", [])
@@ -3099,8 +3249,24 @@ class CompanyManager:
         children_by_parent: Dict[str, List[Dict[str, Any]]] = {}
         for child in child_projects:
             children_by_parent.setdefault(child["parent_project_id"], []).append(child)
+        direct_by_id = {project.project_id: project for project in company.projects}
+        if company.all_projects:
+            # A wildcard company may have no materialized links (a new company
+            # created with "all projects"); the snapshot still needs one entry
+            # per visible project for the dashboard/assistant.
+            project_refs = [
+                direct_by_id.get(project["project_id"])
+                or CompanyProject(
+                    project_id=project["project_id"],
+                    name=project.get("project_name") or project["project_id"],
+                    include_children=True,
+                )
+                for project in catalog.values()
+            ]
+        else:
+            project_refs = list(company.projects)
         projects = []
-        for project in company.projects:
+        for project in project_refs:
             discovered = catalog.get(project.project_id)
             project_budget = budget_by_project.get(project.project_id, {})
             projects.append(
@@ -3139,8 +3305,12 @@ class CompanyManager:
             "company": company.model_dump(exclude={"spend"}),
             "counts": {
                 **company.counts(),
+                "projects": len(visible_project_ids),
                 "child_projects": len(child_projects),
             },
+            "all_projects": company.all_projects,
+            "root_project_ids": root_project_ids,
+            "visible_project_ids": visible_project_ids,
             "teams": teams,
             "projects": projects,
             "child_projects": child_projects,

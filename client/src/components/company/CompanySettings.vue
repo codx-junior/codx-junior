@@ -32,6 +32,7 @@ const confirmDelete = ref(false)
 const company = computed(() => props.snapshot?.company || {})
 const autonomy = computed(() => company.value.autonomy || {})
 const counts = computed(() => props.snapshot?.counts || {})
+const members = computed(() => props.snapshot?.members || [])
 
 const profile = reactive({
   name: '',
@@ -229,6 +230,22 @@ async function saveAI() {
   }
 }
 
+function openAdvancedSettings(tab = '') {
+  const linked = (props.snapshot?.projects || []).find(project => project.available)
+  const project = $storex.projects.activeProject ||
+    ($storex.projects.allProjects || []).find(item => item.project_id === linked?.project_id)
+  const projectName = project?.project_name || linked?.discovered_name || linked?.project_id
+  if (!projectName) {
+    notify('Create or link a project before opening advanced settings.', 'error')
+    return
+  }
+  router.push({
+    name: 'global-settings',
+    params: { projectName },
+    ...(tab ? { query: { tab } } : {})
+  }).catch(() => {})
+}
+
 function openAdvancedAI() {
   const linked = (props.snapshot?.projects || []).find(project => project.available)
   const project = $storex.projects.activeProject ||
@@ -342,9 +359,14 @@ function ask(prompt) {
           {{ t('settings.subtitle') }}
         </p>
       </div>
-      <button class="cp-chip" @click="ask('Review my company settings and tell me what is missing')">
-        <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i> Ask AI
-      </button>
+      <div class="flex flex-wrap items-center gap-2">
+        <button class="cp-chip" @click="openAdvancedSettings()">
+          <i class="fa-solid fa-sliders text-[9px]"></i> Advanced settings
+        </button>
+        <button class="cp-chip" @click="ask('Review my company settings and tell me what is missing')">
+          <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i> Ask AI
+        </button>
+      </div>
     </header>
 
     <div class="grid gap-4 xl:grid-cols-12">
@@ -599,6 +621,26 @@ function ask(prompt) {
               {{ t('settings.saveAutonomy') }}
             </button>
           </div>
+        </section>
+
+        <!-- People -->
+        <section class="cp-card cp-card-pad">
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <h2 class="cp-title">People</h2>
+              <p class="mt-0.5 text-[10px] cp-muted">Owners, managers and members.</p>
+            </div>
+            <button class="cp-chip" :disabled="!canAdmin" @click="ask('Add a person to my company')">
+              <i class="fa-solid fa-user-plus text-[9px]"></i> Add person
+            </button>
+          </div>
+          <div v-if="members.length" class="mt-2 space-y-1.5">
+            <div v-for="member in members" :key="member.username" class="flex items-center gap-2 rounded-lg bg-[var(--cp-surface-soft)] px-2.5 py-1.5">
+              <span class="min-w-0 flex-1 truncate text-[10px] font-semibold">{{ member.title || member.username }}</span>
+              <span class="text-[8px] uppercase tracking-wide cp-muted">{{ member.company_role || 'member' }}</span>
+            </div>
+          </div>
+          <p v-else class="mt-2 text-[10px] cp-muted">No people yet.</p>
         </section>
 
         <!-- Plan -->

@@ -4,6 +4,7 @@ import uuid
 from slugify import slugify
 
 from codx.junior.settings import CODXJuniorSettings
+from codx.junior.ticketing.model import ChatTicket
 
 from pydantic import BaseModel, Field, validator
 from typing import Optional, List, Any, Dict
@@ -847,6 +848,22 @@ class Chat(BaseModel):
     harness_metadata: Dict[str, Any] = Field(
         default_factory=dict,
         description="Free-form harness metadata (session url, selection errors, labels...)."
+    )
+
+    # ── Ticketing (cross-project requests) ────────────────────────────────
+    # A ticket is a chat one project places on ANOTHER project (a child project
+    # or a read/write linked project) to request a bug fix, a feature or a
+    # change. The chat is stored by its TARGET project (``owner_project_id``) on
+    # the ``tickets`` board, so the target owns the queue, and this payload
+    # carries both ends of the request plus the ticketing lifecycle.
+    # ``status`` above is the kanban workflow state and ``ticket.status`` the
+    # ticketing one: they are different concepts and must never be conflated.
+    ticket: Optional[ChatTicket] = Field(
+        default=None,
+        description=(
+            "Ticketing payload of a ticket chat (source/target project, status, "
+            "history). None for every chat that is not a cross-project ticket."
+        )
     )
 
 

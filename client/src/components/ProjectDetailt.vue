@@ -180,6 +180,10 @@ export default {
 
     // Get all projects directly from store (already sorted by last update)
     allProjects() {
+      // The company is the root: the advanced view only lists the projects the
+      // active company sees. Fall back to every project while the company
+      // store has not loaded yet (login/bootstrap).
+      if (this.$storex.company?.loaded) return this.$storex.company.companyProjects || []
       return this.$projects?.allProjects || []
     },
 

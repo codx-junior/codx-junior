@@ -39,10 +39,12 @@ def test_fresh_installation_gets_a_default_company_with_every_project(manager):
     company = manager.ensure_default_company(actor="alice")
 
     assert company.is_default is True
-    assert company.slug == "default"
-    assert company.name
+    assert company.slug == "acme"
+    assert company.name == "ACME"
     assert [project.project_id for project in company.projects] == ["p-api", "p-web"]
     assert company.auto_sync_projects is True
+    assert company.all_projects is True
+    assert all(project.include_children for project in company.projects)
 
 
 def test_default_company_is_idempotent_and_links_new_projects(manager, projects):
@@ -209,3 +211,56 @@ def test_choosing_an_autonomy_level_enables_the_autopilot(manager):
     assert updated.autonomy.level == "autonomous"
     assert updated.autonomy.enabled is True
     assert updated.autonomy.is_due() is True
+
+
+def test_selected_company_sees_children_only_when_the_link_allows_it(tmp_path):
+    projects = [
+        {"project_id": "p-root", "project_name": "Root", "project_path": "/work/root"},
+        {"project_id": "p-child", "project_name": "Child", "project_path": "/work/root/child"},
+        {"project_id": "p-other", "project_name": "Other", "project_path": "/work/other"},
+    ]
+    manager = CompanyManager(
+        store=CompanyStore(root_path=str(tmp_path / "companies")),
+        projects_provider=lambda: projects,
+        users_provider=lambda: [],
+        profiles_provider=lambda project_ids=None: [],
+    )
+    company = manager.create_company({"name": "Selected"}, actor="alice")
+    assert company.all_projects is False
+
+    company = manager.link_project(
+        company.id, "p-root", actor="alice", include_children=False
+    )
+    assert manager.visible_project_ids(company) == ["p-root"]
+    assert manager.root_project_ids(company) == ["p-root"]
+    assert manager.child_projects(company) == []
+
+    company = manager.link_project(
+        company.id, "p-root", actor="alice", include_children=True
+    )
+    assert manager.visible_project_ids(company) == ["p-root", "p-child"]
+    assert [child["project_id"] for child in manager.child_projects(company)] == ["p-child"]
+
+    # A child can always be added manually as a direct company project.
+    company = manager.link_project(
+        company.id, "p-child", actor="alice", include_children=False
+    )
+    assert manager.root_project_ids(company) == ["p-root", "p-child"]
+
+
+def test_all_projects_mode_sees_the_catalog_and_roots_are_top_level(tmp_path):
+    projects = [
+        {"project_id": "p-root", "project_name": "Root", "project_path": "/work/root"},
+        {"project_id": "p-child", "project_name": "Child", "project_path": "/work/root/child"},
+        {"project_id": "p-other", "project_name": "Other", "project_path": "/work/other"},
+    ]
+    manager = CompanyManager(
+        store=CompanyStore(root_path=str(tmp_path / "companies")),
+        projects_provider=lambda: projects,
+        users_provider=lambda: [],
+        profiles_provider=lambda project_ids=None: [],
+    )
+    company = manager.create_company({"name": "All", "all_projects": True}, actor="alice")
+
+    assert manager.visible_project_ids(company) == ["p-root", "p-child", "p-other"]
+    assert manager.root_project_ids(company) == ["p-root", "p-other"]

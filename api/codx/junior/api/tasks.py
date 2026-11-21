@@ -111,6 +111,14 @@ def api_tasks(
     assignee: str = Query("", description="Restrict to one assignee"),
     assignees: str = Query("", description="Comma separated assignees"),
     team_id: str = Query("", description="Restrict to boards of one team"),
+    from_date: str = Query(
+        "",
+        description="Only tasks with activity on/after this date (YYYY-MM-DD)",
+    ),
+    to_date: str = Query(
+        "",
+        description="Only tasks with activity on/before this date (YYYY-MM-DD)",
+    ),
     include_done: Optional[str] = Query(
         None, description="Include closed tasks (default: true)"
     ),
@@ -150,6 +158,8 @@ def api_tasks(
             assignee=assignee,
             assignees=_as_list(assignees),
             team_id=team_id,
+            from_date=from_date,
+            to_date=to_date,
             include_done=_as_bool(include_done, True),
             page=_as_positive_int(page, 1, 10_000_000),
             page_size=_as_positive_int(page_size, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE),

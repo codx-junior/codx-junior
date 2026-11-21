@@ -322,13 +322,6 @@ export const MOBILE_APP_GROUPS = [
         icon: 'fa-solid fa-wand-magic-sparkles',
         tone: 'accent'
       },
-      {
-        key: 'solopreneur',
-        title: 'Solopreneur',
-        description: 'Run your venture solo',
-        icon: 'fa-solid fa-rocket',
-        tone: 'error'
-      }
     ]
   }
 ]
@@ -386,6 +379,5 @@ export const MOBILE_ROUTE_TITLES = {
   'team-dm': 'Direct message',
   'team-media-library': 'Media library',
   'vibe-coding': 'Vibe coding',
-  solopreneur: 'Solopreneur',
   'codx-junior-split': 'Desktop'
 }

@@ -12,7 +12,7 @@ export class ChatSearchRequest {
     this.page = Math.max(1, options.page || 1)
     this.page_size = Math.max(1, Math.min(100, options.page_size || 20))
     this.user_id = options.user_id || null
-    this.project_ids = options.project_ids || null
+    this.project_ids = Array.isArray(options.project_ids) ? options.project_ids : null
     
     // Search field filters - all default to true
     this.filters = {

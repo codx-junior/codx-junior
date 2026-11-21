@@ -4,7 +4,6 @@ import SprintBoardCanvas from './SprintBoardCanvas.vue'
 import SprintBoardGantt from './SprintBoardGantt.vue'
 import SprintBoardModals from './SprintBoardModals.vue'
 import KanbanList from '../KanbanList.vue'
-import PlanningView from './PlanningView.vue'
 import FollowupView from './FollowupView.vue'
 import TaskTableView from './TaskTableView.vue'
 import BoardAssistantChat from './BoardAssistantChat.vue'
@@ -270,7 +269,7 @@ import MobileActionSheet from '@/components/mobile/MobileActionSheet.vue'
 
       <div class="grow"></div>
 
-      <!-- View switcher (board / table / gantt / planning / follow-up) -->
+      <!-- View switcher (board / table / gantt / follow-up) -->
       <div class="join">
         <button
           v-for="tab in viewTabs"
@@ -530,11 +529,8 @@ import MobileActionSheet from '@/components/mobile/MobileActionSheet.vue'
       </div>
     </div>
 
-    <!-- ── Planning view (global, not board scoped — rendered full width) ── -->
-    <PlanningView v-if="activeView === 'planning'" class="flex-1 min-h-0" />
-
     <!-- ── Follow-up view (global, not board scoped — rendered full width) ── -->
-    <FollowupView v-else-if="activeView === 'followup'" class="flex-1 min-h-0" />
+    <FollowupView v-if="activeView === 'followup'" class="flex-1 min-h-0" />
 
     <!-- ── Board workspace: board (left) + inline task detail (right) ── -->
     <VerticalSplitter
@@ -747,10 +743,10 @@ import { API } from '@/api/api'
 // Views this component can render.
 //   board  · table   → both flavours
 //   gantt            → sprint boards (sprint timeline)
-//   planning/followup→ kanban boards (global planning views)
-const KANBAN_VIEWS = ['board', 'table', 'planning', 'followup']
+//   followup         → kanban boards (global follow-up view)
+const KANBAN_VIEWS = ['board', 'table', 'followup']
 const SPRINT_VIEWS = ['board', 'table', 'gantt']
-const VALID_VIEWS = ['board', 'table', 'gantt', 'planning', 'followup']
+const VALID_VIEWS = ['board', 'table', 'gantt', 'followup']
 // View a board opens in when neither the panel nor the URL asks for one: the
 // task table. The view actually used is remembered per panel (see
 // `syncPanelState`), so this is only the first-time default.
@@ -759,8 +755,8 @@ const DEFAULT_VIEW = 'table'
 export default {
   props: {
     project: { type: Object, default: null },
-    // Dockview/app panels receive the app params (e.g. { view: 'planning' }).
-    // In router mode no prop is passed, so we also read the route query (?view=planning).
+    // Dockview/app panels receive the app params (e.g. { view: 'followup' }).
+    // In router mode no prop is passed, so we also read the route query (?view=followup).
     params: { type: Object, default: () => ({}) }
   },
   data() {
@@ -816,7 +812,7 @@ export default {
     this.boardAppliedFromParams = !!this.initialRequestedBoardId &&
       this.activeBoardId === this.initialRequestedBoardId
     // Apply the requested view, but only when the open board supports it
-    // (planning/follow-up are kanban-only, gantt is sprint-only). A board opened
+    // (follow-up is kanban-only, gantt is sprint-only). A board opened
     // without one reopens in the view it was left in (persisted in the app
     // params, see `requestedView`) or, the first time, in the table.
     const requestedView = this.requestedView
@@ -1172,7 +1168,6 @@ export default {
       return [
         { id: 'board', label: 'Board', icon: 'fa-solid fa-columns', count: this.sidebarTasks.length },
         { id: 'table', label: 'Table', icon: 'fa-solid fa-table-list', count: this.boardChats.length },
-        { id: 'planning', label: 'Planning', icon: 'fa-solid fa-list-check', count: planning?.allTasks?.length || 0 },
         { id: 'followup', label: 'Follow-up', icon: 'fa-solid fa-chart-line', count: planning?.metrics?.overdue || 0 }
       ]
     },
@@ -1257,7 +1252,7 @@ export default {
     }
   },
   watch: {
-    // Apply a view requested through params/route (e.g. /kanban?view=planning).
+    // Apply a view requested through params/route (e.g. /kanban?view=followup).
     // Dropping the request (the param/query was cleared) returns to the default.
     requestedView(view) {
       this.activeView = this.isViewAllowed(view)
@@ -1268,8 +1263,8 @@ export default {
     isMobile(mobile) {
       this.sidebarCompact = mobile
     },
-    // The board type owns which views exist (planning/follow-up only for kanban
-    // boards, gantt only for sprints) and the tab title shows the board name.
+    // The board type owns which views exist (follow-up only for kanban boards,
+    // gantt only for sprints) and the tab title shows the board name.
     activeBoard(board) {
       if (!this.isViewAllowed(this.activeView, board)) {
         this.activeView = this.isViewAllowed(DEFAULT_VIEW, board) ? DEFAULT_VIEW : 'board'
@@ -1347,8 +1342,8 @@ export default {
   },
   methods: {
     // ── Views ────────────────────────────────────────────────────────────────
-    // A view only exists while the open board supports it: planning/follow-up
-    // are kanban views, gantt is the sprint timeline.
+    // A view only exists while the open board supports it: follow-up is a
+    // kanban view, gantt is the sprint timeline.
     isViewAllowed(view, board = null) {
       const target = board || this.activeBoard
       const allowed = target?.type === 'sprint' ? SPRINT_VIEWS : KANBAN_VIEWS
@@ -1693,6 +1688,18 @@ export default {
         ? `Work on the attached content:\n${names.map(n => `- ${n}`).join('\n')}`
         : 'Run this task.'
     },
+    // Resolve "non-working-hours" to the instant stored in `Chat.wake_at`. The
+    // working window belongs to the installation, so the server resolves the
+    // expression and the client only persists the result. A null answer leaves
+    // the task unscheduled instead of failing the creation.
+    async resolveNonWorkingHoursWake() {
+      try {
+        const resolved = await API.tasks.resolveSchedule({ when: 'non-working-hours' })
+        return resolved?.wake_at || null
+      } catch (error) {
+        return null
+      }
+    },
     // Unified task creation — same richness both boards offer (initial message,
     // files, attachments, assignees, deadline, cost budget, Run).
     async onTaskCreated(payload) {
@@ -1700,7 +1707,7 @@ export default {
       const {
         name, column, mode, status, profiles, llm_model,
         project_id, users, deadline, estimation_cost,
-        message, files, attachments, parentId, run
+        message, files, attachments, parentId, run, nonUrgent
       } = payload
 
       // Core task:
@@ -1740,6 +1747,16 @@ export default {
 
       if (Object.keys(updates).length) {
         await this.$storex.chats.updateChatInfo({ chat, updates })
+      }
+
+      // "Non urgent": instead of expecting the task to be worked on now, it is
+      // armed outside the human working window so the autonomy runtime picks it
+      // up off-hours (the deadline, when set, is a separate field).
+      if (nonUrgent) {
+        const wakeAt = await this.resolveNonWorkingHoursWake()
+        if (wakeAt) {
+          await this.$storex.chats.updateChatInfo({ chat, updates: { wake_at: wakeAt } })
+        }
       }
 
       // The initial message (text + files + attachments) becomes the task's

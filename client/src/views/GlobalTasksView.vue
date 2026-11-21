@@ -90,9 +90,13 @@ let searchTimer = null
 
 // ── Project scope ──────────────────────────────────────────────────────────
 const activeProject = computed(() => $storex.projects.activeProject || null)
+const childProjects = computed(() => $storex.projects.childProjects || [])
 
-// The active project plus its children: the default Follow-up scope.
+// Follow-up is company-scoped and lists only the company's ROOT projects.
+// Child projects are never selected here (by design), even when the company
+// sees them in other views.
 function defaultProjectIds() {
+  if ($storex.company?.loaded) return ($storex.company.rootProjectIds || []).map(String)
   const ids = []
   if (activeProject.value?.project_id) ids.push(activeProject.value.project_id)
   return ids
@@ -101,7 +105,7 @@ function defaultProjectIds() {
 const scopeProjectIds = computed(() => (filters.project_ids || []).map(String))
 const selectedProjectCount = computed(() => scopeProjectIds.value.length)
 const scopeLabel = computed(() => {
-  if (!scopeProjectIds.value.length) return 'All projects'
+  if (!scopeProjectIds.value.length) return 'All company projects'
   if (scopeProjectIds.value.length === 1) {
     const project = projects.value.find(item => String(item.id) === scopeProjectIds.value[0])
     return project?.name || activeProject.value?.project_name || '1 project'
@@ -113,7 +117,12 @@ const defaultScopeIds = computed(() => defaultProjectIds().map(String))
 // ── Result ─────────────────────────────────────────────────────────────────
 const tasks = computed(() => result.value.tasks || [])
 const metrics = computed(() => result.value.metrics || {})
-const projects = computed(() => result.value.projects || [])
+const projects = computed(() => {
+  const all = result.value.projects || []
+  if (!$storex.company?.loaded) return all
+  const roots = new Set(($storex.company.rootProjectIds || []).map(String))
+  return all.filter(project => roots.has(String(project.id)))
+})
 const allBoards = computed(() => result.value.boards || [])
 const boards = computed(() => {
   const selected = new Set(scopeProjectIds.value)
@@ -159,7 +168,8 @@ const hasFilters = computed(() =>
 function queryParams() {
   return {
     q: filters.q.trim(),
-    project_ids: scopeProjectIds.value.join(','),
+    // Empty multi-select means "all company projects", not "all projects".
+    project_ids: (scopeProjectIds.value.length ? scopeProjectIds.value : defaultScopeIds.value).join(','),
     board_ids: filters.board_ids.join(','),
     columns: filters.columns.join(','),
     statuses: filters.statuses.join(','),
@@ -177,6 +187,17 @@ async function load({ resetPage = false } = {}) {
   if (resetPage) page.value = 1
   loading.value = true
   error.value = ''
+  // A company with no root projects has no Follow-up scope. Do not fall back
+  // to "every project the user can access" (that would cross company lines).
+  if ($storex.company?.loaded && !defaultScopeIds.value.length) {
+    result.value = {
+      tasks: [], metrics: {}, total: 0, page: 1, page_size: pageSize.value,
+      total_pages: 1, has_next: false, has_prev: false, projects: [],
+      boards: [], columns: [], assignees: [], statuses: [], priorities: []
+    }
+    loading.value = false
+    return
+  }
   try {
     result.value = await API.tasks.list(queryParams())
     // A selected task that no longer matches the filters is closed.
@@ -437,6 +458,15 @@ function unsubscribeTaskEvents() {
   if (manager) subscribedEvents.forEach(event => manager.off(event))
   subscribedEvents = []
 }
+
+watch(
+  () => [$storex.company?.loaded, $storex.company?.activeId],
+  ([loaded]) => {
+    if (!loaded) return
+    filters.project_ids = defaultScopeIds.value
+    load({ resetPage: true })
+  }
+)
 
 onMounted(() => {
   filters.project_ids = defaultScopeIds.value

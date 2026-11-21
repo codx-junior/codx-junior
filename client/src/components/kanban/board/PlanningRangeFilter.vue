@@ -4,7 +4,7 @@
       <button
         v-for="range in ranges"
         :key="range.value"
-        @click="$storex.planning.setRangeFilter(range.value)"
+        @click="setRange(range.value)"
         class="btn btn-sm join-item"
         :class="rangeFilter === range.value ? 'btn-primary' : 'btn-ghost'"
       >
@@ -16,14 +16,14 @@
       <input
         type="date"
         :value="customFromDate"
-        @change="$storex.planning.setCustomRange({ fromDate: $event.target.value, toDate: customToDate })"
+        @change="setFrom($event.target.value)"
         class="input input-sm input-bordered text-xs"
       />
       <span class="text-xs text-base-content/40">→</span>
       <input
         type="date"
         :value="customToDate"
-        @change="$storex.planning.setCustomRange({ fromDate: customFromDate, toDate: $event.target.value })"
+        @change="setTo($event.target.value)"
         class="input input-sm input-bordered text-xs"
       />
     </div>
@@ -33,8 +33,23 @@
 </template>
 
 <script>
+/**
+ * Range selector for the planning and follow-up views.
+ *
+ * By default it edits the planning store (the Planning view reads it). Pass
+ * `local` to own the value in the parent instead: the component then emits
+ * `update:range`, `update:from-date` and `update:to-date` without triggering
+ * the planning store's dataset reload.
+ */
 export default {
   name: 'PlanningRangeFilter',
+  props: {
+    local: { type: Boolean, default: false },
+    range: { type: String, default: 'month' },
+    fromDate: { type: String, default: null },
+    toDate: { type: String, default: null }
+  },
+  emits: ['update:range', 'update:from-date', 'update:to-date'],
   data() {
     return {
       ranges: [
@@ -47,16 +62,39 @@ export default {
   },
   computed: {
     rangeFilter() {
-      return this.$storex.planning.rangeFilter
+      return this.local ? this.range : this.$storex.planning.rangeFilter
     },
     customFromDate() {
-      return this.$storex.planning.customFromDate
+      return this.local ? this.fromDate : this.$storex.planning.customFromDate
     },
     customToDate() {
-      return this.$storex.planning.customToDate
+      return this.local ? this.toDate : this.$storex.planning.customToDate
     },
     loading() {
-      return this.$storex.planning.loading
+      return this.local ? false : this.$storex.planning.loading
+    }
+  },
+  methods: {
+    setRange(value) {
+      if (this.local) {
+        this.$emit('update:range', value)
+        return
+      }
+      this.$storex.planning.setRangeFilter(value)
+    },
+    setFrom(value) {
+      if (this.local) {
+        this.$emit('update:from-date', value)
+        return
+      }
+      this.$storex.planning.setCustomRange({ fromDate: value, toDate: this.customToDate })
+    },
+    setTo(value) {
+      if (this.local) {
+        this.$emit('update:to-date', value)
+        return
+      }
+      this.$storex.planning.setCustomRange({ fromDate: this.customFromDate, toDate: value })
     }
   }
 }

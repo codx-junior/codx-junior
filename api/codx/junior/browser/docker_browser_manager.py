@@ -72,6 +72,12 @@ logger = logging.getLogger(__name__)
 
 #: Default browser image.  Chromium (not Firefox) is required because
 #: Playwright drives the shared browser through the Chrome DevTools Protocol.
+#:
+#: The official ``browseruse/browseruse`` image is offered in the image library
+#: (see ``codx.junior.computer.images.BROWSERUSE_IMAGE``) but is NOT the default:
+#: it is headless, publishes neither a CDP port nor a noVNC live view, so the
+#: shared browser would lose both the Playwright connection and the live
+#: screen.  It stays opt-in through ``CODX_BROWSER_IMAGE``.
 DEFAULT_BROWSER_IMAGE = "lscr.io/linuxserver/chromium:latest"
 #: Default Linux desktop image (Selkies web desktop + Xvfb + xdotool).
 DEFAULT_LINUX_IMAGE = "lscr.io/linuxserver/webtop:debian-kde"

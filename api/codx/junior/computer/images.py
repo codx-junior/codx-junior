@@ -54,6 +54,13 @@ LS_WEBTOP_DOCS = "https://docs.linuxserver.io/images/docker-webtop/"
 CACHE_TTL_SECONDS = 3600
 TAGS_TTL_SECONDS = 900
 
+#: Official browser-use image (Python 3.12 + Playwright + Chromium).  It is
+#: headless: no X display and no noVNC, so its live view is the screenshot
+#: stream.  The Web UI (browser-use/web-ui) is not published as an official
+#: image either; it is deployed from its docker-compose (7788 UI / 6080 noVNC).
+BROWSERUSE_IMAGE = "browseruse/browseruse"
+BROWSERUSE_DOCS = "https://github.com/browser-use/browser-use"
+
 
 class ComputerImage(BaseModel):
     """One selectable image in the library."""
@@ -299,6 +306,32 @@ def _kasm_entries() -> List[ComputerImage]:
     return entries
 
 
+def _browseruse_entries() -> List[ComputerImage]:
+    """Official browser-use images (headless Playwright + Chromium)."""
+    return [ComputerImage(
+        id=f"browseruse:browseruse:latest",
+        provider="browseruse",
+        repository="browseruse/browseruse",
+        image=f"{BROWSERUSE_IMAGE}:latest",
+        tag="latest",
+        default_tag="latest",
+        name="Browser-Use agent",
+        description=(
+            "Official browser-use image: Python 3.12, Playwright and Chromium "
+            "preinstalled for AI browser automation. Headless: no desktop and "
+            "no noVNC, the live view is a screenshot stream."
+        ),
+        category="Automation",
+        docs_url=BROWSERUSE_DOCS,
+        live_view="screenshot",
+        live_port=None,
+        live_scheme="http",
+        strip_prefix=False,
+        control="docker",
+        tags=["browseruse", "browser-use", "browser", "automation", "playwright", "latest"],
+    )]
+
+
 def all_catalog_images(provider: Optional[str] = None, refresh: bool = False) -> List[ComputerImage]:
     """Return the curated catalog, optionally enriched from upstream APIs."""
     provider = (provider or "").strip().lower() or None
@@ -307,6 +340,8 @@ def all_catalog_images(provider: Optional[str] = None, refresh: bool = False) ->
         images.extend(_linuxserver_entries(with_dynamic=True, refresh=refresh))
     if provider in (None, "all", "kasmweb", "kasm"):
         images.extend(_kasm_entries())
+    if provider in (None, "all", "browseruse", "browser-use"):
+        images.extend(_browseruse_entries())
     return images
 
 
@@ -403,12 +438,32 @@ def resolve_image(
     if not raw:
         if kind in ("windows", "macos"):
             raw = ""
+        elif hint in ("browseruse", "browser-use"):
+            raw = f"{BROWSERUSE_IMAGE}:latest"
         elif hint in ("kasmweb", "kasm"):
             raw = _kasm_image("desktop")
         else:
             raw = _linuxserver_image(DEFAULT_LINUXSERVER_TAG)
 
     lowered = raw.lower()
+    if hint in ("browseruse", "browser-use") or lowered.startswith("browseruse/"):
+        repository, tag = _split_image(raw)
+        repository = repository or BROWSERUSE_IMAGE
+        tag = tag or "latest"
+        return ImageSpec(
+            provider="browseruse",
+            image=f"{repository}:{tag}",
+            repository=repository,
+            tag=tag,
+            live_view="screenshot",
+            live_port=None,
+            live_scheme="http",
+            strip_prefix=False,
+            control="docker",
+            name="Browser-Use agent",
+            docs_url=BROWSERUSE_DOCS,
+        )
+
     if hint in ("kasmweb", "kasm") or lowered.startswith("kasmweb/") or "/kasmweb/" in lowered:
         repository, tag = _split_image(raw)
         repo_name = repository.split("kasmweb/", 1)[-1] if "kasmweb/" in repository else repository

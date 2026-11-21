@@ -748,6 +748,14 @@ class CompanyProject(BaseModel):
     priority: str = Field(default="medium", description="low | medium | high | critical")
     status: str = Field(default="active", description="active | paused | archived")
     budget_cxjcoins: float = Field(default=0.0, description="Optional AI budget")
+    include_children: bool = Field(
+        default=True,
+        description=(
+            "When true, the child projects nested under this project are seen "
+            "by the company by default. When false, they must be linked "
+            "manually."
+        ),
+    )
     created_at: str = Field(default_factory=now_iso, description="Creation timestamp")
     updated_at: str = Field(default_factory=now_iso, description="Last update timestamp")
 
@@ -1552,6 +1560,14 @@ class Company(BaseModel):
             "user edits the company's project list."
         ),
     )
+    all_projects: bool = Field(
+        default=False,
+        description=(
+            "When true the company sees every discovered project, including "
+            "projects discovered later. The default company starts with this "
+            "enabled; a company can switch to an explicit project list."
+        ),
+    )
     org_units: List[OrgUnit] = Field(default_factory=list)
     teams: List[CompanyTeam] = Field(default_factory=list)
     projects: List[CompanyProject] = Field(default_factory=list)
@@ -1752,6 +1768,7 @@ class Company(BaseModel):
             "owner": self.owner,
             "is_default": self.is_default,
             "auto_sync_projects": self.auto_sync_projects,
+            "all_projects": self.all_projects,
             "project_ids": [project.project_id for project in self.projects],
             "color": self.color,
             "logo": self.logo,

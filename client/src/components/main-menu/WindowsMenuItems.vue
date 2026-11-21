@@ -113,20 +113,20 @@ export default {
   },
   methods: {
     run(item) {
-      const companyLocation = query => {
-        const companyMode = this.$storex.users.isCompanyMode ||
-          !this.$storex.projects.activeProject
-        const companyId = this.$storex.users.primaryCompanyId
+      const companyLocation = (section = '') => {
+        const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
         return {
-          name: companyMode ? 'company-home' : 'company',
-          params: companyMode && companyId ? { companyId } : {},
-          ...(query ? { query } : {})
+          name: 'company-home',
+          params: {
+            ...(company?.slug ? { companySlug: company.slug } : {}),
+            ...(section ? { section } : {})
+          }
         }
       }
       const actions = {
         home: () => this.$ui.setActiveTab('home'),
         company: () => this.$storex.$router.push(companyLocation()).catch(() => {}),
-        'company-settings': () => this.$storex.$router.push(companyLocation({ assistant: 'settings' })).catch(() => {}),
+        'company-settings': () => this.$storex.$router.push(companyLocation('settings')).catch(() => {}),
         projects: () => this.$ui.openApp('projects'),
         'new-project': () => this.$ui.showNewProject(true),
         wiki: () => this.$ui.setActiveTab('wiki'),

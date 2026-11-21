@@ -50,15 +50,6 @@ export const APPS = {
     route: () => ({ name: 'home' })
   },
 
-  // Solopreneur mode: the top-level "/solopreneur" screen that re-frames the
-  // workspace around a solo operator (venture overview, modules, AI co-founder).
-  // Unscoped — its route carries no ":projectName" — so `withProject()` never
-  // prefixes it (see router/index.ts + views/SolopreneurView.vue).
-  solopreneur: {
-    id: 'solopreneur', title: 'Solopreneur', component: 'solopreneur', icon: 'fa-solid fa-rocket',
-    route: () => ({ name: 'solopreneur' })
-  },
-
   // Tasks — the general task table of the installation. It is the screen the
   // "Tasks" item opens: the latest tasks of every board/project, paged, with
   // the board and column as columns. From a row the user opens the board (the
@@ -133,19 +124,6 @@ export const APPS = {
   ciso: {
     id: 'ciso', title: 'CISO', component: 'ciso', icon: 'fa-solid fa-shield-halved',
     route: () => ({ name: 'ciso' })
-  },
-
-  // Company — the top-level hybrid organization: org chart, teams of humans and
-  // AI profiles, linked projects, missions and the guard-railed autopilot.
-  // Desktop mode → dockview panel; single/mobile mode →
-  // "/:projectName/company" (see router/index.ts + views/CompanyView.vue).
-  company: {
-    id: 'company', title: 'Company', component: 'company',
-    icon: 'fa-solid fa-building-columns',
-    desktopParams: p => ({ companyId: p.companyId }),
-    route: p => (p?.companyId
-      ? { name: 'company', params: { companyId: p.companyId } }
-      : { name: 'company' })
   },
 
   chat: {

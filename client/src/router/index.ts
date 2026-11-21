@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { $storex } from '../store'
+import { API } from '@/api/api'
 import Navigate from './navigate'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -18,383 +19,373 @@ const MeetSummaryView = () => import('@/views/MeetSummaryView.vue')
 const BoardManagementView = () => import('@/views/BoardManagementView.vue')
 const TeamView = () => import('@/views/TeamView.vue')
 const CompanyView = () => import('@/views/CompanyView.vue')
+const LegacyRedirectView = () => import('@/views/LegacyRedirectView.vue')
 const MetricsDashboard = () => import('@/components/analytics/MetricsDashboard.vue')
 const Desktop = () => import('@/components/desktop/Desktop.vue')
 const KanbanBoardView = () => import('@/components/kanban/board/KanbanBoardView.vue')
 const BrowsersSessionManager = () => import('@/components/browsers/BrowsersSessionManager.vue')
-const SolopreneurView = () => import('@/views/SolopreneurView.vue')
 const ProfileEditorView = () => import('@/views/ProfileEditorView.vue')
 
 // ─────────────────────────────────────────────────────────────────────────────
-// WELCOME SCREEN
-// "/" and "/<project_name>" are the landing routes and both render the general
-// Tasks table (the latest tasks of every board, paged). It is resolved through
-// <AppRouteView> exactly like any other app screen, so the same key opens a
-// dockview panel on desktop and the routed screen in single/mobile mode.
+// COMPANY-FIRST URL MODEL
 //
-// Company-mode users land in the company shell instead (see router/navigate.js
-// and App.vue): the company is the top-level element of the product.
+//   /                                    → /<default-company-slug>
+//   /<companySlug>                       → company home
+//   /<companySlug>/<section>             → company section
+//   /<companySlug>/workspace/<project>…  → advanced (project) view
+//
+// The company is the root. Legacy project URLs are resolved by the guard and
+// redirected to the canonical company/workspace path.
 // ─────────────────────────────────────────────────────────────────────────────
 const WELCOME_APP = 'task-list'
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MOBILE ROUTE METADATA
-//
-// The mobile shell (components/mobile/MobileShell.vue) reads `meta.mobile` to
-// decide which bottom tab highlights, whether the generic app bar is rendered
-// (screens with their own header hide it) and whether the tab bar should stay
-// hidden for immersive screens (chat, browser, workspace…).
-//
-// Routes that only need a title fall back to config/mobile.js →
-// MOBILE_ROUTE_TITLES, so this helper is used just where the defaults are not
-// enough.
-// ─────────────────────────────────────────────────────────────────────────────
+const COMPANY_SECTIONS = [
+  'home',
+  'work',
+  'team',
+  'projects',
+  'business',
+  'activity',
+  'security',
+  'settings',
+  'meet',
+  'coworking',
+  'calendar'
+]
+
+const COMPANY_SECTION_RE = COMPANY_SECTIONS.join('|')
+
+// Mobile metadata helper (same convention as before).
 function mobile(title: string, tab = 'more', extra: Record<string, any> = {}) {
   return { mobile: { title, tab, ...extra } }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PROJECT-SCOPED ROUTES
-// Every route is mounted under the active project's *escaped* name so the URL
-// always reflects which project you are working in, e.g.
-//   /codx-junior/chats      → project "codx-junior" chat list
-//   /my.project/desktop     → project "my.project"  desktop view
-//   /my-project/settings    → project "my-project"  settings
-// The first segment is the project_name; vue-router percent-encodes it while
-// building the URL, so names containing dots, dashes, spaces… stay valid.
-// ─────────────────────────────────────────────────────────────────────────────
+// Project-scoped screens. Each path below is relative to the project root and
+// is mounted under /:companySlug/workspace/:projectName.
+const PROJECT_ROUTES = [
+  {
+    path: '',
+    name: 'home',
+    component: AppRouteView,
+    meta: { app: WELCOME_APP, ...mobile('Home', 'home', { hideTopBar: true }) }
+  },
+  {
+    path: '/chats',
+    name: 'chats',
+    component: ChatsView,
+    meta: { ...mobile('Chats', 'chats', { hideTopBar: true }) }
+  },
+  {
+    path: '/new-chat',
+    name: 'new-chat',
+    component: QuickChatView,
+    meta: { ...mobile('New chat', 'chats') }
+  },
+  {
+    path: '/chats/:chatId/:chatName',
+    name: 'chat',
+    component: QuickChatView,
+    meta: { ...mobile('Chat', 'chats', { hideTopBar: true, hideTabs: true }) }
+  },
+  {
+    path: '/chats/:chatId/:chatName/workspace/:workspaceId/:workspaceName',
+    name: 'chat-workspace',
+    component: QuickChatView,
+    meta: { ...mobile('Chat', 'chats', { hideTopBar: true, hideTabs: true }) }
+  },
+  { path: '/meet', name: 'meet', component: MeetView },
+  {
+    path: '/meet/:meetId',
+    name: 'meet-session',
+    component: MeetView,
+    meta: { ...mobile('Meeting', 'more', { hideTabs: true }) }
+  },
+  {
+    path: '/meet/:meetId/summary',
+    name: 'meet-summary',
+    component: MeetSummaryView,
+    meta: { ...mobile('Meeting summary', 'more', { hideTabs: true }) }
+  },
+  { path: '/workspaces', name: 'workspaces', component: WorkspaceView },
+  {
+    path: '/workspaces/:workspaceId/:workspaceName',
+    name: 'workspace',
+    component: WorkspaceView,
+    meta: { ...mobile('Workspace', 'more', { hideTabs: true }) }
+  },
+  { path: '/browsers', name: 'browsers', component: BrowsersSessionManager },
+  {
+    path: '/browsers/:sessionId/:sessionName',
+    name: 'browser-session',
+    component: BrowsersSessionManager,
+    meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
+  },
+  { path: '/computers', name: 'computers', component: BrowsersSessionManager },
+  {
+    path: '/computers/:sessionId/:sessionName',
+    name: 'computer-session',
+    component: BrowsersSessionManager,
+    meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
+  },
+  {
+    path: '/board-management',
+    name: 'board-management',
+    component: BoardManagementView,
+    meta: { ...mobile('Board management', 'tasks') }
+  },
+  {
+    path: '/tasks',
+    name: 'tasks',
+    component: AppRouteView,
+    meta: { app: 'task-list', ...mobile('Tasks', 'tasks', { hideTopBar: true }) }
+  },
+  {
+    path: '/kanban/:board?/:boardName?',
+    name: 'kanban',
+    component: KanbanBoardView,
+    meta: { ...mobile('Board', 'tasks', { hideTopBar: true }) }
+  },
+  {
+    path: '/messenger',
+    name: 'messenger',
+    component: MessengerView,
+    meta: { ...mobile('Messenger', 'chats', { hideTopBar: true, hideTabs: true }) }
+  },
+  {
+    path: '/team/:teamId?',
+    name: 'team',
+    component: TeamView
+  },
+  {
+    path: '/profiles/:name/edit',
+    name: 'profile-edit',
+    component: ProfileEditorView,
+    meta: { ...mobile('Edit profile', 'more', { hideTabs: true }) }
+  },
 
-// Return the RAW active project name. vue-router encodes route params when it
-// builds the URL, so pre-encoding here would double-encode names with special
-// characters (e.g. "my project" → "my%2520project"), and the segment would no
-// longer decode back to the real project name on reload.
+  // ── Generic app routes ────────────────────────────────────────────────
+  { path: '/vibe-coding', name: 'vibe-coding', component: AppRouteView, meta: { app: 'vibe-coding' } },
+  { path: '/wiki', name: 'wiki', component: AppRouteView, meta: { app: 'wiki' } },
+  {
+    path: '/channel',
+    name: 'channel',
+    component: ChannelView,
+    meta: { ...mobile('Channel', 'more', { hideTopBar: true, hideTabs: true }) }
+  },
+  { path: '/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs' } },
+  { path: '/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', ...mobile('Calendar', 'more') } },
+  { path: '/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
+  { path: '/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', ...mobile('CISO', 'more') } },
+  { path: '/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
+  { path: '/knowledge-settings', name: 'knowledge-settings', component: AppRouteView, meta: { app: 'knowledge_settings' } },
+  { path: '/projects', name: 'projects', component: AppRouteView, meta: { app: 'projects' } },
+  { path: '/settings', name: 'settings', component: AppRouteView, meta: { app: 'settings' } },
+  { path: '/global-settings', name: 'global-settings', component: AppRouteView, meta: { app: 'global-settings' } },
+  { path: '/account', name: 'account', component: AppRouteView, meta: { app: 'account' } },
+  { path: '/file-explorer', name: 'file-explorer', component: AppRouteView, meta: { app: 'file-explorer' } },
+  { path: '/file-viewer/:filePath(.*)*', name: 'file-viewer', component: AppRouteView, meta: { app: 'file-viewer', ...mobile('File', 'more', { hideTabs: true }) } },
+  { path: '/logs', name: 'log-viewer', component: AppRouteView, meta: { app: 'log-viewer' } },
+  { path: '/chat-logs', name: 'chat-logs', component: AppRouteView, meta: { app: 'chat-logs' } },
+  { path: '/decision-model-logs', name: 'decision-model-logs', component: AppRouteView, meta: { app: 'decision-model-logs' } },
+  { path: '/metrics', name: 'metrics', component: AppRouteView, meta: { app: 'metrics' } },
+  {
+    path: '/management-dashboard',
+    redirect: (to: any) => ({
+      name: 'tasks',
+      params: { companySlug: to.params.companySlug, projectName: to.params.projectName }
+    })
+  },
+  { path: '/api-monitoring', name: 'api-monitoring', component: AppRouteView, meta: { app: 'api-monitoring' } },
+  { path: '/infra', name: 'infra', component: AppRouteView, meta: { app: 'infra' } },
+  { path: '/git-view', name: 'git-view', component: AppRouteView, meta: { app: 'git-view' } },
+  { path: '/team-channel/:channelId', name: 'team-channel', component: AppRouteView, meta: { app: 'team-channel', ...mobile('Channel', 'chats', { hideTabs: true }) } },
+  { path: '/team-dm/:dmId', name: 'team-dm', component: AppRouteView, meta: { app: 'team-dm', ...mobile('Direct message', 'chats', { hideTabs: true }) } },
+  { path: '/team-media-library/:teamId', name: 'team-media-library', component: AppRouteView, meta: { app: 'team-media-library' } },
+  {
+    path: '/desktop/:pathMatch(.*)*',
+    name: 'codx-junior-split',
+    component: Desktop,
+    meta: { ...mobile('Desktop', 'more', { hideTopBar: true, hideTabs: true }) }
+  },
+  { path: '/analytics', name: 'analytics', component: MetricsDashboard }
+]
+
+// The same route names, mounted under the company workspace prefix.
+const ADVANCED_ROUTES = PROJECT_ROUTES.map(route => ({
+  ...route,
+  path: `/:companySlug/workspace/:projectName${route.path}`
+}))
+
+// Return the RAW active project/company segments. vue-router encodes params
+// when it builds the URL, so pre-encoding would double-encode names.
 function activeProjectSegment() {
   return $storex.projects.activeProject?.project_name || ''
 }
 
+function activeCompanySlug() {
+  return $storex.company?.activeSlug || ''
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY REDIRECTS
+//
+// A legacy project URL is /<projectName>/<tail>. The guard resolves the project
+// to a company and redirects to /<companySlug>/workspace/<projectName>/<tail>.
+// ─────────────────────────────────────────────────────────────────────────────
+function defaultCompanyHome() {
+  const company = $storex.company?.defaultCompany
+  return company?.slug ? `/${company.slug}` : '/'
+}
+
+function withQuery(path: string, query: Record<string, any>) {
+  const params = new URLSearchParams()
+  Object.entries(query || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return
+    if (Array.isArray(value)) value.forEach(item => params.append(key, String(item)))
+    else params.set(key, String(value))
+  })
+  const search = params.toString()
+  return search ? `${path}?${search}` : path
+}
+
+async function ensureProjectsLoaded() {
+  if (($storex.projects.allProjects || []).length) return
+  try {
+    await $storex.projects.loadAllProjects?.()
+  } catch {
+    // The screens report their own loading errors.
+  }
+}
+
+async function resolveLegacy(to: any) {
+  if (!$storex.api.user) return true
+  await $storex.company.ensureLoaded().catch(() => {})
+  await ensureProjectsLoaded()
+  const segments = String(to.path || '')
+    .split('/')
+    .filter(Boolean)
+    .map(segment => decodeURIComponent(segment))
+
+  if (!segments.length) return defaultCompanyHome()
+
+  // Old /company[/<id>] routes.
+  if (segments[0] === 'company') {
+    const byId = $storex.company.companies.find(item => item.id === segments[1])
+    if (byId) return withQuery(`/${byId.slug}`, to.query)
+    return withQuery(defaultCompanyHome(), to.query)
+  }
+
+  const first = segments[0]
+  const company = $storex.company.companies.find(item => item.slug === first)
+  if (company) {
+    // A company slug with an unknown tail: go to its home rather than 404.
+    return withQuery(`/${company.slug}`, to.query)
+  }
+
+  const project = ($storex.projects.allProjects || []).find(item =>
+    item.project_name === first || item.project_id === first
+  )
+  if (!project) return withQuery(defaultCompanyHome(), to.query)
+
+  let target = null
+  try {
+    const owners = await API.companies.lookup(project.project_id)
+    target = (owners || []).find(item => item.is_default) || (owners || [])[0] || null
+  } catch {
+    target = null
+  }
+  target = target || $storex.company.defaultCompany
+  if (!target?.slug) return withQuery(defaultCompanyHome(), to.query)
+
+  try {
+    if ($storex.projects.activeProject?.project_id !== project.project_id) {
+      await $storex.projects.activeProjectChanged(project)
+    }
+  } catch {
+    // The redirect is still useful; project loading reports its own error.
+  }
+
+  // /<project>/company is the old company entry point.
+  if (segments[1] === 'company') {
+    return withQuery(`/${target.slug}`, to.query)
+  }
+
+  let tail = segments.slice(1).join('/')
+  if (tail.startsWith('management-dashboard')) tail = 'tasks'
+  const path = `/${target.slug}/workspace/${encodeURIComponent(project.project_name)}${
+    tail ? `/${tail}` : ''
+  }`
+  return withQuery(path, to.query)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUTES
+// ─────────────────────────────────────────────────────────────────────────────
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
-      // Unscoped bootstrap home. The navigation guard replaces it with the
-      // project-scoped home ("/:projectName") as soon as a project is active.
-      // Both render the welcome screen (management dashboard).
+      // Bootstrap home. The guard replaces it with /<default-company-slug>.
       path: '/',
       name: 'root',
       component: AppRouteView,
       meta: { app: WELCOME_APP, ...mobile('Home', 'home', { hideTopBar: true }) }
     },
+    { path: '/company', redirect: () => withQuery(defaultCompanyHome(), {}) },
+    { path: '/solopreneur/:pathMatch(.*)*', redirect: () => defaultCompanyHome() },
     {
-      // Solopreneur mode — a top-level, project-INDEPENDENT screen that re-frames
-      // the workspace around a solo operator (venture overview, modules and the
-      // AI co-founder). The optional ":module" segment makes a module
-      // deep-linkable ("/solopreneur/tasks"); without it the dashboard is shown.
-      //
-      // It is a STATIC segment, so vue-router ranks it above the dynamic
-      // "/:projectName" route, and it is never project-prefixed: `withProject()`
-      // only injects a project into routes whose path contains ":projectName".
-      path: '/solopreneur/:module?',
-      name: 'solopreneur',
-      component: SolopreneurView,
-      meta: { ...mobile('Solopreneur', 'more', { fullScreen: true, hideTopBar: true, hideTabs: true }) }
-    },
-    {
-      // Company shell — the project-INDEPENDENT landing screen of company mode.
-      //
-      // A company is global (it can orchestrate projects anywhere in the
-      // installation), so the manager-oriented shell must not require an active
-      // project. The optional :companyId keeps a company deep-linkable.
-      //
-      // The static "/company" segment ranks above "/:projectName", so the
-      // router never mistakes it for a project name. A user whose role/mode is
-      // "company" is redirected here after login (see router/navigate.js);
-      // everyone else keeps today's project workspace.
-      path: '/company/:companyId?',
-      name: 'company-home',
-      component: CompanyView,
-      meta: { ...mobile('Company', 'more', { hideTopBar: true }) }
-    },
-    {
-      // Home — the welcome screen for "/<project_name>".
-      // The dashboard initialises its project filter to THIS project (the URL
-      // segment is the single source of truth for "where am I working").
-      path: '/:projectName',
-      name: 'home',
-      component: AppRouteView,
-      meta: { app: WELCOME_APP, ...mobile('Home', 'home', { hideTopBar: true }) }
-    },
-    {
-      // Chat routes: router mode
-      path: '/:projectName/chats',
-      name: 'chats',
-      component: ChatsView,
-      meta: { ...mobile('Chats', 'chats', { hideTopBar: true }) }
-    },
-    {
-      // "New chat" is a dedicated route instead of sending people to the
-      // management dashboard (the old mobile bottom bar did exactly that).
-      // QuickChatView with no :chatId is the composer/home surface.
-      path: '/:projectName/new-chat',
-      name: 'new-chat',
-      component: QuickChatView,
-      meta: { ...mobile('New chat', 'chats') }
-    },
-    {
-      path: '/:projectName/chats/:chatId/:chatName',
-      name: 'chat',
-      component: QuickChatView,
-      meta: { ...mobile('Chat', 'chats', { hideTopBar: true, hideTabs: true }) }
-    },
-    {
-      path: '/:projectName/chats/:chatId/:chatName/workspace/:workspaceId/:workspaceName',
-      name: 'chat-workspace',
-      component: QuickChatView,
-      meta: { ...mobile('Chat', 'chats', { hideTopBar: true, hideTabs: true }) }
-    },
-    {
-      // Meet routes: router mode
-      path: '/:projectName/meet',
-      name: 'meet',
-      component: MeetView
-    },
-    {
-      path: '/:projectName/meet/:meetId',
-      name: 'meet-session',
-      component: MeetView,
-      meta: { ...mobile('Meeting', 'more', { hideTabs: true }) }
-    },
-    {
-      // Recap of a meeting: minutes, action items (create/run/schedule tasks)
-      // and the recorded audio.
-      path: '/:projectName/meet/:meetId/summary',
-      name: 'meet-summary',
-      component: MeetSummaryView,
-      meta: { ...mobile('Meeting summary', 'more', { hideTabs: true }) }
-    },
-    {
-      // Workspace routes: router mode
-      path: '/:projectName/workspaces',
-      name: 'workspaces',
-      component: WorkspaceView
-    },
-    {
-      path: '/:projectName/workspaces/:workspaceId/:workspaceName',
-      name: 'workspace',
-      component: WorkspaceView,
-      meta: { ...mobile('Workspace', 'more', { hideTabs: true }) }
-    },
-    {
-      // Browser routes: router mode
-      path: '/:projectName/browsers',
-      name: 'browsers',
-      component: BrowsersSessionManager
-    },
-    {
-      path: '/:projectName/browsers/:sessionId/:sessionName',
-      name: 'browser-session',
-      component: BrowsersSessionManager,
-      meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
-    },
-    {
-      // Canonical alias: computer sessions include desktop/VM kinds, while
-      // the /browsers routes stay for existing bookmarks.
-      path: '/:projectName/computers',
-      name: 'computers',
-      component: BrowsersSessionManager
-    },
-    {
-      path: '/:projectName/computers/:sessionId/:sessionName',
-      name: 'computer-session',
-      component: BrowsersSessionManager,
-      meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
-    },
-    {
-      // Board management: flow + responsible for every visible board.
-      path: '/:projectName/board-management',
-      name: 'board-management',
-      component: BoardManagementView,
-      meta: { ...mobile('Board management', 'tasks') }
-    },
-    {
-      // Tasks — the general table of the latest tasks from every board and
-      // project. It is the screen the Tasks item opens; clicking a board from
-      // here opens the board canvas below.
-      path: '/:projectName/tasks',
-      name: 'tasks',
-      component: AppRouteView,
-      meta: { app: 'task-list', ...mobile('Tasks', 'tasks', { hideTopBar: true }) }
-    },
-    {
-      // The optional board id + name segments let the URL carry the open board,
-      // so a refresh or a back-navigation (non-desktop / single mode) reopens it.
-      // Both are optional: the plain "/:projectName/kanban" still works.
-      path: '/:projectName/kanban/:board?/:boardName?',
-      name: 'kanban',
-      component: KanbanBoardView,
-      meta: { ...mobile('Board', 'tasks', { hideTopBar: true }) }
-    },
-    {
-      path: '/:projectName/messenger',
-      name: 'messenger',
-      component: MessengerView,
-      meta: { ...mobile('Messenger', 'chats', { hideTopBar: true, hideTabs: true }) }
-    },
-    {
-      // Team view (used by setActiveTab('team') / openTeam() / openTeams()).
-      // The optional :teamId makes an individual team deep-linkable
-      // ("/:projectName/team/<teamId>"); without it the view opens every team
-      // (see views/TeamView.vue).
-      path: '/:projectName/team/:teamId?',
-      name: 'team',
-      component: TeamView
-    },
-    {
-      // Full-page profile editor. The team drawer is a 32rem panel, too narrow
-      // for the voice settings, so those live in their own screen. Opened from
-      // the drawer ("open full editor") with the profile name in the URL.
-      path: '/:projectName/profiles/:name/edit',
-      name: 'profile-edit',
-      component: ProfileEditorView,
-      meta: { ...mobile('Edit profile', 'more', { hideTabs: true }) }
-    },
-    {
-      // Company — the top-level hybrid organization above projects.
-      // The optional :companyId makes a company deep-linkable inside the
-      // project-scoped shell ("/:projectName/company/<companyId>").
-      // See views/CompanyView.vue and config/apps.js → company.
-      path: '/:projectName/company/:companyId?',
-      name: 'company',
-      component: CompanyView,
-      meta: { ...mobile('Company', 'more', { hideTopBar: true }) }
-    },
-
-    // ── Generic app routes ────────────────────────────────────────────────
-    // Each app maps to <AppRouteView> which resolves the component from
-    // config/apps.js (route meta.app) and feeds it its params.
-    { path: '/:projectName/vibe-coding', name: 'vibe-coding', component: AppRouteView, meta: { app: 'vibe-coding' } },
-    { path: '/:projectName/wiki', name: 'wiki', component: AppRouteView, meta: { app: 'wiki' } },
-    {
-      // Unscoped alias so the literal "/channel" deep link works: it forwards to
-      // the ACTIVE project's channel. The static segment outranks
-      // "/:projectName", like "/company" and "/solopreneur". Without an active
-      // project it goes back to the bootstrap route (which the guard resolves
-      // to the project home), never to itself.
       path: '/channel',
       redirect: () => {
+        const companySlug = activeCompanySlug()
         const projectName = activeProjectSegment()
-        return projectName
-          ? { name: 'channel', params: { projectName } }
-          : { name: 'root' }
+        return companySlug && projectName
+          ? { name: 'channel', params: { companySlug, projectName } }
+          : defaultCompanyHome()
       }
     },
-    {
-      // Project's channel (design/project-channel.md) — the video-first shell
-      // that will host the project documentation as its "Library" tab.
-      //
-      // M0 shell only: the five sections live in the "?tab=" query
-      // (home|library|episodes|shorts|learn), so each one is a deep link that
-      // survives a refresh. The SIDEBAR ENTRY now opens this screen, while
-      // "/:projectName/wiki" above keeps resolving unchanged — the channel is
-      // a shell over the wiki, never a replacement for its route.
-      //
-      // `hideTabs` removes the generic mobile tab bar: the channel has its own
-      // thumb-reachable bottom bar (Home · Library · Episodes · Shorts ·
-      // Learn), and stacking two bars would cost 56 px of a 640 px screen.
-      path: '/:projectName/channel',
-      name: 'channel',
-      component: ChannelView,
-      meta: { ...mobile('Channel', 'more', { hideTopBar: true, hideTabs: true }) }
-    },
-    { path: '/:projectName/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs' } },
-    // Agenda / Calendar manager — ONE global agenda across every project
-    // (design/06-calendar/01-analysis.md, decision D1): the projects are a
-    // FILTER of the view, never a data root. Same pattern as every other app:
-    // <AppRouteView> resolves meta.app from config/appComponentsMap.js, and on
-    // desktop the very same key opens a dockview panel (config/apps.js).
-    { path: '/:projectName/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', ...mobile('Calendar', 'more') } },
-    { path: '/:projectName/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
-    { path: '/:projectName/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', ...mobile('CISO', 'more') } },
-    { path: '/:projectName/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
-    { path: '/:projectName/knowledge-settings', name: 'knowledge-settings', component: AppRouteView, meta: { app: 'knowledge_settings' } },
-    { path: '/:projectName/projects', name: 'projects', component: AppRouteView, meta: { app: 'projects' } },
-    { path: '/:projectName/settings', name: 'settings', component: AppRouteView, meta: { app: 'settings' } },
-    { path: '/:projectName/global-settings', name: 'global-settings', component: AppRouteView, meta: { app: 'global-settings' } },
-    { path: '/:projectName/account', name: 'account', component: AppRouteView, meta: { app: 'account' } },
-    { path: '/:projectName/file-explorer', name: 'file-explorer', component: AppRouteView, meta: { app: 'file-explorer' } },
-    { path: '/:projectName/file-viewer/:filePath(.*)*', name: 'file-viewer', component: AppRouteView, meta: { app: 'file-viewer', ...mobile('File', 'more', { hideTabs: true }) } },
-    { path: '/:projectName/logs', name: 'log-viewer', component: AppRouteView, meta: { app: 'log-viewer' } },
-    { path: '/:projectName/chat-logs', name: 'chat-logs', component: AppRouteView, meta: { app: 'chat-logs' } },
-    { path: '/:projectName/decision-model-logs', name: 'decision-model-logs', component: AppRouteView, meta: { app: 'decision-model-logs' } },
-    { path: '/:projectName/metrics', name: 'metrics', component: AppRouteView, meta: { app: 'metrics' } },
-    // The Management view was removed: the company shell owns the cross-project
-    // management story. Old bookmarks land on the general Tasks table instead
-    // of a 404.
-    { path: '/:projectName/management-dashboard', redirect: { name: 'tasks' } },
-    // Per-request API performance (latency / throughput / errors) recorded by the
-    // backend and served from /api/api-logs/*. Same pattern as every other app:
-    // <AppRouteView> resolves meta.app, and on desktop the very same key opens a
-    // dockview panel (see config/apps.js + views/api-monitoring/).
-    { path: '/:projectName/api-monitoring', name: 'api-monitoring', component: AppRouteView, meta: { app: 'api-monitoring' } },
-    { path: '/:projectName/infra', name: 'infra', component: AppRouteView, meta: { app: 'infra' } },
-    // Git repository view (branches, commits, merges and working-tree diffs).
-    // The screen already exists (components/repo/GitView.vue) and is registered
-    // in config/appComponentsMap.js as 'git-view'; only the route was missing,
-    // which made the sidebar "Git" item a no-op in single / mobile mode. Same
-    // pattern as every other app: <AppRouteView> resolves meta.app, and on
-    // desktop the very same key opens a dockview panel.
-    { path: '/:projectName/git-view', name: 'git-view', component: AppRouteView, meta: { app: 'git-view' } },
-    { path: '/:projectName/team-channel/:channelId', name: 'team-channel', component: AppRouteView, meta: { app: 'team-channel', ...mobile('Channel', 'chats', { hideTabs: true }) } },
-    { path: '/:projectName/team-dm/:dmId', name: 'team-dm', component: AppRouteView, meta: { app: 'team-dm', ...mobile('Direct message', 'chats', { hideTabs: true }) } },
-    { path: '/:projectName/team-media-library/:teamId', name: 'team-media-library', component: AppRouteView, meta: { app: 'team-media-library' } },
 
     {
-      // Desktop / team view (dockview panels)
-      path: '/:projectName/desktop/:pathMatch(.*)*',
-      name: 'codx-junior-split',
-      component: Desktop,
-      meta: { ...mobile('Desktop', 'more', { hideTopBar: true, hideTabs: true }) }
+      // Company shell and sections: /<slug> and /<slug>/<section>.
+      path: `/:companySlug/:section(${COMPANY_SECTION_RE})?`,
+      name: 'company-home',
+      component: CompanyView,
+      meta: { ...mobile('Company', 'more', { hideTopBar: true }), company: true }
     },
+
+    ...ADVANCED_ROUTES,
+
     {
-      path: '/:projectName/analytics',
-      name: 'analytics',
-      component: MetricsDashboard
-    },
-    {
-      // Catch-all: redirect everything else to the project bootstrap
+      // Legacy / unknown URL: the guard redirects to the canonical path.
       path: '/:pathMatch(.*)*',
-      redirect: '/'
-    },
+      name: 'legacy',
+      component: LegacyRedirectView
+    }
   ]
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BASE-PATH ENFORCEMENT
-// Any navigation by *name* to a project-scoped route automatically gets the
-// active project name injected as the first URL segment. Centralising it here
-// means call sites only ever specify the route name/params, and the project
-// prefix is never forgotten (works for $router.push, $router.replace and
-// <RouterLink> alike, since they all funnel through these two methods).
+// Any navigation by *name* to an advanced route gets the active company slug
+// and project name injected. Company shell routes are not injected.
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Names of routes that live under the "/:projectName" base path.
-let scopedRouteNames = new Set()
+let scopedRouteNames = new Set<string>()
 
 function refreshScopedRouteNames() {
   scopedRouteNames = new Set(
     router.getRoutes()
       .filter(route => typeof route.name === 'string' && route.path.includes(':projectName'))
-      .map(route => route.name)
+      .map(route => route.name as string)
   )
 }
 
-function withProject(location: any): any {
-  // String paths are already fully qualified (or external) – leave them as-is.
-  if (!location || typeof location === 'string') {
-    return location
-  }
+function withContext(location: any): any {
+  if (!location || typeof location === 'string') return location
   const loc = { ...location }
-  if (scopedRouteNames.has(loc.name) && !(loc.params && loc.params.projectName)) {
-    loc.params = { ...(loc.params || {}), projectName: activeProjectSegment() }
+  if (scopedRouteNames.has(loc.name)) {
+    const params = { ...(loc.params || {}) }
+    if (!params.companySlug) params.companySlug = activeCompanySlug()
+    if (!params.projectName) params.projectName = activeProjectSegment()
+    loc.params = params
   }
   return loc
 }
@@ -403,25 +394,76 @@ refreshScopedRouteNames()
 
 const _push = router.push.bind(router)
 const _replace = router.replace.bind(router)
-;(router as any).push = (to: any) => _push(withProject(to))
-;(router as any).replace = (to: any) => _replace(withProject(to))
+;(router as any).push = (to: any) => _push(withContext(to))
+;(router as any).replace = (to: any) => _replace(withContext(to))
 
-// Initialize navigation API with both $router and $storex
 router.$navigation = Navigate({ $router: router, $storex })
 router.$navigation.$storex = $storex
 router.$navigation.init()
 
-router.beforeEach((to, from) => {
-  // The dockview workspace is not a mobile screen. A deep link (or a stale
-  // "desktop" link shared from a desktop) lands on the mobile home instead of
-  // rendering a window manager that cannot be used with a finger.
-  if ($storex.ui.isMobile && to.name === 'codx-junior-split') {
-    const projectName = activeProjectSegment()
-    return projectName
-      ? { name: 'home', params: { projectName }, replace: true }
-      : { name: 'root', replace: true }
+router.beforeEach(async (to, _from) => {
+  if (to.path.startsWith('/auth')) return true
+  if (to.path.startsWith('/solopreneur')) return defaultCompanyHome()
+  if (to.name === 'legacy') return resolveLegacy(to)
+  if (!$storex.api.user) return true
+
+  if (to.name === 'root') {
+    await $storex.company.ensureLoaded().catch(() => {})
+    const home = defaultCompanyHome()
+    // No company yet (fresh bootstrap / API unavailable): let the shell render
+    // instead of redirecting to "/" in a loop.
+    return home === '/' ? true : home
   }
 
+  if (to.params.companySlug) {
+    await $storex.company.ensureLoaded().catch(() => {})
+    const slug = String(to.params.companySlug)
+    const company = $storex.company.companies.find(item => item.slug === slug)
+    if (!company) return resolveLegacy(to)
+
+    if ($storex.company.activeId !== company.id) {
+      await $storex.company.select(company.id, { skipList: true })
+    }
+
+    if (to.params.projectName) {
+      await ensureProjectsLoaded()
+      const projectName = decodeURIComponent(String(to.params.projectName))
+      const project = ($storex.projects.allProjects || []).find(item =>
+        item.project_name === projectName || item.project_id === projectName
+      )
+      if (!project) {
+        $storex.ui?.addNotification?.({
+          text: `Project "${projectName}" is not available in this company`,
+          type: 'error'
+        })
+        return `/${company.slug}`
+      }
+      if ($storex.projects.activeProject?.project_id !== project.project_id) {
+        try {
+          await $storex.projects.activeProjectChanged(project)
+        } catch {
+          // The screen reports its own loading error.
+        }
+      }
+    }
+  }
+
+  return true
+})
+
+// The dockview desktop is not a mobile screen; keep the existing fallback.
+router.beforeEach((to) => {
+  if ($storex.ui.isMobile && to.name === 'codx-junior-split') {
+    const companySlug = activeCompanySlug()
+    const projectName = activeProjectSegment()
+    return companySlug && projectName
+      ? { name: 'home', params: { companySlug, projectName }, replace: true }
+      : defaultCompanyHome()
+  }
+  return true
+})
+
+router.beforeEach((to, from) => {
   return router.$navigation.onRouteChanged({ from, to })
 })
 

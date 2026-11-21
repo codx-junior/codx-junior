@@ -61,6 +61,14 @@ export const companiesModule = (API) => ({
     return API.get(`${BASE}/${encodeURIComponent(companyId)}`)
   },
 
+  /**
+   * Companies that can see a project. Used to resolve legacy
+   * `/<project>/...` URLs to the canonical company workspace URL.
+   */
+  lookup(projectId) {
+    return API.get(`${BASE}/lookup${toQuery({ project_id: projectId })}`)
+  },
+
   /** Create a company (optionally from the `saas` template). */
   create(payload) {
     return API.post(BASE, payload)

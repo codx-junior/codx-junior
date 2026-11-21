@@ -28,54 +28,36 @@ function onAssistantChatCreated(chat) {
 const uiReady = computed(() => $storex.ui.uiReady)
 const isLogin = computed(() => !$storex.users.user)
 const isMobile = computed(() => $storex.ui.isMobile)
-const isCompanyMode = computed(() => $storex.users.isCompanyMode)
+// The company is the root of the product. The router resolves / and legacy
+// URLs; this watcher covers the login transition (before the company store was
+// allowed to load) and keeps a logged-in user on the company home.
+const isCompanyRoute = computed(() => route.name === 'company-home')
+const isFullScreenRoute = computed(() => isCompanyRoute.value)
 
-// Solopreneur mode is a product shell of its own: it owns the full viewport on
-// every device, so neither the desktop sidebar nor the mobile shell wraps it.
-const isFullScreenRoute = computed(() => route.name === 'solopreneur' || ['company-home', 'company'].includes(route.name))
-
-// ── Company mode entry ──────────────────────────────────────────────────────
-// Role-driven landing: a manager/company admin (or a member of any company)
-// enters the company shell after login. The guard also does this when the user
-// is already loaded; this watcher covers the normal bootstrap where the router
-// guard runs before `users.login()` resolves.
-//
-// The redirect happens ONCE per browser session: switching to working mode (or
-// following a deep link into a project) must not bounce the manager back.
-const COMPANY_ENTRY_KEY = 'codx.company.entry'
-// Only the bootstrap path ("/" after a login or a mode switch) auto-enters the
-// company shell. A deep link into a project must keep working for managers.
-const enteredFromRoot = ['/', ''].includes(window.location.pathname)
-
-watch(
-  [isCompanyMode, () => route.name, isLogin, uiReady],
-  ([companyMode, routeName, login, ready]) => {
-    if (!enteredFromRoot || !ready || login || !companyMode) return
-    if (!['root', 'home'].includes(routeName)) return
-    if (sessionStorage.getItem(COMPANY_ENTRY_KEY)) return
-    sessionStorage.setItem(COMPANY_ENTRY_KEY, '1')
-    const companyId = $storex.users.primaryCompanyId
+async function enterCompanyHome() {
+  if (isLogin.value) return
+  await $storex.company.ensureLoaded().catch(() => {})
+  const company = $storex.company.activeCompany || $storex.company.defaultCompany
+  if (!company?.slug) return
+  if (route.name === 'legacy') {
+    // Re-run the guard now that the user is known, so a legacy project URL
+    // resolves to its company workspace instead of being dropped.
     router.replace({
-      name: 'company-home',
-      params: companyId ? { companyId } : {}
+      path: route.path,
+      query: route.query,
+      hash: route.hash,
+      force: true
     }).catch(() => {})
-  },
-  { immediate: true }
-)
-
-// Switching back into company mode should land on the company shell again.
-watch(isCompanyMode, (value) => {
-  if (!value) {
-    sessionStorage.removeItem(COMPANY_ENTRY_KEY)
     return
   }
-  if (!enteredFromRoot || route.name === 'company-home') return
-  const companyId = $storex.users.primaryCompanyId
+  if (route.name !== 'root') return
   router.replace({
     name: 'company-home',
-    params: companyId ? { companyId } : {}
+    params: { companySlug: company.slug }
   }).catch(() => {})
-})
+}
+
+watch([isLogin, () => $storex.company.loaded], () => enterCompanyHome(), { immediate: true })
 
 function openAccountSettings() {
   $storex.ui.openApp({ appKey: 'account' })
@@ -96,6 +78,7 @@ watchEffect(() => {
 onMounted(() => {
   // The launcher must never survive a reload.
   if (isMobile.value) $storex.ui.closeMobileMenu()
+  enterCompanyHome()
 })
 </script>
 

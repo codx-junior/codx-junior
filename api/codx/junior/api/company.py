@@ -135,6 +135,10 @@ class CompanyCreateRequest(BaseModel):
     project_ids: List[str] = Field(
         default_factory=list, description="Projects to link at creation time"
     )
+    all_projects: bool = Field(
+        default=False,
+        description="When true the company sees every discovered project",
+    )
 
 
 class CompanyUpdateRequest(BaseModel):
@@ -152,6 +156,10 @@ class CompanyUpdateRequest(BaseModel):
     status: Optional[str] = None
     owner: Optional[str] = None
     tags: Optional[List[str]] = None
+    all_projects: Optional[bool] = Field(
+        default=None,
+        description="When true the company sees every discovered project",
+    )
     business: Optional[Dict[str, Any]] = Field(
         default=None,
         description=(
@@ -223,14 +231,18 @@ class ProjectLinkRequest(BaseModel):
     priority: str = "medium"
     status: str = "active"
     budget_cxjcoins: float = 0.0
+    include_children: bool = True
 
 
 class CompanyProjectsRequest(BaseModel):
     """Replace the complete project list of a company."""
 
-    project_ids: List[str] = Field(
+    project_ids: List[Any] = Field(
         default_factory=list,
-        description="Every project that must stay linked (others are unlinked)",
+        description=(
+            "Every project that must stay linked (others are unlinked). Items "
+            "may be project ids or {project_id, include_children} objects."
+        ),
     )
 
 
@@ -500,6 +512,27 @@ def _assert_company_admin(company: Any, user: Optional[CodxUser]) -> None:
         )
 
 
+def _assert_can_read(company: Any, user: Optional[CodxUser]) -> None:
+    """Allow company reads to members, the owner and global admins.
+
+    A company without an owner is still being bootstrapped (fresh install or a
+    company created before the role model): keep it readable so the first user
+    can finish configuring it.
+    """
+    if company is None:
+        return
+    if user is None or getattr(user, "role", "") == "admin":
+        return
+    if not (getattr(company, "owner", "") or ""):
+        return
+    if _company_role(company, user):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=f"You are not a member of company '{company.name}'.",
+    )
+
+
 def _get_editable(company_id: str, user: Optional[CodxUser]):
     """Load a company and enforce ownership for a write operation."""
     manager = _manager()
@@ -535,12 +568,24 @@ def api_list_companies(
         manager.ensure_default_company(actor=_actor(user))
     except Exception as ex:  # bootstrap must not make the company list unusable
         logger.warning("Could not provision the default company: %s", ex)
-    return _run(
+    companies = _run(
         lambda: manager.list_companies(
             include_archived=include_archived,
             ensure_default=False,
         )
     )
+    if user is not None and getattr(user, "role", "") != "admin":
+        memberships = {
+            item.company_id for item in (getattr(user, "companies", None) or [])
+        }
+        if memberships:
+            # The default company is installation-wide and must never disappear
+            # from the switcher; other companies are membership-scoped.
+            companies = [
+                item for item in companies
+                if item.get("is_default") or item.get("id") in memberships
+            ]
+    return companies
 
 
 @router.get("/companies/references")
@@ -595,13 +640,30 @@ def api_create_company(
     return created
 
 
+@router.get("/companies/lookup")
+def api_company_lookup(
+    project_id: str = Query(default=""),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    Return the companies that can see *project_id*.
+
+    The canonical company routes are ``/<companySlug>`` and
+    ``/<companySlug>/workspace/<projectName>/...``. Legacy project URLs use
+    this lookup to find the owning company before redirecting.
+    """
+    return _run(lambda: _manager().lookup_companies_for_project(project_id))
+
+
 @router.get("/companies/{company_id}")
 def api_get_company(
     company_id: str,
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
     """Return one company document."""
-    return _run(lambda: _manager().get_company(company_id))
+    company = _run(lambda: _manager().get_company(company_id))
+    _assert_can_read(company, user)
+    return company
 
 
 @router.put("/companies/{company_id}")
@@ -644,9 +706,10 @@ def api_company_snapshot(
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
     """Return the full dashboard payload for a company."""
-    return _run(
-        lambda: _manager().snapshot(company_id, journal_limit=journal_limit)
-    )
+    manager = _manager()
+    company = _run(lambda: manager.get_company(company_id))
+    _assert_can_read(company, user)
+    return _run(lambda: manager.snapshot(company_id, journal_limit=journal_limit))
 
 
 class CompanySecurityScanRequest(BaseModel):

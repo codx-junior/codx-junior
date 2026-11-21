@@ -355,12 +355,16 @@ export const actions = actionTree(
      *  - `desktop_auto_resize` let the desktop follow the viewer (default) or
      *    pin `desktop_width`/`desktop_height`
      */
-    async createSession({ commit }, sessionData) {
+    async createSession({ commit, dispatch }, sessionData) {
       commit('clearError')
       try {
         const payload = {
           name: sessionData.name,
           description: sessionData.description || null,
+          // The order is accepted and the machine boots in background: the
+          // screen keeps working while the image is pulled and the container
+          // starts, and the card follows the session status.
+          background: sessionData.background ?? true,
           chat_id: sessionData.chat_id || null,
           initial_url: sessionData.initial_url || sessionData.url || null,
           share_project: sessionData.share_project ?? null,
@@ -404,12 +408,54 @@ export const actions = actionTree(
         // advertise it on the meet (the backend persists it so late joiners and
         // page reloads land in the same session).
         shareNewSessionWithMeet(session)
+        // The POST only accepted the order: the machine is still booting, so
+        // the card is followed until it reports a final status.
+        if (session.status === 'creating') {
+          dispatch('followSessionCreation', session.id)
+        }
         return session
       } catch (error) {
         commit('setError', error.message || 'Failed to create session')
         notify('error', error.message || 'Failed to create session')
         throw error
       }
+    },
+
+    /**
+     * Follow a co-desktop whose creation is still running in background.
+     *
+     * The POST only accepted the order: the record exists with status
+     * "creating" and the backend starts the machine (image pull + docker run)
+     * behind the request, pushing every status change as a collection event.
+     * The record is polled here so the card leaves "creating" even when the
+     * socket is not connected; polling stops on the first final status.
+     */
+    async followSessionCreation({ commit }, sessionId) {
+      if (!sessionId) return null
+      // Generous for an image pull on a cold host; after this the card simply
+      // keeps whatever status the backend last reported.
+      const deadline = Date.now() + 5 * 60 * 1000
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 2000))
+        let session = null
+        try {
+          session = await API.computers.get(sessionId)
+        } catch (error) {
+          console.warn('[Browsers] Could not refresh the creating session', sessionId, error)
+          return null
+        }
+        if (!session?.id) return null
+        commit('updateSession', session)
+        if (session.status !== 'creating' && session.status !== 'starting') {
+          if (session.status === 'error') {
+            notify('error', `Could not start "${session.name}"`)
+          } else {
+            notify('success', `"${session.name}" is ready`)
+          }
+          return session
+        }
+      }
+      return null
     },
 
     /**
@@ -505,7 +551,9 @@ export const actions = actionTree(
     async deleteSession({ commit }, sessionId) {
       commit('clearError')
       try {
-        await API.computers.delete(sessionId)
+        // Fire and forget: the backend stops the container and moves the
+        // profile to trash behind the response, so the list is usable at once.
+        await API.computers.delete(sessionId, true)
         commit('deleteSession', sessionId)
         notify('success', SESSION_LABELS.noticeDeleted)
       } catch (error) {

@@ -52,7 +52,24 @@ WORKSPACE_MAX_CONTENT = (
 SYNCED_FIELDS = ("name", "description", "profiles", "tools", "team", "tags")
 
 # The delivery contract every harness tier must keep in its instructions.
-DELIVERY_MARKERS = ("## What happened", "## Next tasks", "**Good enough?**")
+DELIVERY_MARKERS = (
+    "## What happened",
+    "## What I did",
+    "## Demo",
+    "## Next tasks",
+    "**Delivered.**",
+)
+
+# The contract must never regress into a permission question or a partial-layer
+# handoff.
+FORBIDDEN_MARKERS = (
+    "**Good enough?**",
+    "do you want me to continue",
+    "should I proceed",
+    "One increment per turn",
+    "partial increment",
+    "partial delivery is a valid outcome",
+)
 
 
 def _synced_fields(profile: Profile) -> dict:
@@ -84,9 +101,12 @@ def test_builtin_profile_instructions_exist():
     content = BUILTIN_CONTENT.read_text(encoding="utf-8")
     assert "codx-junior harness" in content
     # The agile tier closes every answer with the delivery contract.
-    assert "## What happened" in content
-    assert "## Next tasks" in content
-    assert "**Good enough?**" in content
+    for marker in DELIVERY_MARKERS:
+        assert marker in content, f"{marker} missing from the agile profile"
+    # And it never asks for permission or legalises a partial delivery.
+    for marker in FORBIDDEN_MARKERS:
+        assert marker not in content, f"forbidden instruction {marker!r} in the agile profile"
+    assert "complete vertical slice" in content
 
 
 def test_builtin_max_profile_links_the_agile_tier():
@@ -101,7 +121,9 @@ def test_builtin_max_profile_links_the_agile_tier():
     content = MAX_CONTENT.read_text(encoding="utf-8")
     # Orchestration is the max tier's job (the agile tier delegates it).
     assert 'orchestrator(action="start")' in content or "orchestrator" in content
-    assert "**Good enough?**" in content
+    assert "**Delivered.**" in content
+    for marker in FORBIDDEN_MARKERS:
+        assert marker not in content, f"forbidden instruction {marker!r} in the max profile"
 
 
 def test_workspace_copy_matches_builtin():
@@ -149,3 +171,33 @@ def test_supervisor_conf_supervises_all_processes_with_autorestart():
 
     assert BACKGROUND_PROGRAM == "codx-junior-api-background"
     assert f"[program:{BACKGROUND_PROGRAM}]" in conf
+
+
+def test_software_developer_can_implement_and_validate():
+    """The developer override must carry the write/test tools, not read-only ones.
+
+    The workspace profile wins over the built-in one at load time. A workspace
+    copy without ``project_write_file``/``apply_file_changes`` is exactly the
+    "plan-only developer" failure: the agent can inspect the code but cannot
+    deliver a change, so every task ends with a proposal.
+    """
+    workspace = REPO_ROOT / ".codx" / "profiles" / "software_developer" / "software_developer.profile"
+    builtin = REPO_ROOT / "api" / "codx" / "junior" / "profiles" / "software_developer.profile"
+    required = {
+        "project_write_file",
+        "apply_file_changes",
+        "qa_run_tests",
+        "qa_review_changes",
+    }
+    for path in (workspace, builtin):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tools = set(data.get("tools") or [])
+        assert required <= tools, f"{path} is read-only: missing {required - tools}"
+
+    # And the instructions must not tell the developer to return a plan first.
+    content = (REPO_ROOT / ".codx" / "profiles" / "software_developer" / "software_developer.md").read_text(
+        encoding="utf-8"
+    )
+    for forbidden in ("Delay Implementation", "stop and ask for clarification", "Allow user validation before proceeding"):
+        assert forbidden not in content
+    assert "Finish the requested change in this turn" in content

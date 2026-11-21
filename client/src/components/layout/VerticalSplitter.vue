@@ -4,7 +4,7 @@ import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from 'radix-vue'
 
 <template>
   <!-- Split mode (default): resizable side-by-side panels -->
-  <SplitterGroup v-if="split" :id="groupId" direction="horizontal" @layout="onLayout">
+  <SplitterGroup v-if="split" :id="groupId" :direction="direction" @layout="onLayout">
     <SplitterPanel
       :id="`${groupId}-panel-splitter-1`"
       :min-size="panels?.left?.minSize || 10"
@@ -22,16 +22,22 @@ import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from 'radix-vue'
     <!-- Divider: `showHandle` reveals a grip so the dragger is easy to find/use -->
     <SplitterResizeHandle
       :id="`${groupId}-panel-divider`"
-      class="m-1 relative shrink-0 w-2 cursor-col-resize outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-primary/50"
-      :class="showHandle
-        ? 'group bg-base-200 hover:bg-primary/10 active:bg-primary/20'
-        : 'border-r border-base-100 hover:bg-slate-600'"
+      class="m-1 relative shrink-0 outline-none transition-colors duration-150 focus-visible:ring-2 focus-visible:ring-primary/50"
+      :class="[
+        direction === 'vertical' ? 'h-2 w-full cursor-row-resize' : 'w-2 cursor-col-resize',
+        showHandle
+          ? 'group bg-base-200 hover:bg-primary/10 active:bg-primary/20'
+          : (direction === 'vertical'
+            ? 'border-b border-base-100 hover:bg-slate-600'
+            : 'border-r border-base-100 hover:bg-slate-600')
+      ]"
       v-if="showLeft && $slots.left && showRight && $slots.right"
     >
       <span
         v-if="showHandle"
         aria-hidden="true"
-        class="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-10 rounded-full bg-base-content/20 transition-colors duration-150 group-hover:bg-primary/70 group-focus-visible:bg-primary"
+        class="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-base-content/20 transition-colors duration-150 group-hover:bg-primary/70 group-focus-visible:bg-primary"
+        :class="direction === 'vertical' ? 'h-1 w-10' : 'w-1 h-10'"
       ></span>
     </SplitterResizeHandle>
 
@@ -51,7 +57,7 @@ import { SplitterGroup, SplitterPanel, SplitterResizeHandle } from 'radix-vue'
   </SplitterGroup>
 
   <!-- Non-split fallback (mobile): plain, non-resizable container (no SplitterGroup) -->
-  <div v-else class="flex h-full w-full min-h-0 overflow-hidden">
+  <div v-else class="flex h-full w-full min-h-0 overflow-hidden" :class="direction === 'vertical' ? 'flex-col' : ''">
     <div class="flex-1 min-w-0 min-h-0 overflow-hidden" v-if="showLeft">
       <slot name="left"></slot>
     </div>
@@ -88,6 +94,13 @@ const MOUNT_SETTLE_MS = 300
 
 export default {
   props: {
+    // Split axis: 'horizontal' places the panels side by side (left/right),
+    // 'vertical' stacks them (left slot on top, right slot below).
+    direction: {
+      type: String,
+      default: 'horizontal',
+      validator: value => ['horizontal', 'vertical'].includes(value)
+    },
     // Per-panel sizing/class config: { left: {...}, right: {...} }
     panels: { type: Object, default: () => ({}) },
     // Render the splitter. Set to false (e.g. on mobile) to render the slots

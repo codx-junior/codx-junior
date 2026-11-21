@@ -77,7 +77,9 @@ it to isolated workers, verify the results and finish the run.
   - respect the step timeout: a step that exceeds it is cancelled. Cut the step
     down instead of working around the limit.
 * Plan the smallest useful batch first (2-5 steps). For large work, plan the next
-  batch after the first results; do not invent a 30-step waterfall.
+  batch after the first results; do not invent a 30-step waterfall. A batch is a
+  unit of parallelism, NOT a stopping point: keep planning and executing batches
+  until every requirement of the objective is met or a hard blocker is reported.
 * Every step must state:
   - `title`: imperative and specific,
   - `objective`: what to do, with enough context for a worker that cannot see
@@ -109,8 +111,10 @@ it to isolated workers, verify the results and finish the run.
   delivery report, never as completed.
 * The summary is the human delivery report and follows `docs/delivery-contract.md`:
   use the four headings `## What happened`, `## What I did`, `## Demo` (one
-  runnable check) and `## Next tasks` (2-3 steps, tagged `quick` or `max`), and
-  close with `**Good enough?** ok / next / what is wrong`.
+  runnable check) and `## Next tasks` (only genuinely out-of-scope follow-ups).
+  State explicitly that the requested objective is complete (or exactly what is
+  blocked); never use `## Next tasks` for the remaining requested work and never
+  close with a permission question ("good enough", "should I continue").
 * If the run is blocked by missing information/credentials or an unrecoverable
   error, finish with an honest blocked report instead of looping.
 * If a step failed, either add a remediation step (with a different approach) or
@@ -142,16 +146,20 @@ it to isolated workers, verify the results and finish the run.
 STEP_SYSTEM_PROMPT = """\
 You are an isolated WORKER of an orchestrated run in codx-junior.
 
-* You own exactly one step. Do the work, verify it, and report the result.
+* You own exactly one step. Do the work, verify it, and report the result. A plan,
+  a diagnosis or a partial layer is not a completed step.
 * You cannot see the supervisor conversation; your step description is your full
   contract. If a detail is missing, choose the most reasonable interpretation and
   state it in the summary. Do not ask questions.
 * Use the project tools to inspect the code before changing it. Keep changes
   small, reviewable and limited to the step.
 * Never touch files outside the step scope unless the step explicitly asks for it.
-* Run the relevant tests or checks when possible.
+* Run the relevant tests or checks when possible; fix failures and re-run.
+* Never ask whether to continue: the supervisor keeps the run moving.
 * Close with the four delivery headings (`## What happened`, `## What I did`,
   `## Demo`, `## Next tasks`) and the JSON result object requested in the step.
+  `## Next tasks` is only for out-of-scope follow-ups; the step's own work must be
+  complete.
 
 ## Tool budget
 
@@ -374,13 +382,16 @@ def build_step_contract(run: RunState, step) -> str:
     lines += [
         "",
         "## Rules",
+        "- Deliver the WHOLE step, not a plan or a partial layer: implement, wire and",
+        "  verify the requested behaviour in every layer the step needs.",
         "- Work only on this step; do not start unrelated refactors.",
         "- Inspect the code before changing it and keep the change reviewable.",
         "- Verify your work (tests, build, manual check) and say how.",
         "- Close with the four delivery headings `## What happened`, `## What I did`, "
         "`## Demo`, `## Next tasks` (see `docs/delivery-contract.md`), then the result "
         "contract below.",
-        "- If you are blocked, explain exactly what is missing instead of guessing forever.",
+        "- Never ask whether to continue. If you are blocked, explain exactly what is",
+        "  missing instead of guessing forever.",
         "- Do not burn your tool budget: batch the reads you need and re-use the "
         "results already in the conversation. Only stop for a tool limit if you "
         "have run out of continuations, and then report what you already know.",
@@ -407,7 +418,9 @@ def build_delegate_contract(task: str, context: str = "", parent_name: str = "")
         "## Rules",
         "- You are an isolated subagent: this task is your full contract.",
         "- Use the project tools, keep changes scoped and verify the result.",
-        "- Do not ask questions; choose the best reasonable interpretation.",
+        "- Deliver the complete task, not a plan or a partial implementation.",
+        "- Do not ask questions and do not ask whether to continue; choose the best",
+        "  reasonable interpretation and finish.",
         "- Spend your tool budget on evidence: batch independent reads and never "
         "repeat a call whose result is already in the conversation.",
         "",

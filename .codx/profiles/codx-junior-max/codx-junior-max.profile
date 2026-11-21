@@ -2,7 +2,7 @@
   "name": "codx-junior-max",
   "url": "",
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=codx-junior-max",
-  "description": "codx-junior harness (MAX effort): the high-effort tier for long or complex work — multi-file refactors, migrations, full-suite validation, long research. It runs at reasoning_effort=max and inherits everything from codx-junior (plain language, 4-section close, mandatory validation, checkpoint) while adding a much larger budget, orchestration and the heavy validation gate.",
+  "description": "codx-junior-max harness (MAX effort): the high-effort tier for long or complex work \u2014 multi-file refactors, migrations, full-suite validation, long research. It runs at reasoning_effort=max and inherits everything from codx-junior (plain language, 4-section close, mandatory validation, no permission questions) while adding a much larger budget, orchestration and the heavy validation gate. It keeps executing batches until the objective is met or a hard blocker is reported.",
   "category": "assistant",
   "file_match": "",
   "content": null,

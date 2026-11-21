@@ -138,9 +138,11 @@ class Profile(BaseModel):
     team: Optional[List[str]] = Field(
         default=[],
         description=(
-            "Profile names the LLM can use in new tasks. They are NOT active in "
+            "Profile names the LLM can DELEGATE work to. They are NOT active in "
             "the chat: they are listed as a name/description table in the system "
-            "prompt, after the profile composition."
+            "prompt, after the profile composition, and the agent hands them a "
+            "self-contained task with the delegation tools instead of asking the "
+            "user to re-run the task."
         )
     )
     llm_model: Optional[str] = Field(default='')

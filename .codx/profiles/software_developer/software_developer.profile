@@ -60,7 +60,13 @@
     "project_grep",
     "project_glob",
     "project_changes",
-    "search_codx"
+    "search_codx",
+    "project_write_file",
+    "apply_file_changes",
+    "read_folder",
+    "qa_run_tests",
+    "qa_review_changes",
+    "security_review_changes"
   ],
   "tags": [],
   "effort": null,
@@ -98,7 +104,7 @@
     "max_agenda": 3,
     "max_tasks": 40,
     "include_done": false,
-    "instructions": "Take the first card in \"To Do\" on the \"IT team\" board, move it to Doing, work one increment only, add a comment with the changed files and the validation evidence (test command + result), then move it to Review. Never close your own card and never widen the scope of the card.",
+    "instructions": "Take the first card in \"To Do\" on the \"IT team\" board, move it to Doing, and deliver the card end to end in this shift: implement the change in every layer it needs (data/API/UI/tests), run the targeted tests and the quality gate, and add a comment with the changed files and the validation evidence (command + result). If the card is genuinely too large for one shift, deliver a working vertical slice and comment the exact remaining scope; never stop to ask whether to continue. Move it to Review only when the delivered behaviour works. Never close your own card and never widen the scope of the card.",
     "wake_at": "",
     "notify": true,
     "schedule": {

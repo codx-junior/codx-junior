@@ -16,27 +16,27 @@ is written **once** here. It applies to:
 ## Demo
 ## Next tasks
 
-**Good enough?** ok / next / what is wrong
+**Delivered.** Run the Demo above. If something fails, reply with the failing step.
 ```
 
 ### One line per section
 
 * `## What happened` — the situation in plain language: the problem, what you found, what you decided and why. Facts and evidence (`path:line`, command output), not intentions.
-* `## What I did` — the increment(s) delivered in this turn, one line each, with the files touched. If the increment is partial, say so: partial delivery is a valid outcome.
+* `## What I did` — the complete behaviour delivered in this turn, one line per file/area. If the request was too large, say which **complete vertical slice** landed and which requested scope is still missing: a partial layer is never a delivery.
 * `## Demo` — exactly ONE runnable thing the human can do to see the result (a command, a URL, a test, a card). One, not a list.
-* `## Next tasks` — 2-3 candidate next steps, each tagged `quick` (an agile increment) or `max` (needs the `codx-junior-max` effort level).
+* `## Next tasks` — only genuinely out-of-scope follow-ups, each tagged `quick` or `max`. Never the remaining requested work; if the request is complete, write `None — request delivered`.
 
-### The checkpoint
+### The delivered line
 
-The delivery ends with the line `**Good enough?** ok / next / what is wrong`:
+The delivery ends with:
 
 ```md
-**Good enough?** ok / next / what is wrong
+**Delivered.** Run the Demo above. If something fails, reply with the failing step.
 ```
 
-It is a real question, not decoration: `ok` accepts the increment, `next` takes the
-first `Next tasks` entry, `what is wrong` opens a correction. Never remove it, never
-answer it yourself.
+It is a statement, not a permission question. The turn **never** ends with
+"do you want me to continue?", "should I proceed?" or a "good enough?" menu.
+The user presses Stop if they want less, or replies with the failing step.
 
 ## Validation tiers
 
@@ -44,7 +44,7 @@ Validation is **never optional**; only its *breadth* changes with the effort lev
 
 | Tier | Applies to | What must be run before delivering |
 | --- | --- | --- |
-| `agile` | `codx-junior` (default) | Targeted tests for the touched files (or a manual reproduction when there are none) + `qa_review_changes`. A `warn` verdict is acceptable **only** if the gap is named in **Next tasks**. |
+| `agile` | `codx-junior` (default) | Targeted tests for the touched files (or a manual reproduction when there are none) + `qa_review_changes`. A `warn` verdict is acceptable **only** when the gap is genuinely outside the request; requested work is fixed now. |
 | `max` | `codx-junior-max` | Full test suite + coverage threshold + `security_review_changes` + browser explorer for UI changes. |
 
 Both tiers close with the same four sections; a delivery without its tier's validation
@@ -122,13 +122,15 @@ already cached, it is only missing that shared object.
 
 * `codx-junior` — **agile**. Small BASE budget and an ADVISORY clock: reaching
   either grants a bounded course correction and marks the response, but it never
-  cancels the task — only the user stops a task. One increment per turn, partial
-  delivery legal. The policy is resolved at runtime from the profile name, not
-  from prompt phrasing.
+  cancels the task — only the user stops a task. The turn delivers the requested
+  behaviour, or one **complete vertical slice** when the request is too large;
+  a partial layer is not a delivery. The policy is resolved at runtime from the
+  profile name, not from prompt phrasing.
 * `codx-junior-max` — **max**. The heavier tier: bigger budget, longer course
   corrections, full validation breadth, used for long or complex work and for
   orchestration runs. It does not copy the base profile; it links
   `profiles: ["codx-junior"]` and holds only its delta (budget, validation
-  breadth, orchestration use).
+  breadth, orchestration use). It keeps executing batches until the objective
+  is met or blocked; the first green phase is not a delivery.
 
 Made with ❤️ by codx-junior

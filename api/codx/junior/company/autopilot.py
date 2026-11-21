@@ -32,6 +32,8 @@ import threading
 
 from typing import Any, Dict, Optional
 
+from codx.junior.utils.stop_event import wait_for_stop
+
 logger = logging.getLogger(__name__)
 
 #: How often the loop looks for due companies (seconds).
@@ -128,7 +130,7 @@ def _loop(stop_event: threading.Event) -> None:
                 run_once()
         except Exception as ex:  # pragma: no cover - never kill the loop
             logger.exception("Company autopilot tick failed: %s", ex)
-        stop_event.wait(max(5, AUTOPILOT_TICK_SECONDS))
+        wait_for_stop(stop_event, max(5, AUTOPILOT_TICK_SECONDS))
 
 
 def start_company_autopilot(stop_event: Optional[threading.Event] = None) -> Optional[threading.Thread]:

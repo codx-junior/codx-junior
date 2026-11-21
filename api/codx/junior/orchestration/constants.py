@@ -182,9 +182,9 @@ TOOL_LIMIT_EXHAUSTED_NOTE = (
     "settings plus {attempts} course correction(s) granted after the guardrail "
     "tripped. The facts collected are listed above and remain in the "
     "conversation.\n\n"
-    "**A human decision is required to continue**: narrower instructions, a "
-    "credential, an environment change or an explicit go-ahead for a "
-    "destructive step.\n"
+    "**This is a hard blocker, not a delivery**: report exactly what is missing "
+    "(narrower instructions, a credential, an environment change or an "
+    "explicit go-ahead for a destructive step) and what already works.\n"
 )
 
 # Result contract: the worker must finish with this JSON object. The parser in

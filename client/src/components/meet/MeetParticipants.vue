@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import MicIndicator from './MicIndicator.vue'
 import { $storex } from '@/store'
 
@@ -41,6 +41,26 @@ function profileIsSpeaking(profile) {
   const name = profile.profileName || profile.username
   return floor.value?.holder === name
 }
+
+const initiator = computed(() => props.meet?.initiator || '')
+const isInitiator = computed(() => !!initiator.value && initiator.value === currentUser.value)
+const removing = ref('')
+
+/** The initiator may drop a human peer; an AI profile can always be removed. */
+function canRemovePerson(username) {
+  return isInitiator.value && username !== currentUser.value
+}
+
+async function removeFromCall(name) {
+  const meetId = props.meet?.meetId
+  if (!meetId || !name || removing.value) return
+  removing.value = name
+  try {
+    await $storex.meets.removeParticipant({ meetId, name })
+  } finally {
+    removing.value = ''
+  }
+}
 </script>
 
 <template>
@@ -76,6 +96,15 @@ function profileIsSpeaking(profile) {
           <div class="flex h-7 w-7 items-center justify-center rounded-lg" :class="isMuted(person.username) ? 'bg-base-content/10' : 'bg-success/20'">
             <MicIndicator :enabled="!isMuted(person.username)" :speaking="isSpeaking(person.username)" size="sm" />
           </div>
+          <button
+            v-if="canRemovePerson(person.username)"
+            class="flex h-7 w-7 items-center justify-center rounded-lg bg-base-content/10 text-base-content/60 transition-colors hover:bg-error/20 hover:text-error"
+            :disabled="removing === person.username"
+            title="Remove from the call"
+            @click="removeFromCall(person.username)"
+          >
+            <i class="fa-solid fa-user-minus text-xs"></i>
+          </button>
         </div>
       </div>
 
@@ -104,6 +133,14 @@ function profileIsSpeaking(profile) {
           <div class="flex h-7 w-7 items-center justify-center rounded-lg bg-base-content/5" title="Camera off">
             <i class="fa-solid fa-video-slash text-xs text-base-content/30"></i>
           </div>
+          <button
+            class="flex h-7 w-7 items-center justify-center rounded-lg bg-error/10 text-error transition-colors hover:bg-error/20"
+            :disabled="removing === (profile.profileName || profile.username)"
+            title="Remove from the call"
+            @click="removeFromCall(profile.profileName || profile.username)"
+          >
+            <i class="fa-solid fa-user-minus text-xs"></i>
+          </button>
         </div>
       </div>
     </div>

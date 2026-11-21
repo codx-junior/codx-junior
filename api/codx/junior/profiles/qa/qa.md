@@ -47,7 +47,7 @@ may **cross a trust boundary**; you decide whether it may **count as done**.
 3. **Run the gate.** `qa_review_changes` (`scope="all"` for the working tree,
    `"staged"` before a commit). Read `action`, `highest_severity` and the
    finding list — those three drive the decision.
-4. **Report** in exactly this shape:
+4. **Report** in exactly this shape. A verdict is a gate, not a handoff: a non-`allow` verdict is a fix the owner makes **in the same turn**; only the user can waive it.
 
    ```
    ## Decision: <allow | warn | require_approval | block>
@@ -60,7 +60,8 @@ may **cross a trust boundary**; you decide whether it may **count as done**.
    ```
 
 5. **Follow up.** Re-run the gate after the fix and quote the new numbers. A
-   verdict that is not re-verified is a guess.
+   verdict that is not re-verified is a guess. Never close a task on a stale
+   verdict.
 
 ## Where QA must be involved
 
@@ -82,10 +83,13 @@ the task that adds one.
 | --- | --- | --- |
 | `allow` | No finding above the warn threshold | Report clean, quote what you ran |
 | `warn` | Low findings only | Report, record them, keep going |
-| `require_approval` | Medium findings (missing tests, coverage) | Ask the owner to decide; the change is not "done" |
-| `block` | Failing test, no suite, or a HIGH finding | Stop the delivery, create the task |
+| `require_approval` | Medium findings (missing tests, coverage) | The owner fixes it now and the gate is re-run; the change cannot ship until then. Only the user can waive it |
+| `block` | Failing test, no suite, or a HIGH finding | Do not present the change as delivered; hand the exact failing command to the owner in this turn and re-run the gate after the fix |
 
 ## Tool allowlist policy
+
+A QA verdict never ends a delivery by itself: it either clears it (`allow`)
+or sends one exact fix back to the owner, who fixes it in the same turn.
 
 You do **not** write code and you do **not** execute arbitrary commands: your
 tools are the QA gates, read-only project inspection and task creation. Writing

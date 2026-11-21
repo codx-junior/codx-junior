@@ -37,7 +37,8 @@ BUILTIN_DESCRIPTIONS: Dict[str, str] = {
         "HIGH effort: the codx-junior harness profile. It runs the model at "
         "reasoning_effort=high, gives it room to finish a normal task in one "
         "turn (several tool rounds and course corrections) and keeps the clock "
-        "advisory. A partial increment closed with its own summary is valid."
+        "advisory. The turn must deliver the requested behaviour (or one "
+        "complete vertical slice), never a partial layer."
     ),
     "max": (
         "MAX effort: the codx-junior-max harness profile. It runs the model at "
@@ -93,11 +94,12 @@ FALLBACK_EFFORT: str = "default"
 EFFORT_TYPE_DOCS: List[Dict[str, str]] = [
     {
         "name": "agile",
-        "tagline": "Incrementally add value with quick user revisions",
+        "tagline": "One complete, validated vertical slice per turn",
         "method": (
-            "Work in the smallest slice that is worth showing, then hand control "
-            "back for a revision. The clock is a promise, not a deadline: a "
-            "partial increment closed with its own summary is a valid outcome."
+            "Deliver the requested behaviour end to end in every layer it "
+            "needs. If the request is too large, shrink the SCOPE to one "
+            "complete vertical slice, never to a partial layer. The clock is "
+            "advisory: it marks the turn, it does not stop it."
         ),
     },
     {
@@ -479,8 +481,8 @@ EFFORT_FIELD_DOCS: List[Dict[str, Any]] = [
         "effect": (
             "On, the profile is told it ran out of budget, keeps its findings and "
             "continues with a reduced budget: the task is never dead-ended by a "
-            "number. Off, the turn stops at the limit and the partial result is "
-            "delivered."
+            "number. Off, the turn stops at the limit and delivers the work gathered "
+            "so far with the blocked scope explicit, never as done."
         ),
     },
     {
@@ -530,7 +532,8 @@ EFFORT_FIELD_DOCS: List[Dict[str, Any]] = [
         "effect": (
             "With 'Enforce wall clock' off it is only a target the profile sees "
             "and uses to pace itself. On, the turn is stopped when it is reached "
-            "and the partial increment is delivered with a notice."
+            "and the work gathered so far is delivered with a notice; the "
+            "missing layers are reported as a hard blocker, never as done."
         ),
     },
     {

@@ -512,18 +512,60 @@ class TaskWorkspaceManager:
         return entries
 
     # -- settings clone ----------------------------------------------------
+
+    # Attributes the agent runtime attaches to the settings object for the span
+    # of one turn (see ``ai/smol/smol_agent.py``): the cancellation token owns a
+    # live ``asyncio.Event`` and the session owns live futures, so a deep copy of
+    # them raises ``TypeError: cannot pickle '_asyncio.Future' object``. They must
+    # never travel into a clone -- and because ``settings_for`` clones the parent
+    # settings, an active token would otherwise kill the FIRST turn of every
+    # delegated card and every run step with exactly that error.
+    RUNTIME_SETTINGS_ATTRS = (
+        "_active_cancellation_token",
+        "_active_session",
+    )
+
+    def _detach_runtime_attrs(self, source: Any) -> Dict[str, Any]:
+        """Detach the runtime-only settings attributes so *source* can be copied."""
+        detached: Dict[str, Any] = {}
+        for attr in self.RUNTIME_SETTINGS_ATTRS:
+            try:
+                if not hasattr(source, attr):
+                    continue
+                detached[attr] = getattr(source, attr)
+                delattr(source, attr)
+            except Exception:  # pragma: no cover - defensive
+                continue
+        return detached
+
+    def _reattach_runtime_attrs(self, source: Any, detached: Dict[str, Any]) -> None:
+        """Restore the runtime-only settings attributes on the original object."""
+        for attr, value in detached.items():
+            try:
+                setattr(source, attr, value)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning(
+                    "TaskWorkspace: could not restore settings attribute %s", attr
+                )
+
     def settings_for(self, workspace: "TaskWorkspace", project_settings: Any = None) -> Any:
         """Return a settings clone whose project root is the worktree.
 
         The clone keeps ``codx_path`` (chats, boards, settings, audit) and the
         project identity. Only the checkout root changes, which is what makes
-        every file/git tool operate on the isolated tree.
+        every file/git tool operate on the isolated tree. Runtime-only turn
+        state (cancellation token, session) is never copied: the worker turn
+        installs its own.
         """
         source = project_settings or self.settings
+        detached = self._detach_runtime_attrs(source)
         try:
-            clone = source.model_copy(deep=True)
-        except Exception:  # pragma: no cover - non-pydantic test doubles
-            clone = copy.deepcopy(source)
+            try:
+                clone = source.model_copy(deep=True)
+            except Exception:  # pragma: no cover - non-pydantic test doubles
+                clone = copy.deepcopy(source)
+        finally:
+            self._reattach_runtime_attrs(source, detached)
         clone.abs_project_path = workspace.path
         clone.project_path = workspace.path
         # The worktree is the root of its own checkout: without this the git

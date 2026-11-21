@@ -19,14 +19,21 @@ Those files live in a runtime folder instead::
         wiki_settings.json
 
 The folder is expendable: removing it only costs a rebuild. Its location is
-``CODX_JUNIOR_RUNTIME_PATH`` (default ``<tmp>/codx-junior-runtime``, so ``/tmp``
-on Linux) because nothing there has to survive a restart.
+``CODX_JUNIOR_RUNTIME_PATH`` (``set_env.sh`` points it at a folder inside the
+shared projects mount in the Compose deployment; otherwise it defaults to
+``<tmp>/codx-junior-runtime``) because nothing there has to survive a restart.
+The per-project folder is derived from ``project.json`` (project id), never from
+the path string: the API and the background worker can see the same project
+through different mount aliases, and a path-derived name made them miss each
+other's locks and worker heartbeat.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+from typing import Optional, Tuple
 
 from codx.junior.globals import RUNTIME_FOLDER
 
@@ -133,12 +140,58 @@ DATA_PLANE_ENTRIES = (
 )
 
 
-def _project_slug(codx_path: str) -> str:
-    """Return a filesystem-safe, collision-free name for a project."""
+def _project_identity(codx_path: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Return ``(project_id, project_name)`` from ``<codx_path>/project.json``.
+
+    The identity is read from the project document — never derived from the
+    path string — because the same project can be reached through different
+    mount aliases (``/home/codx-junior/codx-junior/.codx`` and
+    ``/home/codx-junior-projects/.../.codx`` are the same bind-mounted folder
+    in the Compose deployment). Hashing the alias produced two runtime folders
+    for one project, so the API could never read the worker heartbeat written by
+    the background process and the harness reported "worker offline" forever.
+    """
     absolute = os.path.abspath(str(codx_path or "."))
-    name = os.path.basename(os.path.dirname(absolute)) or "project"
+    try:
+        with open(
+            os.path.join(absolute, "project.json"), "r", encoding="utf-8"
+        ) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    project_id = str(data.get("project_id") or "").strip() or None
+    project_name = str(data.get("project_name") or "").strip() or None
+    return project_id, project_name
+
+
+def _fallback_identity(absolute: str) -> str:
+    """
+    Return a stable identity for a project without a readable ``project.json``.
+
+    The inode/device pair is stable across bind-mount aliases (the path aliases
+    are the failure mode this function exists to survive); the resolved path is
+    only the last resort for platforms/filesystems without useful stat data.
+    """
+    try:
+        stat = os.stat(absolute)
+        return f"inode:{stat.st_dev}:{stat.st_ino}"
+    except OSError:
+        return f"path:{os.path.realpath(absolute)}"
+
+
+def _project_slug(codx_path: str) -> str:
+    """Return a filesystem-safe, alias-independent identifier for a project."""
+    absolute = os.path.abspath(str(codx_path or "."))
+    project_id, project_name = _project_identity(absolute)
+    identity = project_id or _fallback_identity(absolute)
+    # Without a project document there is no stable human name across mount
+    # aliases: a fixed prefix plus the inode hash keeps the slug identical.
+    name = project_name or "project"
     safe = "".join(char if char.isalnum() or char in "-_." else "-" for char in name)
-    digest = hashlib.sha1(absolute.encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
     return f"{safe}-{digest}"
 
 

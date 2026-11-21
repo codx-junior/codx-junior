@@ -217,7 +217,13 @@ def find_all_projects(force: bool = False) -> Dict[str, CODXJuniorSettings]:
         logger.info("Waiting for the first project discovery snapshot.")
         proc.join(timeout=DISCOVERY_WAIT_SECONDS)
 
-    return _ALL_PROJECTS
+    # The documented contract is a mapping. Returning ``None`` here used to
+    # crash every caller that did ``find_all_projects().values()`` when a cold
+    # scan took longer than the wait (profile loading, the orchestration worker,
+    # the harness watchdog, chat routing...). A not-yet-discovered project list
+    # is empty, not an error; ``get_all_projects_snapshot`` remains the
+    # non-blocking API that can return ``None``.
+    return _ALL_PROJECTS or {}
 
 
 def get_all_projects_snapshot() -> Optional[Dict[str, CODXJuniorSettings]]:

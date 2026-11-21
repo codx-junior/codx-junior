@@ -286,11 +286,12 @@ HARNESS_PROFILE: str = "codx-junior"
 CONTINUE_ON_TOOL_LIMIT_KEY: str = "continue_on_tool_limit"
 
 # Notice appended to the answer when the effort tier's wall-clock deadline stops
-# the turn. The partial increment gathered so far is still delivered.
+# the turn. The work gathered so far is delivered; the missing requested scope
+# is a blocker, never presented as done.
 WALL_CLOCK_EXCEEDED_MSG: str = (
     "\n\n> \u23f1\ufe0f **Time budget reached** \u2014 the `{tier}` effort tier bounds a "
-    "turn to {seconds:.0f}s. The partial increment gathered so far is delivered "
-    "above; continue with the next turn.\n\n"
+    "turn to {seconds:.0f}s. The work gathered so far is delivered above; the "
+    "missing requested scope is reported as a hard blocker, not as done.\n\n"
 )
 
 # Sentinel returned to the model when a tool produces no output.
@@ -1186,7 +1187,8 @@ class SmolAgent:
         an orchestrated turn all continue after a tool limit with a bounded
         course correction, so a limit never dead-ends a task. A plain chat and
         an explicit ``continue_on_tool_limit=False`` stop at the limit and
-        deliver the partial increment. The config key
+        deliver the work gathered so far (with the missing scope named as a
+        blocker, never as done). The config key
         ``continue_on_tool_limit`` stays the highest priority override.
 
         Args:
@@ -1216,8 +1218,8 @@ class SmolAgent:
 
         The effort tier bounds how long a single turn may run. Reaching the
         deadline BREAKS the round loop (it never raises): the text and the tool
-        facts already produced are still delivered, so the turn ends with a
-        partial increment instead of an error.
+        facts already produced are still delivered, so the turn ends with the
+        work gathered so far and an explicit blocked scope instead of an error.
 
         Args:
             deadline: Monotonic deadline (``None`` when the tier has none).
@@ -1231,7 +1233,7 @@ class SmolAgent:
             return None
         logger.warning(
             "SmolAgent: wall-clock deadline reached after %.0fs (tier=%s); "
-            "delivering the partial increment",
+            "delivering the work gathered so far with its blocked scope",
             policy.wall_clock_seconds,
             policy.name,
         )
@@ -1690,9 +1692,9 @@ class SmolAgent:
         # condition for MAX work: a ``codx-junior-max`` turn that runs out of
         # tool budget is CONTINUED in the same turn (the facts it already
         # collected + a smaller budget) so the run resolves itself instead of
-        # dying. Agile (``codx-junior``, the default) has ``continuations=0`` and
-        # plain chats keep the old behaviour: they stop at the limit and deliver
-        # the partial increment.
+        # dying. Agile (``codx-junior``, the default) also has continuations, so a
+        # harness turn is never dead-ended; only a plain chat stops at the limit
+        # and delivers the work gathered so far with the blocked scope explicit.
         continue_on_tool_limit: bool = self._continuation_enabled(
             config=config,
             orchestration_info=orchestration_info,
@@ -1729,7 +1731,7 @@ class SmolAgent:
 
         # Wall-clock deadline ENFORCED by the effort tier (opt-in only: no
         # built-in tier enables it). When it is set the round loop breaks
-        # instead of raising, so the partial increment survives. The normal
+        # instead of raising, so the work gathered so far survives. The normal
         # path is the ADVISORY clock handled above.
         wall_clock_deadline: Optional[float] = (
             request_start + effort_policy.wall_clock_seconds
@@ -1763,7 +1765,7 @@ class SmolAgent:
         cost_limit_error: Optional[str] = None
 
         # Set when the effort tier's wall-clock deadline stops the turn. The
-        # loop is then broken (never raised) so the partial increment survives.
+        # loop is then broken (never raised) so the work gathered so far survives.
         wall_clock_limit_error: Optional[str] = None
         # Initialised before the loop so they are always defined for the
         # post-loop analytics call, even when the very first budget check stops
@@ -1785,7 +1787,7 @@ class SmolAgent:
                 run_context.checkpoint()
             # Time pressure first: an ENFORCING tier (max) must not start
             # another round once its deadline is gone (breaking instead of
-            # raising keeps the partial increment deliverable), while an
+            # raising keeps the work gathered so far deliverable), while an
             # ADVISORY tier (agile) only nudges the model and never stops.
             wall_clock_limit_error = self._time_pressure(
                 deadline=wall_clock_deadline,
@@ -2267,7 +2269,7 @@ class SmolAgent:
             )
 
         # When the effort tier's wall-clock deadline stopped the turn, say it so
-        # the user knows the increment is partial (a valid outcome for agile).
+        # the user knows the requested scope is blocked, not delivered.
         if wall_clock_limit_error:
             thinking_content += wall_clock_limit_error
             send_callback(wall_clock_limit_error, True)
@@ -2288,7 +2290,7 @@ class SmolAgent:
             send_callback(tool_limit_note, True)
             logger.warning(
                 "SmolAgent: harness turn exhausted its tool budget (%d "
-                "continuation(s)); reporting that a human decision is required",
+                "continuation(s)); reporting the hard blocker instead of a successful delivery",
                 tool_limit_continuations,
             )
 

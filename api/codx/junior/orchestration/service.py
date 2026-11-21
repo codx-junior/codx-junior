@@ -730,7 +730,7 @@ class OrchestrationService:
             summary: Delivery report written by the supervisor.
             actor_chat_id: Chat performing the call (must be the main task).
             main_chat: Live main-task object to append the report to.
-            accept_failures: Publish a partial report instead of failing the call.
+            accept_failures: Publish a blocked report instead of failing the call.
         """
         run = self.get(run_id)
         self._assert_actor(run, actor_chat_id)
@@ -755,13 +755,13 @@ class OrchestrationService:
                 f"This run cannot be reported as completed: {len(unresolved)} "
                 f"step(s) failed or are unreachable ({titles}). Retry them, add a "
                 "remediation step, or finish again with accept_failures=true to "
-                "publish an HONEST partial report (the run is then reported as "
+                "publish an HONEST blocked report (the run is then reported as "
                 "failed, never as completed)."
             )
         if unresolved:
             titles = ", ".join(f"'{step.title}'" for step in unresolved[:8])
             summary = (
-                f"⚠️ **PARTIAL DELIVERY — the run is NOT complete.**\n\n"
+                f"⚠️ **BLOCKED DELIVERY — the run is NOT complete.**\n\n"
                 f"{len(unresolved)} step(s) failed or are unreachable: {titles}.\n\n"
                 f"{summary}"
             )
@@ -780,7 +780,7 @@ class OrchestrationService:
                 prompts.build_delivery_report(run, summary),
                 chat_status="rejected",
                 column_phase="blocked",
-                error="Run finished with unresolved steps (partial delivery)",
+                error="Run finished with unresolved steps (blocked delivery)",
             )
 
         run.status = C.RUN_STATUS_COMPLETED

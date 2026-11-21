@@ -7,10 +7,11 @@ wall-clock deadline, the granted tool set (prompt size) and the validation
 breadth:
 
 * ``codx-junior`` (AGILE, the DEFAULT tier) — small base budget, bounded course
-  corrections when the budget is reached and an ADVISORY clock. A partial
-  increment closed with its own summary is a valid outcome, but the budget is
-  never allowed to dead-end the task: the model gets a smaller renewed budget
-  and the user remains the only one who can stop it.
+  corrections when the budget is reached and an ADVISORY clock. The turn
+  delivers the requested behaviour (or one COMPLETE vertical slice when the
+  request is too large); a partial layer is not a valid outcome. The budget
+  never dead-ends the task: the model gets a smaller renewed budget and the
+  user remains the only one who can stop it.
 * ``codx-junior-max`` (MAX) — the heavier tier: bigger base budget, the same
   bounded course corrections and a long ADVISORY target.
 * plain chats — moderate rounds, no continuation (the previous behaviour).
@@ -62,7 +63,8 @@ DEFAULT_NAME: str = "default"
 
 # ── Validation breadth (written once, reused by every caller) ────────────────
 # AGILE: targeted tests for the touched files + ``qa_review_changes`` (a ``warn``
-# is acceptable only when the gap is named in the close "Next tasks").
+# is acceptable only when the gap is outside the request; requested work is
+# fixed now, not moved to "Next tasks").
 # MAX:   full suite + coverage + ``security_review_changes``.
 AGILE_VALIDATION: str = "targeted+qa_review_changes"
 MAX_VALIDATION: str = "full+coverage+security"
@@ -280,7 +282,7 @@ def agile_policy(settings: Optional[Mapping[str, Any]] = None) -> EffortPolicy:
 
     Small BASE budget that never dead-ends the task: reaching a limit grants
     the bounded course correction of ``AGILE_CONTINUATIONS`` with a smaller
-    renewed budget. The clock is advisory, so a long increment is marked and
+    renewed budget. The clock is advisory, so a long delivery is marked and
     stressed, never stopped.
 
     Args:

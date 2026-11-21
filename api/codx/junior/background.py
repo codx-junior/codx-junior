@@ -3,7 +3,7 @@ import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from typing import Dict, List
 
 from codx.junior.ai import AIManager
@@ -33,6 +33,80 @@ PROJECT_CHECK_INTERVAL_SECONDS: int = 3
 # Maximum number of concurrent project-check threads in the pool
 MAX_PROJECT_WORKERS: int = 10
 
+#: How often the supervisor checks that the critical worker threads are alive.
+WORKER_SUPERVISOR_SECONDS: int = 30
+
+#: Stop event handed to the synchronous worker threads. ``app.APP_STOP_EVENT``
+#: is an ``asyncio.Event``: its ``wait()`` takes no timeout, so passing it to a
+#: worker that waits with a timeout killed that thread on its first tick.
+_BACKGROUND_STOP: Event = Event()
+
+
+def _worker_stop_event() -> Event:
+    """Return the process-wide event that stops the synchronous workers."""
+    return _BACKGROUND_STOP
+
+
+def _ensure_orchestration_worker(stop_event: Event) -> None:
+    """Restart the orchestration worker if its thread is not alive."""
+    try:
+        from codx.junior.orchestration.worker import (
+            get_orchestration_worker,
+            start_orchestration_worker,
+            worker_enabled,
+        )
+
+        if not worker_enabled():
+            return
+        worker = get_orchestration_worker()
+        if worker is not None and worker.running:
+            return
+        logger.warning(
+            "Background supervisor: orchestration worker is not running; restarting it"
+        )
+        start_orchestration_worker(stop_event=stop_event)
+    except Exception as ex:  # pragma: no cover - supervision must never die
+        logger.exception("Background supervisor: could not restart orchestration worker: %s", ex)
+
+
+def _ensure_actor_worker(stop_event: Event) -> None:
+    """Restart the actor (coworker/manager shifts) worker if needed."""
+    try:
+        from codx.junior.autonomy.worker import (
+            get_actor_worker,
+            start_actor_worker,
+            worker_enabled,
+        )
+
+        if not worker_enabled():
+            return
+        worker = get_actor_worker()
+        if worker is not None and worker.running:
+            return
+        logger.warning(
+            "Background supervisor: actor worker is not running; restarting it"
+        )
+        start_actor_worker(stop_event=stop_event)
+    except Exception as ex:  # pragma: no cover - supervision must never die
+        logger.exception("Background supervisor: could not restart actor worker: %s", ex)
+
+
+def _supervise_workers(stop_event: Event) -> None:
+    """
+    Keep the long-running workers alive.
+
+    A thread can die without killing the container (an unhandled exception in a
+    third-party call, an OOM of that allocation, a bad configuration), and the
+    container health check cannot see it. The durable workers used to stay dead
+    until the next full restart, which is exactly the "harness mode does not
+    work" symptom: runs stayed queued with a live API and a live background
+    container. The supervisor notices the dead thread and starts it again.
+    """
+    while not stop_event.wait(WORKER_SUPERVISOR_SECONDS):
+        _ensure_orchestration_worker(stop_event)
+        _ensure_actor_worker(stop_event)
+
+
 def start_background_services(stop_event) -> None:
     """
     Start background services for project watching and processing.
@@ -47,6 +121,7 @@ def start_background_services(stop_event) -> None:
     global RUN_BACKGROUND_PROCESSES
 
     RUN_BACKGROUND_PROCESSES = True
+    _BACKGROUND_STOP.clear()
     logger.info("*** Starting background processes ***")
     reload_models()
 
@@ -71,7 +146,7 @@ def start_background_services(stop_event) -> None:
     try:
         from codx.junior.orchestration.worker import start_orchestration_worker
 
-        start_orchestration_worker(stop_event=stop_event)
+        start_orchestration_worker(stop_event=_worker_stop_event())
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the orchestration worker: %s", ex)
 
@@ -80,7 +155,7 @@ def start_background_services(stop_event) -> None:
     try:
         from codx.junior.company.autopilot import start_company_autopilot
 
-        start_company_autopilot(stop_event=stop_event)
+        start_company_autopilot(stop_event=_worker_stop_event())
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the company autopilot: %s", ex)
 
@@ -92,7 +167,7 @@ def start_background_services(stop_event) -> None:
     try:
         from codx.junior.autonomy.worker import start_actor_worker
 
-        start_actor_worker(stop_event=stop_event)
+        start_actor_worker(stop_event=_worker_stop_event())
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the actor worker: %s", ex)
 
@@ -102,9 +177,19 @@ def start_background_services(stop_event) -> None:
     try:
         from codx.junior.media.worker import start_media_worker
 
-        start_media_worker(stop_event=stop_event)
+        start_media_worker(stop_event=_worker_stop_event())
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the media worker: %s", ex)
+
+    # Keep the critical worker threads alive for the whole life of the process.
+    # The event belongs to this module: ``stop_background_services`` sets it so
+    # the supervisor and every worker stop together.
+    Thread(
+        target=_supervise_workers,
+        args=(_worker_stop_event(),),
+        name="BackgroundWorkerSupervisor",
+        daemon=True,
+    ).start()
 
 
 async def stop_background_services() -> None:
@@ -118,6 +203,7 @@ async def stop_background_services() -> None:
 
     logger.info("Stopping background processes")
     RUN_BACKGROUND_PROCESSES = False
+    _BACKGROUND_STOP.set()
     try:
         from codx.junior.orchestration.worker import stop_orchestration_worker
 

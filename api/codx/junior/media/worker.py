@@ -33,6 +33,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 from codx.junior.media.budget import BudgetGate
 from codx.junior.media.model import MediaAsset, MediaJob
 from codx.junior.media.store import MediaStore
+from codx.junior.utils.stop_event import wait_for_stop
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +230,7 @@ def _worker_loop(stop_event: threading.Event, worker_id: str) -> None:
             logger.exception("Media worker cycle failed: %s", ex)
         if stop_event.is_set():
             break
-        stop_event.wait(POLL_INTERVAL_SECONDS)
+        wait_for_stop(stop_event, POLL_INTERVAL_SECONDS)
     logger.debug("Media worker loop finished (worker_id=%s)", worker_id)
 
 

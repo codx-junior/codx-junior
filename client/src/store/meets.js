@@ -1380,6 +1380,42 @@ export const actions = actionTree(
       }
     },
 
+    /**
+     * Remove a participant from the running call.
+     *
+     * Covers both cases the call UI needs: an AI profile that stopped
+     * listening/answering (it is dropped from `profileParticipants`, so it gets
+     * no more turns and its tile disappears) and a human peer (dropped from the
+     * WebRTC mesh). The lists are updated optimistically and the backend then
+     * broadcasts the authoritative ones over the socket.
+     */
+    async removeParticipant(ctx, { meetId, name } = {}) {
+      const session = ctx.state.activeMeets[meetId]
+      if (!session || !name) return false
+      const profiles = session.profileParticipants || []
+      const isProfile = profiles.some(p => (p.profileName || p.username || p.name) === name)
+      if (isProfile) {
+        ctx.commit('setProfileParticipants', {
+          meetId,
+          profiles: profiles.filter(p => (p.profileName || p.username || p.name) !== name)
+        })
+      } else {
+        ctx.commit('setParticipants', {
+          meetId,
+          participants: (session.participants || []).filter(username => username !== name)
+        })
+      }
+      try {
+        // The backend needs the kind to know which list to clean: an AI
+        // profile lives in `invited_profiles`, a human in `invited`.
+        await API.meets.removeParticipant({ meetId, name, kind: isProfile ? 'profile' : 'user' })
+        return true
+      } catch (error) {
+        console.warn('[meets] removeParticipant failed', error)
+        return false
+      }
+    },
+
     // ─────────────────────────────────────────────────
     // DISCOVERY & CODES
     // ─────────────────────────────────────────────────
@@ -1563,6 +1599,41 @@ export const actions = actionTree(
       await ctx.dispatch('_startDurationTimer', client.meetId)
       ctx.dispatch('_flushPendingSignals', client.meetId)
       return client.meetId
+    },
+
+    /**
+     * Start a new call from a persisted meeting: same agenda, same invited
+     * people and same AI profiles, in a fresh room (the previous one is closed
+     * and its minutes/recording stay untouched).
+     *
+     * @param {object} meeting Entry of `persistedMeetings` (backend summary:
+     *   { meet_id, name, agenda, participants, profiles, ... })
+     */
+    async restartMeeting(ctx, meeting = {}) {
+      const source = (meeting && meeting.meeting) || meeting || {}
+      const previousId = source.meet_id || source.meetId
+      if (!previousId) {
+        throw new Error('A persisted meeting is required to restart a call')
+      }
+      // The backend summary carries usernames, the live meet carries objects.
+      const participants = (source.participants || [])
+        .map(entry => (typeof entry === 'string' ? entry : entry?.username))
+        .filter(Boolean)
+        .map(username => ({ username, kind: 'user' }))
+      const profiles = (source.profiles || [])
+        .map(entry => (typeof entry === 'string' ? entry : entry?.name || entry?.profile_name))
+        .filter(Boolean)
+      const name = source.name ? `${source.name} (restart)` : `Restart of ${previousId}`
+      return ctx.dispatch('initiateMeet', {
+        name,
+        participants,
+        profiles,
+        agenda: source.agenda || '',
+        source: 'restart',
+        // A restart is a new conversation: the previous chat belongs to the
+        // closed meeting and its transcript must not be mixed with this call.
+        createChat: true
+      })
     },
 
     /**

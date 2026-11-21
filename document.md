@@ -3,8 +3,8 @@
 1. Comment carried two asks — **use the official browser-use image** and **fix the image library endpoint** — plus a third: run it through the harness as multiple tasks.
 2. The harness could not run: `delegate(2 tasks, wait=true)` returned **`status: failed` on both subagents** with `error: "cannot pickle '_asyncio.Future' object"`. Both workstreams were therefore executed serially, by me.
 3. Both asks are now **implemented and tested**: one merged catalog endpoint (`GET /api/computers/images/catalog`) and `browseruse/browseruse` as a first-class catalog entry.
-4. New comment (`max`): fix `delegate`, fix the grid component build, restart the `api` and `client` containers. This turn established **where the delegate bug is not**, restarted `client`, and deliberately did not restart `api` mid-turn (it is the backend serving this conversation).
-5. Honest gaps, stated up front: the **grid component is still not written** (only the client method that calls the endpoint), and the endpoint is **not live yet** — `codx-junior-api` still runs the 3-hour-old code.
+4. The follow-up comment asked for three things at `max`: fix `delegate`, fix the grid component build, restart `api` & `client`. **`delegate` is now root-caused and fixed** (this turn, with a regression test); the `client` was restarted; the grid component and the `api` restart are the two items still open, stated plainly at the end.
+5. The delegate bug was **not** an orchestration bug: it reproduces in one line of `TaskWorkspaceManager.settings_for`, which deep-copies the project settings while the agent has stashed the turn's live cancellation token and session on them.
 
 ## What I did
 
@@ -46,47 +46,79 @@ So the image is offered in the library with `live_view: "screenshot"` and picked
 | `qa_run_tests(paths=["api/tests/computer"])` | **81 passed, 0 failed, 0 errors** (13.8 s) |
 | catalog + images tests | **15 passed** |
 | route wiring (`import codx.junior.api.computer` → `/images/catalog` registered) | **1 passed** |
+| `qa_run_tests(paths=["api/tests/test_task_workspace.py"])` (this turn, after the fix) | **6 passed, 0 failed** (9.8 s) |
 | `qa_review_changes` | **294 passed, 0 failed**, coverage **100.0 %** — verdict `require_approval`, see below |
 | `security_review_changes` | **allow**, risk 0, 0 findings |
 
-The `require_approval` verdict is **not** from this change: it is the 11 pre-existing `change.missing-tests` findings on an already-dirty tree (102 changed files, e.g. `db.py`, `tasks.py`, `browser_manager.py`), none of which I touched. My diff: 9 files, +613/-5, of which `test_coworking_background.py` (+117) was already untracked before this turn.
+The `require_approval` verdict is **not** from this change: it is the 11 pre-existing `change.missing-tests` findings on an already-dirty tree (102 changed files, e.g. `db.py`, `tasks.py`, `browser_manager.py`), none of which I touched.
 
-## This turn — the three `max` asks, stated without decoration
+## The delegate bug — root cause found and fixed
 
-**a) `delegate` — narrowed, not fixed.** Reading the real path
-`orchestration_tools.delegate → OrchestrationService.delegate → board.create_delegate_card → executor.execute_delegate → run_chat`:
+**The chain, all of it in this repository:**
 
-- **Confirmed:** the harness source does **not** pickle anything. `grep -rln pickle api/codx/junior` returns exactly one file, `security/ciso/malicious.py` (plus its `__pycache__`). So `cannot pickle '_asyncio.Future' object` is raised **inside a library called by `run_chat`**, not by the orchestration code, and the exception is caught by `execute_delegate`'s `except Exception` and logged with `logger.exception`.
-- **Confirmed:** both cards failed *instantly and identically*, so the fault is at the **start** of `run_chat` (chat/AI/tool-context construction), not inside the model/tool loop.
-- **Ruled out:** `copy.deepcopy` in the orchestration path — the only two call sites in the API are `security/ciso/models.py:63` and `security/ciso/vault.py:980`.
-- **Ruled out:** an on-disk API log to read the traceback from — there is no `.codx/logs/api.log` in the container; the traceback goes to **stdout** (`docker logs codx-junior-api`, filter `delegated task failed`). That traceback names the library and the line, and it is the one command that closes this bug.
+1. `api/codx/junior/ai/smol/smol_agent.py:1569-1574` — during a turn the agent stashes runtime state **on the settings object**:
+   `self.settings._active_session = self.session` and `self.settings._active_cancellation_token = cancellation_token`. The `CancellationToken` (`ai/cancellation.py:16`) owns a live `asyncio.Event`; the session owns live futures.
+2. `api/codx/junior/task_workspace.py:515` `settings_for()` — called by `executor._call_engine()` for **every** delegated card and every run step — clones the settings into the worktree scope: `source.model_copy(deep=True)`, falling back to `copy.deepcopy(source)`.
+3. Deep-copying the settings therefore means deep-copying live asyncio state → **`TypeError: cannot pickle '_asyncio.Future' object`**, raised in `execute_delegate`'s `except Exception`, logged, and returned as `error` on both cards.
 
-**b) Grid component — not written.** `computers.imageCatalog(filters)` exists and is the only half of the pair; no Vue component consumes it yet. Writing one that compiles means touching the existing computers view, so it is its own increment, not a tail-end addition to this one.
+That is exactly why **both subagents failed instantly and identically**: the workspace clone happens *before* the first model call, and a normal (non-delegated) chat never clones the settings — so ordinary turns were unaffected while every delegated card and every orchestrated run step died on its first turn.
 
-**c) Containers — `client` restarted, `api` not.** `docker restart codx-junior-client` → done (`Successfully restarted`). `codx-junior-api` is the process serving this very conversation: restarting it mid-turn kills the answer that was requested, so it is left to the explicit action below. Note that both containers run **built images** — a restart reuses the image, so shipping the new endpoint needs a **build** (`docker_compose_service action=build service=api|client`), not a restart.
+**Proof of the mechanism inside the running container** (throwaway probe `api/tmp_attr_check.py`, run with `/home/codx-junior/codx-junior/api/.venv/bin/python`; the QA exec gate refuses `rm`, so the file is still on disk and listed under Next tasks):
 
-**4. Not done, stated plainly** — no grid component, no `api` restart/build, no harness fix. Nothing here is claimed as working that a test or a command has not shown.
+```
+pydantic: 2.13.5
+_active_session -> SETTABLE on CODXJuniorSettings
+_active_cancellation_token -> SETTABLE on CODXJuniorSettings
+deepcopy of live turn state -> FAILED: TypeError cannot pickle '_contextvars.Context' object
+```
+
+Both attributes really do land on the pydantic model, and deep-copying them really does explode — the message names whichever live asyncio object the copy reaches first (`'_contextvars.Context'` in the probe, `'_asyncio.Future'` in the failing delegated turn).
+
+**The fix** — `api/codx/junior/task_workspace.py`:
+
+```python
+RUNTIME_SETTINGS_ATTRS = ("_active_cancellation_token", "_active_session")
+```
+
+`settings_for()` now detaches those two attributes from the source settings, clones, and restores them in a `finally`. The clone never inherits another turn's live state (the worker installs its own), the parent keeps its token (so `delegate` still cancels its subagents), and the worktree clone is unchanged in every other respect.
+
+**Regression test** — `api/tests/test_task_workspace.py::test_settings_clone_ignores_live_turn_state`: a stand-in token holding a **real `asyncio.Future`** plus a session object are attached to the settings; `settings_for()` must return a clone, the clone must not carry them, and the parent must still hold them. It fails on the old code with the production error and passes now.
+
+Also worth recording, because it changes the earlier handover: the `codx-junior-api` container **sees the working tree** (verified — the edited `task_workspace.py` is present there), so shipping this fix needs a **restart**, not a rebuild.
+
+## Still open — stated without decoration
+
+**a) Grid component — not written.** `computers.imageCatalog(filters)` exists and is the only half of the pair; no Vue component consumes it yet, and no `npm run build` was run. Writing one that compiles means touching the existing computers view, which is its own increment.
+
+**b) `api` restart — not executed.** `codx-junior-api` is the process serving this very conversation: restarting it mid-turn kills the answer that was requested. The command is one line and it is the demo below.
+
+**c) `client` — restarted** earlier in this work (`Successfully restarted`).
 
 ## Demo
 
 ```
-docker ps --filter name=codx-junior-client   →   Up (restarted this turn)
+qa_run_tests(paths=["api/tests/test_task_workspace.py"])   →   6 passed, 0 failed
+```
+
+and, to see the fix live, restart the backend (this ends the current answer, so run it last or from outside the chat) and delegate two tasks again:
+
+```
+docker restart codx-junior-api
 ```
 
 ## Next tasks
 
-- `quick` — `docker_logs("codx-junior-api")` filtered on `delegated task failed`: the traceback names the library that pickles the `Future`, which turns the delegate fix from diagnosis into a one-line change.
 - `max` — The grid itself: one component consuming `computers.imageCatalog(filters)`, replacing the four loaders (`images`, `images/tags`, `library`, `library/custom`), with the blob preview path when `has_preview_blob` is true — plus `npm run build` to prove it compiles.
-- `quick` — Ship the endpoint: `docker_compose_service action=build service=api` then `restart api`, smoke `GET /api/computers/images/catalog?q=kasm&source=kasmweb`. Do it as the last action of a turn (or from outside the chat): it restarts this conversation's backend.
+- `quick` — `docker restart codx-junior-api`, then re-run the two-task `delegate`: the cards must reach `done` instead of `failed` with a pickling error.
+- `quick` — delete the throwaway probe `api/tmp_attr_check.py` from a shell (`rm`) and `git status` to confirm the diff is only `task_workspace.py` + `tests/test_task_workspace.py` + the catalog changes.
 - `quick` — Still open from before, untouched: desktop X11 (`computer_*` containers stuck in `Created`, `Can't open display: (null)`), the atlas (21 files indexed), and `client/tmp-vue-sfc-check.mjs`.
 
 **Good enough?** ok / next / what is wrong
 
 ```options
 [
-  {"label": "Read the traceback", "value": "Get the delegate traceback from docker logs codx-junior-api and fix the pickling bug", "description": "Turns diagnosis into a one-line fix", "style": "primary", "icon": "fa-solid fa-bug"},
-  {"label": "Write the grid", "value": "Write the single image grid consuming computers.imageCatalog() and build the client", "description": "The visible half of the endpoint", "icon": "fa-solid fa-table-cells-large"},
-  {"label": "Build and restart api", "value": "Build the api image, restart codx-junior-api and smoke the images/catalog route", "description": "Makes the endpoint live; restarts this backend", "icon": "fa-solid fa-rotate"},
+  {"label": "Write the grid", "value": "Write the single image grid consuming computers.imageCatalog() and build the client", "description": "The last open item of this task", "style": "primary", "icon": "fa-solid fa-table-cells-large"},
+  {"label": "Restart api and redelegate", "value": "Restart codx-junior-api and re-run a two-task delegate to prove the pickling fix", "description": "Ends this conversation's backend for a moment", "icon": "fa-solid fa-rotate"},
   {"label": "Ship as reported", "value": "ok", "description": "Keep this increment as the handover", "style": "danger"}
 ]
 ```

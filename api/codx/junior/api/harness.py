@@ -87,12 +87,19 @@ def harness_status(request: Request) -> Dict[str, Any]:
 
     worker: Dict[str, Any] = {}
     active_runs: List[str] = []
+    runtime_path: Optional[str] = None
+    heartbeat_path: Optional[str] = None
     try:
         from codx.junior.orchestration.store import RunStore
 
         store = RunStore(codx_path)
         worker = store.worker_status()
         active_runs = store.active_run_ids()
+        # The API and the background worker are separate processes/containers:
+        # exposing both paths makes a runtime-folder mismatch (the cause of a
+        # permanent "worker offline") directly visible in the harness view.
+        runtime_path = store.runtime_dir
+        heartbeat_path = store.worker_path()
     except Exception as ex:  # pragma: no cover - defensive
         logger.warning("Harness status: could not read worker state: %s", ex)
 
@@ -111,6 +118,8 @@ def harness_status(request: Request) -> Dict[str, Any]:
 
     return {
         "codx_path": codx_path,
+        "runtime_path": runtime_path,
+        "heartbeat_path": heartbeat_path,
         "worker": worker,
         "worker_running": bool(worker.get("present")),
         "active_runs": active_runs,

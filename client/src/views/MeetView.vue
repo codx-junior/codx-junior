@@ -3,6 +3,7 @@ import MeetHeader from '@/components/meet/MeetHeader.vue'
 import MeetParticipants from '@/components/meet/MeetParticipants.vue'
 import MeetInviteModal from '@/components/meet/MeetInviteModal.vue'
 import MeetSettingsModal from '@/components/meet/MeetSettingsModal.vue'
+import NewMeetingModal from '@/components/meet/NewMeetingModal.vue'
 import MeetControls from '@/components/meet/MeetControls.vue'
 import MicIndicator from '@/components/meet/MicIndicator.vue'
 import MeetBrowserPanel from '@/components/meet/MeetBrowserPanel.vue'
@@ -173,7 +174,7 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
                   </button>
 
                   <button
-                    @click="$ui.openMeetingSetup({ source: 'manual' })"
+                    @click="openMeetingSetup"
                     class="btn btn-outline gap-2 rounded-full px-4 flex-1 min-w-[10rem] whitespace-nowrap text-white border-white/20 hover:bg-white/10"
                   >
                     <i class="fa-solid fa-users"></i>
@@ -221,22 +222,37 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
               <!-- Persisted meetings: minutes and recording stay available -->
               <div v-if="meetingHistory.length > 0" class="w-full space-y-2 pt-1">
                 <div class="text-xs font-semibold text-white/30 uppercase tracking-wider text-left">Recent meetings</div>
-                <button
+                <div
                   v-for="meeting in meetingHistory"
                   :key="`history-${meeting.meet_id}`"
-                  @click="$ui.openApp({ appKey: 'meet-summary', payload: { meetId: meeting.meet_id } })"
-                  class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 transition-colors text-left"
+                  class="flex items-center gap-1 rounded-xl bg-white/5 hover:bg-white/10 transition-colors"
                 >
-                  <div class="min-w-0">
-                    <div class="font-medium text-sm text-white truncate">{{ meeting.name }}</div>
-                    <div class="text-xs text-white/40">
-                      {{ formatDate(meeting.ended_at || meeting.created_at) }}
-                      <span v-if="meeting.minutes_status === 'ready'"> · minutes</span>
-                      <span v-if="meeting.recording_status === 'ready'"> · recording</span>
+                  <button
+                    @click="$ui.openApp({ appKey: 'meet-summary', payload: { meetId: meeting.meet_id } })"
+                    class="min-w-0 flex-1 flex items-center justify-between px-3 py-2.5 transition-colors text-left"
+                  >
+                    <div class="min-w-0">
+                      <div class="font-medium text-sm text-white truncate">{{ meeting.name }}</div>
+                      <div class="text-xs text-white/40">
+                        {{ formatDate(meeting.ended_at || meeting.created_at) }}
+                        <span v-if="meeting.minutes_status === 'ready'"> · minutes</span>
+                        <span v-if="meeting.recording_status === 'ready'"> · recording</span>
+                      </div>
                     </div>
-                  </div>
-                  <i class="fa-solid fa-arrow-right text-white/30 text-xs"></i>
-                </button>
+                    <i class="fa-solid fa-arrow-right text-white/30 text-xs"></i>
+                  </button>
+                  <!-- Restart: the same people and AI profiles in a fresh room,
+                       so a recurring review does not have to be set up again. -->
+                  <button
+                    @click.stop="restartMeeting(meeting)"
+                    :disabled="restartBusy"
+                    class="btn btn-ghost btn-xs btn-circle mr-1 text-white/40 hover:text-white"
+                    title="Start this meeting again with the same participants"
+                  >
+                    <span v-if="restartBusy" class="loading loading-spinner loading-xs"></span>
+                    <i v-else class="fa-solid fa-rotate-right"></i>
+                  </button>
+                </div>
               </div>
 
               <!-- Recent -->
@@ -526,6 +542,16 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
               live
             </span>
           </button>
+          <!-- Dock the chat under the panel: a call can read the chat while
+               looking at the people, the notes or a shared browser. -->
+          <button
+            @click="chatDocked = !chatDocked"
+            :class="chatDocked ? 'text-primary' : 'text-white/40 hover:text-white'"
+            class="btn btn-ghost btn-sm btn-circle"
+            :title="chatDocked ? 'Chat docked under the panel' : 'Keep the chat open next to the panel'"
+          >
+            <i class="fa-solid fa-table-columns"></i>
+          </button>
           <button
             @click="panelCollapsed = true"
             class="btn btn-ghost btn-sm btn-circle text-white/40 hover:text-white mr-1"
@@ -535,7 +561,22 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
           </button>
         </div>
 
-        <div class="flex-1 min-h-0 overflow-hidden">
+        <!-- Body: the active tab and the docked chat share the panel through a
+             vertical splitter, so the split is draggable and remembered. -->
+        <VerticalSplitter
+          class="min-h-0 flex-1"
+          direction="vertical"
+          show-handle
+          persist-key="meet.panel.dock"
+          :show-left="activePanelTab !== 'chat'"
+          :show-right="chatDocked || activePanelTab === 'chat'"
+          :panels="{
+            left: { minSize: 20, defaultSize: 55, class: 'h-full min-h-0' },
+            right: { minSize: 15, defaultSize: 45, class: 'h-full min-h-0' }
+          }"
+        >
+          <template #left>
+          <div class="flex h-full min-h-0 flex-col overflow-hidden">
           <MeetParticipants v-if="activePanelTab === 'people'" :meet="currentMeet" />
 
           <!-- Notes: live transcript + minutes. The minute taker sees the same
@@ -649,7 +690,14 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
             :shared-session="sharedBrowserInfo"
             class="h-full"
           />
-          <div v-if="activePanelTab === 'chat'" class="flex flex-col h-full">
+          </div>
+
+          </template>
+
+          <!-- Chat: the tab itself, or docked under the panel so people, notes
+               and a shared browser stay usable during the conversation. -->
+          <template #right>
+          <div class="flex h-full min-h-0 flex-col overflow-hidden">
             <div v-if="!meetChatData" class="flex-1 flex flex-col items-center justify-center gap-4 p-6 text-center">
               <div class="w-14 h-14 rounded-full bg-white/5 flex items-center justify-center">
                 <i class="fa-solid fa-comments text-2xl text-white/30"></i>
@@ -672,7 +720,8 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
               class="h-full"
             />
           </div>
-        </div>
+          </template>
+        </VerticalSplitter>
         </div>
       </template>
     </VerticalSplitter>
@@ -690,6 +739,13 @@ import { isAssistantEcho } from '@/utils/voice/bargeIn'
       @close="showCallSettings = false"
       @save="onSaveCallSettings"
     />
+
+    <!-- The global host lives in App.vue, but this view is a full-screen route
+         opened from the call surface itself, so the dialog is hosted here too:
+         "Start with participants" must always show it, never just flip a flag. -->
+    <modal v-if="meetingSetupOpen" close="true" @close="closeMeetingSetup">
+      <NewMeetingModal @close="closeMeetingSetup" />
+    </modal>
   </div>
 </template>
 
@@ -715,6 +771,12 @@ export default {
       callSettings: {},
       activePanelTab: 'people',
       panelCollapsed: true,
+      // Chat kept open underneath the panel (people/notes/browser at once).
+      chatDocked: false,
+      // A restart of a persisted meeting is in flight.
+      restartBusy: false,
+      // Local host of the "New meeting" dialog opened from the call surface.
+      meetingSetupOpen: false,
       // Last browser session announced by a call participant. Kept here (not
       // only in the browser tab) so the notification arrives even when the tab
       // is closed and is ready when the user opens it.
@@ -921,6 +983,10 @@ export default {
     }
   },
   watch: {
+    // Remember the docked-chat preference per user.
+    chatDocked(value) {
+      if (this.writeChatDockPref) this.writeChatDockPref(value)
+    },
     // Mirror the store's current meet into the view so "Start call", "Join with
     // a code", an approved knock, an accepted invitation and a deep link all
     // open the call room.
@@ -1062,6 +1128,8 @@ export default {
     } catch (e) {
       console.warn('[MeetView] Could not load saved settings')
     }
+    // Restore the per-user docked-chat preference.
+    this.chatDocked = this.readChatDockPref()
     this.browserCollabUnsubscribe = onBrowserCollab((event) => this.onBrowserCollabEvent(event))
   },
   beforeUnmount() {
@@ -1122,6 +1190,68 @@ export default {
       } catch (error) {
         console.error('[MeetView] join active meet failed:', error)
         this.$storex.session.onError('Failed to join meet')
+      }
+    },
+
+    /**
+     * Open the "New meeting" dialog from the call surface.
+     *
+     * The dialog is hosted by this view (see the modal at the end of the
+     * template) instead of relying on the global host in App.vue: the call
+     * surface is a full-screen route, so the button must always show the dialog
+     * itself and never just flip a store flag that something else must render.
+     */
+    openMeetingSetup() {
+      this.meetingSetupOpen = true
+    },
+    closeMeetingSetup() {
+      this.meetingSetupOpen = false
+      this.$storex.ui.closeMeetingSetup()
+    },
+
+    /**
+     * Start a persisted meeting again with the same people and AI profiles.
+     */
+    async restartMeeting(meeting) {
+      if (this.restartBusy || !meeting?.meet_id) return
+      this.restartBusy = true
+      try {
+        const meetId = await this.$storex.meets.restartMeeting(meeting)
+        if (meetId) {
+          this.activeMeetId = meetId
+          this.panelCollapsed = false
+          this.activePanelTab = 'people'
+        }
+      } catch (error) {
+        console.error('[MeetView] could not restart the meeting:', error)
+        this.$storex.session.onError('Could not restart the meeting')
+      } finally {
+        this.restartBusy = false
+      }
+    },
+
+    // ─── Local preferences ──────────────────────────────────────────────────
+    /**
+     * `chatDocked` is a per-user preference. It is stored under a key that
+     * carries the username, so two people sharing a browser do not inherit each
+     * other's layout.
+     */
+    chatDockStorageKey() {
+      const username = this.$storex?.users?.user?.username || 'anonymous'
+      return `meet.chatDocked:${username}`
+    },
+    readChatDockPref() {
+      try {
+        return localStorage.getItem(this.chatDockStorageKey()) === '1'
+      } catch (error) {
+        return false
+      }
+    },
+    writeChatDockPref(value) {
+      try {
+        localStorage.setItem(this.chatDockStorageKey(), value ? '1' : '0')
+      } catch (error) {
+        // Storage may be unavailable (private mode / quota): the toggle still works
       }
     },
 

@@ -2,6 +2,9 @@
 import { computed, onMounted, ref } from 'vue'
 import { $storex } from '@/store'
 
+// The dialog can be hosted by a view (MeetView) or by the global host in
+// App.vue: `close` lets the host that owns the instance hide it.
+const emit = defineEmits(['close'])
 const prefill = computed(() => $storex.ui.meetingSetup || {})
 const loading = ref(false)
 const starting = ref(false)
@@ -126,6 +129,8 @@ async function startMeeting(name) {
       settings: { ...form.value.settings }
     })
     $storex.ui.closeMeetingSetup()
+    // The host that owns this instance (MeetView or App.vue) hides the dialog.
+    emit('close')
     $storex.ui.openMeet(meetId)
   } catch (err) {
     console.error('[meeting] could not start the meeting', err)
@@ -155,7 +160,7 @@ onMounted(async () => {
           Invite people and AI profiles. The meeting is recorded, transcribed and turned into minutes.
         </p>
       </div>
-      <button class="btn btn-ghost btn-sm btn-circle shrink-0" title="Close" @click="$storex.ui.closeMeetingSetup()">
+      <button class="btn btn-ghost btn-sm btn-circle shrink-0" title="Close" @click="$storex.ui.closeMeetingSetup(); emit('close')">
         <i class="fa-solid fa-xmark"></i>
       </button>
     </div>
@@ -309,7 +314,7 @@ onMounted(async () => {
 
     <!-- Footer -->
     <div class="flex items-center justify-end gap-2 border-t border-base-content/10 px-5 py-4">
-      <button class="btn btn-ghost btn-sm" @click="$storex.ui.closeMeetingSetup()">Cancel</button>
+      <button class="btn btn-ghost btn-sm" @click="$storex.ui.closeMeetingSetup(); emit('close')">Cancel</button>
       <button class="btn btn-primary btn-sm gap-2" :disabled="starting" @click="onStart">
         <span v-if="starting" class="loading loading-spinner loading-xs"></span>
         <i v-else class="fa-solid fa-video"></i>

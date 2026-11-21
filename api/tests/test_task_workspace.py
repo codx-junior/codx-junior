@@ -8,6 +8,7 @@ end to end.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -39,6 +40,16 @@ class FakeSettings:
 
     def get_worktrees_path(self) -> str:
         return self.git_worktrees_path
+
+
+class FakeCancellationToken:
+    """Stand-in for ``CancellationToken``: owns live asyncio state."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self.chat_id = "chat-5"
+        self.cancelled_at = None
+        self._event = asyncio.Event()
+        self._future = loop.create_future()
 
 
 class FakeChat:
@@ -134,6 +145,39 @@ def test_autonomous_turn_is_isolated_and_committed(project, tmp_path):
     again = manager.ensure(chat)
     assert again.path == workspace.path
     assert again.branch == workspace.branch
+
+
+def test_settings_clone_ignores_live_turn_state(project, tmp_path):
+    """A turn's live cancellation token must not break the settings clone.
+
+    ``ai/smol/smol_agent.py`` stashes the running turn's cancellation token and
+    session on the settings object. Both carry live asyncio objects, and
+    deep-copying them raises ``TypeError: cannot pickle '_asyncio.Future'
+    object`` -- which is how the first turn of every delegated card and every
+    orchestrated run step failed before the runtime state was detached.
+    """
+    settings = FakeSettings(project, str(tmp_path / "worktrees"))
+    manager = TaskWorkspaceManager(settings)
+    workspace = manager.ensure(FakeChat("chat-5", "root-5", "Delegated"))
+    assert workspace is not None
+
+    loop = asyncio.new_event_loop()
+    try:
+        token = FakeCancellationToken(loop)
+        settings._active_cancellation_token = token
+        settings._active_session = object()
+        # The clone used to raise here: cannot pickle '_asyncio.Future' object.
+        run_settings = manager.settings_for(workspace)
+    finally:
+        loop.close()
+
+    assert run_settings.abs_project_path == workspace.path
+    # The clone never inherits another turn's live state...
+    assert not hasattr(run_settings, "_active_cancellation_token")
+    assert not hasattr(run_settings, "_active_session")
+    # ...and the parent settings keep theirs for the rest of its own turn.
+    assert settings._active_cancellation_token is token
+    assert hasattr(settings, "_active_session")
 
 
 def test_workspace_links_dependencies_and_copies_ignored_env(project, tmp_path):

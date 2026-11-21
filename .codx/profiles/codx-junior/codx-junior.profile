@@ -2,7 +2,7 @@
   "name": "codx-junior",
   "url": "",
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=codx-junior",
-  "description": "codx-junior harness (HIGH effort): the main contact between the user, every other profile and the whole platform. It runs at reasoning_effort=high with a DSH-like budget (it finishes normal multi-step work in one turn), closes with What happened / What I did / Demo / Next tasks, and escalates to max only for genuinely long-running work.",
+  "description": "codx-junior harness (HIGH effort): the main contact between the user, every other profile and the whole platform. It runs at reasoning_effort=high with a DSH-like budget, delivers the requested behaviour in one turn (or one complete vertical slice when the request is too large), never asks permission to continue, and closes with What happened / What I did / Demo / Next tasks.",
   "category": "assistant",
   "file_match": "",
   "content": null,

@@ -700,10 +700,12 @@ class ChatEngine:
 
         lines = [
             "### TEAM",
-            "Profiles you can use in NEW tasks. They are NOT active in this turn: "
-            "never answer on their behalf. When a request belongs to one of them, "
-            "say so and ask the user to run that task with the profile "
-            "(@profile_name).",
+            "Profiles you can DELEGATE work to in THIS turn. They are not composed "
+            "into your prompt, but you can hand them a self-contained task with the "
+            "`delegate` tool (wait=true when you need the result to finish this turn, "
+            "wait=false for a durable run) or create the task card with the task "
+            "tools. Never stop to ask the user to re-run the task with a profile: "
+            "delegate it, or do the work yourself with your tools, and continue.",
             "",
             "| Profile | Description |",
             "| --- | --- |",

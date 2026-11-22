@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# codx-junior demo — container entrypoint
+# codx-junior — container entrypoint
 #
 # Keeps the boot dead simple and idempotent:
 #   1. create the folders the API expects (they may be bind mounts)
@@ -29,7 +29,7 @@ mkdir -p \
 
 cat <<BANNER
 =============================================================================
- codx-junior (demo)  -  http://localhost:${CODX_JUNIOR_WEB_PORT:-19981}
+ codx-junior  -  http://localhost:${CODX_JUNIOR_WEB_PORT:-19981}
 -----------------------------------------------------------------------------
  projects : ${CODX_JUNIOR_PROJECTS_PATH}
  settings : ${CODX_JUNIOR_CONFIG_FOLDER}
@@ -40,7 +40,7 @@ BANNER
 if [ -z "${CODX_JUNIOR_AI_PROVIDER}${CODX_JUNIOR_AI_API_KEY}${OPENAI_API_KEY}${DEEPSEEK_API_KEY}${GEMINI_API_KEY}" ]; then
     echo "WARNING: no AI provider configured. The UI will load but chats cannot"
     echo "         run until you set CODX_JUNIOR_AI_PROVIDER and"
-    echo "         CODX_JUNIOR_AI_API_KEY (see demo/README.md) and restart."
+    echo "         CODX_JUNIOR_AI_API_KEY (see codx-junior-installer/README.md) and restart."
 fi
 
 exec /usr/bin/supervisord -c /etc/supervisord.conf

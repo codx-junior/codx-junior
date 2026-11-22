@@ -168,13 +168,17 @@ TICKET_CREATE_TOOL_JSON = {
         "description": (
             "Place a TICKET on another project: a request for a bug fix, a feature or a "
             "change that must be implemented in a project this one does not own. "
-            "Valid targets are the CHILD projects of this one and the LINKED projects "
-            "with read/write permission (a read-only link cannot receive tickets). "
+            "Valid targets are the CHILD projects of this one, EVERY linked project "
+            "(read-only, read/write or the legacy dependency list) and the PARENT "
+            "projects that contain this one. A ticket is a request, so a read-only "
+            "link may receive one. "
             "The ticket is a chat stored by the target project on its 'tickets' board, "
             "so the target reviews it, accepts/declines it and implements it with its "
             "own profiles; this project keeps full control of the request through the "
             "returned ticket id (query, comment, abandon). "
             f"Kinds: {', '.join(TICKET_KINDS)}. "
+            "Set `autonomous=true` when the target should work the ticket without "
+            "a human until its validation gate is green. "
             "Returns the ticket id: quote it in every later ticket_query / "
             "ticket_update / ticket_abandon call."
         ),
@@ -185,7 +189,7 @@ TICKET_CREATE_TOOL_JSON = {
                     "type": "string",
                     "description": (
                         "Project that must do the work: its name or id. It must be a "
-                        "child project or a read/write linked project."
+                        "child, linked or parent project."
                     ),
                 },
                 "name": {
@@ -240,6 +244,22 @@ TICKET_CREATE_TOOL_JSON = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Usernames of the target project to assign the ticket to.",
+                },
+                "autonomous": {
+                    "type": "boolean",
+                    "description": (
+                        "Ask the target to work the ticket autonomously: it dives "
+                        "into the codebase, implements the request, runs the "
+                        "validation gate and only closes it when the gate is green. "
+                        "The target still owns the profile and the validation."
+                    ),
+                },
+                "autonomy_profile": {
+                    "type": "string",
+                    "description": (
+                        "Optional profile (agent) for the autonomous run, e.g. "
+                        "`software_developer`. It must exist in the target project."
+                    ),
                 },
             },
             "required": ["target_project", "name", "description"],
@@ -410,14 +430,16 @@ def ticket_create(
     files: Optional[List[str]] = None,
     tags: Optional[List[str]] = None,
     assignees: Optional[List[str]] = None,
+    autonomous: bool = False,
+    autonomy_profile: Optional[str] = None,
     settings: Optional["CODXJuniorSettings"] = None,
     session: Any = None,
 ) -> ToolResponse:
     """
-    Place a ticket on a child or read/write linked project.
+    Place a ticket on a child, linked or parent project.
 
     Args:
-        target_project: Target project name or id (child or read/write linked).
+        target_project: Target project name or id (child, linked or parent).
         name: Short title of the request.
         description: Complete request (context, observed vs expected behaviour,
             acceptance criteria).
@@ -429,6 +451,11 @@ def ticket_create(
         files: Optional files of the target project the request refers to.
         tags: Optional triage tags.
         assignees: Optional usernames of the target project.
+        autonomous: Ask the target project to work the ticket without a human
+            until its validation gate is green. The requester only enables the
+            queue; the target owns the profile and the validation gate.
+        autonomy_profile: Optional profile (agent) for the autonomous run (must
+            exist in the target project).
         settings: Project settings (injected by the agent runtime).
         session: Active session (injected by the agent runtime).
 
@@ -452,6 +479,8 @@ def ticket_create(
             files=files,
             tags=tags,
             assignees=assignees,
+            autonomous=autonomous,
+            autonomy_profile=autonomy_profile,
         )
     except TicketError as ex:
         logger.warning("ticket_create: %s", ex)
@@ -463,12 +492,25 @@ def ticket_create(
         f"- project: **{record.target_project_name}** → board `{record.board}` / "
         f"`{record.column}`",
         f"- kind: {record.kind} · status: {record.status}",
+    ]
+    if autonomous:
+        autonomy = record.autonomy or {}
+        user_lines.append(
+            f"- autonomy: **{autonomy.get('state') or 'queued'}** · the target "
+            "will dive, implement and validate it without a human"
+        )
+    user_lines += [
         "",
         "The target project owns the queue now: it reviews, accepts or declines the "
         "ticket and implements it with its own profiles. Follow it with "
         f"`ticket_query(ticket_id='{record.ticket_id}')`, answer with "
         "`ticket_update(comment=...)` and withdraw it with `ticket_abandon`.",
     ]
+    if autonomous:
+        user_lines.append(
+            "Track the autonomous run with "
+            f"`ticket_autonomy(action='status', ticket_id='{record.ticket_id}')`."
+        )
     return ToolResponse(
         user_response="\n".join(user_lines),
         llm_response=_json(
@@ -666,3 +708,301 @@ def ticket_abandon(
     )
 
 # Made with ❤️ by codx-junior
+
+
+# ---------------------------------------------------------------------------
+# Autonomous tickets
+# ---------------------------------------------------------------------------
+
+TICKET_AUTONOMY_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "ticket_autonomy",
+        "description": (
+            "Run, configure and inspect the AUTONOMOUS work of a ticket. An "
+            "autonomous ticket is worked by its TARGET project without a human in "
+            "the loop: the agent dives into the codebase, implements the request, "
+            "runs the validation gate after every round and only closes the ticket "
+            "when the gate is green. This tool is available to the target project "
+            "(the ticket owner). Actions: status, enable, disable, configure, "
+            "queue, run, cancel. Use `validation` to declare how the ticket is "
+            "proven (commands or the project QA suite); `run` is synchronous and "
+            "can take minutes, so prefer `queue` and let the background worker run "
+            "it unless the user asks to wait."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "status", "list", "enable", "disable", "configure",
+                        "queue", "run", "cancel",
+                    ],
+                    "description": "Operation to perform.",
+                },
+                "ticket_id": {
+                    "type": "string",
+                    "description": (
+                        "Ticket id (required except for status/list without id)."
+                    ),
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Enable/disable autonomous work (configure).",
+                },
+                "profile": {
+                    "type": "string",
+                    "description": (
+                        "Profile (agent) that works the ticket, e.g. "
+                        "`software_developer`. Default resolves the project profile."
+                    ),
+                },
+                "auto_accept": {
+                    "type": "boolean",
+                    "description": "Accept the open ticket when the run starts.",
+                },
+                "max_rounds": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum agent rounds (each round ends with a validation "
+                        "gate). Default 6, max 40."
+                    ),
+                },
+                "max_runtime_minutes": {
+                    "type": "integer",
+                    "description": "Hard wall-clock limit of one run (default 30).",
+                },
+                "budget_cxjcoins": {
+                    "type": "number",
+                    "description": "Budget of one run (0 = project default).",
+                },
+                "validation": {
+                    "type": "object",
+                    "description": (
+                        "The gate that must be green before the ticket is closed."
+                    ),
+                    "properties": {
+                        "source": {
+                            "type": "string",
+                            "enum": ["auto", "commands", "none"],
+                            "description": (
+                                "auto: project QA default suite; commands: the "
+                                "commands list; none: explicitly unvalidated."
+                            ),
+                        },
+                        "commands": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Command lines run in the ticket workspace "
+                                "(shell disabled)."
+                            ),
+                        },
+                        "suite": {
+                            "type": "string",
+                            "description": "QA suite name for source=auto.",
+                        },
+                        "paths": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional test paths for the QA suite.",
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "description": "Timeout of one validation run.",
+                        },
+                        "required": {
+                            "type": "boolean",
+                            "description": (
+                                "When true (default) the ticket cannot close "
+                                "without a green validation."
+                            ),
+                        },
+                    },
+                },
+            },
+            "required": ["action"],
+        },
+    },
+}
+
+
+def _autonomy_service(**kwargs) -> Any:
+    """Build the :class:`TicketAutonomyService` of the running project."""
+    from codx.junior.ticketing.autonomy import TicketAutonomyService
+
+    settings = _resolve_settings(**kwargs)
+    return TicketAutonomyService(
+        settings=settings,
+        user=kwargs.get("session").user if kwargs.get("session") else None,
+    )
+
+
+def _render_autonomy_status(payload: Dict[str, Any]) -> str:
+    """Render one autonomy status payload as markdown."""
+    autonomy = payload.get("autonomy") or {}
+    lines = [
+        f"**{payload.get('name')}** — `{payload.get('ticket_id')}`",
+        f"- ticket status: **{payload.get('status')}** · autonomy: "
+        f"**{autonomy.get('state') or 'off'}**",
+    ]
+    if autonomy.get("enabled"):
+        lines.append(
+            f"- profile: `{autonomy.get('profile') or '(project default)'}` "
+            f"· rounds: {autonomy.get('rounds', 0)}/{autonomy.get('max_rounds', '?')} "
+            f"· attempts: {autonomy.get('attempts', 0)}"
+        )
+        gate = autonomy.get("validation") or {}
+        lines.append(
+            f"- validation: `{gate.get('source') or 'auto'}`"
+            + (f" · {gate.get('suite')}" if gate.get("suite") else "")
+        )
+        if autonomy.get("workspace_branch"):
+            lines.append(f"- workspace branch: `{autonomy.get('workspace_branch')}`")
+        if autonomy.get("validation_passed"):
+            lines.append("- validation: ✅ passed")
+        if autonomy.get("last_error"):
+            lines.append(f"- last error: {autonomy.get('last_error')}")
+        if autonomy.get("delivery"):
+            lines += ["", "### Last delivery", str(autonomy.get("delivery"))[:4000]]
+    else:
+        lines.append("- autonomy is disabled")
+    return "\n".join(lines)
+
+
+async def ticket_autonomy(
+    action: str,
+    ticket_id: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    profile: Optional[str] = None,
+    auto_accept: Optional[bool] = None,
+    max_rounds: Optional[int] = None,
+    max_runtime_minutes: Optional[int] = None,
+    budget_cxjcoins: Optional[float] = None,
+    validation: Optional[Dict[str, Any]] = None,
+    settings: Optional["CODXJuniorSettings"] = None,
+    session: Any = None,
+    **kwargs,
+) -> ToolResponse:
+    """
+    Configure/run an autonomous ticket (target project only).
+
+    Args:
+        action: ``status``, ``list``, ``enable``, ``disable``, ``configure``,
+            ``queue``, ``run`` or ``cancel``.
+        ticket_id: Ticket id (required except for status/list without id).
+        enabled: Enable/disable autonomy (``configure``).
+        profile: Profile (agent) used by the run.
+        auto_accept: Accept the open ticket when the run starts.
+        max_rounds: Maximum validated rounds of one run.
+        max_runtime_minutes: Wall-clock limit of one run.
+        budget_cxjcoins: Budget of one run (0 = project default).
+        validation: Validation declaration (see the tool schema).
+        settings: Project settings (injected by the agent runtime).
+        session: Active session (injected by the agent runtime).
+        **kwargs: Runtime injection.
+
+    Returns:
+        ToolResponse with the status payload (or the finished run).
+    """
+    action = str(action or "").strip().lower()
+    service = _autonomy_service(settings=settings, session=session)
+    try:
+        if action in ("status", "list"):
+            payload = service.status(ticket_id)
+            if ticket_id:
+                return ToolResponse(
+                    user_response=_render_autonomy_status(payload),
+                    llm_response=_json(payload),
+                )
+            entries = payload.get("tickets") or []
+            if not entries:
+                text = "No autonomous tickets in this project."
+            else:
+                lines = [f"## {len(entries)} autonomous ticket(s)", ""]
+                for entry in entries:
+                    autonomy = entry.get("autonomy") or {}
+                    lines.append(
+                        f"- `{entry.get('ticket_id')}` **{entry.get('name')}** · "
+                        f"{entry.get('status')} · autonomy "
+                        f"**{autonomy.get('state') or 'off'}**"
+                    )
+                if not payload.get("worker_present"):
+                    lines += [
+                        "",
+                        "⚠️ No ticket worker heartbeat: queued tickets will not "
+                        "run until the background service is up.",
+                    ]
+                text = "\n".join(lines)
+            return ToolResponse(user_response=text, llm_response=_json(payload))
+
+        if not ticket_id:
+            raise ValueError(f"action='{action}' requires ticket_id")
+
+        if action == "enable":
+            payload = service.configure(
+                ticket_id, enabled=True, accept=True,
+                profile=profile, auto_accept=auto_accept,
+                max_rounds=max_rounds,
+                max_runtime_minutes=max_runtime_minutes,
+                budget_cxjcoins=budget_cxjcoins, validation=validation,
+            )
+            return ToolResponse(
+                user_response=(
+                    "✅ Autonomy enabled and queued.\n\n"
+                    + _render_autonomy_status(payload)
+                ),
+                llm_response=_json(payload),
+            )
+
+        if action == "disable":
+            payload = service.configure(
+                ticket_id, enabled=False, profile=profile, auto_accept=auto_accept,
+                max_rounds=max_rounds, max_runtime_minutes=max_runtime_minutes,
+                budget_cxjcoins=budget_cxjcoins, validation=validation,
+            )
+            return ToolResponse(
+                user_response="✅ Autonomy disabled.\n\n" + _render_autonomy_status(payload),
+                llm_response=_json(payload),
+            )
+
+        if action in ("configure", "queue"):
+            payload = service.configure(
+                ticket_id,
+                enabled=True if action == "queue" else enabled,
+                accept=action == "queue",
+                profile=profile, auto_accept=auto_accept,
+                max_rounds=max_rounds,
+                max_runtime_minutes=max_runtime_minutes,
+                budget_cxjcoins=budget_cxjcoins, validation=validation,
+            )
+            return ToolResponse(
+                user_response="✅ Ticket autonomy updated.\n\n" + _render_autonomy_status(payload),
+                llm_response=_json(payload),
+            )
+
+        if action == "run":
+            payload = await service.run(ticket_id, force=True)
+            return ToolResponse(
+                user_response="## Autonomous run finished\n\n" + _render_autonomy_status(payload),
+                llm_response=_json(payload),
+            )
+
+        if action == "cancel":
+            payload = service.cancel(ticket_id)
+            return ToolResponse(
+                user_response="⏹️ Autonomous run cancelled.\n\n" + _render_autonomy_status(payload),
+                llm_response=_json(payload),
+            )
+
+        raise ValueError(
+            f"unknown action '{action}'. Available: status, list, enable, disable, "
+            "configure, queue, run, cancel"
+        )
+    except (ValueError, TicketError) as ex:
+        logger.warning("ticket_autonomy: %s", ex)
+        return ToolResponse(
+            user_response=f"⚠️ {ex}",
+            llm_response=_json({"error": str(ex)}),
+        )

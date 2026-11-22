@@ -1,7 +1,7 @@
 """
 Source map: the small JSON file that describes what is indexed for a project.
 
-Every knowledge backend (``knowledge_db`` / Milvus, ``knowledge_lancedb`` /
+The knowledge backend (``knowledge_lancedb`` /
 LanceDB) keeps a *source map* next to its database:
 
     <codx_path>/db/<index_name>/<index_name>_file.json
@@ -51,7 +51,7 @@ def build_empty_source_map(index_name: str) -> Dict[str, Any]:
     Return a fresh, empty source-map skeleton.
 
     Args:
-        index_name: The collection (Milvus) or table (LanceDB) name.
+        index_name: The table (LanceDB) name.
 
     Returns:
         Empty source-map dict.

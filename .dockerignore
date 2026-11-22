@@ -10,9 +10,23 @@
 #   client/ api/ scripts/ codx-junior/ set_env.sh entrypoint.sh supervisor.conf
 # ---------------------------------------------------------------------------
 
-# Control plane (.codx). Nothing that lives in git is stripped from a build:
+# Build/test scratch directories (build logs, local publish configs, temp data).
+tmp/
+design-worktrees/
+.core
+core
+.coverage
+coverage.xml
+**/core
+
+# Control plane (.codx). The release Dockerfile never COPYs it; it is created at
+# first boot inside the settings volume. Excluding all of it keeps browser
+# profiles (sockets, Chromium caches) and tasks out of the build context.
+**/.codx/
+
+# Nothing that lives in git is stripped from a build:
 # the TRACKED half (profiles, tasks, boards, views, teams, workspaces) stays in
-# the context, so the `-dev` flavour (demo/up.sh --dev) builds against the real
+# the context, so the dev flavour (`dev-install.sh`) builds against the real
 # control plane of the checkout. Only the GENERATED data plane is dropped: it is
 # runtime state and it is big (1.5 GB of chat turns, browser sessions and atlas
 # indexes on a developer box). The release image never COPYs .codx at all — it
@@ -94,10 +108,4 @@ api/tests/
 **/tests/
 
 # Installer assets that are never copied into a runtime image
-codx-junior-installer/vllm/
-codx-junior-installer/codx-junior-dind/
-codx-junior-installer/codx-junior/workspaces/
-codx-junior-installer/codx-junior/traefik/
-codx-junior-installer/codx-junior/localai/
-codx-junior-installer/codx-junior/litellm/
 codx-junior-installer/*.md

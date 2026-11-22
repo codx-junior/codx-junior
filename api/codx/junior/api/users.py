@@ -1,6 +1,6 @@
 import logging
 import datetime
-from fastapi import APIRouter, Request, Response, Depends
+from fastapi import APIRouter, HTTPException, Request, Response, Depends
 import httpx
 
 from codx.junior.engine import (
@@ -8,11 +8,17 @@ from codx.junior.engine import (
 )
 
 from codx.junior.security.user_management import (
+    AmbiguousLogin,
     UserSecurityManager,
     get_authenticated_user,
+    get_optional_authenticated_user,
     is_github_admin_account,
     _redact_token,
     redact_user,
+)
+from codx.junior.security.workspace_api import (
+    AUTH_ERROR_INVALID,
+    auth_error_detail,
 )
 from codx.junior.model.user import CodxUser, CodxUserLogin
 from codx.junior.model.model import GlobalSettings
@@ -25,6 +31,15 @@ from codx.junior.globals import ANALYTICS_DATA_PATH
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# The SAME body for "unknown identifier" and "wrong password": a client cannot
+# distinguish them, so a login attempt is not a user-enumeration oracle. An
+# identifier that matches several accounts is rejected separately (409) instead
+# of silently picking one.
+INVALID_LOGIN_DETAIL = auth_error_detail(
+    AUTH_ERROR_INVALID, "Invalid username or password."
+)
 
 
 @router.get("/forward-auth")
@@ -231,6 +246,27 @@ def _ensure_default_company_membership(user: CodxUser = None):
 
 @router.post("/users/login")
 async def user_login(request: Request, response: Response):
+    """
+    Log in with a username **or email** and a password.
+
+    Body:
+        {"username": "<username or email>", "password": "<password>"}
+
+    The identifier is matched against ``username`` first and then against the
+    account email, case-insensitively, so the customer can sign in with the
+    email they registered instead of a generated username.
+
+    Returns:
+        The authenticated user, including its session ``token`` and the
+        ``codx-session`` cookie.
+
+    Raises:
+        HTTPException 401: Wrong password or unknown identifier. Both answer
+            with the SAME body (``{"code": "invalid_credentials", ...}``) so
+            the endpoint cannot be used to enumerate accounts.
+        HTTPException 409: The identifier matches more than one account. The
+            client must send the username to disambiguate.
+    """
     body = await request.json()
     oauth_provider = body.get("oauth_provider")
     if oauth_provider:
@@ -238,14 +274,67 @@ async def user_login(request: Request, response: Response):
         oauth_data = await get_oauth_login_url(oauth_provider=oauth_provider)
         return oauth_data
 
-    login_user = CodxUserLogin(**body)
-    user = _ensure_default_company_membership(get_authenticated_user(request=request))
-    logger.info(f"user_login user: {redact_user(user)} - body: {redact_user(login_user)}")
+    login_credentials = CodxUserLogin(**body)
+    # A request that already carries a valid credential (session JWT or the
+    # scoped workspace token) logs in directly; this is what makes the endpoint
+    # usable from a machine client that only holds an API key.
+    user = _ensure_default_company_membership(
+        get_optional_authenticated_user(request=request)
+    )
+    logger.info(
+        "user_login user: %s - body: %s",
+        redact_user(user),
+        redact_user(login_credentials),
+    )
     if user:
         response.set_cookie(key="codx-session", value=user.token)
         return user
     response.set_cookie(key="codx-session", value="")
-    user = UserSecurityManager().login_user(user=login_user)
+
+    identifier = str(login_credentials.username or "").strip() or str(
+        login_credentials.email or ""
+    ).strip()
+    password = login_credentials.password or ""
+    if not identifier or not password:
+        logger.info("user_login: missing identifier or password")
+        raise HTTPException(status_code=401, detail=INVALID_LOGIN_DETAIL)
+
+    user_security_manager = UserSecurityManager()
+    try:
+        username, matched_field = user_security_manager.resolve_login(identifier)
+    except AmbiguousLogin as ex:
+        logger.warning("user_login: %s", ex)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ambiguous_login",
+                "message": (
+                    "That email matches several accounts; sign in with the "
+                    "username instead."
+                ),
+            },
+        ) from None
+
+    if not username:
+        # Same answer as a wrong password: never reveal whether the account
+        # exists.
+        logger.info("user_login: no account matches the identifier")
+        raise HTTPException(status_code=401, detail=INVALID_LOGIN_DETAIL)
+
+    user = user_security_manager.login_user(
+        user=CodxUserLogin(
+            username=username,
+            password=password,
+            email=login_credentials.email,
+        ),
+        # The legacy "an account with no credential adopts its first password"
+        # bootstrap is a username flow. An email login must verify an existing
+        # credential, so a wrong password is a 401 and not a credential write.
+        allow_credential_creation=(matched_field == "username"),
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail=INVALID_LOGIN_DETAIL)
+
     return _ensure_default_company_membership(user)
 
 @router.put("/users")

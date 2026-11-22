@@ -84,10 +84,12 @@ from .ticket_tools import (
     ticket_update,
     ticket_query,
     ticket_abandon,
+    ticket_autonomy,
     TICKET_CREATE_TOOL_JSON,
     TICKET_UPDATE_TOOL_JSON,
     TICKET_QUERY_TOOL_JSON,
     TICKET_ABANDON_TOOL_JSON,
+    TICKET_AUTONOMY_TOOL_JSON,
 )
 from .orchestration_tools import (
     orchestrator,
@@ -838,6 +840,20 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
         "tags": ["ticket", "ticketing", "cross-project", "abandon", "withdraw"],
         "tool_call": ticket_abandon
+    },
+    {
+        "tool_json": TICKET_AUTONOMY_TOOL_JSON,
+        "settings": {
+            "async": True,
+            "is_async": True,
+            "session": True,
+            "project_settings": True,
+            "dual_response": True,
+            "scope": "chat",
+            "cache": False,
+        },
+        "tags": ["ticket", "ticketing", "autonomy", "agent", "validation", "run"],
+        "tool_call": ticket_autonomy
     },
     {
         "tool_json": SCHEDULE_TASK_TOOL_JSON,

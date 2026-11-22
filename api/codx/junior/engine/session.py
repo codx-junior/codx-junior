@@ -28,7 +28,7 @@ from codx.junior.events.collection_events import (
 )
 from codx.junior.events.event_manager import EventManager
 from codx.junior.knowledge.knowledge_keywords import KnowledgeKeywords
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.mentions.mention_manager import MentionManager
 from codx.junior.model.model import CodxUser, KnowledgeSearch, Profile
 from codx.junior.profiles.profile_manager import ProfileManager

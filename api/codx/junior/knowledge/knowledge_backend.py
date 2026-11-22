@@ -1,35 +1,20 @@
 """
-Knowledge backend selection — one switch, two interchangeable implementations.
+Knowledge backend selection.
 
-Knowledge is a **built-in** feature of codx-junior: the default backend is
-LanceDB, an embedded (on-disk, in-process) vector database, so there is nothing
-to install, start or configure beyond an embeddings provider. Milvus stays
-available for installations that already have data in it or that outgrow an
-embedded index.
+Knowledge is a **built-in** feature of codx-junior: the backend is LanceDB, an
+embedded (on-disk, in-process) vector database, so there is nothing to install,
+start or configure beyond an embeddings provider.
 
 Selection
 ---------
 ``CODX_JUNIOR_KNOWLEDGE_BACKEND``
-    ``lancedb`` (default)  embedded, no service — the demo/trial tier
-    ``milvus``             Milvus server (``CODX_JUNIOR_MILVUS_URL``)
+    ``lancedb`` (default)  embedded, no service
     ``none``/``off``       knowledge disabled entirely
 
 Both implementations expose the same public surface
 (``index_documents``, ``delete_documents``, ``search*``, ``raw_search``,
-``get_all_sources``, ``get_all_categoties``, ``get_db_*``, ``reset``) and share
-the source-map file format, so switching the variable only changes *where* the
-vectors live. The Milvus implementation is imported lazily: a LanceDB
-installation never imports ``pymilvus`` (which can be installed on demand with
-``pip install codx-junior[milvus]``).
-
-Diagram:
-flowchart TD
-    A[create_knowledge_db settings] --> B{CODX_JUNIOR_KNOWLEDGE_BACKEND}
-    B -- lancedb --> C[KnowledgeDBLanceDB]
-    B -- milvus --> D[KnowledgeDB - pymilvus]
-    B -- none --> E[NullKnowledgeDB]
-    C -- lancedb missing --> D
-    D -- pymilvus missing --> E
+``get_all_sources``, ``get_all_categoties``, ``get_db_*``, ``reset``), so callers
+never branch on the backend.
 
 Made with ❤️ by codx-junior
 """
@@ -55,13 +40,12 @@ BACKEND_ALIASES = {
     "lancedb": "lancedb",
     "lance": "lancedb",
     "embedded": "lancedb",
-    "milvus": "milvus",
     "none": "none",
     "off": "none",
     "disabled": "none",
 }
 
-SUPPORTED_KNOWLEDGE_BACKENDS = ("lancedb", "milvus")
+SUPPORTED_KNOWLEDGE_BACKENDS = ("lancedb",)
 
 
 def get_knowledge_backend() -> str:
@@ -69,7 +53,7 @@ def get_knowledge_backend() -> str:
     Return the configured knowledge backend.
 
     Returns:
-        ``lancedb``, ``milvus`` or ``none``.
+        ``lancedb`` or ``none``.
     """
     raw = (os.environ.get(KNOWLEDGE_BACKEND_ENV) or DEFAULT_KNOWLEDGE_BACKEND).strip().lower()
     backend = BACKEND_ALIASES.get(raw)
@@ -90,7 +74,7 @@ def knowledge_backend_info() -> Dict[str, Any]:
 
     Returns:
         Dict with the active backend, the default one, the accepted values and
-        which optional packages are importable.
+        whether the embedded package is importable.
     """
     def is_importable(module: str) -> bool:
         import importlib.util
@@ -106,7 +90,6 @@ def knowledge_backend_info() -> Dict[str, Any]:
         "supported": list(SUPPORTED_KNOWLEDGE_BACKENDS) + ["none"],
         "env": KNOWLEDGE_BACKEND_ENV,
         "lancedb_installed": is_importable("lancedb"),
-        "pymilvus_installed": is_importable("pymilvus"),
     }
 
 
@@ -114,7 +97,7 @@ class NullKnowledgeDB:
     """
     Knowledge database used when knowledge is explicitly disabled.
 
-    Implements the same public surface as the real backends and returns empty
+    Implements the same public surface as the real backend and returns empty
     results, so callers never have to check whether knowledge is enabled.
     """
 
@@ -123,7 +106,7 @@ class NullKnowledgeDB:
     def __init__(self, settings: CODXJuniorSettings, reason: str = ""):
         """
         Args:
-            settings: Project settings (kept for parity with the real backends).
+            settings: Project settings (kept for parity with the real backend).
             reason: Why knowledge is disabled (logged once, for support).
         """
         self.settings = settings
@@ -202,57 +185,36 @@ def create_knowledge_db(settings: CODXJuniorSettings):
     caller (``Knowledge``, ``ProfileKnowledge``, the wiki index, the API
     routers) gets the right backend without knowing about it.
 
-    Falls back gracefully: LanceDB missing → Milvus, Milvus missing → disabled.
-    Knowledge never prevents the API from starting.
+    Knowledge never prevents the API from starting: a missing/broken LanceDB
+    falls back to :class:`NullKnowledgeDB`.
 
     Args:
         settings: Project settings.
 
     Returns:
-        ``KnowledgeDBLanceDB``, ``KnowledgeDB`` (Milvus) or ``NullKnowledgeDB``.
+        ``KnowledgeDBLanceDB`` or ``NullKnowledgeDB``.
     """
     backend = get_knowledge_backend()
 
     if backend == "none":
         return NullKnowledgeDB(settings=settings, reason=f"{KNOWLEDGE_BACKEND_ENV}=none")
 
-    if backend == "lancedb":
-        # Only the *module* import means "lancedb is not installed". An
-        # ImportError raised while building the database (a broken torch stack
-        # under a lazily loaded embeddings model) must NOT be reported as a
-        # missing package nor downgrade the installation to Milvus.
-        try:
-            from codx.junior.knowledge.knowledge_lancedb import KnowledgeDBLanceDB
-        except ImportError as ex:
-            logger.warning(
-                "LanceDB is not available (%s), falling back to the Milvus backend. "
-                "Install it with: pip install lancedb",
-                ex,
-            )
-        else:
-            try:
-                return KnowledgeDBLanceDB(settings=settings)
-            except Exception as ex:
-                logger.exception("Error creating the LanceDB knowledge base: %s", ex)
-                return NullKnowledgeDB(settings=settings, reason=f"lancedb error: {ex}")
-
+    # Only the *module* import means "lancedb is not installed". An ImportError
+    # raised while building the database (a broken torch stack under a lazily
+    # loaded embeddings model) must not be reported as a missing package.
     try:
-        from codx.junior.knowledge.knowledge_db import KnowledgeDB
-
-        return KnowledgeDB(settings=settings)
+        from codx.junior.knowledge.knowledge_lancedb import KnowledgeDBLanceDB
     except ImportError as ex:
         logger.warning(
-            "Milvus backend is not available (%s). Install it with: "
-            "pip install 'codx-junior[milvus]' or set %s=lancedb",
+            "LanceDB is not available (%s). Install it with: pip install lancedb",
             ex,
-            KNOWLEDGE_BACKEND_ENV,
         )
-    except Exception as ex:
-        logger.exception("Error creating the Milvus knowledge base: %s", ex)
+        return NullKnowledgeDB(settings=settings, reason=f"lancedb missing: {ex}")
 
-    return NullKnowledgeDB(
-        settings=settings,
-        reason=f"{KNOWLEDGE_BACKEND_ENV}={backend} but the backend is not installed",
-    )
+    try:
+        return KnowledgeDBLanceDB(settings=settings)
+    except Exception as ex:
+        logger.exception("Error creating the LanceDB knowledge base: %s", ex)
+        return NullKnowledgeDB(settings=settings, reason=f"lancedb error: {ex}")
 
 # Made with ❤️ by codx-junior

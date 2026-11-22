@@ -420,14 +420,14 @@ def test_project_search_matches_each_query_independently(project, monkeypatch):
 def test_project_search_survives_knowledge_failure(project, monkeypatch):
     class _BrokenKnowledge:
         def __init__(self, settings):
-            raise RuntimeError("milvus offline")
+            raise RuntimeError("knowledge offline")
 
     monkeypatch.setattr(project_tools, "Knowledge", _BrokenKnowledge)
 
     response = project_search("auth", settings=project)
 
     assert "auth_service.py" in response.llm_response
-    assert "milvus offline" in response.llm_response
+    assert "knowledge offline" in response.llm_response
     assert "1 warning" in response.user_response
 
 

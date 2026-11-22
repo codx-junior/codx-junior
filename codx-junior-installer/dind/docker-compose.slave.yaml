@@ -1,0 +1,29 @@
+# =============================================================================
+# codx-junior DIND — TRAEFIK SLAVE overlay
+#
+# The host already has a master proxy (DNS + TLS + ACME). This container joins
+# that proxy's network; the master discovers it through the labels below and
+# forwards Host traffic to container port 80, where the nested slave Traefik
+# trusts X-Forwarded-* and routes to the app.
+#
+# No host port is published. The nested slave Traefik binds :80 inside the
+# container (see runtime/docker-compose.dind-slave.yaml).
+# =============================================================================
+services:
+  dind:
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.entrypoints=${CODX_MASTER_ENTRYPOINT:-websecure}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls=true
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls.certresolver=${CODX_MASTER_CERT_RESOLVER:-letsencrypt}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.service=${CODX_INSTANCE:-codx-junior}-edge
+      - traefik.http.services.${CODX_INSTANCE:-codx-junior}-edge.loadbalancer.server.port=80
+
+networks:
+  proxy:
+    name: ${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+    external: true

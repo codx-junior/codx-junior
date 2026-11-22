@@ -50,13 +50,19 @@ flowchart LR
 Made with ❤️ by codx-junior
 """
 
+import asyncio
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from codx.junior.api import get_current_session
+from codx.junior.ticketing.autonomy import (
+    TicketAutonomyService,
+    autonomy_enabled,
+)
 from codx.junior.ticketing.model import (
     TICKET_KINDS,
     TICKET_SIDE_SOURCE,
@@ -80,7 +86,7 @@ class TicketCreateRequest(BaseModel):
     """Body of ``POST /api/tickets``: the whole request, no inherited values."""
 
     target_project: str = Field(
-        description="Target project name or id (a child or a read/write linked project)."
+        description="Target project name or id (a child, linked or parent project)."
     )
     name: str = Field(description="Short title of the request.")
     description: str = Field(description="Complete request the target will read.")
@@ -103,6 +109,46 @@ class TicketCreateRequest(BaseModel):
     tags: List[str] = Field(default_factory=list, description="Triage tags.")
     assignees: List[str] = Field(
         default_factory=list, description="Usernames of the target project."
+    )
+    autonomous: bool = Field(
+        default=False,
+        description=(
+            "Ask the target to work the ticket autonomously until its validation "
+            "gate is green."
+        ),
+    )
+    autonomy_profile: Optional[str] = Field(
+        default=None,
+        description="Optional profile (agent) for the run; it must exist in the target.",
+    )
+
+
+class TicketAutonomyRequest(BaseModel):
+    """Body of the autonomy configuration endpoint (every field optional)."""
+
+    enabled: Optional[bool] = Field(
+        default=None, description="Enable/disable autonomous work."
+    )
+    profile: Optional[str] = Field(
+        default=None, description="Profile (agent) used by the run."
+    )
+    auto_accept: Optional[bool] = Field(
+        default=None, description="Accept an open ticket when the run starts."
+    )
+    max_rounds: Optional[int] = Field(
+        default=None, description="Maximum validated rounds of one run."
+    )
+    max_runtime_minutes: Optional[int] = Field(
+        default=None, description="Wall-clock limit of one run."
+    )
+    budget_cxjcoins: Optional[float] = Field(
+        default=None, description="Budget of one run (0 = project default)."
+    )
+    validation: Optional[Dict[str, Any]] = Field(
+        default=None, description="Validation declaration (source/commands/suite...)."
+    )
+    accept: Optional[bool] = Field(
+        default=None, description="Accept the open ticket in the same operation."
     )
 
 
@@ -159,6 +205,21 @@ def _service(request: Request) -> TicketService:
         raise HTTPException(status_code=500, detail=str(ex)) from ex
 
 
+def _autonomy_service(request: Request) -> TicketAutonomyService:
+    """Build the autonomy service of the project in context (target side)."""
+    session = get_current_session(request)
+    if session is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No project session for this request (codx_path is required)",
+        )
+    user = getattr(session, "user", None)
+    try:
+        return TicketAutonomyService(settings=session.settings, user=user)
+    except Exception as ex:
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
 def _payload(record: TicketRecord) -> Dict[str, Any]:
     """Return the JSON payload of one ticket record."""
     return record.dict()
@@ -195,7 +256,9 @@ def list_ticket_targets(request: Request) -> List[Dict[str, Any]]:
 
     Returns:
         One entry per target: ``project_id``, ``project_name``, ``relationship``
-        (``child`` / ``linked``), ``write`` and ``path``.
+        (``child`` / ``linked`` / ``parent``), ``write`` and ``path``. ``write``
+        reports the file-tool permission of the relation; a read-only target can
+        still receive a ticket.
     """
     return _service(request).targets()
 
@@ -266,10 +329,119 @@ def create_ticket(request: Request, payload: TicketCreateRequest) -> Dict[str, A
             files=payload.files,
             tags=payload.tags,
             assignees=payload.assignees,
+            autonomous=payload.autonomous,
+            autonomy_profile=payload.autonomy_profile,
         )
     except TicketError as ex:
         raise _failure(ex) from ex
     return _payload(record)
+
+
+@router.get("/tickets/autonomy")
+def list_autonomous_tickets(request: Request) -> Dict[str, Any]:
+    """
+    List the autonomous tickets of this project (target side) and the worker state.
+
+    Returns:
+        ``{"tickets": [...], "worker_present": bool, "enabled": bool}``.
+    """
+    service = _autonomy_service(request)
+    payload = service.status()
+    payload["enabled"] = bool(autonomy_enabled())
+    return payload
+
+
+@router.get("/tickets/{ticket_id}/autonomy")
+def get_ticket_autonomy(request: Request, ticket_id: str) -> Dict[str, Any]:
+    """Return the autonomy declaration and live state of one ticket."""
+    service = _autonomy_service(request)
+    try:
+        return service.status(ticket_id)
+    except TicketError as ex:
+        raise _failure(ex) from ex
+
+
+@router.post("/tickets/{ticket_id}/autonomy")
+def configure_ticket_autonomy(
+    request: Request, ticket_id: str, payload: TicketAutonomyRequest
+) -> Dict[str, Any]:
+    """
+    Create/update the autonomy declaration of a ticket (target project only).
+
+    This is how a human enables autonomy, chooses the profile and declares the
+    validation gate (commands or the project QA suite).
+    """
+    service = _autonomy_service(request)
+    try:
+        return service.configure(
+            ticket_id,
+            enabled=payload.enabled,
+            profile=payload.profile,
+            auto_accept=payload.auto_accept,
+            max_rounds=payload.max_rounds,
+            max_runtime_minutes=payload.max_runtime_minutes,
+            budget_cxjcoins=payload.budget_cxjcoins,
+            validation=payload.validation,
+            accept=bool(payload.accept),
+        )
+    except TicketError as ex:
+        raise _failure(ex) from ex
+
+
+@router.post("/tickets/{ticket_id}/autonomy/queue")
+def queue_ticket_autonomy(request: Request, ticket_id: str) -> Dict[str, Any]:
+    """Enable autonomy and queue the ticket for the background worker."""
+    service = _autonomy_service(request)
+    try:
+        return service.queue(ticket_id)
+    except TicketError as ex:
+        raise _failure(ex) from ex
+
+
+@router.post("/tickets/{ticket_id}/autonomy/run")
+def run_ticket_autonomy(
+    request: Request, ticket_id: str, wait: bool = False
+) -> Dict[str, Any]:
+    """
+    Start an autonomous run now.
+
+    Args:
+        ticket_id: Ticket id.
+        wait: When true, block until the run finishes (for tests/debug and
+            direct user requests). The default queues the run in a background
+            thread so the HTTP request returns immediately.
+
+    Returns:
+        The final payload when ``wait`` is true, or an accepted/queued payload.
+    """
+    service = _autonomy_service(request)
+    if wait:
+        try:
+            return asyncio.run(service.run(ticket_id, force=True))
+        except TicketError as ex:
+            raise _failure(ex) from ex
+
+    def _run() -> None:
+        try:
+            asyncio.run(service.run(ticket_id, force=True))
+        except Exception as ex:  # pragma: no cover - background failure is logged
+            logger.exception("ticket autonomy: background run failed: %s", ex)
+
+    thread = threading.Thread(
+        target=_run, name=f"TicketAutonomy-{ticket_id[:8]}", daemon=True
+    )
+    thread.start()
+    return {"ticket_id": ticket_id, "queued": True, "wait": False}
+
+
+@router.post("/tickets/{ticket_id}/autonomy/cancel")
+def cancel_ticket_autonomy(request: Request, ticket_id: str) -> Dict[str, Any]:
+    """Cancel a queued/running autonomous run without closing the ticket."""
+    service = _autonomy_service(request)
+    try:
+        return service.cancel(ticket_id)
+    except TicketError as ex:
+        raise _failure(ex) from ex
 
 
 @router.get("/tickets/{ticket_id}")

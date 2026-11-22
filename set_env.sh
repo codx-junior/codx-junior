@@ -27,17 +27,6 @@ export WEB_CONCURRENCY=${WEB_CONCURRENCY:-1}
 
 export CODX_JUNIOR_STATIC_FOLDER=${CODX_JUNIOR_STATIC_FOLDER:-~/codx-junior-static}
 
-# llmfactory server port
-export CODX_JUNIOR_LLMFACTORY_URL=http://litellm-codx-junior:4000/v1
-export CODX_JUNIOR_LLMFACTORY_KEY=${LITELLM_MASTER_KEY}
-
-export CODX_JUNIOR_LLMFACTORY_KNOWLEDGE_MODEL=${CODX_JUNIOR_LLMFACTORY_KNOWLEDGE_MODEL:-"ollama/phi4"}
-export CODX_JUNIOR_LLMFACTORY_EMBEDDINGS_MODEL=${CODX_JUNIOR_LLMFACTORY_EMBEDDINGS_MODEL:-"nomic-embed-text"}
-
-# milvus vector DB
-export CODX_JUNIOR_MILVUS_UI_URL=${CODX_JUNIOR_MILVUS_UI_URL:-"http://milvus-codx-junior:9091"}
-export CODX_JUNIOR_MILVUS_URL=${CODX_JUNIOR_MILVUS_URL:-"http://milvus-codx-junior:19530"}
-
 # User codxspaces and apps base port
 export USER_PORT_RANGE_START=${USER_PORT_RANGE_START:-99000}
 export USER_PORT_RANGE_END=${USER_PORT_RANGE_END:-99050}
@@ -77,8 +66,6 @@ export LANG=en_US.UTF-8
 export LANGUAGE=en_US:en  
 export LC_ALL=en_US.UTF-8
 
-# vllm
-export VLLM_TARGET_DEVICE=CPU
 # Runtime folder shared by every container of the installation.
 # The API and the background worker run in separate containers; if each kept
 # locks/heartbeats in its own /tmp, the two processes would not see each other's

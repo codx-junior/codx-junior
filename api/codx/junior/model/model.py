@@ -26,11 +26,6 @@ from codx.junior.model.ai_model import (
     AIModelType,
     AIModel,
     AISettings,
-    OLLAMA_PROVIDER,
-    OLLAMA_EMBEDDINGS_MODEL,
-    OLLAMA_KNOWLEDGE_MODEL,
-    KNOWLEDGE_MODEL,
-    EMBEDDINGS_MODEL,
 )
 
 # ---------------------------------------------------------------------------
@@ -316,11 +311,11 @@ class HumanWorkingHours(BaseModel):
 class GlobalSettings(BaseModel):
     log_ai: bool = Field(default=True)
     
-    embeddings_model: str = Field(default=OLLAMA_EMBEDDINGS_MODEL.name)
-    llm_model: str = Field(default=OLLAMA_KNOWLEDGE_MODEL.name)
-    rag_model: str = Field(default=OLLAMA_KNOWLEDGE_MODEL.name)
-    wiki_model: str = Field(default=OLLAMA_KNOWLEDGE_MODEL.name)
-    guardrail_model: str = Field(default=OLLAMA_KNOWLEDGE_MODEL.name)
+    embeddings_model: str = Field(default="")
+    llm_model: str = Field(default="")
+    rag_model: str = Field(default="")
+    wiki_model: str = Field(default="")
+    guardrail_model: str = Field(default="")
 
     # Image models. The names are the SAME in the global and the project
     # settings: here they are the installation default, in
@@ -370,14 +365,9 @@ class GlobalSettings(BaseModel):
     bookmarks: List[Bookmark] = Field(default=[
     ])
 
-    ai_providers: List[AIProvider] = [
-        OLLAMA_PROVIDER
-    ]
+    ai_providers: List[AIProvider] = []
 
-    ai_models: List[AIModel] = [
-      OLLAMA_KNOWLEDGE_MODEL,
-      OLLAMA_EMBEDDINGS_MODEL
-    ]
+    ai_models: List[AIModel] = []
 
     users: Optional[List[CodxUser]] = Field(default=[CodxUser(username="admin", role="admin", avatar="/only_icon.png")])
     user_logins: Optional[List[CodxUserLogin]] = Field(default=[])

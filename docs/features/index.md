@@ -14,13 +14,14 @@ context and stay in budget. This section documents every feature in detail.
 | [Kanban and tasks](/features/kanban) | Boards and columns where every card is a chat with sub-tasks, checklists and assignees. |
 | [Profiles](/features/profiles) | Reusable instructions that set the model, tools and coding standards. |
 | [Autonomous agents](/features/autonomous-agents) | Actors: profiles with initiative that take their own shifts, schedule their own follow-ups and work only inside a weekly availability window. |
+| [Autonomous tickets](/features/autonomous-tickets) | Cross-project requests that the target project works end to end — dive, implement, test, validate — until the gate is green. |
 
 ## Build
 
 | Feature | Summary |
 | --- | --- |
 | [Vibe coding](/features/vibe-coding) | The conversation, the live file changes and the running app side by side. |
-| [Knowledge (RAG)](/features/knowledge) | Projects indexed into Milvus so the AI finds the right context before it acts. |
+| [Knowledge (RAG)](/features/knowledge) | Projects indexed into embedded LanceDB so the AI finds the right context before it acts. |
 | [@codx mentions](/features/mentions) | Write `@codx` in any file and codx-junior edits, explains or improves it in place. |
 | [Wiki](/features/wiki) | AI-maintained project documentation, updated as the code changes. |
 

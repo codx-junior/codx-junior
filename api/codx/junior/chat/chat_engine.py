@@ -45,7 +45,7 @@ from codx.junior.project.project_discover import (
     find_project_by_id,
     get_project_dependencies,
 )
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.knowledge.knowledge_ai_search import KnowledgeAISearch
 from codx.junior.knowledge.knowledge_ai_search_message import build_search_message
 from codx.junior.organizer import ChatOrganizer

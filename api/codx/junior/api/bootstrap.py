@@ -51,7 +51,7 @@ class BootstrapConfig(BaseModel):
     """
 
     provider: Optional[str] = Field(
-        default=None, description="Preset name: openai, deepseek, gemini, openrouter, mistral, groq, ollama, custom"
+        default=None, description="Preset name: openai, deepseek, gemini, openrouter, mistral, groq, custom"
     )
     api_key: Optional[str] = Field(default=None, description="API key of the provider")
     api_url: Optional[str] = Field(default=None, description="OpenAI-compatible base URL (required for 'custom')")

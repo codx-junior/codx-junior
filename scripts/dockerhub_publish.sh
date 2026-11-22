@@ -31,7 +31,7 @@ IMAGE_NAME="${IMAGE_NAME:-codx-junior}"
 # Comma separated list of tags pushed for the same build (e.g. "1.4.0,latest").
 IMAGE_TAGS="${IMAGE_TAGS:-${IMAGE_TAG:-latest}}"
 
-DOCKERFILE="${DOCKERFILE:-Dockerfile}"
+DOCKERFILE="${DOCKERFILE:-codx-junior-installer/demo/Dockerfile}"
 CONTEXT="${CONTEXT:-.}"
 BUILD_TARGET="${BUILD_TARGET:-}"
 BUILD_ARGS="${BUILD_ARGS:-}"
@@ -152,8 +152,9 @@ if is_true "$PUSH" && ! is_true "$DRY_RUN" && [[ -z "$DOCKERHUB_TOKEN" ]] && ! h
   die "DOCKERHUB_TOKEN is required to push (or pass --no-push / use DRY_RUN=true)"
 fi
 
-# buildx is required for --platform and for multi-arch manifests.
-if is_true "$MULTI_ARCH" || ! is_true "$BUILD"; then
+# buildx is required to build (platform selection and manifests). A
+# --no-build publish of an image that is already local only needs `docker push`.
+if is_true "$BUILD"; then
   docker buildx version >/dev/null 2>&1 || die "docker buildx is required (install the buildx plugin)"
 fi
 

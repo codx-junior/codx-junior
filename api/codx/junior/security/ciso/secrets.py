@@ -163,7 +163,7 @@ _PLACEHOLDER_PATTERNS: List[re.Pattern] = [
     re.compile(r"%(?:s|d|\()"),                   # printf placeholder
     re.compile(r"^(?:os\.environ|process\.env|env\(|getenv)", re.IGNORECASE),
     re.compile(r"^(?:redacted|masked|removed|hidden|encrypted|not[_\-]?set|no[_\-]?value)$", re.IGNORECASE),
-    re.compile(r"^(?:sk-llmfactory|sk-local|sk-dummy|sk-test)$", re.IGNORECASE),
+    re.compile(r"^(?:sk-local|sk-dummy|sk-test)$", re.IGNORECASE),
     re.compile(r"^[a-z]+(?:_[a-z]+){2,}$"),       # snake_case identifier, not a value
     re.compile(r"^[A-Z][a-z]+(?:[A-Z][a-z]+){1,}$"),  # CamelCase identifier
     # A mask is a run of one repeated character: ``••••••••``, ``********``,
@@ -494,7 +494,7 @@ def is_non_executable_path(path: Optional[str]) -> bool:
 def is_compose_example_url(value: str, path: Optional[str]) -> bool:
     """Return True for a connection string pointing at a compose service.
 
-    A host without a dot (``db``, ``postgres``, ``milvus``) is a service name
+    A host without a dot (``db``, ``postgres``, ``redis``) is a service name
     inside a stack definition, not an external endpoint. Such a value is
     reported as ``low``, and only on a non-executable path: the same URL in a
     ``.env`` or a Python module still blocks.

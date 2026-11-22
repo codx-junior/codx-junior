@@ -302,7 +302,7 @@ def _compose_profile_args(profiles: Optional[List[str]]) -> List[str]:
     Build the ``--profile`` arguments of a compose command.
 
     Compose profiles are how a stack ships optional services (the demo keeps
-    Milvus in the ``knowledge`` profile), so the tools need to activate them.
+    the embedded knowledge backend), so the tools need to activate them.
 
     Args:
         profiles: Profile names to activate.
@@ -1035,7 +1035,7 @@ def docker_build(
     through a shell).
 
     Args:
-        image: Tag to assign to the built image (e.g. ``codxjunior/codx-junior:demo``).
+        image: Tag to assign to the built image (e.g. ``codxjuniorai/codx-junior:latest``).
         dockerfile: Dockerfile path relative to the project (default: the
                     ``Dockerfile`` inside ``context``).
         context: Build context relative to the project (default: project root).
@@ -1062,7 +1062,7 @@ def docker_build(
 
     Example:
         >>> docker_build(
-        ...     "codxjunior/codx-junior:demo",
+        ...     "codxjuniorai/codx-junior:latest",
         ...     dockerfile="codx-junior-installer/demo/Dockerfile",
         ... )
         # Builds the demo image from the project root context
@@ -1178,7 +1178,7 @@ def docker_pull(image: str, timeout: int = 1800, **kwargs) -> ToolResponse:
         ToolResponse: Pull result with the command and its output.
 
     Example:
-        >>> docker_pull("codxjunior/codx-junior:demo")
+        >>> docker_pull("codxjuniorai/codx-junior:latest")
         # Downloads the demo image
     """
     settings: CODXJuniorSettings = kwargs.get("settings")
@@ -2515,7 +2515,7 @@ DOCKER_BUILD_TOOL_JSON = {
             "properties": {
                 "image": {
                     "type": "string",
-                    "description": "Tag for the built image (e.g. 'codxjunior/codx-junior:demo')"
+                    "description": "Tag for the built image (e.g. 'codxjuniorai/codx-junior:latest')"
                 },
                 "dockerfile": {
                     "type": "string",
@@ -2576,7 +2576,7 @@ DOCKER_PULL_TOOL_JSON = {
             "properties": {
                 "image": {
                     "type": "string",
-                    "description": "Image reference with optional tag (e.g. 'codxjunior/codx-junior:demo')"
+                    "description": "Image reference with optional tag (e.g. 'codxjuniorai/codx-junior:latest')"
                 },
                 "timeout": {
                     "type": "integer",
@@ -3015,7 +3015,7 @@ DOCKER_COMPOSE_SERVICE_TOOL_JSON = {
                     "items": {"type": "string"},
                     "description": (
                         "For up action: compose profiles to activate "
-                        "(e.g. ['knowledge'] to include the optional Milvus service)"
+                        "(e.g. ['knowledge'])"
                     )
                 },
                 "no_cache": {

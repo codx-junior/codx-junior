@@ -56,14 +56,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# Heavy, OPTIONAL dependencies. They are not installed by the slim/demo image
-# (see codx-junior-installer/demo/Dockerfile): the API imports them lazily and
-# degrades with a clear message when they are missing, so a trial installation
-# does not have to download torch (~2.5 GB), the CUDA-less vLLM stack or a
-# browser runtime before the first chat.
-#
-# Full installations keep today's behaviour by installing
-# `.[local-models,browser,milvus]` (scripts/install_api.sh does exactly that).
+# Heavy runtime features. The released image is COMPLETE and installs
+# `.[local-models,browser]` (see codx-junior-installer/demo/Dockerfile); the API
+# still imports them lazily so a source checkout can run without them and
+# degrade with a clear message.
 [project.optional-dependencies]
 test = [
     "pytest>=7.3.1",
@@ -82,23 +78,11 @@ local-models = [
 browser = [
     "playwright",
 ]
-# Milvus vector database client. Only needed when
-# CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus: the default (lancedb) backend is embedded
-# and part of the base dependencies, while pymilvus pulls grpcio and the
-# milvus-lite binary.
-milvus = [
-    "pymilvus>=2.4.0",
-]
-# Deprecated local inference server (codx/junior/ai/vllm_cpu_ai.py)
-vllm = [
-    "vllm>=0.5.0",
-]
 # Everything a full deployment needs
 full = [
     "sentence-transformers>=6.2.0",
     "torch>=2.4.0",
     "playwright",
-    "pymilvus>=2.4.0",
 ]
 [project.scripts]
 codx-junior = 'codx.app:app'
@@ -121,7 +105,7 @@ target-version = "py311"
 # Extras a plain `uv sync` installs (source / dev deployments). They keep the
 # full feature set: local embeddings + the browser client. The slim demo image
 # installs with pip and no extras, so it never downloads torch.
-default-extras = ["local-models", "browser", "milvus"]
+default-extras = ["local-models", "browser"]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

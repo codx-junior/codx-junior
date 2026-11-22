@@ -1,0 +1,83 @@
+# =============================================================================
+# codx-junior — TRAEFIK SLAVE overlay
+#
+# For a server that sits BEHIND a master proxy (the "master resolver"): the
+# master owns DNS and TLS (ACME), terminates HTTPS and forwards plain HTTP plus
+# X-Forwarded-* headers to this container on port 80.
+#
+# This slave Traefik:
+#   * listens on :80 only (no :443, no ACME, no published host port);
+#   * trusts X-Forwarded-* from the master network so the app sees https and
+#     the real client IP;
+#   * consumes the API HTTP provider, so custom/workspace routes keep working;
+#   * exposes a Docker label router for the master to discover it.
+#
+# The app never trusts the headers by itself: nginx forwards them to uvicorn,
+# which only trusts its loopback peer. Keep port 80 reachable from the master
+# network only (never publish it on the host).
+#
+# Required variables:
+#   CODX_DOMAIN_RULE       Host(`a.example.com`) || Host(`b.example.com`)
+#   CODX_PROXY_NETWORK     external network shared with the master (required)
+#   CODX_TRUSTED_PROXIES   CIDRs of the master (default: private + loopback)
+# =============================================================================
+services:
+  codx-junior:
+    environment:
+      # The slave Traefik only defines `web` (:80). Generated custom/workspace
+      # routers must not reference `websecure`.
+      CODX_JUNIOR_TRAEFIK_ENTRYPOINTS: web
+    networks:
+      # The app is deliberately NOT on the master network: the external master
+      # must see only the slave container, never the app's labels.
+      - internal
+    labels:
+      # Router inside the slave: master -> slave:80 -> app:19981. No
+      # traefik.docker.network override: the only network shared with this
+      # Traefik is `internal`.
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.entrypoints=web
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.service=${CODX_INSTANCE:-codx-junior}
+
+  traefik:
+    image: ${CODX_TRAEFIK_IMAGE:-traefik:v3.3}
+    container_name: ${CODX_INSTANCE:-codx-junior}-traefik
+    restart: unless-stopped
+    command:
+      - --entrypoints.web.address=:80
+      # Trust forwarding headers only from the master network. `insecure=true`
+      # is an explicit escape hatch for a master whose IP cannot be pinned
+      # (e.g. a load balancer pool): then ANY peer can spoof the headers, so
+      # only use it when port 80 is private to that network.
+      - --entrypoints.web.forwardedheaders.trustedips=${CODX_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32}
+      - --entrypoints.web.forwardedheaders.insecure=${CODX_FORWARDED_INSECURE:-false}
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+      - --providers.http.endpoint=http://codx-junior:19980/api/traefik/config
+      - --providers.http.pollinterval=10s
+      - --providers.http.polltimeout=5s
+      - --api.dashboard=false
+      - --log.level=INFO
+      - --accesslog=true
+    # No `ports:`: only the master network reaches this container.
+    networks:
+      - internal
+      - proxy
+    labels:
+      # Consumed by the MASTER Traefik through its Docker provider. If the
+      # master is not Docker-aware these labels are inert and it must be
+      # configured with the same Host -> <container>:80 route by hand.
+      - traefik.enable=true
+      - traefik.docker.network=${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.entrypoints=${CODX_MASTER_ENTRYPOINT:-websecure}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls=true
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls.certresolver=${CODX_MASTER_CERT_RESOLVER:-letsencrypt}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.service=${CODX_INSTANCE:-codx-junior}-edge
+      - traefik.http.services.${CODX_INSTANCE:-codx-junior}-edge.loadbalancer.server.port=80
+
+networks:
+  proxy:
+    name: ${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+    external: true

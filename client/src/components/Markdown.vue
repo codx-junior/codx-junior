@@ -40,6 +40,7 @@ import MarkdownIt from 'markdown-it'
 
 <script>
 import hljs from '@/utils/highlight'
+import { markdownFileLinks } from '@/utils/markdownFileLinks'
 
 const md = new MarkdownIt({
   html: true,
@@ -59,6 +60,9 @@ const md = new MarkdownIt({
 })
 
 md.use(emoji)
+// File references (`./coolify-install.sh`, `src/App.vue`, `install.sh`) become
+// .file-link anchors that open the in-app FileViewer (see captureFileLinks).
+md.use(markdownFileLinks)
 
 export default {
   inheritAttrs: false,
@@ -76,6 +80,9 @@ export default {
   mounted() {
     this.localText = this.text
     this.initializeComponent()
+  },
+  beforeUnmount() {
+    this.releaseFileLinks()
   },
   computed: {
     html() {
@@ -121,7 +128,10 @@ export default {
       this.captureFileLinks()
     },
     captureLinks() {
+      // File references have their own handler (captureFileLinks) that opens the
+      // FileViewer instead of bubbling the click as a plain link.
       const linkBlocks = [...this.$el.querySelectorAll('a')]
+        .filter(a => !a.classList.contains('file-link'))
       linkBlocks.forEach(a => a.onclick = ev => {
         ev.preventDefault()
         this.$emit('link', { a, url: a.attributes["href"].value, text: a.innerText })
@@ -138,18 +148,29 @@ export default {
       const youtubeRegex = /https?:\/\/(www\.)?youtube\.com\/watch\?v=[\w-]+/g
       this.youtubeLinks = this.localText?.match(youtubeRegex) || []
     },
+    // One delegated listener on the container: the anchors are re-created on
+    // every render (v-html), so per-element handlers would go stale.
     captureFileLinks() {
-      const fileLinks = [...this.$el.querySelectorAll('.file-link')]
-      fileLinks.forEach(link => {
-        link.onclick = ev => {
-          ev.preventDefault()
-          this.openFile(link.getAttribute('href'))
-        }
-      })
+      if (this._fileLinkHandler) return
+      this._fileLinkHandler = ev => {
+        const link = ev.target?.closest?.('.file-link')
+        if (!link || !this.$el.contains(link)) return
+        ev.preventDefault()
+        ev.stopPropagation()
+        this.openFile(link.dataset.file || link.getAttribute('href'))
+      }
+      this.$el.addEventListener('click', this._fileLinkHandler)
     },
-    openFile(href) {
-      this.$ui.copyTextToClipboard(href)
-      this.$storex.api.coder.openFile(href)
+    releaseFileLinks() {
+      if (!this._fileLinkHandler) return
+      this.$el?.removeEventListener('click', this._fileLinkHandler)
+      this._fileLinkHandler = null
+    },
+    // Open a referenced file in the FileViewer: a new panel/tab on desktop, a
+    // dialog over the current screen in single mode (see $ui.openFileViewer).
+    openFile(reference) {
+      if (!reference) return
+      this.$ui.openFileViewer(reference)
     },
 
     // A Code block reported its content changed; patch localText and bubble up

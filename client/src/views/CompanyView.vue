@@ -247,6 +247,7 @@ async function loadActiveCompany() {
     await loadCompanyActors(company.id)
     await loadCompanyChats()
     await loadCompanyReferences()
+    openNewCompanyFromMenu()
   } catch (error) {
     notifyError(error)
   } finally {
@@ -289,6 +290,17 @@ async function refreshSnapshot() {
     notifyError(error)
   }
 }
+
+// A project created from the company workspace (Projects → "New project")
+// is only linkable once the company references are recomputed from the
+// discovered projects. The project store is the signal: as soon as it grows,
+// the picker and the snapshot are refreshed — no reload of the page.
+watch(() => ($storex.projects?.allProjects || []).length, (now, before) => {
+  if (now > before && activeId.value) {
+    loadCompanyReferences()
+    refreshSnapshot()
+  }
+})
 
 // ── Projects ──────────────────────────────────────────────────────────────
 // The project list is a company setting: it is what the company "can work
@@ -406,6 +418,17 @@ async function createCompany() {
   } finally {
     newCompanySaving.value = false
   }
+}
+
+// The main menu (left bar → "New company") reaches this shell with `?new=1`.
+// The dialog is owned here, so the entry point never duplicates it; the flag
+// is consumed and removed from the URL so a refresh does not reopen it.
+async function openNewCompanyFromMenu() {
+  if (route.query.new !== '1') return
+  openNewCompany()
+  const query = { ...route.query }
+  delete query.new
+  await router.replace({ query }).catch(() => {})
 }
 
 async function selectCompany(companyId, { skipList = false } = {}) {

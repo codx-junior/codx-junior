@@ -173,7 +173,7 @@ def api_extract_tags(doc: Document, request: Request):
 @router.get("/metrics")
 def api_knowledge_metrics(request: Request):
     """
-    Return detailed collection-level metrics from the underlying Milvus store.
+    Return detailed collection-level metrics from the knowledge store.
 
     Includes row count, load state, schema information, index metadata,
     and partition details.

@@ -1,19 +1,21 @@
 # syntax=docker/dockerfile:1
 # =============================================================================
-# codx-junior — DEMO image (single container, ~1 GB)
+# codx-junior — COMPLETE application image (single container)
 #
-# What this image is NOT: it does not install TeX, Firefox, Tesseract, Pandoc,
-# torch, vLLM, Playwright or Node. Those are runtime dependencies of optional
-# features (document conversion, browser sessions, local embeddings) that are
-# only needed by the full/server deployment.
+# One image, no slim variant. It contains everything the product can use:
 #
-#   client  -> compiled in a `node` builder stage (never shipped)
-#   api     -> python:3.11-slim + the base dependencies of api/pyproject.toml
-#   web     -> nginx-light serving the compiled SPA and proxying /api
-#   process -> supervisord (api + background worker + nginx)
+#   client    -> compiled in a `node` builder stage (never shipped)
+#   api       -> FastAPI + background worker + embedded LanceDB
+#   tools     -> pandoc, TeX Live, tesseract, ffmpeg, Playwright/Chromium
+#   embeddings-> torch (CPU) + sentence-transformers
+#   web       -> nginx serving the compiled SPA and proxying /api
+#   process   -> supervisord (api + background worker + nginx)
 #
-# Build context is the REPOSITORY ROOT (see demo/docker-compose.yaml):
+# Build context is the REPOSITORY ROOT:
 #   docker build -f codx-junior-installer/demo/Dockerfile .
+#
+# The image is large (TeX Live, torch and Chromium). That is intentional: no
+# feature may fail because the released image is a "slim" build.
 # =============================================================================
 
 ARG NODE_VERSION=22
@@ -54,15 +56,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CODX_JUNIOR_SKIP_INSTALL=1 \
     CODX_JUNIOR_APPS=api
 
-# Only what the API actually uses at runtime. `nginx` serves the SPA,
-# `supervisor` keeps the three processes alive, `tini` reaps zombies.
+# Runtime tools used by document conversion, OCR, audio and browser rendering.
+# TeX Live is intentionally the full metapackage: xelatex alone is not enough
+# for every template the document converter accepts.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        ffmpeg \
+        fonts-dejavu \
         git \
+        lmodern \
         nginx \
+        pandoc \
         procps \
         supervisor \
+        tesseract-ocr \
+        texlive \
+        texlive-latex-extra \
+        texlive-xetex \
         tini \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /home/codx-junior-projects /home/codx-junior/.codx-junior \
@@ -77,16 +88,22 @@ COPY codx-junior ./codx-junior
 COPY set_env.sh .
 COPY supervisor.conf .
 
-# The venv is created at build time: restarting the container must not install
-# anything (see CODX_JUNIOR_SKIP_INSTALL in scripts/run_api.sh).
+# Venv and all optional runtime features are baked at build time: restarting the
+# container must not install anything (see CODX_JUNIOR_SKIP_INSTALL in
+# scripts/run_api.sh). Torch is installed from the CPU index first so pip does
+# not pull the CUDA build; the `local-models` extra then sees the requirement
+# satisfied.
 RUN python -m venv "${CODX_JUNIOR_API_VENV}" \
     && "${CODX_JUNIOR_API_VENV}/bin/pip" install --upgrade pip \
-    && "${CODX_JUNIOR_API_VENV}/bin/pip" install ./api
+    && "${CODX_JUNIOR_API_VENV}/bin/pip" install \
+        --index-url https://download.pytorch.org/whl/cpu torch \
+    && "${CODX_JUNIOR_API_VENV}/bin/pip" install "./api[local-models,browser]" \
+    && "${CODX_JUNIOR_API_VENV}/bin/python" -m playwright install --with-deps chromium
 
 # -----------------------------------------------------------------------------
 # Build provenance, declared LAST on purpose. Declared before the apt-get and
 # venv layers these three ARGs would invalidate them on every tag: a release
-# rebuild would re-download the whole product (~20 min) to change one string.
+# rebuild would re-download the whole product to change one string.
 #
 # `GET /api/health` reports them so an unattended install can assert WHICH build
 # answered instead of "something returned HTML" (api/codx/junior/version.py).
@@ -118,10 +135,10 @@ RUN chmod +x /usr/local/bin/codx-junior-entrypoint.sh
 # 19980: API (internal, proxied by nginx)
 EXPOSE 19981
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=12 \
+HEALTHCHECK --interval=10s --timeout=5s --start-period=45s --retries=20 \
     CMD curl -fsS http://127.0.0.1:19980/api/health || exit 1
 
-# Runs as root on purpose: the demo bind-mounts a host folder for the projects
-# and the API (git, editors, project scripts) must be able to write there
-# whatever the host UID is. The full deployment keeps the 1001:1001 user.
+# Runs as root on purpose: the API bind-mounts a host folder for the projects
+# and (git, editors, project scripts) must be able to write there whatever the
+# host UID is. Coworking containers are created by the API through the socket.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/codx-junior-entrypoint.sh"]

@@ -1,0 +1,26 @@
+# =============================================================================
+# codx-junior — COWORKING overlay (optional, privileged host access)
+#
+# Enables browser sessions, co-desktops (Linux webtop / Windows / macOS VMs) and
+# the infrastructure panel. They all create sibling containers, so the API needs
+# the Docker socket.
+#
+# SECURITY: the socket is root-equivalent on the host. Enable it only when the
+# instance is trusted (a single-tenant server or a nested/dind daemon). The
+# installer refuses --coworking when it cannot prove the instance is isolated
+# unless you pass --allow-privileged.
+#
+#   docker compose ... -f docker-compose.coworking.yaml up -d
+#
+# Linux desktops and browser sessions work with the socket alone. Windows/macOS
+# VMs also need /dev/kvm and a CPU with virtualization enabled; those are host
+# prerequisites, not something this overlay can create.
+# =============================================================================
+services:
+  codx-junior:
+    volumes:
+      # The API user runs as root inside the application image, so no group_add is
+      # needed. A non-root image must be added to the host's docker group.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      CODX_JUNIOR_COWORKING: "1"

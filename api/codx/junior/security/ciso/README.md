@@ -45,7 +45,7 @@ untracked, because one gate is never enough:
 | 9 | Container build/run | `docker_run/build/compose` | `guard_container` | pending |
 | 10 | Profile save | `profiles/profile_manager.py` → `save_profile` | `guard_profile` | pending |
 | 11 | Logs and exports | `ai_logger`, `api_logs`, `chat_export` | `sanitize_for_log` | pending |
-| 12 | Knowledge ingestion | `knowledge_db` / `knowledge_lancedb` `index_documents` | `guard_knowledge` | **wired** (document indexing) |
+| 12 | Knowledge ingestion | `knowledge_lancedb` `index_documents` | `guard_knowledge` | **wired** (document indexing) |
 
 Items 1–5 are the ones the incident proves load-bearing. Items 6–12 are grouped
 by class in the follow-up tickets of the incident report.

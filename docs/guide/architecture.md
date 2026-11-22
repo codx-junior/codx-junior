@@ -1,29 +1,30 @@
 # Architecture
 
-codx-junior is a set of Docker services behind a Traefik reverse proxy. Everything is reachable from a single domain, so users only need a browser.
+codx-junior runs as **one application container**. Traefik is optional and lives
+only at the edge (server mode); the container serves the SPA, the API and the
+background worker through supervisord.
 
 ```
-browser ──► Traefik (80/443) ──┬──► codx-junior-client   Vue 3 + Vite          :19981
-                               ├──► codx-junior-api      FastAPI + Socket.IO   :19980  (/api)
-                               ├──► workspaces           Docker Compose dev containers
-                               ├──► LocalAI / LiteLLM    model serving (optional)
-                               └──► Traefik dashboard    (/traefik, admins only)
+browser ──► Traefik (optional edge, :80/:443, ACME)
+                │
+                ▼
+        codx-junior container :19981 (nginx)
+                ├──► /            compiled Vue SPA
+                └──► /api         FastAPI + Socket.IO :19980
+                                    ├── background worker (same image)
+                                    ├── embedded LanceDB
+                                    └── Docker socket (optional: coworking/desktops)
 
-codx-junior-api ──► codx-junior-api-background   watchers, indexing, long running jobs
-                ──► Milvus                       vector store for knowledge
-                ──► Docker socket                workspaces and docker tools
+dev only: the same compose with the checkout mounted (dev-install.sh)
 ```
 
 ## Services
 
 | Service | Role |
 | --- | --- |
-| `codx-junior-client` | The web application (`client/`). Vue 3, Vite, Tailwind and daisyUI. |
-| `codx-junior-api` | The backend (`api/codx/junior`). REST API under `/api`, real-time events over Socket.IO at `/api/socket.io`, OpenAPI docs at `/api/docs`. It also exposes `/api/forward-auth`, used by Traefik to protect every routed app. |
-| `codx-junior-api-background` | Same image as the API, started with `CODX_JUNIOR_API_BACKGROUND=1`. Runs file watchers, knowledge indexing, `@codx` mentions and other background work. |
-| `milvus` | Vector database used by the knowledge engine. |
-| `localai` | Optional local model server for chat and embeddings. |
-| `traefik` | Reverse proxy, TLS (Let's Encrypt) and dynamic routes for workspaces, read from `/api/traefik/config`. |
+| `codx-junior` | The application container: nginx (SPA + `/api` proxy), FastAPI, background worker and embedded LanceDB. |
+| `traefik` | Optional edge proxy in `server` mode: TLS (Let's Encrypt), the public domain(s) and custom routes from `/api/traefik/config`. |
+| `dind` | Optional wrapper in `dind` mode: a nested Docker daemon with one isolated stack per container. |
 
 ## Backend modules
 
@@ -32,10 +33,10 @@ The API code lives in `api/codx/junior`:
 | Module | What it does |
 | --- | --- |
 | `chat/`, `chat_manager.py` | Chat engine, chat storage, chat modes and the bridge to Socket.IO events. |
-| `ai/` | Provider clients (OpenAI-compatible, Ollama, vLLM), the tool-calling agent loop (`ai/smol`), cancellation, raw AI logs and wallet checks. |
+| `ai/` | Provider clients (OpenAI-compatible), the tool-calling agent loop (`ai/smol`), cancellation, raw AI logs and wallet checks. |
 | `tools/` | Tools agents can call: project search, read/write files, apply patches, web fetch and DuckDuckGo search, images, Docker and Docker Compose, Git, tasks, tutorials and recipes. |
 | `agents/` | Specialised agents such as the GitHub issues agent. |
-| `knowledge/`, `engine/knowledge_engine.py` | Code splitting, embeddings, Milvus storage, AI search and knowledge graph. |
+| `knowledge/`, `engine/knowledge_engine.py` | Code splitting, embeddings, LanceDB storage, AI search and knowledge graph. |
 | `profiles/` | Profile manager and the built-in profiles. |
 | `mentions/` | `@codx` mention detection and processing in project files. |
 | `engine/git_engine.py`, `api/git.py` | Branches, commits, diffs and pull-request views. |

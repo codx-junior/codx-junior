@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.documents import Document
 
 from codx.junior.ai import AI
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.model.model import CodxUser
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.utils.utils import extract_json_blocks

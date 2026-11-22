@@ -15,8 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 faulthandler.enable()
 
-from codx.junior.ai import AIManager
-
 from codx.junior.sio.sio import sio
 from codx.junior.sio.session_channel import SessionChannel
 
@@ -25,7 +23,14 @@ from codx.junior.profiling.profiler import profile_function
 # Dynamic router loading
 from codx.junior.api import discover_routers
 
-from codx.junior.security.user_management import get_authenticated_user
+from codx.junior.security.user_management import (
+    get_authenticated_user,
+    get_optional_authenticated_user,
+)
+from codx.junior.security.workspace_api import (
+    resolve_workspace_codx_path,
+    workspace_api_capabilities,
+)
 
 from codx.junior.chat.chat_export import ExportedDocument
 
@@ -388,7 +393,16 @@ def _load_cached_settings(codx_path: str):
 
 
 def get_codx_junior_session(request, codx_path):
-    user = get_authenticated_user(request=request)
+    """
+    Build the request-scoped session for an already validated ``codx_path``.
+
+    The user is resolved **optionally** here: this function runs in the
+    middleware, before the endpoint dependency, and an anonymous request must
+    still reach the endpoint so it can be answered with a proper ``401``
+    instead of failing while building a session. Endpoints that require a
+    credential depend on ``get_authenticated_user``.
+    """
+    user = get_optional_authenticated_user(request=request)
     sid = request.headers.get("x-sid")
     channel = SessionChannel(sid=sid, sio=sio)
     settings = _load_cached_settings(codx_path) if codx_path else None
@@ -403,21 +417,88 @@ def get_codx_junior_session(request, codx_path):
 
 def _attach_session(request: Request, scope) -> None:
     """
-    Build the request-scoped ``CODXJuniorSession`` from ``?codx_path``.
+    Build the request-scoped ``CODXJuniorSession``.
 
-    Same contract as the removed middleware: a failure here never breaks the
-    request, it only leaves ``request.state.codx_junior_session`` unset.
+    ``codx_path`` accepts the project folder as well as its ``.codx`` folder
+    (see ``security.workspace_api.resolve_codx_path``). When the parameter is
+    absent the workspace's default project is used, so a machine client that
+    only knows the instance URL can act on a fresh workspace.
+
+    A failure here never breaks the request, it only leaves
+    ``request.state.codx_junior_session`` unset. When the caller DID provide a
+    path that is not a project, the actionable 4xx payload is stored on
+    ``request.state.codx_path_error`` so the endpoint answers ``422`` instead of
+    the ``500`` a missing session used to produce.
     """
     codx_path = request.query_params.get("codx_path")
     codx_path = request.headers.get("x-codx-path", codx_path)
-    if not codx_path or codx_path in ["undefined", "null"]:
+    state = scope.setdefault("state", {})
+    if not codx_path:
+        # No project requested: no session is built on the hot path (a health
+        # probe must not pay for one). ``require_project_session`` resolves the
+        # default project when a write endpoint actually needs it.
+        return
+
+    resolved, error = resolve_workspace_codx_path(codx_path, allow_scan=False)
+    if resolved is None:
+        # Store the actionable reason so the endpoint answers this with a 4xx
+        # instead of the 500 a missing session used to produce.
+        if error:
+            state["codx_path_error"] = error
         return
     try:
-        session = get_codx_junior_session(request, codx_path)
-        scope.setdefault("state", {})["codx_junior_session"] = session
+        session = get_codx_junior_session(request, resolved)
+        state["codx_junior_session"] = session
+        state["codx_path"] = resolved
         session.update_last_access_time()
     except Exception as ex:
-        logger.error("Error loading settings %s: %s\n%s", codx_path, ex, request.url)
+        logger.error("Error loading settings %s: %s\n%s", resolved, ex, request.url)
+
+
+def require_project_session(request: Request):
+    """
+    Return the request's ``CODXJuniorSession`` or raise an actionable 422.
+
+    This is the write path used by ``POST /api/chats/tasks``: a client that only
+    holds a bearer token and the instance URL must not need to know the
+    workspace layout. When ``codx_path`` was absent the default project is
+    resolved (allowing a project-discovery scan, because this is a request and
+    not a health probe) and its session is attached for the rest of the
+    request.
+
+    Raises:
+        HTTPException: 422 with ``{"code", "message"}`` when no project can be
+            resolved (``codx_path_required``) or the provided path is not a
+            project (``codx_path_not_found``).
+    """
+    from fastapi import HTTPException
+
+    session = getattr(request.state, "codx_junior_session", None)
+    if session is not None:
+        return session
+
+    error = getattr(request.state, "codx_path_error", None)
+    provided = request.query_params.get("codx_path") or request.headers.get(
+        "x-codx-path"
+    )
+    # Retry with a discovery scan: the middleware stays fast, but a write
+    # endpoint may legitimately need the scan to resolve the default project
+    # (or a projects-root value) on a cold process.
+    resolved, retry_error = resolve_workspace_codx_path(
+        provided or None, allow_scan=True
+    )
+    if resolved is not None:
+        session = get_codx_junior_session(request, resolved)
+        request.state.codx_junior_session = session
+        request.state.codx_path = resolved
+        return session
+    error = error or retry_error
+
+    if not error:
+        from codx.junior.security.workspace_api import CODEX_PATH_REQUIRED_ERROR
+
+        error = dict(CODEX_PATH_REQUIRED_ERROR)
+    raise HTTPException(status_code=422, detail=error)
 
 
 # Paths whose performance is either noise (the log reader itself, static assets,
@@ -547,6 +628,11 @@ def api_health_check():
     can assert the ref it asked for instead of "something returned HTML". The
     shape is stable and the endpoint is unauthenticated on purpose (see
     codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md).
+
+    ``workspace_api`` publishes the machine-client contract (auth headers,
+    scoped-token support, task endpoint and the default ``codx_path``), so a
+    hosted pipeline can detect an older image instead of guessing. It is
+    versioned and additive.
     """
     from codx.junior.api_logs.storage import queue_stats
     from codx.junior.project.project_discover import get_all_projects_snapshot
@@ -562,6 +648,9 @@ def api_health_check():
         "event_loop_lag_ms": dict(_EVENT_LOOP_LAG),
         "projects_cached": len(snapshot) if snapshot is not None else None,
         "api_log_pipeline": queue_stats(),
+        # Machine-client contract (see security/workspace_api.py). Additive and
+        # versioned: an older image that predates it simply omits the block.
+        "workspace_api": workspace_api_capabilities(),
     }
 
 @app.post("/api/run/improve")
@@ -746,7 +835,15 @@ def api_project_ai_models(request: Request):
 
 @app.post("/api/projects/ai/models/reload")
 def api_project_ai_models_reload(request: Request, model: AIModel):
-    return AIManager().reload_model(model)
+    from fastapi import HTTPException
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Local model management was removed. Configure an OpenAI-compatible "
+            "provider instead; run a local server (for example Ollama) in a "
+            "coworking desktop if you need one."
+        ),
+    )
 
 @app.post("/api/projects")
 def api_project_create(request: Request, user: CodxUser = Depends(get_authenticated_user)):

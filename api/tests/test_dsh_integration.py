@@ -412,6 +412,7 @@ def test_router_create_task_endpoint(project, monkeypatch):
     from fastapi import FastAPI, Request
     from fastapi.testclient import TestClient
     from codx.junior.db import Chat
+    from codx.junior.model.model import CodxUser
 
     root, settings, manager = project
     monkeypatch.setenv("CODX_JUNIOR_DSH_SECRET", "router-secret")
@@ -439,6 +440,11 @@ def test_router_create_task_endpoint(project, monkeypatch):
 
     app = FastAPI()
     app.include_router(dsh_api.router, prefix="/api")
+    # Task creation is a protected write (an anonymous POST is a 401); this
+    # test is about the mirror, so it authenticates as an admin.
+    app.dependency_overrides[dsh_api.get_authenticated_user] = lambda: CodxUser(
+        username="admin", role="admin"
+    )
 
     @app.middleware("http")
     async def attach_session(request: Request, call_next):

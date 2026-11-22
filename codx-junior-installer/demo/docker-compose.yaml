@@ -1,23 +1,23 @@
 # =============================================================================
-# codx-junior — DEMO deployment (tier 1)
+# codx-junior — application deployment (development path)
 #
-#   cd codx-junior-installer/demo && ./up.sh
+#   used by dev-install.sh; production installs use codx-junior-installer/install.sh
 #
 # One container: API + background worker + web client (nginx) in the same
 # image, published on 19981. No Traefik, no LocalAI, no vector database
 # container, no init containers, no build on the user's machine (pull).
 #
 # Knowledge / RAG is BUILT IN: it runs on LanceDB, an embedded (in-process,
-# on-disk) vector database, so there is no Milvus to start. Only an embeddings
+# on-disk) vector database, so there is no external vector service. Only an embeddings
 # provider is needed, and the AI provider preset already sets one.
 #
-# Settings live in `.env` (see .env.example and README.md).
+# Settings live in `.env` (see .env.example and ../README.md).
 # =============================================================================
 name: codx-junior-demo
 
 services:
   codx-junior:
-    image: ${CODX_JUNIOR_IMAGE:-codxjunior/codx-junior:demo}
+    image: ${CODX_JUNIOR_IMAGE:-codxjuniorai/codx-junior:latest}
     build:
       context: ../..
       dockerfile: codx-junior-installer/demo/Dockerfile
@@ -36,13 +36,11 @@ services:
       # is what the bind mount above interpolates; passing it through env_file
       # would leave the API looking at a host path that does not exist here.
       CODX_JUNIOR_PROJECTS_PATH: /home/codx-junior-projects
-      # Knowledge / RAG backend: embedded LanceDB, no external service.
-      # Set to `milvus` only if you point CODX_JUNIOR_MILVUS_URL at your own
-      # (external) Milvus server; `none` disables knowledge entirely.
+      # Knowledge / RAG backend: embedded LanceDB. `none` disables knowledge.
       CODX_JUNIOR_KNOWLEDGE_BACKEND: ${CODX_JUNIOR_KNOWLEDGE_BACKEND:-lancedb}
     volumes:
       # Where the user's projects live on the host. This is the only thing a
-      # trial user has to change.
+      # developer normally changes.
       - "${CODX_JUNIOR_PROJECTS_PATH:-./projects}:/home/codx-junior-projects"
       # Global settings + project .codx folders survive `docker compose down`
       - codx-junior-settings:/home/codx-junior/.codx-junior
@@ -51,14 +49,14 @@ services:
       # NOT mounted on purpose:
       #   /var/run/docker.sock  -> only needed by workspaces, browser/computer
       #                            sessions and the infra panel. Add it only if
-      #                            you want those features in the demo:
+      #                            you want those features on a development host:
       # - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:19980/api/health"]
       interval: 10s
       timeout: 5s
       retries: 30
-      start_period: 30s
+      start_period: 60s
 
 volumes:
   codx-junior-settings:

@@ -5,12 +5,12 @@
 # An unattended deployment (cloud-init on a fresh 2 vCPU / 4 GB box) must not
 # compile the product. `install.sh --ref v1.2.3` pins the tree; this workflow is
 # what makes that pin installable: every tag publishes an image under the SAME
-# tag, and `codx-junior-installer/demo/up.sh` derives the image tag from the ref
-# (`vX.Y.Z` -> :vX.Y.Z, anything else -> :demo).
+# tag, and `install.sh` derives the image tag from the ref
+# (`vX.Y.Z` -> :vX.Y.Z, anything else -> :latest).
 #
-# A failed pull is fatal in up.sh, so a tag without an image is a hard, loud
-# failure instead of a silent 20 minute build on the customer's machine. That is
-# why the tag push and the image publish must never drift apart: both live here.
+# A failed pull is fatal, so a tag without an image is a hard, loud failure
+# instead of a silent build on the customer's machine. That is why the tag push
+# and the image publish must never drift apart: both live here.
 #
 # Secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
 # =============================================================================
@@ -32,7 +32,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: codxjunior/codx-junior
+  IMAGE: codxjuniorai/codx-junior
 
 jobs:
   publish:
@@ -60,7 +60,7 @@ jobs:
           else
             # Rolling tag for `--ref main`: an explicit, non-pinnable artifact.
             version="0.0.0-main.${commit}"
-            tags="${IMAGE}:demo"
+            tags="${IMAGE}:latest"
           fi
           {
             echo "version=${version}"
@@ -134,7 +134,7 @@ jobs:
             ```
 
             Release artifact: `${{ env.IMAGE }}:${{ github.ref_name }}`
-            (`codx-junior-installer/demo/up.sh` derives it from `--ref`, so nothing
+            (`codx-junior-installer/install.sh` derives it from `--ref`, so nothing
             is compiled on the target box).
 
             Minimum box for this path: **2 vCPU / 4 GB RAM / 40 GB disk**, pull only.

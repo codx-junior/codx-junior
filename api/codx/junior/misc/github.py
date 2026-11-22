@@ -126,8 +126,6 @@ def save_cache_for_url(url: str, results: Union[List, str]) -> None:
 
 def search_codx_junior_dependencies_project_isssues():
     repos = [
-      "ollama/ollama",
-      "milvus-io/pymilvus",
       "gbrian/codx-junior",
       "vuejs/vitepress",
       "encode/uvicorn",

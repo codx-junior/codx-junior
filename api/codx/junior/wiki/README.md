@@ -25,7 +25,7 @@ flowchart TD
 | `scheduler.py` | Coalesces file changes per project and applies them after a quiet period. |
 | `assistant.py` | Retrieval + AI answer with citations for the current project. |
 | `wiki_domains.py` | Architecture/domain pages from the dependency graph. |
-| `wiki_index.py` | Searchable index (including docs-manifest pages) in Milvus. |
+| `wiki_index.py` | Searchable index (including docs-manifest pages) in LanceDB. |
 
 ## Page format
 

@@ -6,11 +6,15 @@ Most settings are edited in the app (**Global settings** and **Project settings*
 
 | Variable | Description |
 | --- | --- |
-| `CODX_JUNIOR_DOMAIN` | Host name Traefik routes on, for example `localhost` or `dev.example.com`. |
-| `CODX_JUNIOR_TRAEFIK_AUTH_MIDDLEWARE` | Traefik auth middleware used by HTTP-provider routes. Defaults to `codx-junior-auth@docker`; set it to an empty value to disable it. |
-| `ACME_EMAIL` | Email for Let's Encrypt certificates. |
-| `USER_ID`, `GROUP_ID` | Host user and group ids used for file permissions. |
-| `LITELLM_MASTER_KEY`, `LITELLM_SALT_KEY` | Keys for the optional LiteLLM model manager. |
+| `CODX_JUNIOR_DOMAIN` | Public host name (server/slave modes). |
+| `CODX_JUNIOR_WEB_PORT` | Host port for the UI (`19981` by default). |
+| `CODX_JUNIOR_PROJECTS_PATH` | Host folder that holds the projects. |
+| `CODX_JUNIOR_AI_PROVIDER` | Provider preset (`openai`, `deepseek`, `gemini`, `openrouter`, `mistral`, `groq`, `custom`). |
+| `CODX_JUNIOR_AI_API_KEY` | Provider key. |
+| `CODX_JUNIOR_AI_API_URL` | Endpoint for a `custom` provider. |
+| `CODX_ACME_EMAIL` | Email for Let's Encrypt certificates (server mode). |
+| `CODX_JUNIOR_KNOWLEDGE_BACKEND` | `lancedb` (default) or `none`. |
+| `CODX_JUNIOR_COWORKING` | `1` mounts the Docker socket for coworking/desktops. |
 | `CODX_JUNIOR_HIDDEN` | Hides codx-junior's own project from the projects list. |
 
 ## API service
@@ -19,15 +23,18 @@ Most settings are edited in the app (**Global settings** and **Project settings*
 | --- | --- |
 | `CODX_JUNIOR_CONFIG_FOLDER` | Folder where global settings, users and chats are stored. |
 | `CODX_JUNIOR_PROJECTS_PATH` | Root folder for cloned projects. |
-| `CODX_JUNIOR_WORKSPACES_FOLDER` | Root folder for workspace files. |
-| `CODX_JUNIOR_MILVUS_URL` | Milvus endpoint, for example `http://milvus-codx-junior:19530`. |
-| `CODX_JUNIOR_MILVUS_UI_URL` | Milvus health and UI endpoint. |
 | `CODX_JUNIOR_API_URL` | URL the background worker uses to reach the API. |
 | `CODX_JUNIOR_API_BACKGROUND` | Set to `1` to run the process as the background worker. |
 | `CODX_JUNIOR_API_VENV` | Python virtual environment used by the API. |
 | `CODX_JUNIOR_API_LOGS` | Folder for API logs. |
 | `CODX_JUNIOR_AI_RAW_LOG_PATH` | Folder for raw AI request and response logs. |
 | `CODX_JUNIOR_API_ANALYTICS_DATA_PATH` | Folder for usage analytics data. |
+| `CODX_JUNIOR_ADMIN_USER`, `CODX_JUNIOR_ADMIN_PASSWORD`, `CODX_JUNIOR_ADMIN_EMAIL` | First admin created on the first boot of an unattended install (password bcrypt-hashed, never logged). The email also works as a login identifier. |
+| `CODX_JUNIOR_WORKSPACE_TOKEN` | Per-instance scoped API key a hosted console uses to act on the workspace without the owner's password. Accepted as `Authorization: Bearer <token>`; rotate it by changing the value and restarting the API. |
+
+The machine-client contract (accepted auth headers, `codx_path` rules, login by
+email and the `/api/health` capability block) is documented in
+`codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md` §5b and §7b.
 
 ## Global settings
 

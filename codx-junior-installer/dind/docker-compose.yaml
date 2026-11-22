@@ -1,0 +1,70 @@
+# =============================================================================
+# codx-junior — DIND OUTER wrapper
+#
+# One isolated codx-junior per container. The image runs its own dockerd and the
+# same runtime compose inside it; the host only sees this wrapper container.
+#
+# The host installer selects one overlay:
+#   docker-compose.local.yaml    publish 127.0.0.1:<port>
+#   docker-compose.master.yaml   publish :80/:443 (standalone edge)
+#   docker-compose.slave.yaml    join the master network, no published port
+#   docker-compose.sysbox.yaml   runtime sysbox-runc instead of privileged
+#
+# Everything persistent lives under ${CODX_DATA_DIR} on the host:
+#   projects/  settings/  analytics/  traefik/  docker/ (nested image layers)
+# =============================================================================
+name: ${CODX_INSTANCE:-codx-junior}
+
+services:
+  dind:
+    image: ${CODX_DIND_IMAGE:-codxjuniorai/codx-junior:dind}
+    container_name: ${CODX_INSTANCE:-codx-junior}
+    # A nested dockerd needs real privileges. Use docker-compose.sysbox.yaml on
+    # hosts that provide sysbox-runc, or accept the risk: this container is
+    # effectively root on the host.
+    privileged: ${CODX_DIND_PRIVILEGED:-true}
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file:
+      - ${CODX_ENV_FILE:?CODX_ENV_FILE must point to the settings file}
+    environment:
+      # Passed to the inner installer, which starts the nested stack.
+      CODX_MODE: ${CODX_MODE:-local}
+      CODX_JUNIOR_DOMAIN: ${CODX_JUNIOR_DOMAIN:-localhost}
+      CODX_JUNIOR_WEB_PORT: ${CODX_JUNIOR_WEB_PORT:-19981}
+      CODX_JUNIOR_IMAGE: ${CODX_JUNIOR_IMAGE:-codxjuniorai/codx-junior:latest}
+      # Host folders are remapped under /data; the inner API must never see a
+      # host path.
+      CODX_JUNIOR_PROJECTS_PATH: /data/projects
+      CODX_DATA_DIR: /data
+      CODX_PROXY_NETWORK: ${CODX_PROXY_NETWORK:-codx-proxy}
+      CODX_TRUSTED_PROXIES: ${CODX_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32}
+      CODX_ACME_EMAIL: ${CODX_ACME_EMAIL:-}
+      CODX_ACME_CA: ${CODX_ACME_CA:-prod}
+      CODX_CERT_RESOLVER: ${CODX_CERT_RESOLVER:-letsencrypt}
+      CODX_JUNIOR_KNOWLEDGE_BACKEND: ${CODX_JUNIOR_KNOWLEDGE_BACKEND:-lancedb}
+      CODX_JUNIOR_COWORKING: "1"
+      CODX_HEALTH_PORT: ${CODX_HEALTH_PORT:-19981}
+      # `/data` is on the host, so nested Docker layers survive `down`.
+      DOCKER_TLS_CERTDIR: ""
+    volumes:
+      - ${CODX_DATA_DIR:?CODX_DATA_DIR is required}:/data
+      # Projects may live outside the data root; mount them explicitly so the
+      # inner /data/projects is always the requested host folder.
+      - ${CODX_JUNIOR_PROJECTS_PATH:?CODX_JUNIOR_PROJECTS_PATH is required}:/data/projects
+      # The nested daemon's image layers. Kept outside /data/docker so they can
+      # use a dedicated volume/disk if needed.
+      - dind-storage:/var/lib/docker
+    # The inner stack needs longer than a normal app to pull images and start
+    # the nested daemon; this probe goes through the inner proxy when present.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null -H \"Host: $$CODX_JUNIOR_DOMAIN\" http://127.0.0.1:$$CODX_HEALTH_PORT/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 900s
+
+volumes:
+  # compose creates the named volume; the value is interpolated as its name.
+  dind-storage:
+    name: ${CODX_DIND_STORAGE:?CODX_DIND_STORAGE is required}

@@ -56,6 +56,10 @@ export const state = () => ({
   activeApp: null,
   appShowMode: null,
   viewEditor: null,
+  // File shown in the global FileViewer dialog (single mode only). One-shot:
+  // opening a file never survives a reload. Opened by $ui.openFileViewer from
+  // the markdown file references (utils/markdownFileLinks.js).
+  filePreview: null,
   activeTeam: null,
   teamBarCollapsed: false,
   panelWidths: {
@@ -543,6 +547,30 @@ export const mutations = mutationTree(state, {
   openFileInViewer(_, filePath) {
     $storex.ui.openApp({ appKey: 'file-viewer', payload: { filePath } })
   },
+  /**
+   * Open a file reference in the FileViewer, adapting to the current mode:
+   *
+   *  • desktop mode → a new dockview panel (one tab per file);
+   *  • single mode  → the global FileViewer dialog, so the chat / board the
+   *    reference lives in stays behind it instead of being replaced.
+   *
+   * @param {string} filePath Project relative (or absolute) file path.
+   */
+  openFileViewer({ state }, filePath) {
+    const path = String(filePath || '').trim()
+    if (!path) return
+    if ($storex.ui.isDesktopMode) {
+      state.filePreview = null
+      $storex.ui.openFileInViewer(path)
+      return
+    }
+    // Re-assigning the object (not mutating it) makes the dialog re-render even
+    // when the same file is requested twice.
+    state.filePreview = { filePath: path }
+  },
+  closeFileViewer({ state }) {
+    state.filePreview = null
+  },
   openViewEditor(state, view = null) {
     state.viewEditor = { view: view || null }
   },
@@ -636,6 +664,7 @@ export const actions = actionTree(
           meetingSetup: null,
           openApps: {},
           viewEditor: null,
+          filePreview: null,
           projectLoadingState: {
             isLoading: false,
             projectName: '',
@@ -662,6 +691,7 @@ export const actions = actionTree(
       state.mobileMenuOpen = false
       state.newAssistantChat = false
       state.meetingSetup = null
+      state.filePreview = null
       $storex.ui.showNewProject(false)
       $storex.ui.showNewTask(false)
       $storex.ui.handleResize()

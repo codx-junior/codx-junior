@@ -14,12 +14,12 @@
 #
 # Flags (environment equivalent in parentheses):
 #   --provider NAME   (CODX_JUNIOR_AI_PROVIDER)  required, unless already in .env
-#   --key KEY         (CODX_JUNIOR_AI_API_KEY)   required, except for `ollama`
+#   --key KEY         (CODX_JUNIOR_AI_API_KEY)   required
 #   --url URL         (CODX_JUNIOR_AI_API_URL)   only for provider `custom`
 #   --model ID        (CODX_JUNIOR_AI_MODEL)     override the preset model
 #   --port PORT       (CODX_JUNIOR_WEB_PORT)     default: 19981
 #   --projects PATH   (CODX_JUNIOR_PROJECTS_PATH) default: demo/projects
-#   --build           rebuild the image even if codxjunior/codx-junior:dev exists
+#   --build           rebuild the image even if codxjuniorai/codx-junior:dev exists
 #   --reload          uvicorn --reload (off by default: it interrupts agent turns)
 #   --no-wait         print the URL without waiting for the health check
 #   --down            stop the stack, keep projects and settings
@@ -39,7 +39,7 @@ DEMO="${ROOT}/codx-junior-installer/demo"
 ENV_FILE="${DEMO}/.env"
 EXAMPLE_FILE="${DEMO}/.env.example"
 CONTAINER="codx-junior-demo"
-IMAGE="codxjunior/codx-junior:dev"
+IMAGE="codxjuniorai/codx-junior:dev"
 
 PROVIDER="${CODX_JUNIOR_AI_PROVIDER:-}"
 API_KEY="${CODX_JUNIOR_AI_API_KEY:-}"
@@ -151,12 +151,6 @@ WEB_PORT="$(get_env_var CODX_JUNIOR_WEB_PORT)"; WEB_PORT="${WEB_PORT:-19981}"
 PROJECTS_PATH="$(get_env_var CODX_JUNIOR_PROJECTS_PATH)"; PROJECTS_PATH="${PROJECTS_PATH:-./projects}"
 FINAL_RELOAD="$(get_env_var CODX_JUNIOR_API_RELOAD)"; FINAL_RELOAD="${FINAL_RELOAD:-0}"
 
-if [[ -z "${FINAL_KEY}" && "${FINAL_PROVIDER}" == "ollama" ]]; then
-    # A local Ollama endpoint needs no key at all.
-    set_env_var CODX_JUNIOR_AI_API_KEY ollama
-    FINAL_KEY="ollama"
-fi
-
 if [[ -z "${FINAL_PROVIDER}" || -z "${FINAL_KEY}" ]]; then
     cat >&2 <<MSG
 ERROR: an AI provider is required before codx-junior can chat.
@@ -164,7 +158,7 @@ ERROR: an AI provider is required before codx-junior can chat.
   ./dev-install.sh --provider deepseek --key sk-xxxxxxxx
   ./dev-install.sh --provider openai   --key sk-xxxxxxxx
 
-Providers: openai, deepseek, gemini, openrouter, mistral, groq, ollama, custom.
+Providers: openai, deepseek, gemini, openrouter, mistral, groq, custom.
 Or edit ${ENV_FILE#"${ROOT}/"} directly.
 MSG
     exit 1

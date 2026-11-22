@@ -1,314 +1,172 @@
 #!/usr/bin/env bash
 # =============================================================================
-# codx-junior — one-line installer / upgrader
+# codx-junior — one-line installer / upgrader (thin front door)
 #
-# Root is required (it installs Docker); when it is not root it prints the exact
-# command to run instead of escalating on its own.
+# This file only resolves the real installer for the requested branch and hands
+# the arguments over to it. That installer is the single place that knows the
+# deployment modes, the compose files and the settings:
 #
-#   curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh -o install.sh
-#   sudo ./install.sh --provider deepseek --key sk-xxxxxxxx
+#   codx-junior-installer/install.sh
 #
-# It installs on a fresh machine and UPDATES an
-# existing installation (the repository is moved to the requested branch, your
-# projects and settings are kept).
+#   curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
+#     -o install.sh
+#   sudo ./install.sh --mode server --domain codx.example.com \
+#        --acme-email ops@example.com --provider deepseek --key sk-...
 #
-# This file is deliberately small: it resolves the real installer of the
-# requested branch (`codx-junior-installer/cloud/bootstrap.sh`) and hands the
-# settings over to it, so there is exactly ONE place that knows how to install.
+#   sudo ./install.sh --mode local --provider deepseek --key sk-...
+#   sudo ./install.sh --mode slave --domain team.example.com \
+#        --proxy-network traefik --provider openai --key sk-...
+#   sudo ./install.sh --mode dind --dind-mode server --domain acme.example.com \
+#        --acme-email ops@example.com --provider deepseek --key sk-...
 #
-#   --branch, -branch, --ref, -b BRANCH   branch or tag to install/update (default: main)
-#   --provider, -p NAME   AI provider preset: openai deepseek gemini
-#                         openrouter mistral groq ollama custom.
-#                         Default: keep the settings file value, else deepseek.
-#   --key, -k KEY         provider API key (or --key-file)
-#   --key-file PATH       read the key from a file
-#   --url URL             OpenAI-compatible endpoint (only for provider `custom`)
-#   --model ID            override the preset chat model
-#   --port, -P PORT       web port                                default: 19981
-#   --projects PATH       folder holding your projects            default: <home>/projects
-#   --home PATH           installation root                       default: /opt/codx-junior
-#   --repo URL            git repository to install from
-#   --env-file PATH       settings file                       default: /etc/codx-junior/settings.env
-#   --installer PATH      use this bootstrap.sh instead of the one of the branch
-#   --build               build the image from source instead of pulling it
-#   --domain DOMAIN       serve HTTPS on DOMAIN (automatic ACME, no extra tool)
-#   --tls none            do not terminate TLS here: a proxy in front forwards
-#                         to the web port
-#   --non-interactive     never wait for input: fail instead of prompting
-#                         (also CODX_JUNIOR_NON_INTERACTIVE=1)
-#   --no-docker-install   fail instead of installing Docker
-#   --open-firewall       ufw: allow ssh + the web port (off by default)
-#   --update              update an existing installation (the default)
-#   --dry-run             show what would run; change nothing
-#   -h, --help            this help
-#   -V, --version         print the version of this installer script
+# Every flag of the real installer works here; see:
+#   ./codx-junior-installer/install.sh --help
 #
-# Every value can also come from the environment (CODX_JUNIOR_REF,
-# CODX_JUNIOR_AI_PROVIDER, CODX_JUNIOR_AI_API_KEY, CODX_JUNIOR_WEB_PORT, …) and
-# from --env-file. Precedence: default < env file < environment < flags.
-#
-# Exit code 0 means codx-junior answered its health check.
+# Settings can also come from the environment or --env-file. Re-running is an
+# upgrade: projects and settings are kept.
 # =============================================================================
 set -euo pipefail
 
-INSTALLER_VERSION="0.0.1"
+INSTALLER_VERSION="2.0.0"
 DEFAULT_REPO="https://github.com/codx-junior/codx-junior.git"
 DEFAULT_REF="main"
 
 log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
-usage() {
-    # Printed from here (not from the file header) because when this script is
-    # piped into bash, $BASH_SOURCE is empty and there is nothing to sed.
+short_help() {
     cat <<'USAGE'
-codx-junior installer — one line, installs or updates
+codx-junior installer (front door)
 
-  curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
-    -o install.sh
-  sudo ./install.sh --provider deepseek --key sk-xxxxxxxx
+Usage: install.sh [options]          install or update
+       install.sh status|logs|down|upgrade|doctor|config
 
-  ./install.sh --provider openai --key sk-xxxxxxxx          # from a checkout
-  ./install.sh --branch feature-x --provider gemini --key AIza...
+Modes:
+  --mode local     laptop/CI: loopback port, no TLS, no proxy
+  --mode server    public server: Traefik master :80/:443 + ACME
+  --mode slave     behind a master proxy: Traefik slave :80 only
+  --mode dind      Docker-in-Docker instance (--dind-mode local|server|slave)
+  Default: server as root, local otherwise.
 
-Settings (flag | environment | --env-file), lowest precedence first:
-  --branch, -branch, --ref, -b  BRANCH   branch or tag to install/update   [main]
-  --provider, -p                NAME     openai deepseek gemini openrouter
-                                         mistral groq ollama custom
-                                         [settings file, else deepseek]
-  --key, -k                     KEY      provider API key (or --key-file)
-  --key-file                    PATH     read the key from a file
-  --url                         URL      endpoint, only for provider `custom`
-  --model                       ID       override the preset chat model
-  --port, -P                    PORT     web port                       [19981]
-  --projects                    PATH     folder for your projects  [<home>/projects]
-  --home                        PATH     installation root          [/opt/codx-junior]
-  --repo                        URL      git repository to install from
-  --env-file                    PATH     settings file  [/etc/codx-junior/settings.env]
-  --installer                   PATH     use this bootstrap.sh for the install
-  --build                                build the image instead of pulling it
-  --domain                     DOMAIN    serve HTTPS on DOMAIN (automatic ACME)
-  --tls                        MODE      `none` = a proxy in front terminates
-                                         TLS (default with --domain: caddy)
-  --non-interactive, --yes, -y           never wait for input: fail instead
-  --no-docker-install                    fail instead of installing Docker
-  --open-firewall                        ufw: allow ssh + the web port
-  --update                               update an existing install (default)
-  --dry-run                              show what would run; change nothing
+Common settings:
+  --provider NAME            openai deepseek gemini openrouter mistral groq
+                             custom
+  --key KEY | --key-file P   provider API key
+  --url URL                  OpenAI-compatible endpoint (custom provider)
+  --no-ai                    configure the provider in the UI instead
+  --domain DOMAIN            public domain (server/slave/dind)
+  --acme-email EMAIL         Let's Encrypt account (server/master)
+  --proxy-network NAME       master network (slave)
+  --projects PATH            host projects folder
+  --home PATH                installation root
+  --instance NAME            instance slug
+  --coworking                mount the Docker socket (browser/desktops)
+  --build | --build-dind     build the app / DIND image from this checkout
+  --systemd | --no-systemd   register a systemd unit
+  --dry-run                  print what would run; change nothing
+  --non-interactive          never read stdin
   -h, --help | -V, --version
 
-Environment equivalent of every flag: CODX_JUNIOR_REF, CODX_JUNIOR_AI_PROVIDER,
-CODX_JUNIOR_AI_API_KEY, CODX_JUNIOR_AI_API_URL, CODX_JUNIOR_AI_MODEL,
-CODX_JUNIOR_WEB_PORT, CODX_JUNIOR_PROJECTS_PATH, CODX_JUNIOR_HOME,
-CODX_JUNIOR_REPO, CODX_JUNIOR_ENV_FILE, CODX_JUNIOR_INSTALLER,
-CODX_JUNIOR_BUILD, CODX_JUNIOR_INSTALL_DOCKER, CODX_JUNIOR_OPEN_FIREWALL,
-CODX_JUNIOR_DOMAIN, CODX_JUNIOR_TLS, CODX_JUNIOR_NON_INTERACTIVE,
-CODX_JUNIOR_PUBLIC_URL, CODX_JUNIOR_ADMIN_USER, CODX_JUNIOR_ADMIN_PASSWORD.
-
-From a checkout: ./install.sh …   As root, or with sudo in front of it.
+Full reference: codx-junior-installer/install.sh --help
 USAGE
 }
 
-need() {
-    [[ $# -ge 2 && -n "${2:-}" ]] || die "option $1 needs a value (see --help)"
-}
-
-# --- settings: environment first, flags afterwards --------------------------
 REF="${CODX_JUNIOR_REF:-${DEFAULT_REF}}"
 REPO="${CODX_JUNIOR_REPO:-${DEFAULT_REPO}}"
-PROVIDER="${CODX_JUNIOR_AI_PROVIDER:-}"
-API_KEY="${CODX_JUNIOR_AI_API_KEY:-}"
-API_KEY_FILE="${CODX_JUNIOR_AI_API_KEY_FILE:-}"
-API_URL="${CODX_JUNIOR_AI_API_URL:-}"
-MODEL="${CODX_JUNIOR_AI_MODEL:-}"
-PORT="${CODX_JUNIOR_WEB_PORT:-}"
-PROJECTS="${CODX_JUNIOR_PROJECTS_PATH:-}"
-HOME_DIR="${CODX_JUNIOR_HOME:-}"
-ENV_FILE="${CODX_JUNIOR_ENV_FILE:-}"
-INSTALLER="${CODX_JUNIOR_INSTALLER:-}"
-BUILD="${CODX_JUNIOR_BUILD:-0}"
-INSTALL_DOCKER="${CODX_JUNIOR_INSTALL_DOCKER:-1}"
-OPEN_FIREWALL="${CODX_JUNIOR_OPEN_FIREWALL:-0}"
-DOMAIN="${CODX_JUNIOR_DOMAIN:-}"
-TLS_MODE="${CODX_JUNIOR_TLS:-}"
-NON_INTERACTIVE="${CODX_JUNIOR_NON_INTERACTIVE:-0}"
-DRY_RUN=0
-UPDATE_ONLY=0
+EXPLICIT_INSTALLER=""
+FORWARD=()
+HELP=0
+VERSION=0
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --branch|--ref|-branch|-ref|-b|-r)  need "$@"; REF="${2:-}"; shift 2 ;;
-        --provider|-provider|-p)            need "$@"; PROVIDER="${2:-}"; shift 2 ;;
-        --key|-key|-k)                      need "$@"; API_KEY="${2:-}"; shift 2 ;;
-        --key-file|-key-file)               need "$@"; API_KEY_FILE="${2:-}"; shift 2 ;;
-        --url|-url|-u)                      need "$@"; API_URL="${2:-}"; shift 2 ;;
-        --model|-model|-m)                  need "$@"; MODEL="${2:-}"; shift 2 ;;
-        --port|-port|-P)                    need "$@"; PORT="${2:-}"; shift 2 ;;
-        --projects|-projects)               need "$@"; PROJECTS="${2:-}"; shift 2 ;;
-        --home|-home)                       need "$@"; HOME_DIR="${2:-}"; shift 2 ;;
-        --repo|-repo)                       need "$@"; REPO="${2:-}"; shift 2 ;;
-        --env-file|-env-file)               need "$@"; ENV_FILE="${2:-}"; shift 2 ;;
-        --installer|-installer)             need "$@"; INSTALLER="${2:-}"; shift 2 ;;
-        --build|-build)                     BUILD=1; shift ;;
-        --no-docker-install)                INSTALL_DOCKER=0; shift ;;
-        --open-firewall)                    OPEN_FIREWALL=1; shift ;;
-        --domain)                           need "$@"; DOMAIN="${2:-}"; shift 2 ;;
-        --tls)                              need "$@"; TLS_MODE="${2:-}"; shift 2 ;;
-        --non-interactive|--yes|-y)         NON_INTERACTIVE=1; shift ;;
-        --update|-update)                   UPDATE_ONLY=1; shift ;;
-        --dry-run|--dry|--check)            DRY_RUN=1; shift ;;
-        -h|--help|-help)                    usage; exit 0 ;;
-        -V|--version|-version)              printf 'codx-junior install.sh %s\n' "${INSTALLER_VERSION}"; exit 0 ;;
-        "")                                 shift ;;
-        *) die "unknown option: $1 (see --help)" ;;
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    a="${args[$i]}"
+    next="${args[$((i + 1))]:-}"
+    case "$a" in
+        --ref|--branch|-b)
+            [[ -n "${next}" ]] || die "$a needs a value"
+            REF="${next}"
+            FORWARD+=("${a}" "${next}")
+            i=$((i + 1)) ;;
+        --repo)
+            [[ -n "${next}" ]] || die "--repo needs a value"
+            REPO="${next}"
+            FORWARD+=("${a}" "${next}")
+            i=$((i + 1)) ;;
+        --installer)
+            [[ -n "${next}" ]] || die "--installer needs a value"
+            EXPLICIT_INSTALLER="${next}"
+            i=$((i + 1)) ;;
+        -h|--help)   HELP=1; FORWARD+=("${a}") ;;
+        -V|--version) VERSION=1; FORWARD+=("${a}") ;;
+        *)           FORWARD+=("${a}") ;;
     esac
 done
 
-# The branch lands in a URL and in a git ref: keep it boring on purpose.
-[[ "${REF}" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid branch name: ${REF}"
-[[ "${PORT}" =~ ^[0-9]+$ || -z "${PORT}" ]] || die "invalid port: ${PORT}"
-[[ -z "${DOMAIN}" || "${DOMAIN}" =~ ^[A-Za-z0-9.-]+$ ]] || die "invalid domain: ${DOMAIN}"
-[[ -z "${TLS_MODE}" || "${TLS_MODE}" == "none" ]] \
-    || die "invalid --tls value: ${TLS_MODE} (only 'none' is supported)"
-
-if [[ -z "${API_KEY}" && -n "${API_KEY_FILE}" ]]; then
-    [[ -f "${API_KEY_FILE}" ]] || die "key file not found: ${API_KEY_FILE}"
-    # `read` stops at the newline and needs no command substitution, so the
-    # value never reaches the process list.
-    IFS= read -r API_KEY < "${API_KEY_FILE}" || true
-    API_KEY=${API_KEY%%$'\r'}
+if [[ "${VERSION}" == "1" ]]; then
+    printf 'codx-junior install.sh %s\n' "${INSTALLER_VERSION}"
+    exit 0
 fi
 
-# --- resolve the real installer for the requested branch --------------------
-REAL_INSTALLER=""
-RESOLVED_HOW=""
-
+# Running from a checkout: use its installer, no network needed.
 LOCAL_INSTALLER=""
-if [[ -n "${INSTALLER}" ]]; then
-    LOCAL_INSTALLER="${INSTALLER}"
+if [[ -n "${EXPLICIT_INSTALLER}" ]]; then
+    [[ -f "${EXPLICIT_INSTALLER}" ]] || die "installer not found: ${EXPLICIT_INSTALLER}"
+    LOCAL_INSTALLER="${EXPLICIT_INSTALLER}"
 elif [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
-    # Running from a file: prefer the checkout this script belongs to.
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    if [[ -f "${SCRIPT_DIR}/codx-junior-installer/cloud/bootstrap.sh" ]]; then
-        LOCAL_INSTALLER="${SCRIPT_DIR}/codx-junior-installer/cloud/bootstrap.sh"
+    if [[ -f "${SCRIPT_DIR}/codx-junior-installer/install.sh" ]]; then
+        LOCAL_INSTALLER="${SCRIPT_DIR}/codx-junior-installer/install.sh"
     fi
 fi
 
-if [[ -n "${LOCAL_INSTALLER}" ]]; then
-    [[ -f "${LOCAL_INSTALLER}" ]] || die "installer not found: ${LOCAL_INSTALLER}"
-    REAL_INSTALLER="${LOCAL_INSTALLER}"
-    RESOLVED_HOW="local"
+if [[ "${HELP}" == "1" && -z "${LOCAL_INSTALLER}" ]]; then
+    short_help
+    exit 0
 fi
 
-# raw.githubusercontent needs no git and no clone, which matters on a bare VM.
+if [[ -n "${LOCAL_INSTALLER}" ]]; then
+    log "Using ${LOCAL_INSTALLER}"
+    exec bash "${LOCAL_INSTALLER}" "${FORWARD[@]+"${FORWARD[@]}"}"
+fi
+
+# No checkout: fetch the real installer for REF and let it clone the runtime.
 raw_url() {
     local url="${REPO%.git}" owner repo
     url="${url#git@github.com:}"
     url="${url#ssh://git@github.com/}"
     url="${url#https://github.com/}"
-    [[ "${url}" == */* ]] || return 1
+    [[ "${REPO}" == *github.com* && "${url}" == */* ]] || return 1
     owner="${url%%/*}"
     repo="${url#*/}"
-    [[ "${REPO}" == *github.com* ]] || return 1
-    printf 'https://raw.githubusercontent.com/%s/%s/%s/codx-junior-installer/cloud/bootstrap.sh' \
+    printf 'https://raw.githubusercontent.com/%s/%s/%s/codx-junior-installer/install.sh' \
         "${owner}" "${repo}" "${REF}"
 }
 
-TMP_INSTALLER=""
-cleanup() {
-    [[ -n "${TMP_INSTALLER}" && -f "${TMP_INSTALLER}" ]] && rm -f "${TMP_INSTALLER}" || true
-}
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codx-junior-install.XXXXXX" 2>/dev/null || mktemp -d)"
+cleanup() { rm -rf "${TMP_DIR}"; }
 trap cleanup EXIT
 
-if [[ -z "${REAL_INSTALLER}" ]]; then
-    TMP_INSTALLER="$(mktemp "${TMPDIR:-/tmp}/codx-junior-bootstrap.XXXXXX.sh")"
-    URL="$(raw_url || true)"
-    FETCHED=0
-    if [[ -n "${URL}" ]]; then
-        if command -v curl >/dev/null 2>&1; then
-            curl -fsSL --max-time 60 "${URL}" -o "${TMP_INSTALLER}" 2>/dev/null && FETCHED=1
-        elif command -v wget >/dev/null 2>&1; then
-            wget -qO "${TMP_INSTALLER}" "${URL}" 2>/dev/null && FETCHED=1
-        fi
-        if [[ "${FETCHED}" == "1" ]]; then
-            RESOLVED_HOW="downloaded (${REF})"
-        fi
-    fi
-
-    if [[ "${FETCHED}" != "1" ]]; then
-        # Unknown host or no raw endpoint: get the branch with git instead.
-        command -v git >/dev/null 2>&1 \
-            || die "cannot download the installer and git is not installed (see --installer)"
-        CLONE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codx-junior-src.XXXXXX")"
-        log "Fetching the installer with git (${REPO} @ ${REF})"
-        git clone --depth 1 --branch "${REF}" "${REPO}" "${CLONE_DIR}" >/dev/null 2>&1 \
-            || die "cannot clone ${REPO} at ${REF} (does the branch exist?)"
-        REAL_INSTALLER="${CLONE_DIR}/codx-junior-installer/cloud/bootstrap.sh"
-        [[ -f "${REAL_INSTALLER}" ]] \
-            || die "unexpected repository layout: ${REAL_INSTALLER} is missing"
-        RESOLVED_HOW="cloned (${REF})"
-    else
-        REAL_INSTALLER="${TMP_INSTALLER}"
+TARGET="${TMP_DIR}/install.sh"
+FETCHED=0
+URL="$(raw_url || true)"
+if [[ -n "${URL}" ]]; then
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --max-time 60 "${URL}" -o "${TARGET}" 2>/dev/null && FETCHED=1
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "${TARGET}" "${URL}" 2>/dev/null && FETCHED=1
     fi
 fi
 
-# --- forward everything explicitly (flags survive sudo, env vars do not) ----
-FORWARD=(--ref "${REF}")
-[[ -n "${PROVIDER}" ]]      && FORWARD+=(--provider "${PROVIDER}")
-[[ -n "${API_KEY}" ]]       && FORWARD+=(--key "${API_KEY}")
-[[ -n "${API_KEY_FILE}" ]]  && FORWARD+=(--key-file "${API_KEY_FILE}")
-[[ -n "${API_URL}" ]]       && FORWARD+=(--url "${API_URL}")
-[[ -n "${MODEL}" ]]         && FORWARD+=(--model "${MODEL}")
-[[ -n "${PORT}" ]]          && FORWARD+=(--port "${PORT}")
-[[ -n "${PROJECTS}" ]]      && FORWARD+=(--projects "${PROJECTS}")
-[[ -n "${HOME_DIR}" ]]      && FORWARD+=(--home "${HOME_DIR}")
-[[ -n "${ENV_FILE}" ]]      && FORWARD+=(--env-file "${ENV_FILE}")
-[[ -n "${REPO}" ]]          && FORWARD+=(--repo "${REPO}")
-[[ "${BUILD}" == "1" ]]             && FORWARD+=(--build)
-[[ "${INSTALL_DOCKER}" == "0" ]]    && FORWARD+=(--no-docker-install)
-[[ "${OPEN_FIREWALL}" == "1" ]]     && FORWARD+=(--open-firewall)
-[[ -n "${DOMAIN}" ]]                && FORWARD+=(--domain "${DOMAIN}")
-[[ -n "${TLS_MODE}" ]]              && FORWARD+=(--tls "${TLS_MODE}")
-[[ "${NON_INTERACTIVE}" == "1" ]]   && FORWARD+=(--non-interactive)
-
-# --- announce --------------------------------------------------------------
-log "codx-junior install.sh ${INSTALLER_VERSION}"
-log "  branch    : ${REF}"
-log "  provider  : ${PROVIDER:-<from ${ENV_FILE:-the settings file}>}${MODEL:+ (model ${MODEL})}"
-log "  port      : ${PORT:-<from the settings file, else 19981>}"
-log "  domain    : ${DOMAIN:-<none: plain HTTP on the web port>}${TLS_MODE:+ (tls: ${TLS_MODE})}"
-log "  installer : ${REAL_INSTALLER}"
-log "  resolved  : ${RESOLVED_HOW}"
-if [[ "${UPDATE_ONLY}" == "1" ]]; then
-    log "  mode      : update (existing projects and settings are kept)"
+if [[ "${FETCHED}" != "1" ]]; then
+    command -v git >/dev/null 2>&1 \
+        || die "cannot download the installer and git is not installed (use --installer PATH)"
+    log "Fetching ${REPO} @ ${REF} with git"
+    git clone --depth 1 --branch "${REF}" "${REPO}" "${TMP_DIR}/src" >/dev/null 2>&1 \
+        || die "cannot clone ${REPO} at ${REF} (does the branch exist?)"
+    TARGET="${TMP_DIR}/src/codx-junior-installer/install.sh"
+    [[ -f "${TARGET}" ]] || die "unexpected repository layout: ${TARGET} is missing"
 fi
 
-if [[ "${DRY_RUN}" == "1" ]]; then
-    RUNAS="bash"
-    [[ "${EUID}" -eq 0 ]] || RUNAS="sudo"
-    log "dry run — nothing was changed. This is the command:"
-    printf '\n  %s %s' "${RUNAS}" "${REAL_INSTALLER}"
-    printf ' %q' "${FORWARD[@]}"
-    printf '\n\n'
-    exit 0
-fi
-
-# --- hand over to the real installer (root is required from here on) --------
-if [[ "${EUID}" -eq 0 ]]; then
-    if [[ "${NON_INTERACTIVE}" == "1" ]]; then
-        # stdin closed: anything downstream that asks a question gets EOF and
-        # fails with a non-zero exit instead of blocking cloud-init forever.
-        exec bash "${REAL_INSTALLER}" "${FORWARD[@]}" </dev/null
-    fi
-    exec bash "${REAL_INSTALLER}" "${FORWARD[@]}"
-fi
-
-# No silent escalation: installing Docker needs root, so say what to run instead
-# of asking for a password in the middle of a pipe.
-chmod +x "${REAL_INSTALLER}" 2>/dev/null || true
-warn "Root is required to install Docker and start the stack."
-printf '\n  Re-run it as root:\n\n    sudo %s' "${REAL_INSTALLER}"
-printf ' %q' "${FORWARD[@]}"
-printf '\n\n'
-exit 2
+log "Running the codx-junior installer (${REF})"
+bash "${TARGET}" "${FORWARD[@]+"${FORWARD[@]}"}"

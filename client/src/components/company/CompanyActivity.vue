@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import FollowupView from '@/components/kanban/board/FollowupView.vue'
 import { EVENT_META, formatDate, formatDateTime, relativeTime } from './companyMeta'
 import { useCompanyI18n } from './i18n'
 
@@ -19,6 +20,15 @@ const { t } = useCompanyI18n()
 
 const filter = ref('all')
 const query = ref('')
+// The Activity tab holds two faces of the same question: the company journal
+// (what happened) and the Follow-up / GeneralView (what needs doing). The
+// button switch keeps both one click apart instead of adding another nav item.
+const view = ref('activity')
+
+const views = computed(() => [
+  { id: 'activity', label: t('activity.viewActivity'), icon: 'fa-solid fa-wave-square' },
+  { id: 'followup', label: t('activity.viewFollowup'), icon: 'fa-solid fa-list-check' }
+])
 
 const journal = computed(() => (props.snapshot?.journal || []).slice().reverse())
 const missions = computed(() => props.snapshot?.missions || [])
@@ -100,7 +110,15 @@ function createTask() {
           {{ t('activity.subtitle') }}
         </p>
       </div>
-      <div class="flex flex-wrap gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <div class="flex items-center gap-1 rounded-xl border border-base-content/10 bg-base-100 p-1">
+          <button v-for="item in views" :key="item.id" type="button"
+                  class="btn btn-xs gap-1.5 rounded-lg border normal-case"
+                  :class="view === item.id ? 'border-primary bg-primary text-primary-content' : 'border-transparent bg-transparent text-base-content/55 hover:bg-base-content/5'"
+                  @click="view = item.id">
+            <i :class="item.icon" class="text-[10px]"></i> {{ item.label }}
+          </button>
+        </div>
         <button class="cp-chip" @click="createTask">
           <i class="fa-solid fa-plus text-[9px]"></i> {{ t('activity.newTask') }}
         </button>
@@ -110,7 +128,11 @@ function createTask() {
       </div>
     </header>
 
-    <section v-if="completed.length" class="rounded-2xl border border-base-content/10 bg-base-100 p-4 md:p-5">
+    <div v-if="view === 'followup'" class="max-h-[75vh] overflow-hidden rounded-2xl border border-base-content/10 bg-base-100">
+      <FollowupView />
+    </div>
+
+    <section v-if="view === 'activity' && completed.length" class="rounded-2xl border border-base-content/10 bg-base-100 p-4 md:p-5">
       <div class="flex items-center justify-between">
         <div>
           <h2 class="flex items-center gap-2 text-sm font-black">
@@ -135,7 +157,7 @@ function createTask() {
       </div>
     </section>
 
-    <section class="rounded-2xl border border-base-content/10 bg-base-100 p-4 md:p-5">
+    <section v-if="view === 'activity'" class="rounded-2xl border border-base-content/10 bg-base-100 p-4 md:p-5">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div class="flex flex-wrap gap-1.5">
           <button v-for="item in filters" :key="item.id"

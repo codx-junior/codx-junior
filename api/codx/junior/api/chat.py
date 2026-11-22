@@ -2140,7 +2140,13 @@ async def api_create_task(request: Request, user: CodxUser = Depends(get_authent
         )
 
     try:
-        codx_junior_session = request.state.codx_junior_session
+        from codx.junior.app import require_project_session
+
+        # A machine client must be able to create the first task with only the
+        # instance URL and a bearer token: a missing/relative codx_path is
+        # resolved to the workspace's default project, and an unusable one
+        # answers an actionable 422 (never the 500 an unset session produced).
+        codx_junior_session = require_project_session(request)
         task = codx_junior_session.get_task_manager().create_task(
             name=name,
             description=description,
@@ -2165,6 +2171,10 @@ async def api_create_task(request: Request, user: CodxUser = Depends(get_authent
             task.id, task.board, task.column,
         )
         return task
+    except HTTPException:
+        # 401/422 already carry the actionable body (auth or codx_path); the
+        # validation and unexpected branches below must not rewrite them.
+        raise
     except ValueError as ex:
         logger.warning("api_create_task: invalid task: %s", ex)
         raise HTTPException(status_code=422, detail=str(ex))

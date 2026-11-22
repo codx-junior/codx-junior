@@ -1202,7 +1202,7 @@ Rules:
         wiki_index = WikiIndex(settings=self.settings, db=self.db)
         index = wiki_index.build(wiki_settings=wiki_settings, domain_map=domains, graph=graph)
         wiki_index.save(index)
-        wiki_index.index_to_milvus(index)
+        wiki_index.index_to_knowledge(index)
         return index
 
     def _ensure_domain_frontmatter(self, content: str, domain: Dict[str, Any]) -> str:

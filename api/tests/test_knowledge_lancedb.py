@@ -10,7 +10,6 @@ Made with ❤️ by codx-junior
 
 import hashlib
 import os
-import sys
 
 import pytest
 
@@ -89,7 +88,7 @@ def build_documents():
             metadata={"source": "/p/wallet.py", "category": "code", "keywords": ["wallet", "money"]},
         ),
         Document(
-            page_content="database migrations for milvus collections",
+            page_content="database migrations for the knowledge index",
             metadata={"source": "/p/db.py", "category": "code", "keywords": ["db"]},
         ),
         Document(
@@ -192,8 +191,8 @@ def test_broken_embeddings_stack_degrades_instead_of_raising(tmp_path, monkeypat
     assert db.search_hybrid("wallet", _limit=5)
 
 
-def test_raw_search_accepts_milvus_filter_syntax(lexical_db):
-    """The Milvus filter syntax used by /api/data/query keeps working."""
+def test_raw_search_accepts_filter_syntax(lexical_db):
+    """The filter syntax used by /api/data/query keeps working."""
     docs = lexical_db.raw_search('category == "docs"')
     assert [doc.metadata["source"] for doc in docs] == ["/p/README.md"]
     assert len(lexical_db.raw_search('source != ""')) == 3
@@ -279,7 +278,6 @@ def test_backend_selector_accepts_aliases(monkeypatch):
         ("lancedb", "lancedb"),
         ("lance", "lancedb"),
         ("embedded", "lancedb"),
-        ("milvus", "milvus"),
         ("none", "none"),
         ("off", "none"),
         ("nonsense", "lancedb"),
@@ -299,17 +297,5 @@ def test_default_backend_is_the_embedded_one(tmp_path, monkeypatch):
 
     assert isinstance(db, KnowledgeDBLanceDB)
 
-
-def test_default_backend_never_imports_pymilvus(tmp_path, monkeypatch):
-    """A LanceDB installation must not pull the Milvus client."""
-    from codx.junior.knowledge.knowledge_backend import create_knowledge_db
-
-    monkeypatch.delenv("CODX_JUNIOR_KNOWLEDGE_BACKEND", raising=False)
-    monkeypatch.setenv("CODX_JUNIOR_EMBEDDINGS_BACKEND", "none")
-    monkeypatch.delitem(sys.modules, "pymilvus", raising=False)
-
-    create_knowledge_db(FakeSettings(str(tmp_path)))
-
-    assert "pymilvus" not in sys.modules
 
 # Made with ❤️ by codx-junior

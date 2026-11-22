@@ -5,24 +5,22 @@ Motivation
 ----------
 The knowledge base no longer needs a service: LanceDB is an *embedded* vector
 database (an on-disk Lance dataset, queried in-process), so knowledge/RAG works
-out of the box on the single-container demo installation. There is no Milvus
+out of the box on the single-container installation. There is no external
 container to start, no gRPC connection to wait for and nothing to configure.
 
 What this module provides
 -------------------------
-:class:`KnowledgeDBLanceDB` is a drop-in replacement for
-:class:`~codx.junior.knowledge.knowledge_db.KnowledgeDB` (the Milvus backend):
-same public surface, same ``<codx_path>/db`` layout, same source-map file, so
-``Knowledge``, ``ProfileKnowledge``, the wiki index and the API routers do not
-know which backend they are talking to. The backend is selected with
-``CODX_JUNIOR_KNOWLEDGE_BACKEND`` (see :mod:`knowledge_backend`); ``lancedb`` is
-the default, ``milvus`` remains available for existing data / big corpora.
+:class:`KnowledgeDBLanceDB` is the knowledge backend. It keeps the public
+surface, the ``<codx_path>/db`` layout and the source-map file used by
+``Knowledge``, ``ProfileKnowledge``, the wiki index and the API routers. The
+backend is selected with ``CODX_JUNIOR_KNOWLEDGE_BACKEND`` (see
+:mod:`knowledge_backend`); ``lancedb`` is the only implementation.
 
 Retrieval
 ---------
-Two legs, exactly like the Milvus implementation:
+Two legs:
 
-* **lexical** — full-text search on ``page_content`` (BM25 in Milvus, the
+* **lexical** — full-text search on ``page_content`` (BM25-style, the
   LanceDB full-text index here),
 * **dense** — cosine similarity over the embedding of the document.
 
@@ -57,7 +55,7 @@ Storage layout
     <codx_path>/db/<index_name>/
         lancedb/                      Lance dataset (embedded, no server)
         index_meta.json               backend + embedding dimension + model
-        <index_name>_file.json        source map (shared with the Milvus backend)
+        <index_name>_file.json        source map (shared with the previous backend)
 
 ``index_meta.json`` records the embedding dimension. Embedding dimensions are
 not interchangeable, so when the configured provider changes the dimension the
@@ -72,7 +70,7 @@ flowchart TD
     C -- provider --> E[OpenAI-compatible embeddings API]
     C -- none --> F[dense leg disabled]
     A --> G[search_hybrid: FTS + vector, RRF fusion]
-    A --> H[source map JSON shared with Milvus]
+    A --> H[source map JSON shared with the previous backend]
 
 Made with ❤️ by codx-junior
 """
@@ -112,7 +110,7 @@ logger = logging.getLogger(__name__)
 # ── Backend identity ─────────────────────────────────────────────────────────
 KNOWLEDGE_BACKEND = "lancedb"
 
-# ── Column names (mirrors the Milvus field names so callers are unchanged) ───
+# ── Column names (legacy field names so callers are unchanged) ───
 FIELD_ID = "id"
 FIELD_SOURCE = "source"
 FIELD_LAST_UPDATE = "last_update"
@@ -161,7 +159,7 @@ class ProviderEmbeddingsModel:
 
     Uses the OpenAI-compatible ``/embeddings`` endpoint, which is implemented by
     OpenAI, DeepSeek, Gemini (compatibility layer), Mistral, Groq, OpenRouter
-    and Ollama, so no extra SDK is required: the ``openai`` client is already a
+    and any OpenAI-compatible endpoint, so no extra SDK is required: the ``openai`` client is already a
     dependency.
 
     This is what allows knowledge to work in an installation without
@@ -269,7 +267,7 @@ class KnowledgeDBLanceDB:
     a Lance dataset inside the project ``.codx`` folder. No service, no
     connection, no container: the database is a folder.
 
-    Three retrieval strategies are exposed, mirroring the Milvus backend:
+    Three retrieval strategies are exposed, mirroring the previous backend:
 
       - ``search_sparse``  → full-text search (lexical).
       - ``search_vector``  → dense embedding semantic search.
@@ -277,7 +275,7 @@ class KnowledgeDBLanceDB:
 
     The source map (``<db_path>/<index_name>_file.json``) is the single source of
     truth for ``get_all_sources`` / ``get_all_categoties``, exactly like the
-    Milvus backend, so both backends can coexist and be swapped freely.
+    previous backend, so data stays readable.
 
     Diagram:
     classDiagram
@@ -328,7 +326,7 @@ class KnowledgeDBLanceDB:
 
         self.path = self.settings.abs_project_path
         self.index_name = re.sub(r"[^a-zA-Z0-9._]", "", slugify(str(self.path))).strip()
-        # Kept identical to the Milvus backend: callers/logs refer to it
+        # Kept identical to the previous backend: callers/logs refer to it
         self.index_fulltext_name = f"{self.index_name}_full_text"
 
         self.db_path = f"{settings.codx_path}/db/{self.index_name}"
@@ -336,7 +334,7 @@ class KnowledgeDBLanceDB:
 
         # Lance dataset folder (embedded database — this *is* the database)
         self.db_file = f"{self.db_path}/lancedb"
-        # Source map: same file/format as the Milvus backend
+        # Source map: same file/format as the previous backend
         self.db_file_list = f"{self.db_path}/{self.index_name}_file.json"
         # Backend metadata (embedding dimension / model)
         self.index_meta_file = f"{self.db_path}/{INDEX_META_FILE_NAME}"
@@ -1329,7 +1327,7 @@ class KnowledgeDBLanceDB:
         include_score: bool = False,
     ) -> List[Document]:
         """
-        Compatibility shim with the Milvus backend.
+        Compatibility shim with the previous backend.
 
         Args:
             results: Iterable of LanceDB rows.
@@ -1476,7 +1474,7 @@ class KnowledgeDBLanceDB:
         Run the vector query, requesting the cosine metric.
 
         The metric is set explicitly because LanceDB defaults to L2, while the
-        Milvus backend and the stored vectors are cosine based.
+        previous backend and the stored vectors are cosine based.
 
         Args:
             query_vector: Query embedding.
@@ -1636,7 +1634,7 @@ class KnowledgeDBLanceDB:
     @staticmethod
     def _translate_filter(search_filter: str) -> Optional[str]:
         """
-        Translate a Milvus filter expression to a Python boolean expression.
+        Translate a filter expression to a Python boolean expression.
 
         Only the subset used by codx-junior is supported (``==``, ``!=``,
         ``>``, ``>=``, ``<``, ``<=``, ``in``, ``not in``, ``and``, ``or``,
@@ -1644,7 +1642,7 @@ class KnowledgeDBLanceDB:
         ``GET /api/data/query`` working unchanged when the backend is swapped.
 
         Args:
-            search_filter: Milvus filter expression.
+            search_filter: filter expression.
 
         Returns:
             Python expression, or None when there is nothing to filter.
@@ -1699,7 +1697,7 @@ class KnowledgeDBLanceDB:
         """
         Execute a scalar filter query against the table.
 
-        The filter uses the Milvus expression syntax (see
+        The filter uses the expression syntax (see
         :meth:`_translate_filter`) so the API endpoint is backend agnostic.
 
         Args:
@@ -1747,7 +1745,7 @@ class KnowledgeDBLanceDB:
         """
         Aggregate the dashboard metrics for the project's knowledge table.
 
-        Returns the same shape as the Milvus backend so the API and the UI do not
+        Returns the same shape as the previous backend so the API and the UI do not
         need to know which backend is in use.
 
         Returns:

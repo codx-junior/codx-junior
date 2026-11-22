@@ -116,7 +116,12 @@ export const actions = actionTree(
       try {
         await API.users.login(user)
       } catch(ex) {
-        $storex.session.onError("Login error")
+        // A rejected credential (401) is a normal login failure: the login
+        // screen reports it and the user retries. Only an unexpected failure
+        // (network, 5xx) deserves the generic error toast.
+        if (ex?.response?.status !== 401) {
+          $storex.session.onError("Login error")
+        }
       }
       $storex.users.bumpUserRevision()
       $storex.init()

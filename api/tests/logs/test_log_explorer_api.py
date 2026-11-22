@@ -174,26 +174,26 @@ def test_sources_lists_the_log_files(client, log_folder):
     assert api_log["entries_estimate"] >= 5
 
 
-def test_anonymous_request_does_not_500(log_folder):
+def test_anonymous_request_is_401_and_not_500(log_folder):
     """
-    Regression: ``get_authenticated_user`` RETURNS None (it does not raise)
-    when the ``authentication`` header is missing, and every route dereferenced
-    ``user.username`` -> 500 on the whole explorer, which the UI showed as
-    "No log sources". No dependency override here: the real dependency runs and
-    yields None.
+    Regression: every route dereferenced ``user.username`` after
+    ``get_authenticated_user`` returned ``None`` -> 500 on the whole explorer,
+    which the UI showed as "No log sources". The dependency is now strict: an
+    anonymous caller receives a proper ``401`` (server logs are protected), and
+    never a ``500``. No dependency override here: the real dependency runs.
     """
     app = FastAPI()
     app.include_router(log_explorer.router, prefix=API_PREFIX)
     with TestClient(app) as anonymous:
         sources = anonymous.get(f"{BASE_URL}/sources")
-        assert sources.status_code == 200, sources.text
-        assert sources.json()["sources"]
+        assert sources.status_code == 401, sources.text
+        assert sources.json()["detail"]["code"] == "missing_credentials"
 
         query = anonymous.get(f"{BASE_URL}/query", params={"source": "api.log"})
-        assert query.status_code == 200, query.text
+        assert query.status_code == 401, query.text
 
         insights = anonymous.get(f"{BASE_URL}/insights", params={"source": "api.log"})
-        assert insights.status_code == 200, insights.text
+        assert insights.status_code == 401, insights.text
 
 
 def test_query_with_unknown_source_returns_404(client):

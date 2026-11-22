@@ -899,7 +899,7 @@ class CODXJuniorSettings(BaseModel):
 
     def is_valid_project(self):
         ai_settings = self.get_llm_settings()
-        return True if ai_settings.api_url or ai_settings.provider == 'llmfactory' else False
+        return bool(ai_settings.api_url)
 
     def get_dbs(self):
         from codx.junior import build_dbs

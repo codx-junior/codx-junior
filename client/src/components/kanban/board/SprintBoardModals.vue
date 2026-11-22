@@ -69,7 +69,7 @@ defineExpose({
           ></textarea>
           <!-- Mode: board tasks only. A quick ticket is always a chat, so the
                compact dialog drops the selector and keeps the "chat" default. -->
-          <div v-if="!compact" class="">
+          <div v-if="!compact && newTask.processing !== 'ticket'" class="">
             <ChatModeSelector
               :selected-mode="newTask.mode"
               @mode-changed="newTask.mode = $event"
@@ -77,8 +77,49 @@ defineExpose({
           </div>
         </div>
 
+        <!-- Processing: a normal task or a request on another project -->
+        <div v-if="!newTask.parentId" class="flex items-center gap-2 mb-2" :class="{ 'mb-1': compact }">
+          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/50">Type</span>
+          <select v-model="newTask.processing" class="select select-xs select-bordered">
+            <option value="task">Task</option>
+            <option value="ticket">Ticket to another project</option>
+          </select>
+          <span v-if="newTask.processing === 'ticket'" class="text-[10px] text-base-content/50">
+            The target accepts it before it runs
+          </span>
+        </div>
+
+        <!-- Cross-project ticket: target project + autonomous request -->
+        <div v-if="newTask.processing === 'ticket' && !newTask.parentId" class="form-control mb-3">
+          <label class="label py-1">
+            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Target project</span>
+          </label>
+          <div v-if="ticketTargetsLoading" class="text-xs text-base-content/50 flex items-center gap-2">
+            <span class="loading loading-spinner loading-xs"></span> Finding projects…
+          </div>
+          <select
+            v-else
+            v-model="newTask.ticket_target"
+            class="select select-sm select-bordered"
+            :disabled="!ticketTargets.length"
+          >
+            <option v-for="target in ticketTargets" :key="target.project_id || target.project_name" :value="target.project_id || target.project_name">
+              {{ target.project_name }} · {{ target.relationship }}
+            </option>
+          </select>
+          <div v-if="!ticketTargetsLoading && !ticketTargets.length" class="text-xs text-warning mt-1">
+            No project can receive a ticket from this one. Link a child, read-only or read/write
+            project first.
+          </div>
+          <label class="flex items-center gap-2 mt-2 cursor-pointer">
+            <input v-model="newTask.ticket_autonomous" type="checkbox" class="checkbox checkbox-xs checkbox-primary" />
+            <span class="text-xs">Work autonomously on the target until its validation is green</span>
+          </label>
+          <div v-if="ticketError" class="text-xs text-error mt-1">{{ ticketError }}</div>
+        </div>
+
         <!-- Column selector — kanban boards (sprint columns are the task status) -->
-        <div v-if="isKanban" class="form-control mb-3">
+        <div v-if="isKanban && newTask.processing !== 'ticket'" class="form-control mb-3">
           <label class="label py-1">
             <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Column</span>
           </label>
@@ -377,8 +418,12 @@ defineExpose({
         <div v-if="!compact" class="flex gap-2 items-start p-2.5 rounded-lg bg-info/5 border border-info/15 mb-4">
           <i class="fa-solid fa-circle-info text-info text-xs mt-0.5 shrink-0"></i>
           <span class="text-xs text-base-content/50">
+            <template v-if="newTask.processing === 'ticket'">
+              The ticket is placed on <b>{{ selectedTicketTarget?.project_name || 'the target project' }}</b>.
+              <span v-if="newTask.ticket_autonomous"> It is requested to run autonomously; the target accepts it first.</span>
+            </template>
             <!-- Kanban: destination is a board column (chat.column) -->
-            <template v-if="isKanban">
+            <template v-else-if="isKanban">
               <template v-if="newTask.parentId">
                 Subtask of <b>{{ parentName || 'parent task' }}</b>, linked to its parent and added to
                 <b>{{ boardName }}</b> in the <b>{{ currentColumnLabel }}</b> column.
@@ -404,18 +449,19 @@ defineExpose({
 
         <!-- Actions -->
         <div class="flex gap-2 items-center" :class="compact ? '' : 'justify-end'">
-          <span v-if="hasInitialContent && !compact" class="text-[10px] text-base-content/40 mr-auto flex items-center gap-1">
+          <span v-if="hasInitialContent && !compact && newTask.processing !== 'ticket'" class="text-[10px] text-base-content/40 mr-auto flex items-center gap-1">
             <i class="fa-solid fa-play text-[8px]"></i> Run creates the task and starts the agent now
           </span>
           <button
             class="btn btn-outline btn-sm gap-1.5"
             :class="compact ? 'flex-1' : null"
             @click="addNewTask"
-            :disabled="!newTask.name?.trim() || creating"
+            :disabled="!newTask.name?.trim() || creating || (newTask.processing === 'ticket' && !newTask.ticket_target)"
           >
-            <i class="fa-solid fa-plus text-xs"></i> Add
+            <i class="fa-solid fa-plus text-xs"></i> {{ newTask.processing === 'ticket' ? 'Place ticket' : 'Add' }}
           </button>
           <button
+            v-if="newTask.processing !== 'ticket'"
             class="btn btn-primary btn-sm gap-1.5"
             :class="compact ? 'flex-1' : null"
             title="Create the task and process it immediately"
@@ -1060,6 +1106,10 @@ const BOARD_TYPES = [
 
 const DEFAULT_NEW_TASK = () => ({
   name: '',
+  // 'task' = normal card on this board; 'ticket' = request placed on another project
+  processing: 'task',
+  ticket_target: '',
+  ticket_autonomous: true,
   mode: 'chat',
   status: 'todo',
   // Kanban destination column (chat.column). Ignored by sprint boards.
@@ -1144,7 +1194,8 @@ export default {
   },
   emits: [
     'task-created', 'tasks-added', 'column-created', 'column-updated', 'column-deleted',
-    'board-created', 'board-updated', 'board-delete', 'board-manager'
+    'board-created', 'board-updated', 'board-delete', 'board-manager',
+    'ticket-created'
   ],
   data() {
     return {
@@ -1168,6 +1219,10 @@ export default {
       teams: [],
       candidateSearch: '',
       selected: [],
+      // Cross-project ticket targets and their loading/error state.
+      ticketTargets: [],
+      ticketTargetsLoading: false,
+      ticketError: '',
       // Mirror of the composer text so the "Run" button knows when there is
       // content. Kept in sync through `update:cursor-word`, which the composer
       // emits on every keystroke (no extra events needed).
@@ -1197,6 +1252,11 @@ export default {
     this.cancelIntelliSense()
   },
   computed: {
+    selectedTicketTarget() {
+      return this.ticketTargets.find(
+        (target) => (target.project_id || target.project_name) === this.newTask.ticket_target
+      ) || null
+    },
     // ── Board flavour ────────────────────────────────────────────────────────
     isKanban() {
       return this.boardType === 'kanban'
@@ -1677,9 +1737,11 @@ export default {
       }
       this.composerText = ''
       this.cursorWord = {}
+      this.ticketError = ''
       this.intelliSenseDismissed = false
       this.cancelIntelliSense()
       this.showNewTask = true
+      this.loadTicketTargets()
       this.initComposerProject()
       this.$nextTick(() => {
         this.$refs.composer?.setEditorText('')
@@ -1693,6 +1755,63 @@ export default {
       this.cancelIntelliSense()
       this.$refs.composer?.setEditorText('')
     },
+    // Load the projects this one can place a ticket on. Cached for the life of
+    // the component (the target list changes rarely); refreshed on open errors.
+    async loadTicketTargets() {
+      if (this.ticketTargetsLoading) return
+      this.ticketTargetsLoading = true
+      this.ticketError = ''
+      try {
+        const targets = await API.get('/api/tickets/targets')
+        this.ticketTargets = Array.isArray(targets) ? targets : []
+        if (!this.newTask.ticket_target && this.ticketTargets.length) {
+          const first = this.ticketTargets[0]
+          this.newTask.ticket_target = first.project_id || first.project_name
+        }
+      } catch (ex) {
+        this.ticketTargets = []
+        this.ticketError = ex?.message || 'Could not read the ticket targets'
+      } finally {
+        this.ticketTargetsLoading = false
+      }
+    },
+    // Place a cross-project ticket from the same dialog. The ticket lives on the
+    // TARGET project's `tickets` board; this project keeps the ledger reference.
+    async placeTicket() {
+      const [title, ...brief] = String(this.newTask.name).split('\n')
+      const name = title.trim()
+      if (!name) return
+      if (!this.newTask.ticket_target) {
+        this.ticketError = 'Choose the target project'
+        return
+      }
+      const description = [
+        this.newTask.name,
+        (this.$refs.composer?.getEditorText() || '').trim()
+      ].filter(Boolean).join('\n\n')
+      this.creating = true
+      this.ticketError = ''
+      try {
+        const record = await API.post('/api/tickets', {
+          target_project: this.newTask.ticket_target,
+          name,
+          description,
+          kind: 'change',
+          content: description,
+          autonomous: !!this.newTask.ticket_autonomous
+        })
+        this.$emit('ticket-created', record)
+        this.$ui?.addNotification?.({
+          text: `Ticket placed on ${record?.target_project_name || 'the target project'} (${record?.ticket_id || ''}) — accept it in the target's tickets board.`,
+          type: 'success'
+        })
+        this.closeNewTask()
+      } catch (ex) {
+        this.ticketError = ex?.message || ex?.detail || 'Could not place the ticket'
+      } finally {
+        this.creating = false
+      }
+    },
     addNewTask() {
       return this.submitNewTask(false)
     },
@@ -1703,6 +1822,9 @@ export default {
     // files and attachments) and (when `run` is set) processing it immediately.
     submitNewTask(run) {
       if (!this.newTask.name?.trim() || this.creating) return
+      if (this.newTask.processing === 'ticket') {
+        return this.placeTicket()
+      }
       // Multiline brief: the first line titles the card, the remaining lines are
       // the task's first message, ahead of whatever the composer holds.
       const [title, ...brief] = String(this.newTask.name).split('\n')

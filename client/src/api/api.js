@@ -441,6 +441,10 @@ const initializeAPI = ({ project, user } = {}) => {
         return API.userNetwork
       },
       async login(user) {
+        // `restoring` is the startup path (main.ts calls login() with no
+        // argument): the stored user may carry only a (possibly expired)
+        // token. A 401 there means "no session", not "the login failed".
+        const restoring = !user
         if (!user) {
           try {
             user = API.user = JSON.parse(localStorage.getItem("CODX_USER"))
@@ -448,7 +452,19 @@ const initializeAPI = ({ project, user } = {}) => {
           } catch {}
           if (!user) return null
         }
-        const data = await API.post('/api/users/login', user)
+        let data
+        try {
+          data = await API.post('/api/users/login', user)
+        } catch (ex) {
+          if (restoring && ex?.response?.status === 401) {
+            // Expired/revoked session: fall back to the login screen silently
+            // (the server now answers 401 instead of the old `200 null`).
+            API.user = null
+            localStorage.removeItem("CODX_USER")
+            return null
+          }
+          throw ex
+        }
         API.user = data
         localStorage.setItem("CODX_USER", JSON.stringify(API.user))
         await API.onUserLogin()

@@ -1,321 +1,153 @@
-# codx-junior installer — how to deploy
+# codx-junior installer
 
-Three deployments, one command each. Pick the one that matches what you are doing:
+One installer, one application image, four deployment modes.
 
-| You want to… | Deployment | Where | Containers |
-|---|---|---|---|
-| **try codx-junior**, show it to somebody, evaluate it | **demo** | [`demo/`](demo/) | **1** |
-| hack on codx-junior itself (live source) | **dev** | `./dev-install.sh` (repository root) | **1** |
-| run it for a team (TLS, workspaces, local models) | **server** | `codx-junior/` + profiles | up to 8 |
+| You want to… | Mode | Command |
+|---|---|---|
+| try it on a laptop / CI | `local` | `./install.sh --mode local --provider deepseek --key sk-...` |
+| a public server with Traefik + ACME | `server` | `sudo ./install.sh --mode server --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
+| sit behind an existing master proxy | `slave` | `sudo ./install.sh --mode slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
+| one isolated nested instance per container | `dind` | `sudo ./install.sh --mode dind --dind-mode server --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
 
-Start with the demo. It is the only path that needs no domain, no TLS, no vector
-database and no build.
+Design, module audit and known issues:
+[`docs/installer-refactor.md`](../docs/installer-refactor.md).
 
-- Settings reference for the demo: [`demo/README.md`](demo/README.md)
-- Why the deployment looks like this, and what is still open: [`FAST-DEPLOYMENT.md`](FAST-DEPLOYMENT.md)
+## What runs
 
----
+One container:
 
-## 0. One line: install or update
+* FastAPI API + background worker (supervisord);
+* nginx serving the compiled SPA and proxying `/api` to the API process;
+* embedded LanceDB for knowledge/RAG.
 
-The entry point for a machine you do not control yet — or for updating one you
-already run — is `install.sh` in the repository root:
+There is **no Milvus, LocalAI, LiteLLM, vLLM, Coolify, Prometheus, Caddy or
+default workspace**. Coworking/browser/desktop sessions are optional and use the
+Docker socket; the installer enables them with `--coworking`.
+
+Every released image is **complete**: it includes the document/OCR tools
+(pandoc, TeX Live, tesseract), ffmpeg, Playwright/Chromium and the local
+embeddings stack. There is no slim variant.
+
+## Interactive setup
+
+Run the installer with no arguments on a terminal and it asks for every
+deployment setting, showing the current value as the default:
+
+```bash
+sudo ./install.sh
+```
+
+It asks for the mode (`local` / `server` / `slave` / `dind`), domain, DIND inner
+mode, master proxy network/resolver/entrypoint, instance, installation root,
+projects folder, port, AI provider and key, coworking and Sysbox. Press Enter to
+accept a default. `--interactive` forces the wizard even when other flags are
+present; `--non-interactive` (or `--yes`) always disables it.
+
+## One line: install or update
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
   | sudo bash -s -- --provider deepseek --key sk-xxxxxxxx
 ```
 
-It resolves the installer of the requested branch, installs Docker when it is
-missing, clones or **updates** the repository and ends by verifying the
-published port from the host. Exit code `0` means the health check passed.
+Without `--domain` this serves plain HTTP on the published port. Add
+`--domain x.example.com --acme-email ops@example.com` for Traefik + ACME.
+Re-running is the upgrade path; projects and settings are kept.
 
 | Situation | Command |
 |---|---|
-| first install | `curl … \| sudo bash -s -- --provider deepseek --key sk-…` |
-| second run = upgrade | same command again (projects and settings are kept) |
-| test a branch or tag | add `--branch my-feature` |
+| server with TLS | add `--domain x.example.com --acme-email ops@example.com` |
+| localhost / CI | add `--mode local` |
+| behind a master proxy | `--mode slave --domain x.example.com --proxy-network traefik` |
+| several instances on one host | `--mode dind --dind-mode server\|slave --instance <name>` |
+| branch or tag | add `--branch my-feature` |
 | see before acting | add `--dry-run` |
-| no internet on the host | `git clone`, then `./install.sh --provider … --key …` |
+| no internet | `git clone`, then `./install.sh --provider … --key …` |
 
-Only `--provider` and `--key` are required (`ollama` needs no key). Every other
-value has a default; `install.sh --help` is the full reference, and
-[`cloud/README.md`](cloud/README.md) covers the unattended cloud-VM path.
+Only `--provider` and `--key` are required. Providers: `openai`, `deepseek`,
+`gemini`, `openrouter`, `mistral`, `groq`, `custom`. Local model servers are not
+installed by codx-junior: run Ollama or any other OpenAI-compatible server in a
+coworking desktop, then configure it as a `custom` provider.
 
-**Installing on a machine nobody touches** (cloud-init, hosted workspace): the
-supported settings file, the minimum box and wall clock of each path, TLS, the
-first-admin keys and the `/api/health` readiness probe are the contract in
-[`cloud/DEPLOYMENT-CONTRACT.md`](cloud/DEPLOYMENT-CONTRACT.md). In short:
-
-```bash
-sudo ./install.sh --env-file /etc/codx-junior/settings.env \
-     --ref v1.2.3 --domain x.example.com --non-interactive </dev/null
-```
-
----
-
-## 1. Requirements
+## Requirements
 
 | | |
 |---|---|
-| Docker | 20.10+ with the `compose` v2 plugin (`docker compose`, not `docker-compose`) |
-| RAM | 2 GB free for the demo (the full stack wants ~8 GB) |
-| Disk | ~1.5 GB for the demo image |
-| AI provider | one API key (OpenAI, DeepSeek, Gemini, OpenRouter, Mistral, Groq or a local Ollama) |
+| Docker | 20.10+ with the `compose` v2 plugin |
+| RAM | 4 GB free; more for coworking desktops or local models |
+| Disk | ~8–12 GB for the complete image |
+| AI provider | one API key for an OpenAI-compatible provider |
 
-## 2. Quick start — demo deployment
+## Image
 
-```bash
-git clone https://github.com/codx-junior/codx-junior.git
-cd codx-junior/codx-junior-installer/demo
-```
+Images are published under **`codxjuniorai/codx-junior`**:
 
-**Step 1 — choose a provider.** This prints every preset together with the models
-codx-junior will configure for it, so you know what you are getting before you pay
-for anything:
-
-```bash
-./up.sh --list-providers
-```
-
-**Step 2 — start it** with that provider and your key:
-
-```bash
-./up.sh --provider deepseek --key sk-xxxxxxxxxxxxxxxx
-```
-
-```
-Projects folder: /home/you/codx-junior/codx-junior-installer/demo/projects
-Pulling the demo image...
-Starting codx-junior...
-Waiting for the API to become healthy (first start ~30s)...
-Configuring the AI provider from the environment...
-=============================================================================
- codx-junior is running
-
-   Web UI : http://localhost:19981
-   Projects: /home/you/.../demo/projects
-   Settings: /home/you/.../demo/.env
-=============================================================================
-```
-
-**Step 3 — open <http://localhost:19981>**, create or pick a project and chat. The
-provider, the models and the five global model slots are already configured, so
-there is no settings page to fill in.
-
-### What those two settings are
-
-| Setting | Required | Example |
-|---|---|---|
-| `CODX_JUNIOR_AI_PROVIDER` | **yes** — `openai` `deepseek` `gemini` `openrouter` `mistral` `groq` `ollama` `custom` | `deepseek` |
-| `CODX_JUNIOR_AI_API_KEY` | **yes** (not for `ollama`) | `sk-…` |
-| `CODX_JUNIOR_AI_API_URL` | only for `custom` | `https://gw.acme.com/v1` |
-| `CODX_JUNIOR_AI_MODEL` | no — the preset already picks one | `deepseek-chat` |
-| `CODX_JUNIOR_PROJECTS_PATH` | no — default `./projects` | `/srv/projects` |
-| `CODX_JUNIOR_WEB_PORT` | no — default `19981` | `8080` |
-
-Flags, `.env` and environment variables are equivalent; `up.sh` writes the values
-into `demo/.env` (mode 600, git-ignored) so later runs need no flags.
-
-### Without a git clone
-
-The image is self-contained, so once `codxjunior/codx-junior:demo` is published:
-
-```bash
-docker run -d --name codx-junior -p 19981:19981 \
-  -v "$HOME/codx-projects:/home/codx-junior-projects" \
-  -v codx-junior-settings:/home/codx-junior/.codx-junior \
-  -e CODX_JUNIOR_AI_PROVIDER=deepseek \
-  -e CODX_JUNIOR_AI_API_KEY=sk-xxxxxxxxxxxxxxxx \
-  codxjunior/codx-junior:demo
-```
-
-> **Until the image is published** `docker compose pull` fails and `up.sh` falls
-> back to a local build (a few minutes). Pass `--build` to make that explicit, and
-> see ["publishing the image"](#7-publishing-the-image) below.
-
-### On a cloud VM — one command, fully unattended
-
-On a remote server you do not need to clone anything by hand. This installer
-installs Docker, downloads the repository, writes the settings, starts the
-container, waits for the health check and prints the URL:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/codx-junior-installer/cloud/bootstrap.sh -o /tmp/codx-junior.sh
-sudo bash /tmp/codx-junior.sh --provider deepseek --key sk-xxxxxxxx
-# -> CODX_JUNIOR_READY http://<server-ip>:19981
-```
-
-It is idempotent (re-running upgrades) and it also installs a small operations
-CLI: `codx-junior status | logs | restart | upgrade | down`. Hetzner,
-DigitalOcean, AWS and GCE examples, the full settings reference, HTTPS with a
-domain and the troubleshooting table are in **[cloud/README.md](cloud/README.md)**.
-
-## 3. What the demo includes — and what it leaves out
-
-The demo is **one container**: FastAPI + the background worker + nginx serving the
-built SPA, published on `19981`. There is no Traefik, no LocalAI, no second API
-container, no init container, no Node at runtime and nothing is installed when the
-container restarts.
-
-| Included | Left out (and how to get it) |
+| Tag | Content |
 |---|---|
-| chat, agent turns, project/file browsing, the web UI | **Traefik / TLS / custom domain** → server tier |
-| AI provider + models configured on first start | **LocalAI** → server tier, `--profile local-models` |
-| knowledge/RAG **built in** — embedded LanceDB, nothing extra to run (see §4) | **workspaces, browser/computer sessions** → need `/var/run/docker.sock`, commented in `docker-compose.yaml` |
-| document editing, git operations | **PDF/DOCX export, OCR** → `.[tex]` / tesseract are not in the slim image |
+| `latest` | complete application image (main) |
+| `vX.Y.Z` | pinned release |
+| `dind` | Docker-in-Docker wrapper (contains the installer and runtime files) |
 
-Full detail, per-component, in [`demo/README.md`](demo/README.md).
-
-## 4. Knowledge / RAG — built in, no extra service
-
-Knowledge is a **built-in** feature, not an optional profile. The vector store is
-**LanceDB**, embedded (on-disk, one process) inside the API container: there is no
-Milvus to start, no extra container, no `--knowledge` flag and no RAM to reserve.
-
-The backend is chosen with one variable:
-
-| `CODX_JUNIOR_KNOWLEDGE_BACKEND` | What runs | When |
-|---|---|---|
-| `lancedb` *(default)* | embedded, no service | demo, laptop, single VM |
-| `milvus` | your external Milvus (`pip install 'codx-junior[milvus]'`) | existing data, large corpora |
-| `none` | nothing | knowledge switched off |
-
-- **Hybrid search is native**: BM25 (full-text) + dense vectors fused with RRF,
-  the same shape the Milvus backend returns — the API and the UI do not know which
-  backend is in use.
-- **RAG also needs an embeddings model.** `deepseek`, `openrouter` and `groq` do not
-  provide one; on those presets search runs **lexical only** instead of failing.
-  `openai`, `gemini`, `mistral` and `ollama` presets configure one automatically.
-- **It degrades, never breaks.** If the embeddings stack cannot load, the dense leg
-  is switched off (one warning in the log) and the lexical leg keeps answering.
-  Knowledge never prevents the API from booting.
-
-To reuse an existing Milvus instead of the embedded store:
+Publish with the repository script:
 
 ```bash
-# .env
-CODX_JUNIOR_KNOWLEDGE_BACKEND=milvus
-CODX_JUNIOR_MILVUS_URL=http://my-milvus:19530
+DOCKERHUB_TOKEN=... IMAGE_TAGS="latest" \
+  DOCKERFILE=codx-junior-installer/demo/Dockerfile CONTEXT=. \
+  ./scripts/dockerhub_publish.sh
 ```
 
-## 5. Development deployment (live source, one container)
+Or build locally with `./install.sh --build`.
 
-Use this when you change codx-junior itself, not to show it to users. The dev
-installer is the small counterpart of `install.sh`: it builds the current tree,
-runs the same single-container stack as the demo and mounts the checkout — API,
-scripts and the `.codx` control plane — into the container.
+## Knowledge / RAG
+
+LanceDB is embedded in the API process. There is no external service:
+
+| `CODX_JUNIOR_KNOWLEDGE_BACKEND` | What runs |
+|---|---|
+| `lancedb` (default) | embedded, no service |
+| `none` | knowledge disabled |
+
+Dense search needs an embeddings model. `deepseek`, `openrouter` and `groq` do
+not provide one, so search runs lexical only on those providers. A missing or
+broken embeddings stack degrades to lexical search; it never prevents boot.
+
+## Development
 
 ```bash
-# from the repository root
 ./dev-install.sh --provider deepseek --key sk-xxxxxxxx
 # -> http://localhost:19981
 ```
 
-It only needs Docker and the compose v2 plugin. Unlike `install.sh` it never
-clones, never installs Docker, and has no TLS, domain, firewall, cloud-init,
-admin bootstrap or operations CLI.
+Builds the current checkout, mounts it into the same single-container stack and
+supports `--reload`, `--build`, `--logs`, `--down` and `--purge`.
 
-| Flag | Effect |
-|---|---|
-| `--reload` | `uvicorn --reload` on `api/` changes (off by default: a reload interrupts agent turns) |
-| `--build` | rebuild `codxjunior/codx-junior:dev` after Dockerfile/pyproject changes |
-| `--port`, `--projects` | published port, host projects folder |
-| `--logs`, `--down`, `--purge` | follow logs, stop keeping data, stop and delete the volumes |
+## DIND
 
-API code is live because [`demo/docker-compose.dev.yaml`](demo/docker-compose.dev.yaml)
-mounts the repository at the app path (`scripts/run_api.sh` puts `api/` on
-`PYTHONPATH`). The SPA is still the image's compiled build, so a client change
-needs `--build`. The full-stack `codx-junior/` compose below is the **server**
-tier, not the dev path.
+The wrapper runs its own dockerd and the same runtime compose. Data on the host
+lives under `<home>/data` plus `<instance>-dind` (nested image layers). Only one
+instance per host can be `--dind-mode server`; the rest use `--dind-mode slave`.
 
-If you only need the **full feature set** (local embeddings, Playwright, TeX, OCR)
-without editing the source, that is the server tier below.
-
-## 6. Server deployment (TLS, workspaces, local models)
-
-This is the full-stack compose, not the dev path:
+## Operations
 
 ```bash
-cd codx-junior-installer/codx-junior
-cp .env.example .env          # set CODX_JUNIOR_DOMAIN and the ACME email
-docker compose -f docker-compose.yaml up -d
+/opt/codx-junior/bin/codx-junior-compose ps
+/opt/codx-junior/bin/codx-junior-compose logs -f
+/opt/codx-junior/bin/codx-junior-compose down
+
+sudo ./install.sh --upgrade
+sudo ./install.sh status|logs|down|restart|doctor|config|url|env|version
 ```
 
-The default `up` still brings the whole 8-service stack (api, api-background, client,
-milvus, localai, traefik and two init containers). The profile split — `proxy`,
-`local-models`, `dev`, with production as the default — is item 5 of
-["still open" in `FAST-DEPLOYMENT.md`](FAST-DEPLOYMENT.md) §7.5. Knowledge is no
-longer one of those profiles: it is built into the API (see §4).
+On systemd hosts the installer registers `codx-junior.service` (or
+`codx-junior-<instance>.service`), and installs a `codx-junior` CLI.
 
-`codx-junior-dind/` wraps this stack in docker-in-docker (Sysbox) for the
-one-VM-per-customer product and can additionally install Coolify; it is a separate
-deliverable and not part of the trial path.
-
-## 7. Publishing the image
-
-`demo/up.sh` is pull-first. Publish once from a machine that has the repo:
-
-```bash
-docker build -t codxjunior/codx-junior:demo \
-  -f codx-junior-installer/demo/Dockerfile .
-docker push codxjunior/codx-junior:demo
-```
-
-The build context is the **repository root** (the Dockerfile copies `client/`,
-`api/`, `scripts/`), which is why the command is run from the root and why the root
-`.dockerignore` matters.
-
-## 8. Operating the demo
-
-```bash
-cd codx-junior-installer/demo
-./up.sh                       # start (idempotent, re-applies nothing)
-./up.sh --build               # build from source instead of pulling
-./up.sh --port 8080           # another web port
-./up.sh --projects /srv/projects
-docker compose logs -f codx-junior
-docker compose down           # stop; settings and projects are kept
-docker compose down -v        # stop and delete settings + analytics
-```
-
-Upgrading: `CODX_JUNIOR_IMAGE=codxjunior/codx-junior:demo` in `.env`, then
-`docker compose pull && docker compose up -d`. The two named volumes
-(`codx-junior-settings`, `codx-junior-analytics`) survive the upgrade; the projects
-folder is a bind mount and is never touched.
-
-## 9. Troubleshooting
+## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `ERROR: codx-junior needs an AI provider before it can do anything` | you did not pass `--provider` + `--key` (and `.env` has no values yet) |
-| Container is `unhealthy` / the script prints logs and exits | `docker compose logs --tail 100 codx-junior`; the API log is `api.log` in `$CODX_SUPERVISOR_LOG_FOLDER` |
-| UI opens, chat says "no model configured" | the bootstrap did not run: `docker exec codx-junior-demo curl -s localhost:19980/api/bootstrap` |
-| `401 / invalid api key` in the logs | wrong key, or a `custom` URL without the `/v1` suffix |
-| Chat works, knowledge search finds nothing | check the embeddings model for the preset (see §4): `deepseek`, `openrouter` and `groq` have none, so search stays lexical |
-| Port 19981 already in use | `./up.sh --port 8080` |
-| Projects folder empty / permission denied | `./up.sh --projects /absolute/path`; the container runs as root so it can write to host folders |
-| `pull access denied` for `codxjunior/codx-junior:demo` | the tag is not published yet — add `--build` |
-
-## 10. Architecture
-
-```
-codx-junior                          the application image
-  ├── FastAPI (19980)                api + background worker, supervisord
-  ├── nginx (19981)                  serves the built SPA, proxies /api + socket.io
-  └── volumes                        settings, analytics
-
-demo/                                tier 1: that image, one container
-codx-junior/                         tier 2/3: compose stack (api, client, milvus,
-                                     localai, traefik, workspaces)
-codx-junior-dind/                    docker-in-docker wrapper (Sysbox) + Coolify
-vllm/, litellm/, localai/            optional model-serving sidecars
-```
-
-RAG internally is one `KnowledgeDB` interface with two interchangeable backends,
-selected by `CODX_JUNIOR_KNOWLEDGE_BACKEND` in
-`api/codx/junior/knowledge/knowledge_backend.py`: **LanceDB** (default, embedded,
-`knowledge_lancedb.py`) and **Milvus** (`knowledge_milvus.py`, imported lazily so a
-LanceDB install never pulls `pymilvus`). The LLM layer has no local model manager: it talks to any
-OpenAI-compatible endpoint (`/chat/completions` + `/embeddings`), configured from the
-provider presets in `api/codx/junior/bootstrap.py`.
+| HTTPS never becomes ready | DNS A record must point at the host; port 80 must be reachable. Check `docker logs -f <instance>-traefik`. |
+| port 80/443 already in use | stop the other proxy, or use `--mode slave` |
+| UI opens, API disconnected | `bin/codx-junior-compose logs`; check the `api`/`api-background` programs |
+| knowledge search is lexical only | configure an embeddings model |
+| coworking sessions fail | reinstall with `--coworking --allow-privileged`; VMs also need `/dev/kvm` |
+| pull access denied | publish the image to `codxjuniorai/codx-junior`, or use `--build` |

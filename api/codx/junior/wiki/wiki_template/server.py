@@ -2,7 +2,7 @@
 Standalone wiki site server.
 
 Serves a generated VitePress build and exposes a small documentation assistant
-backed by a **local OpenAI-compatible endpoint** (Ollama, vLLM, LM Studio…).
+backed by a **local OpenAI-compatible endpoint** (any provider serving `/v1`).
 
 This file has no codx-junior runtime dependency: the exported wiki can be
 deployed on its own host with only the files in this folder.
@@ -12,7 +12,7 @@ Environment:
     WIKI_DIST               VitePress build output (default: .vitepress/dist)
     WIKI_HOST / WIKI_PORT   Bind address (default: 0.0.0.0:8080)
     WIKI_AI_BASE_URL        Local OpenAI-compatible base URL
-    WIKI_AI_API_KEY         API key (use "ollama" for Ollama if required)
+    WIKI_AI_API_KEY         API key (any non-empty value for local servers that do not check it)
     WIKI_AI_MODEL           Model name
     WIKI_AI_TIMEOUT         Request timeout in seconds
 """
@@ -38,7 +38,7 @@ WIKI_ROOT = Path(os.environ.get("WIKI_ROOT", Path(__file__).resolve().parent))
 WIKI_DIST = Path(os.environ.get("WIKI_DIST", WIKI_ROOT / ".vitepress" / "dist"))
 MANIFEST = WIKI_ROOT / "docs.json"
 AI_BASE_URL = os.environ.get("WIKI_AI_BASE_URL", "http://127.0.0.1:11434/v1")
-AI_API_KEY = os.environ.get("WIKI_AI_API_KEY", "ollama")
+AI_API_KEY = os.environ.get("WIKI_AI_API_KEY", "local")
 AI_MODEL = os.environ.get("WIKI_AI_MODEL", "qwen2.5:7b")
 AI_TIMEOUT = float(os.environ.get("WIKI_AI_TIMEOUT", "120"))
 

@@ -6,7 +6,7 @@ import os
 
 from datetime import datetime
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from typing import Optional, List
 
@@ -14,6 +14,14 @@ from codx.junior.global_settings import (
     ensure_signing_secret,
     read_global_settings,
     write_global_settings,
+)
+from codx.junior.security.workspace_api import (
+    AUTH_ERROR_INVALID,
+    AUTH_ERROR_MISSING,
+    WORKSPACE_SERVICE_USERNAME,
+    auth_error_detail,
+    extract_auth_token,
+    is_workspace_token,
 )
 from codx.junior.model.user import (
   CodxUser,
@@ -86,6 +94,24 @@ def redact_user(user) -> dict:
     return data
 
 
+class AmbiguousLogin(ValueError):
+    """
+    A login identifier matches more than one account.
+
+    Raised by :meth:`UserSecurityManager.resolve_login_identifier`; the login
+    endpoint turns it into an explicit ``409`` instead of silently choosing an
+    account (which would be an account-takeover hazard).
+    """
+
+    def __init__(self, identifier: str, matches: List[str]):
+        self.identifier = identifier
+        self.matches = list(matches)
+        super().__init__(
+            f"login identifier '{identifier}' matches several accounts: "
+            f"{', '.join(self.matches)}"
+        )
+
+
 # Project permissions that allow changing what the profiles learn in the
 # project (rules written to the profile enrichment and knowledge files).
 PROFILE_KNOWLEDGE_PERMISSIONS = {
@@ -153,6 +179,154 @@ class UserSecurityManager():
     def find_user_login(self, username: str = None) -> Optional[CodxUserLogin]:
         return next((login for login in self.global_settings.user_logins
                      if login.username == username), None)
+
+    # ── Login identifier (username or email) ─────────────────────────────────
+
+    def resolve_login(self, identifier: str) -> tuple:
+        """
+        Resolve a login identifier and report *how* it matched.
+
+        Same rules as :meth:`resolve_login_identifier`, but the caller also
+        learns whether the identifier matched a ``username`` or an ``email``.
+        The distinction matters: the historical first-login bootstrap (an
+        account with no stored credential adopts the password of its first
+        login) is only allowed for a username, never for an email.
+
+        Args:
+            identifier: The login identifier.
+
+        Returns:
+            ``(canonical_username, "username" | "email")``, or ``(None, "")``.
+
+        Raises:
+            AmbiguousLogin: When the identifier matches more than one account.
+        """
+        identifier = str(identifier or "").strip()
+        if not identifier:
+            return None, ""
+
+        exact = self.find_user(username=identifier)
+        if exact is not None:
+            return exact.username, "username"
+
+        wanted = identifier.lower()
+        username_matches: List[str] = []
+        email_matches: List[str] = []
+
+        def add(bucket: List[str], username: Optional[str]) -> None:
+            username = str(username or "").strip()
+            if username and username not in bucket:
+                bucket.append(username)
+
+        for user in self.global_settings.users or []:
+            if (user.username or "").strip().lower() == wanted:
+                add(username_matches, user.username)
+            if (user.email or "").strip().lower() == wanted:
+                add(email_matches, user.username)
+        for login in self.global_settings.user_logins or []:
+            if (login.username or "").strip().lower() == wanted:
+                add(username_matches, login.username)
+            if (login.email or "").strip().lower() == wanted:
+                add(email_matches, login.username)
+
+        matches: List[str] = []
+        for username in username_matches + email_matches:
+            if username not in matches:
+                matches.append(username)
+
+        if not matches:
+            return None, ""
+        if len(matches) > 1:
+            raise AmbiguousLogin(identifier, matches)
+        return matches[0], ("username" if username_matches else "email")
+
+    def resolve_login_identifier(self, identifier: str) -> Optional[str]:
+        """
+        Resolve a login identifier to its canonical username.
+
+        The customer knows the email they signed up with, not the username a
+        provisioning script generated, so a login identifier is matched against
+        both fields:
+
+        1. an exact ``username`` match always wins;
+        2. otherwise ``username`` and ``email`` are compared case-insensitively
+           (``CodxUser.email`` and the stored login's email are both considered).
+
+        Args:
+            identifier: The ``username`` field of ``POST /api/users/login``
+                (which may carry an email address) or an email.
+
+        Returns:
+            The canonical username, or ``None`` when nothing matches.
+
+        Raises:
+            AmbiguousLogin: When the identifier matches more than one account.
+                The caller rejects it explicitly instead of guessing: silently
+                picking one account is an account-takeover hazard.
+        """
+        return self.resolve_login(identifier)[0]
+
+    # ── Scoped workspace credential ──────────────────────────────────────────
+
+    def get_workspace_token_user(self) -> CodxUser:
+        """
+        Return the principal a valid ``CODX_JUNIOR_WORKSPACE_TOKEN`` acts as.
+
+        The token is scoped to the workspace, not to a browser session: the
+        hosted console must be able to create the customer's first task without
+        holding their password. It therefore acts **as the owner** when one can
+        be resolved:
+
+        1. ``CODX_JUNIOR_ADMIN_USER`` (the account the installer provisions),
+        2. the first enabled user with the ``admin`` role,
+        3. otherwise a *service principal* named ``workspace-service`` with the
+           ``admin`` role, so a workspace whose user store is empty is still
+           usable.
+
+        The principal is returned as a copy: nothing is written to the user
+        store for an API-key request.
+
+        Returns:
+            The principal the workspace token authenticates as (never ``None``).
+        """
+        users = [
+            user
+            for user in (self.global_settings.users or [])
+            if user is not None and not getattr(user, "disabled", False)
+        ]
+
+        def principal(source: CodxUser) -> CodxUser:
+            """Copy *source* without its reusable credentials.
+
+            The workspace token is the credential of the request; handing the
+            owner's session JWT or API key back in a response would defeat its
+            purpose (and leak it into a console log).
+            """
+            user = CodxUser(**source.__dict__)
+            user.token = ""
+            user.api_key = ""
+            return user
+
+        preferred = (os.environ.get("CODX_JUNIOR_ADMIN_USER") or "").strip()
+        if preferred:
+            match = next(
+                (user for user in users if user.username == preferred), None
+            )
+            if match is not None:
+                return principal(match)
+
+        admins = sorted(
+            (user for user in users if getattr(user, "role", "") == USER_ROLE_ADMIN),
+            key=lambda user: str(user.username or ""),
+        )
+        if admins:
+            return principal(admins[0])
+
+        return CodxUser(
+            username=WORKSPACE_SERVICE_USERNAME,
+            role=USER_ROLE_ADMIN,
+            email="",
+        )
 
     def list_user(self):
         """
@@ -462,7 +636,26 @@ class UserSecurityManager():
         except:
             return None
 
-    def login_user(self, user: CodxUserLogin = None, token: str = None, oauth_password: str = None) -> CodxUser:
+    def login_user(
+        self,
+        user: CodxUserLogin = None,
+        token: str = None,
+        oauth_password: str = None,
+        allow_credential_creation: bool = True,
+    ) -> CodxUser:
+        """
+        Authenticate *user* with its password, or *token*.
+
+        Args:
+            user: Credentials to verify.
+            token: Session token to verify instead of a password.
+            oauth_password: OAuth marker used by the GitHub flow.
+            allow_credential_creation: Keep the legacy first-login bootstrap:
+                an existing account with **no stored credential** adopts the
+                password of its first login. Callers that resolve the account
+                from an email pass ``False`` so a wrong password on such an
+                account is rejected instead of silently stored.
+        """
         def do_login(user: CodxUserLogin, token: str):
             if token:
                 user = self.get_user_from_token(token)
@@ -500,6 +693,17 @@ class UserSecurityManager():
                         else:
                             logger.error("Invalid password")
                     elif user.username and (user.password or oauth_password):
+                        if not allow_credential_creation:
+                            # The caller resolved this account from an email:
+                            # a password login must never be the event that
+                            # CREATES the credential. Otherwise any password
+                            # would be accepted for an account that has none.
+                            logger.error(
+                                "No stored credential for '%s'; email login "
+                                "does not create one",
+                                user.username,
+                            )
+                            return None
                         password = user.password or oauth_password
                         # Create a new user login with the hashed password
                         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
@@ -650,31 +854,140 @@ class UserSecurityManager():
     def save_settings(self):
         write_global_settings(self.global_settings)
 
-def get_authenticated_user(request: Request) -> CodxUser:
-    user_security_manager = UserSecurityManager()
-    token = request.headers.get("authentication", " ").split(" ")[-1]
+
+# ---------------------------------------------------------------------------
+# Request authentication
+# ---------------------------------------------------------------------------
+# The request user is resolved once per request (the session middleware and the
+# endpoint dependency both need it) and cached on ``request.state``.
+_UNRESOLVED = object()
+
+
+def _unauthorized(code: str, message: str) -> HTTPException:
+    """
+    Build the 401 raised by :func:`get_authenticated_user`.
+
+    ``detail`` carries a stable machine-readable ``code`` so a client can tell
+    "no credential was sent" from "the credential was rejected" without
+    parsing the message.
+    """
+    return HTTPException(
+        status_code=401,
+        detail=auth_error_detail(code, message),
+        headers={"WWW-Authenticate": 'Bearer realm="codx-junior"'},
+    )
+
+
+def resolve_request_user(request: Request) -> Optional[CodxUser]:
+    """
+    Resolve the caller from the request credential, or ``None``.
+
+    A credential is either the scoped workspace token
+    (``CODX_JUNIOR_WORKSPACE_TOKEN``) or a session JWT. The standard
+    ``Authorization: Bearer …`` header and the UI's historical
+    ``authentication: Bearer …`` alias are both accepted; ``Authorization``
+    wins when both are present (see
+    :func:`codx.junior.security.workspace_api.extract_auth_token`).
+
+    Args:
+        request: The incoming request.
+
+    Returns:
+        The authenticated user, or ``None`` for an anonymous request. This
+        function never raises: use :func:`get_authenticated_user` when the
+        endpoint requires a credential.
+    """
+    state = getattr(request, "state", None)
+    cached = getattr(state, "_codx_authenticated_user", _UNRESOLVED) if state else _UNRESOLVED
+    if cached is not _UNRESOLVED:
+        return cached
+
+    token, _header = extract_auth_token(request)
     user = None
     if token:
-        user = user_security_manager.login_user(token=token)
-    user_name = user.username if user else ""
+        manager = UserSecurityManager()
+        if is_workspace_token(token):
+            # Scoped, opaque API key: acts as the workspace owner (or a service
+            # principal), independent of any interactive password.
+            user = manager.get_workspace_token_user()
+        else:
+            user = manager.login_user(token=token)
+
+    if state is not None:
+        try:
+            state._codx_authenticated_user = user
+        except Exception:  # pragma: no cover - state is a plain namespace
+            pass
+    return user
+
+
+def get_authenticated_user(request: Request) -> CodxUser:
+    """
+    FastAPI dependency: require an authenticated caller and return the user.
+
+    This used to return ``None`` when no credential was sent, so every handler
+    that then read ``user.username`` answered ``500`` instead of ``401`` — and a
+    write endpoint that only used the user for attribution silently accepted
+    anonymous writes. A protected route now receives a user or a ``401``; a
+    genuinely public route opts out by depending on
+    :func:`get_optional_authenticated_user` instead.
+
+    Raises:
+        HTTPException: 401 with a stable ``code`` when no/invalid credential is
+            present.
+    """
+    token, header = extract_auth_token(request)
+    user = resolve_request_user(request)
+
     # SECURITY: the raw token and the whole header map (authorization, cookies)
     # were logged at INFO on EVERY request. Log header NAMES only and keep the
     # token as a digest; request authentication is trace-level noise anyway.
     logger.debug(
-        "Authenticating request: %s token %s: %s - headers: %s",
-        request.url,
+        "Authenticating request: %s token %s header %s: %s - headers: %s",
+        getattr(getattr(request, "url", None), "path", request),
         _redact_token(token),
-        user_name,
+        header or "<none>",
+        user.username if user else "",
         sorted(request.headers.keys()),
     )
-    return user
+
+    if user is not None:
+        return user
+    if not token:
+        raise _unauthorized(
+            AUTH_ERROR_MISSING,
+            "Authentication is required: send 'Authorization: Bearer <token>' "
+            "(the legacy 'authentication' header is also accepted).",
+        )
+    raise _unauthorized(AUTH_ERROR_INVALID, "Invalid or expired credentials.")
+
+
+def get_optional_authenticated_user(request: Request) -> Optional[CodxUser]:
+    """
+    FastAPI dependency: resolve the caller without requiring a credential.
+
+    For the small set of routes that are genuinely public (login, the request
+    session context, meeting join) or that enrich a response when a user is
+    present. Every other route must depend on
+    :func:`get_authenticated_user`.
+    """
+    return resolve_request_user(request)
 
 
 def get_authenticated_user_from_token(token: str) -> CodxUser:
+    """
+    Resolve a user from a raw token (Socket.IO handshake, background worker).
+
+    Accepts the scoped workspace credential too, so a machine client is not
+    forced to hold a password to use the token-based transports.
+    """
     user_security_manager = UserSecurityManager()
     user = None
     if token:
-        user = user_security_manager.login_user(token=token)
+        if is_workspace_token(token):
+            user = user_security_manager.get_workspace_token_user()
+        else:
+            user = user_security_manager.login_user(token=token)
     user_name = user.username if user else ""
     logger.info(f"WebSocket token {_redact_token(token)}: {user_name}")
     return user

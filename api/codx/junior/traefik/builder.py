@@ -33,7 +33,17 @@ DEFAULT_DOMAIN = os.environ.get("CODX_JUNIOR_DOMAIN", "localhost")
 DEFAULT_AUTH_MIDDLEWARE = os.environ.get(
     "CODX_JUNIOR_TRAEFIK_AUTH_MIDDLEWARE", "codx-junior-auth@docker"
 )
-DEFAULT_ENTRYPOINTS = ["web", "websecure"]
+# Entry points that exist on the Traefik consuming this config. A slave behind
+# a master runs plain HTTP only (`web`); a standalone master has both. Keeping
+# this environment-driven avoids generating routers for an entry point the
+# local Traefik does not define (Traefik rejects them).
+DEFAULT_ENTRYPOINTS = [
+    name.strip()
+    for name in os.environ.get(
+        "CODX_JUNIOR_TRAEFIK_ENTRYPOINTS", "web,websecure"
+    ).split(",")
+    if name.strip()
+] or ["web"]
 
 _PATH_PREFIX_RE = re.compile(r"PathPrefix\s*\(\s*`([^`]+)`\s*\)")
 

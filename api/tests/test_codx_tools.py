@@ -101,7 +101,7 @@ def project(tmp_path):
     )
 
     (codx / "db").mkdir()
-    (codx / "db" / "milvus.db").write_text("needle in a database", encoding="utf-8")
+    (codx / "db" / "knowledge.db").write_text("needle in a database", encoding="utf-8")
     (codx / "logs").mkdir()
     (codx / "logs" / "app.log").write_text("needle in a log\n", encoding="utf-8")
 
@@ -196,7 +196,7 @@ def test_search_codx_inventory_lists_modules_not_databases(project):
     assert "**tasks**" in response.llm_response
     assert "**profiles**" in response.llm_response
     assert "**browser_sessions**" in response.llm_response
-    assert "milvus.db" not in response.llm_response
+    assert "knowledge.db" not in response.llm_response
     assert "**logs**" not in response.llm_response
 
 
@@ -213,7 +213,7 @@ def test_search_codx_finds_control_plane_content_and_json_fields(project):
     # Source code is not part of the control plane.
     assert "src/main.py" not in text
     # The database and the sensitive .env are never searched.
-    assert "milvus.db" not in text
+    assert "knowledge.db" not in text
     assert "supersecret-needle" not in text
 
 
@@ -246,7 +246,7 @@ def test_search_codx_rejects_databases_with_a_warning(project):
     response = search_codx(query="needle", modules=["db"], settings=project)
 
     assert "not text-searchable" in response.llm_response
-    assert "milvus.db" not in response.llm_response
+    assert "knowledge.db" not in response.llm_response
 
 
 def test_search_codx_regex_and_invalid_regex(project):

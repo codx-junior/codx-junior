@@ -2,15 +2,9 @@ import logging
 import requests
 
 from codx.junior.ai.ai import AI
-from codx.junior.model.model import AISettings, AIModel
 from codx.junior.model.ai_model import AIProvider, AIModelPrice
 
-from codx.junior.ai.llmfactory import OllamaAI
-from codx.junior.global_settings import (
-  read_global_settings,
-  get_provider_settings,
-  get_model_settings
-)
+from codx.junior.global_settings import get_model_settings
 
 AI = AI
 logger = logging.getLogger(__name__)
@@ -50,46 +44,6 @@ MAX_PAGE_CONTENT_CHARS = 32_000
 
 
 class AIManager:
-
-    def reload_models(self, global_settings):
-        active_models = [ai_model for ai_model \
-                            in global_settings.ai_models if ai_model.ai_provider == 'llmfactory'] 
-        for ai_model in active_models:
-            try:
-                info = self.load_model(model=ai_model.name, global_settings=global_settings)
-                if not info:
-                    logger.error(f"Error reloading model {ai_model}")
-                    continue
-                model_info = info['modelinfo']
-                
-                context_length_keys = [k for k in model_info.keys() if "context_length" in k]
-                if context_length_keys:
-                    context_length = model_info[context_length_keys[0]]
-                    if hasattr(ai_model.settings, "context_length"):
-                        ai_model.settings.context_length = context_length
-                    if hasattr(ai_model.settings, "chunk_size"):
-                        ai_model.settings.chunk_size = context_length
-
-                embedding_length_keys = [k for k in model_info.keys() if "embedding_length" in k]
-                if embedding_length_keys and hasattr(ai_model.settings, "vector_size"):
-                    embedding_length = model_info[embedding_length_keys[0]]
-                    ai_model.settings.vector_size = embedding_length
-                
-                self.prune_models(active_models=active_models, global_settings=global_settings)
-            except Exception as ex:
-                logger.error("Error '%s' reloading model: %s", str(ex), ai_model.name)
-
-    def prune_models(self, active_models: [AIModel], global_settings):
-        llmfactory = OllamaAI(ai_settings=get_provider_settings('llmfactory', global_settings=global_settings))
-        llmfactory.prune_models([m.ai_model or m.name for m in active_models])
-
-    def reload_model(self, model: AIModel):
-        global_settings = read_global_settings()
-        return self.load_model(model=model.name, global_settings=global_settings)
-
-    def load_model(self, model: str, global_settings):
-        ai_settings = get_model_settings(llm_model=model, global_settings=global_settings)
-        return OllamaAI(ai_settings=ai_settings).load_model()
 
     # ------------------------------------------------------------------
     # Pricing

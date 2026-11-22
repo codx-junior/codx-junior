@@ -20,7 +20,6 @@ from codx.junior.sio.model import (
     SioFileDiffMessage
 )
 
-from codx.junior.ai import AIManager
 from codx.junior.security.user_management import get_authenticated_user_from_token
 
 CODX_JUNIOR_API_BACKGROUND = os.environ.get("CODX_JUNIOR_API_BACKGROUND")
@@ -360,11 +359,6 @@ async def sio_run_generate_code(sid, data: dict, codxjunior_session: CODXJuniorS
     await codxjunior_session.generate_code(
                             chat=data.chat,
                             code_block_info=code_block_info)
-
-@sio.on("codx-junior-ai-load-model")
-@sio_api_endpoint
-async def sio_ai_load_model(sid, data: dict):
-    AIManager().load_model(model=data["model"])
 
 @sio.on("codx-junior-file-read")
 @sio_api_endpoint

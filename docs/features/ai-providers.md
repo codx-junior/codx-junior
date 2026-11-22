@@ -1,6 +1,6 @@
 # AI providers and models
 
-codx-junior works with any **OpenAI-compatible** provider: OpenAI, Ollama, LocalAI, LiteLLM, vLLM and others. Mix cloud and local models as you like.
+codx-junior works with any **OpenAI-compatible** provider: OpenAI, DeepSeek, Gemini, OpenRouter, Mistral, Groq or a local server you run yourself. Mix cloud and local models as you like.
 
 ![AI models](/images/NOV2025/codx-junior-ai-models.png)
 
@@ -29,7 +29,11 @@ Each chat, profile or `@codx` mention can also pick its own model.
 
 ## Local models
 
-The installer includes **LocalAI** for running models on your own hardware, reachable at `/codx-localai/app` and protected by codx-junior's login. The API image also supports **vLLM** on CPU and **sentence-transformers** for local embeddings.
+codx-junior does not install or manage a local model server. Run any
+OpenAI-compatible server yourself (in a coworking desktop or on another host)
+and configure it as a **`custom`** provider with its `/v1` URL. The complete
+image includes the local embeddings stack (sentence-transformers + torch), but
+Ollama/LocalAI/vLLM are external.
 
 ## MCP servers
 

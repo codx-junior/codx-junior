@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from threading import Event, Lock, Thread
 from typing import Dict, List
 
-from codx.junior.ai import AIManager
 from codx.junior.changes.change_manager import ChangeManager
 from codx.junior.globals import (
     CODX_JUNIOR_API_BACKGROUND,
@@ -14,7 +13,6 @@ from codx.junior.globals import (
 from codx.junior.project.project_discover import (
     find_all_projects
 )
-from codx.junior.global_settings import read_global_settings
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -91,6 +89,30 @@ def _ensure_actor_worker(stop_event: Event) -> None:
         logger.exception("Background supervisor: could not restart actor worker: %s", ex)
 
 
+def _ensure_ticket_worker(stop_event: Event) -> None:
+    """Restart the autonomous-ticket worker if needed."""
+    try:
+        from codx.junior.ticketing.worker import (
+            get_ticket_worker,
+            start_ticket_worker,
+            worker_enabled,
+        )
+
+        if not worker_enabled():
+            return
+        worker = get_ticket_worker()
+        if worker is not None and worker.running:
+            return
+        logger.warning(
+            "Background supervisor: ticket autonomy worker is not running; restarting it"
+        )
+        start_ticket_worker(stop_event=stop_event)
+    except Exception as ex:  # pragma: no cover - supervision must never die
+        logger.exception(
+            "Background supervisor: could not restart ticket autonomy worker: %s", ex
+        )
+
+
 def _supervise_workers(stop_event: Event) -> None:
     """
     Keep the long-running workers alive.
@@ -105,6 +127,7 @@ def _supervise_workers(stop_event: Event) -> None:
     while not stop_event.wait(WORKER_SUPERVISOR_SECONDS):
         _ensure_orchestration_worker(stop_event)
         _ensure_actor_worker(stop_event)
+        _ensure_ticket_worker(stop_event)
 
 
 def start_background_services(stop_event) -> None:
@@ -123,8 +146,6 @@ def start_background_services(stop_event) -> None:
     RUN_BACKGROUND_PROCESSES = True
     _BACKGROUND_STOP.clear()
     logger.info("*** Starting background processes ***")
-    reload_models()
-
     # Start the project checking loop in a dedicated background thread
     Thread(target=check_projects, name="ProjectCheckLoop", daemon=True).start()
 
@@ -170,6 +191,16 @@ def start_background_services(stop_event) -> None:
         start_actor_worker(stop_event=_worker_stop_event())
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the actor worker: %s", ex)
+
+    # Autonomous tickets: the worker that takes the accepted tickets whose
+    # autonomy is enabled and works them until the validation gate is green.
+    # A project without tickets is a no-op, so this is safe to start everywhere.
+    try:
+        from codx.junior.ticketing.worker import start_ticket_worker
+
+        start_ticket_worker(stop_event=_worker_stop_event())
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to start the ticket autonomy worker: %s", ex)
 
     # Channel media worker: drains the durable ``.codx/media/jobs`` queues with
     # leases and retries, so a restart resumes the interrupted work. Every
@@ -226,6 +257,13 @@ async def stop_background_services() -> None:
         logger.exception("Failed to stop the actor worker: %s", ex)
 
     try:
+        from codx.junior.ticketing.worker import stop_ticket_worker
+
+        stop_ticket_worker()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to stop the ticket autonomy worker: %s", ex)
+
+    try:
         from codx.junior.wiki.scheduler import stop_wiki_scheduler
 
         stop_wiki_scheduler()
@@ -238,17 +276,6 @@ async def stop_background_services() -> None:
         stop_media_worker()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to stop the media worker: %s", ex)
-
-
-def reload_models() -> None:
-    """
-    Reload AI models based on the current global settings.
-    """
-    try:
-        AIManager().reload_models(read_global_settings())
-        logger.info("AI models reloaded successfully.")
-    except Exception as ex:
-        logger.exception("Failed to reload AI models: %s", ex)
 
 
 def is_project_in_quarantine(project_name: str) -> bool:

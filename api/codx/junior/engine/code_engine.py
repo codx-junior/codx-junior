@@ -215,7 +215,7 @@ class CodeEngine:
                 chat=chat, code_generator=code_generator
             )
 
-        from codx.junior.knowledge.knowledge_milvus import Knowledge
+        from codx.junior.knowledge.knowledge_manager import Knowledge
 
         knowledge = Knowledge(settings=self.settings)
         profile_manager = ProfileManager(settings=self.settings)

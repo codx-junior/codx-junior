@@ -56,12 +56,17 @@ import { full as emoji } from 'markdown-it-emoji'
 import Modal from './Modal.vue'
 import { highlightCode } from '@/utils/highlight'
 import parser from '@/utils/markdownParser'
+import { markdownFileLinks } from '@/utils/markdownFileLinks'
 
 function createMd(documentId) {
   // `highlight` replaces markdown-it-highlightjs, which statically imports the
   // FULL highlight.js language pack into whichever chunk renders markdown.
   const md = new MarkdownIt({ html: true, linkify: true, typographer: true, highlight: highlightCode })
   md.use(emoji)
+  // File references in the prose (`./coolify-install.sh`, `src/App.vue`,
+  // `install.sh`) render as .file-link anchors that handleClick opens in the
+  // FileViewer.
+  md.use(markdownFileLinks)
 
   const defaultHeadingRenderer = md.renderer.rules.heading_open || function(tokens, idx, options, env, self) {
     return self.renderToken(tokens, idx, options)
@@ -125,7 +130,16 @@ function createMd(documentId) {
 const FILE_PATH_REGEX = /(?<=^|[\s(,>])((?:\.{1,2}\/|\/)?(?:[\w\-_.]+\/)+[\w\-_.]+\.(?:js|ts|vue|py|java|cpp|c|h|cs|go|rb|rs|php|html|css|scss|json|yaml|yml|md|txt|sh|bash|env|toml|xml|sql|graphql|proto|ipynb|jsx|tsx|mjs|cjs|svelte|kotlin|swift|dart))(?=[\s),<]|$)/g
 
 function addFileUploadIcons(html) {
-  return html.replace(
+  // References already rendered as links (see utils/markdownFileLinks.js) are
+  // masked first, so they are never wrapped twice: an anchor inside an anchor
+  // would swallow the click handler.
+  const links = []
+  const masked = html.replace(/<a class="file-link"[^>]*>[\s\S]*?<\/a>/g, anchor => {
+    links.push(anchor)
+    return `\u0000${links.length - 1}\u0000`
+  })
+
+  const decorated = masked.replace(
     FILE_PATH_REGEX,
     (match) =>
       `<span
@@ -134,6 +148,8 @@ function addFileUploadIcons(html) {
         title="Add '${match}' to chat files"
       >${match}</span>`
   )
+
+  return decorated.replace(/\u0000(\d+)\u0000/g, (_, index) => links[Number(index)])
 }
 
 export default {
@@ -285,6 +301,15 @@ export default {
       this.selectedImageAlt = ''
     },
     handleClick(event) {
+      // A file reference (see utils/markdownFileLinks.js) opens in the FileViewer.
+      const fileLink = event.target.closest('.file-link')
+      if (fileLink) {
+        event.preventDefault()
+        event.stopPropagation()
+        this.openFileReference(fileLink.getAttribute('data-file'))
+        return
+      }
+
       const btn = event.target.closest('.file-path-upload-btn')
       if (!btn) return
       event.preventDefault()
@@ -293,6 +318,11 @@ export default {
       if (filePath) {
         this.$emit('add-file', filePath)
       }
+    },
+    // A new dockview panel on desktop, a dialog over the message in single mode.
+    openFileReference(path) {
+      if (!path) return
+      this.$ui.openFileViewer(path)
     }
   }
 }

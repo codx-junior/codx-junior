@@ -2,11 +2,12 @@
 Ticketing models: cross-project requests expressed as chats.
 
 A **ticket** is a request one project places on ANOTHER project — a child
-project or a linked project with read/write permission — asking for a bug fix, a
-feature or a change. The business case is the SaaS platform: while developing
-``codx-junior-cloud`` a bug is found in ``codx-junior``; instead of editing the
-other codebase, the platform places a ticket there, receives an id and keeps
-using it to communicate.
+project, a linked project (read-only, read/write or the legacy dependency list)
+or the project that contains it — asking for a bug fix, a feature or a change.
+The business case is the SaaS platform: while developing ``codx-junior-cloud`` a
+bug is found in ``codx-junior``; instead of editing the other codebase, the
+platform places a ticket there, receives an id and keeps using it to
+communicate.
 
 Design decisions
 ----------------
@@ -150,6 +151,7 @@ TICKET_SIDES = [TICKET_SIDE_SOURCE, TICKET_SIDE_TARGET]
 # Relationship between the two projects of a ticket.
 TICKET_RELATION_CHILD = "child"
 TICKET_RELATION_LINKED = "linked"
+TICKET_RELATION_PARENT = "parent"
 
 MAX_TICKET_NAME_CHARS = 200
 
@@ -157,6 +159,378 @@ MAX_TICKET_NAME_CHARS = 200
 def now_iso() -> str:
     """Return the current timestamp in the ISO format used by chats."""
     return datetime.now().isoformat()
+
+
+# ── Autonomy ─────────────────────────────────────────────────────────────────
+# An **autonomous ticket** is a ticket whose target project works it without a
+# human in the loop: it dives into the codebase, uses its tools, implements the
+# request, runs the validation gate and only closes the ticket when the gate is
+# green. The declaration lives with the ticket (``ChatTicket.autonomy``) because
+# autonomy is a property of the request, not of the profile that happens to pick
+# it up: the requester can ask for it and the target can configure it, but the
+# ticket remains the single source of truth.
+TICKET_AUTONOMY_OFF = "off"
+TICKET_AUTONOMY_QUEUED = "queued"
+TICKET_AUTONOMY_RUNNING = "running"
+TICKET_AUTONOMY_PASSED = "passed"
+TICKET_AUTONOMY_FAILED = "failed"
+TICKET_AUTONOMY_BLOCKED = "blocked"
+TICKET_AUTONOMY_CANCELLED = "cancelled"
+
+TICKET_AUTONOMY_STATES = [
+    TICKET_AUTONOMY_OFF,
+    TICKET_AUTONOMY_QUEUED,
+    TICKET_AUTONOMY_RUNNING,
+    TICKET_AUTONOMY_PASSED,
+    TICKET_AUTONOMY_FAILED,
+    TICKET_AUTONOMY_BLOCKED,
+    TICKET_AUTONOMY_CANCELLED,
+]
+
+#: States that mean "this ticket is being worked right now".
+TICKET_AUTONOMY_ACTIVE_STATES = {TICKET_AUTONOMY_RUNNING}
+
+#: States a run may start from (``failed`` is retried explicitly, never silently).
+TICKET_AUTONOMY_RUNNABLE_STATES = {
+    TICKET_AUTONOMY_OFF,
+    TICKET_AUTONOMY_QUEUED,
+    TICKET_AUTONOMY_FAILED,
+    TICKET_AUTONOMY_BLOCKED,
+    TICKET_AUTONOMY_CANCELLED,
+}
+
+#: Limits of one autonomous ticket run.
+DEFAULT_TICKET_MAX_ROUNDS = 6
+MAX_TICKET_ROUNDS = 40
+DEFAULT_TICKET_RUNTIME_MINUTES = 30
+MAX_TICKET_RUNTIME_MINUTES = 180
+DEFAULT_TICKET_VALIDATION_TIMEOUT_SECONDS = 900
+MAX_TICKET_VALIDATION_TIMEOUT_SECONDS = 3600
+
+#: Profile used when neither the ticket nor the project names one. The first
+#: profile that exists in the project is used (see the service resolver), so a
+#: project without ``codx-junior`` still works with its own coding profile.
+DEFAULT_TICKET_PROFILE_CANDIDATES = (
+    "codx-junior",
+    "software_developer",
+    "coding_agent",
+)
+
+#: Validation sources. ``auto`` asks the QA gate for the project default suite;
+#: ``commands`` runs the explicit argv lines configured on the ticket.
+TICKET_VALIDATION_AUTO = "auto"
+TICKET_VALIDATION_COMMANDS = "commands"
+TICKET_VALIDATION_NONE = "none"
+TICKET_VALIDATION_SOURCES = (
+    TICKET_VALIDATION_AUTO,
+    TICKET_VALIDATION_COMMANDS,
+    TICKET_VALIDATION_NONE,
+)
+
+
+class TicketValidation(BaseModel):
+    """
+    How the target proves that an autonomous ticket is actually done.
+
+    The gate is deliberately explicit: a ticket is only closed when a command
+    or the project QA suite exits successfully. The model's own "it works" is
+    never accepted as validation.
+
+    Attributes:
+        source: ``auto`` (QA gate default suite), ``commands`` (the ``commands``
+            list) or ``none`` (the target explicitly opted out; the ticket can
+            still close but it is reported as unvalidated).
+        commands: Command lines executed with ``shell=False`` (ARGO style, one
+            argv per line) in the ticket workspace. They are configured by the
+            target project, never injected by the requester.
+        suite: QA suite name for ``source='auto'`` (``auto`` uses the project
+            default).
+        paths: Optional test files/folders passed to the QA suite.
+        timeout_seconds: Per command/run timeout.
+        required: When False the ticket may close even when no validation is
+            available. Defaults to True: "tested/validated" is the contract.
+    """
+
+    source: str = Field(
+        default=TICKET_VALIDATION_AUTO,
+        description="auto | commands | none",
+    )
+    commands: List[str] = Field(
+        default_factory=list,
+        description="Command lines run in the ticket workspace (source='commands').",
+    )
+    suite: Optional[str] = Field(
+        default=None,
+        description="QA suite name for source='auto' (None/auto = project default).",
+    )
+    paths: List[str] = Field(
+        default_factory=list,
+        description="Optional test files/folders passed to the QA suite.",
+    )
+    timeout_seconds: int = Field(
+        default=DEFAULT_TICKET_VALIDATION_TIMEOUT_SECONDS,
+        description="Timeout of one validation command/run, in seconds.",
+    )
+    required: bool = Field(
+        default=True,
+        description=(
+            "When True (default) the ticket cannot be closed without a green "
+            "validation; a project with no suite is reported as blocked."
+        ),
+    )
+
+    def normalized(self) -> "TicketValidation":
+        """Return a clamped copy of the validation declaration."""
+        source = str(self.source or TICKET_VALIDATION_AUTO).strip().lower()
+        if source not in TICKET_VALIDATION_SOURCES:
+            source = TICKET_VALIDATION_AUTO
+        commands = [
+            str(command).strip()
+            for command in self.commands or []
+            if str(command or "").strip()
+        ]
+        paths = [
+            str(path).strip() for path in self.paths or [] if str(path or "").strip()
+        ]
+        suite = str(self.suite or "").strip() or None
+        return TicketValidation(
+            source=source,
+            commands=commands,
+            suite=suite,
+            paths=paths,
+            timeout_seconds=max(
+                30,
+                min(
+                    int(self.timeout_seconds or DEFAULT_TICKET_VALIDATION_TIMEOUT_SECONDS),
+                    MAX_TICKET_VALIDATION_TIMEOUT_SECONDS,
+                ),
+            ),
+            required=bool(self.required),
+        )
+
+    def effective_source(self) -> str:
+        """Return the validation source actually used by the gate."""
+        if self.source == TICKET_VALIDATION_COMMANDS and self.commands:
+            return TICKET_VALIDATION_COMMANDS
+        if self.source == TICKET_VALIDATION_NONE:
+            return TICKET_VALIDATION_NONE
+        return TICKET_VALIDATION_AUTO
+
+    def describe(self) -> str:
+        """Return a short human description of the gate."""
+        source = self.effective_source()
+        if source == TICKET_VALIDATION_COMMANDS:
+            return "; ".join(self.commands) or "commands (none configured)"
+        if source == TICKET_VALIDATION_NONE:
+            return "none (the target opted out of validation)"
+        return f"QA suite {self.suite or 'auto'}"
+
+
+class TicketAutonomy(BaseModel):
+    """
+    Autonomy declaration and runtime state of one ticket.
+
+    The declaration is written by the target project (or requested by the source
+    at creation) and the runtime fields are maintained by
+    :class:`codx.junior.ticketing.autonomy.TicketAutonomyService`. Keeping both
+    on the ticket gives the requester a complete, cross-project view without a
+    second store: rounds, attempts, validation evidence, workspace branch and
+    the last delivery/error are all read from the ticket chat.
+    """
+
+    enabled: bool = Field(default=False, description="Work this ticket autonomously.")
+    profile: Optional[str] = Field(
+        default=None,
+        description="Profile (agent) used for the run; None resolves the project default.",
+    )
+    auto_accept: bool = Field(
+        default=False,
+        description=(
+            "Accept the ticket automatically when the run starts. Default false: "
+            "the target accepts the request first (the safe gate for a "
+            "cross-project request)."
+        ),
+    )
+    max_rounds: int = Field(
+        default=DEFAULT_TICKET_MAX_ROUNDS,
+        description="Maximum agent rounds of one run (each round is validated).",
+    )
+    max_runtime_minutes: int = Field(
+        default=DEFAULT_TICKET_RUNTIME_MINUTES,
+        description="Hard wall-clock limit of one run.",
+    )
+    budget_cxjcoins: float = Field(
+        default=0.0,
+        description="Budget of one run (0 = project/chat default).",
+    )
+    validation: TicketValidation = Field(
+        default_factory=TicketValidation,
+        description="The gate that must be green before the ticket is closed.",
+    )
+
+    # -- runtime ---------------------------------------------------------
+    state: str = Field(
+        default=TICKET_AUTONOMY_OFF,
+        description="off | queued | running | passed | failed | blocked | cancelled",
+    )
+    rounds: int = Field(default=0, description="Rounds executed by the current/last run.")
+    attempts: int = Field(default=0, description="Runs started for this ticket.")
+    last_error: Optional[str] = Field(default=None, description="Why the last run stopped.")
+    last_validation: Optional[str] = Field(
+        default=None, description="Output/evidence of the last validation gate."
+    )
+    validation_passed: bool = Field(
+        default=False, description="The last validation gate was green."
+    )
+    delivery: Optional[str] = Field(
+        default=None, description="Final report of the last run (markdown)."
+    )
+    queued_at: Optional[str] = Field(default=None)
+    started_at: Optional[str] = Field(default=None)
+    finished_at: Optional[str] = Field(default=None)
+    last_round_at: Optional[str] = Field(default=None)
+    next_retry_at: Optional[str] = Field(default=None)
+    workspace_branch: Optional[str] = Field(default=None)
+    workspace_path: Optional[str] = Field(default=None)
+    requested_by: Optional[str] = Field(
+        default=None, description="Project/user that asked for autonomy (source side)."
+    )
+    updated_at: Optional[str] = Field(default=None)
+
+    def normalized(self) -> "TicketAutonomy":
+        """Return a clamped copy of the declaration."""
+        state = str(self.state or TICKET_AUTONOMY_OFF).strip().lower()
+        if state not in TICKET_AUTONOMY_STATES:
+            state = TICKET_AUTONOMY_OFF
+        profile = str(self.profile or "").strip().lstrip("@") or None
+        return TicketAutonomy(
+            enabled=bool(self.enabled),
+            profile=profile,
+            auto_accept=bool(self.auto_accept),
+            max_rounds=max(1, min(int(self.max_rounds or DEFAULT_TICKET_MAX_ROUNDS), MAX_TICKET_ROUNDS)),
+            max_runtime_minutes=max(
+                1,
+                min(
+                    int(self.max_runtime_minutes or DEFAULT_TICKET_RUNTIME_MINUTES),
+                    MAX_TICKET_RUNTIME_MINUTES,
+                ),
+            ),
+            budget_cxjcoins=max(0.0, float(self.budget_cxjcoins or 0.0)),
+            validation=self.validation.normalized(),
+            state=state,
+            rounds=max(0, int(self.rounds or 0)),
+            attempts=max(0, int(self.attempts or 0)),
+            last_error=self.last_error or None,
+            last_validation=self.last_validation or None,
+            validation_passed=bool(self.validation_passed),
+            delivery=self.delivery or None,
+            queued_at=self.queued_at or None,
+            started_at=self.started_at or None,
+            finished_at=self.finished_at or None,
+            last_round_at=self.last_round_at or None,
+            next_retry_at=self.next_retry_at or None,
+            workspace_branch=self.workspace_branch or None,
+            workspace_path=self.workspace_path or None,
+            requested_by=self.requested_by or None,
+            updated_at=self.updated_at or None,
+        )
+
+    @property
+    def active(self) -> bool:
+        """Return True while a run is in progress."""
+        return self.state in TICKET_AUTONOMY_ACTIVE_STATES
+
+    def mark_queued(self) -> None:
+        """Mark the ticket as queued for a run (clears the terminal metadata)."""
+        self.state = TICKET_AUTONOMY_QUEUED
+        self.queued_at = now_iso()
+        self.finished_at = None
+        self.last_error = None
+        self.last_validation = None
+        self.validation_passed = False
+        self.delivery = None
+        self.next_retry_at = None
+        self.updated_at = self.queued_at
+
+    def mark_running(self) -> None:
+        """Mark the ticket as running and start a new attempt."""
+        self.state = TICKET_AUTONOMY_RUNNING
+        self.started_at = now_iso()
+        self.finished_at = None
+        self.last_error = None
+        self.last_validation = None
+        self.validation_passed = False
+        self.delivery = None
+        self.next_retry_at = None
+        self.workspace_branch = None
+        self.workspace_path = None
+        self.rounds = 0
+        self.attempts = max(1, int(self.attempts or 0) + 1)
+        self.updated_at = self.started_at
+
+    def mark_passed(self, delivery: str = "") -> None:
+        """Mark the ticket as done and validated."""
+        self.state = TICKET_AUTONOMY_PASSED
+        self.finished_at = now_iso()
+        self.validation_passed = True
+        self.last_error = None
+        self.next_retry_at = None
+        self.delivery = delivery or None
+        self.updated_at = self.finished_at
+
+    def mark_failed(
+        self,
+        error: str,
+        *,
+        state: str = TICKET_AUTONOMY_FAILED,
+        next_retry_at: Optional[str] = None,
+    ) -> None:
+        """Mark the run as failed/blocked without closing the ticket."""
+        self.state = (
+            state if state in TICKET_AUTONOMY_STATES else TICKET_AUTONOMY_FAILED
+        )
+        self.finished_at = now_iso()
+        self.validation_passed = False
+        self.last_error = error or None
+        self.next_retry_at = next_retry_at or None
+        self.updated_at = self.finished_at
+
+    def summary(self) -> str:
+        """Return a one-line description of the autonomy state."""
+        if not self.enabled:
+            return "autonomy off"
+        parts = [f"autonomy {self.state}"]
+        if self.rounds:
+            parts.append(f"{self.rounds} round(s)")
+        if self.attempts:
+            parts.append(f"attempt {self.attempts}")
+        if self.validation_passed:
+            parts.append("validated")
+        return " · ".join(parts)
+
+
+def normalize_autonomy_state(value: Optional[str]) -> Optional[str]:
+    """
+    Normalize an autonomy state argument.
+
+    Args:
+        value: Raw state.
+
+    Returns:
+        One of :data:`TICKET_AUTONOMY_STATES`, or ``None`` when empty.
+
+    Raises:
+        ValueError: When the value is not a known autonomy state.
+    """
+    clean = str(value or "").strip().lower()
+    if not clean:
+        return None
+    if clean not in TICKET_AUTONOMY_STATES:
+        raise ValueError(
+            f"unknown autonomy state '{value}' "
+            f"(valid states: {', '.join(TICKET_AUTONOMY_STATES)})"
+        )
+    return clean
 
 
 def normalize_status(value: Optional[str]) -> Optional[str]:
@@ -332,6 +706,14 @@ class ChatTicket(BaseModel):
     history: List[ChatTicketEvent] = Field(
         default=[], description="Append-only ticketing history (both directions)"
     )
+    autonomy: Optional[TicketAutonomy] = Field(
+        default=None,
+        description=(
+            "Autonomous work declaration/state of the ticket. None means the "
+            "ticket is handled manually; an enabled block makes the target "
+            "project work it until the validation gate is green."
+        ),
+    )
 
     def append_event(
         self,
@@ -433,6 +815,13 @@ class TicketRecord(BaseModel):
             "requester's ledger only."
         ),
     )
+    autonomy: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Autonomy declaration and live state (rounds, attempts, validation, "
+            "workspace branch, delivery). None means the ticket is manual."
+        ),
+    )
     created_at: Optional[str] = Field(default=None)
     updated_at: Optional[str] = Field(default=None)
 
@@ -458,6 +847,7 @@ class TicketRecord(BaseModel):
         content = str(getattr(last, "content", "") or "").strip()
         if len(content) > 400:
             content = content[:397] + "..."
+        autonomy = getattr(ticket, "autonomy", None)
         return cls(
             ticket_id=str(getattr(ticket, "id", "") or getattr(chat, "id", "") or ""),
             chat_id=str(getattr(chat, "id", "") or ""),
@@ -479,6 +869,11 @@ class TicketRecord(BaseModel):
             last_message=content or None,
             last_message_at=str(getattr(last, "created_at", "") or None) if last else None,
             available=True,
+            autonomy=(
+                autonomy.model_dump()
+                if hasattr(autonomy, "model_dump")
+                else (autonomy if isinstance(autonomy, dict) else None)
+            ),
             created_at=getattr(ticket, "created_at", None) or getattr(chat, "created_at", None),
             updated_at=getattr(ticket, "updated_at", None) or getattr(chat, "updated_at", None),
         )
@@ -515,6 +910,7 @@ class TicketRecord(BaseModel):
             board=data.get("board"),
             column=data.get("column"),
             available=False,
+            autonomy=data.get("autonomy"),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
         )
@@ -543,9 +939,29 @@ class TicketRecord(BaseModel):
             "target_project_name": self.target_project_name,
             "board": self.board,
             "column": self.column,
+            "autonomy": self._ledger_autonomy(),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+    def _ledger_autonomy(self) -> Optional[Dict[str, Any]]:
+        """Return a compact, redaction-safe autonomy snapshot for the ledger.
+
+        The ledger is a cache read on every query and is written outside the
+        chat redaction path: it must never carry validation output or a delivery
+        body (they may quote test logs/secrets). The full evidence lives in the
+        ticket chat, which CISO redacts on write. The state, counters and a short
+        error are enough for the requester to follow the run.
+        """
+        if not self.autonomy:
+            return None
+        data = dict(self.autonomy)
+        for key in ("delivery", "last_validation"):
+            data.pop(key, None)
+        error = data.get("last_error")
+        if isinstance(error, str) and len(error) > 500:
+            data["last_error"] = error[:500] + "…"
+        return data
 
     def summary(self) -> str:
         """
@@ -555,8 +971,12 @@ class TicketRecord(BaseModel):
             ``"<id> · <kind> · <status> · <name> → <target>"``.
         """
         target = self.target_project_name or self.target_project_id or "?"
+        autonomy = ""
+        if self.autonomy and self.autonomy.get("enabled"):
+            autonomy = f" · {self.autonomy.get('state') or 'off'}"
         return (
-            f"{self.ticket_id} · {self.kind} · {self.status} · {self.name} → {target}"
+            f"{self.ticket_id} · {self.kind} · {self.status}{autonomy} · "
+            f"{self.name} → {target}"
         )
 
 # Made with ❤️ by codx-junior

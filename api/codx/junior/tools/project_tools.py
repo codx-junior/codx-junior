@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from codx.junior.settings import CODXJuniorSettings
 from codx.junior.engine import CODXJuniorSession
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.utils.utils import document_to_code_block, exec_command
 from codx.junior.ai import AI
 from codx.junior.model.model import CodxUser
@@ -1492,7 +1492,7 @@ def project_search(
         )
 
     # Reuse a single knowledge DB (and its embeddings model) across every query.
-    # Creating ``KnowledgeDB`` is expensive (embeddings model + Milvus connect),
+    # Creating ``KnowledgeDB`` is expensive (embeddings model + embedded index),
     # so it must not happen inside the query loop. Knowledge search is optional:
     # path/file matching still works when the DB is unavailable.
     knowledge_db = None

@@ -25,7 +25,7 @@ from langchain_core.documents import Document
 from codx.junior.ai import AI
 from codx.junior.context import find_relevant_documents
 from codx.junior.db import Chat
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.knowledge.knowledge_ai_search import KnowledgeAISearch
 from codx.junior.knowledge.knowledge_ai_search_message import build_search_message
 from codx.junior.settings import CODXJuniorSettings
@@ -39,14 +39,14 @@ class ChatKnowledge:
     Handles all knowledge search and context gathering operations for chat interactions.
 
     Wraps both AI-powered search (KnowledgeAISearch) and traditional RAG search
-    (Knowledge/Milvus) behind a unified interface used by ChatEngine.
+    (Knowledge/LanceDB) behind a unified interface used by ChatEngine.
 
     flowchart TD
         A[ChatKnowledge] --> B[ai_search_for_context]
         A --> C[select_documents_from_knowledge]
         A --> D[create_knowledge_search_query]
         B --> E[KnowledgeAISearch]
-        C --> F[Knowledge Milvus]
+        C --> F[Knowledge LanceDB]
         C --> G[find_relevant_documents]
         D --> H[AI keyword extraction]
     """

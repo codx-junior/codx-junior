@@ -1,9 +1,10 @@
 """Cross-project ticketing: a project requests a change on another project.
 
-A ticket is a **chat** placed by one project on a child project or on a linked
-project with read/write permission. The chat is stored by the TARGET project on
-its ``tickets`` board (so the target owns the queue) and the requester keeps a
-ledger entry (``.codx/tickets/tickets.json``) with the ticket id.
+A ticket is a **chat** placed by one project on a child project, a linked
+project (read-only, read/write or the legacy dependency list) or a parent
+project. The chat is stored by the TARGET project on its ``tickets`` board (so
+the target owns the queue) and the requester keeps a ledger entry
+(``.codx/tickets/tickets.json``) with the ticket id.
 
 These tests cover the rules the service enforces, which are the reason the
 feature exists:
@@ -12,7 +13,8 @@ feature exists:
 * the target decides ``accepted`` / ``declined`` / ``done``, never the requester;
 * the requester comments and abandons, never the target;
 * moving the card on the board (the human way) IS a status change;
-* a read-only linked project cannot receive tickets, a read/write one can.
+* every child, linked and parent project can receive a ticket (a read-only
+  link included: a ticket is a request, not a direct file write).
 """
 
 import json
@@ -61,6 +63,12 @@ def _project(root, name, project_id, **extra):
         The project settings.
     """
     (root / ".codx").mkdir(parents=True, exist_ok=True)
+    project_file = root / ".codx" / "project.json"
+    if not project_file.exists():
+        project_file.write_text(
+            json.dumps({"project_id": project_id, "project_name": name}),
+            encoding="utf-8",
+        )
     return CODXJuniorSettings(
         project_id=project_id,
         project_name=name,
@@ -236,15 +244,51 @@ def test_an_unknown_target_lists_the_valid_ones(cloud_and_child):
     assert targets[0]["relationship"] == "child"
 
 
-def test_a_read_only_linked_project_cannot_receive_tickets(tmp_path):
+def test_a_read_only_linked_project_can_receive_tickets(tmp_path):
     cloud_root = tmp_path / "cloud"
-    _linked_project(cloud_root)
+    linked_root = _linked_project(cloud_root)
     cloud = _project(cloud_root, "cloud", "cloud-id", read_project_dependencies="linked")
 
     service = TicketService(settings=cloud)
-    assert service.targets() == []
-    with pytest.raises(TicketError, match="unknown ticket target 'linked'"):
-        service.create(target="linked", name="x", description="y")
+    targets = service.targets()
+    assert [
+        (target["project_name"], target["relationship"], target["write"])
+        for target in targets
+    ] == [("linked", "linked", False)]
+
+    record = service.create(target="linked", name="x", description="y")
+    assert record.target_project_name == "linked"
+    assert len(_ticket_files(linked_root)) == 1
+
+
+def test_a_legacy_project_dependency_can_receive_tickets(tmp_path):
+    cloud_root = tmp_path / "cloud"
+    linked_root = _linked_project(cloud_root)
+    cloud = _project(cloud_root, "cloud", "cloud-id", project_dependencies="linked")
+
+    service = TicketService(settings=cloud)
+    assert [(target["project_name"], target["write"]) for target in service.targets()] == [
+        ("linked", False)
+    ]
+
+    record = service.create(target="linked", name="x", description="y")
+    assert record.target_project_name == "linked"
+    assert len(_ticket_files(linked_root)) == 1
+
+
+def test_a_child_project_can_place_a_ticket_on_its_parent(tmp_path):
+    cloud_root = tmp_path / "cloud"
+    cloud = _project(cloud_root, "cloud", "cloud-id")
+    _child_root, child = _child_project(cloud_root)
+
+    service = TicketService(settings=child)
+    assert [
+        (target["project_name"], target["relationship"]) for target in service.targets()
+    ] == [("cloud", "parent")]
+
+    record = service.create(target="cloud", name="Needs a migration", description="v2")
+    assert record.target_project_name == "cloud"
+    assert len(_ticket_files(cloud_root)) == 1
 
 
 def test_a_read_write_linked_project_can_receive_tickets(tmp_path):
@@ -255,7 +299,9 @@ def test_a_read_write_linked_project_can_receive_tickets(tmp_path):
     )
 
     service = TicketService(settings=cloud)
-    assert [target["relationship"] for target in service.targets()] == ["linked"]
+    assert [
+        (target["relationship"], target["write"]) for target in service.targets()
+    ] == [("linked", True)]
 
     record = service.create(target="linked", name="Needs a flag", description="--debug")
     assert record.target_project_name == "linked"

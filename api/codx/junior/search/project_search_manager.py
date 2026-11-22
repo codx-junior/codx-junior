@@ -1,6 +1,6 @@
 import logging
 from codx.junior.settings import CODXJuniorSettings
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 
 logger = logging.getLogger(__name__)
 

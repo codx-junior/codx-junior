@@ -3,12 +3,10 @@ Zero-touch AI configuration ("first run bootstrap").
 
 A demo/trial installation must be usable right after
 
-    docker run ... -e CODX_JUNIOR_AI_API_KEY=... codxjunior/codx-junior:demo
+    docker run ... -e CODX_JUNIOR_AI_API_KEY=... codxjuniorai/codx-junior:latest
 
 Without this module that is not possible: a fresh installation has no usable
-model, because the default :class:`GlobalSettings` points at the bundled
-``llmfactory``/Ollama provider, which only exists when the ``local-models``
-profile (LocalAI) is running.
+model until a provider is configured.
 
 This module reads provider settings from the environment, creates the
 :class:`AIProvider` and its :class:`AIModel` entries and fills the five global
@@ -16,10 +14,9 @@ model slots (``llm``/``rag``/``wiki``/``guardrail``/``embeddings``).
 
 Design rules
 ------------
-* **Idempotent and non destructive.** It only runs when no provider other than
-  the built-in ``llmfactory`` default has been configured, and never touches an
-  installation that was already configured from the UI. ``CODX_JUNIOR_AI_FORCE=1``
-  re-applies it (useful to rotate a key).
+* **Idempotent and non destructive.** It only runs when no provider has been
+  configured yet, and never touches an installation that was already configured
+  from the UI. ``CODX_JUNIOR_AI_FORCE=1`` re-applies it (useful to rotate a key).
 * **Offline.** No HTTP validation here: the container may start without network
   access. The UI validates the provider when a chat is sent, and
   ``POST /api/bootstrap/apply`` can be used to retry.
@@ -28,7 +25,7 @@ Design rules
 Environment variables (all optional except one provider + one key)
 ------------------------------------------------------------------
 CODX_JUNIOR_AI_PROVIDER              openai | deepseek | gemini | openrouter |
-                                     mistral | groq | ollama | anthropic | custom
+                                     mistral | groq | custom
 CODX_JUNIOR_AI_API_KEY               API key. Falls back to the provider's
                                      conventional variable (OPENAI_API_KEY,
                                      DEEPSEEK_API_KEY, GEMINI_API_KEY, ...).
@@ -80,8 +77,9 @@ ENV_ENABLED = "CODX_JUNIOR_AI_BOOTSTRAP"
 #: Environment flag that forces the bootstrap on an already configured instance.
 ENV_FORCE = "CODX_JUNIOR_AI_FORCE"
 
-#: Provider name used by the built-in default settings (see model/ai_model.py).
-DEFAULT_PROVIDER = "llmfactory"
+#: Legacy provider name that older settings may still contain. It is not a
+#: real provider anymore; the bootstrap replaces it on first run.
+LEGACY_DEFAULT_PROVIDERS = {"llmfactory", "ollama"}
 
 #: Names of the two model entries this module creates. They are also the values
 #: written into the global model slots, so the same names must be reused
@@ -148,14 +146,6 @@ PROVIDER_PRESETS: Dict[str, dict] = {
         "embeddings": "",
         "embeddings_dim": 0,
         "documentation": "https://console.groq.com/keys",
-    },
-    "ollama": {
-        "api_url": "http://localhost:11434/v1",
-        "api_key_env": "OLLAMA_API_KEY",
-        "llm": "llama3.1",
-        "embeddings": "nomic-embed-text",
-        "embeddings_dim": 768,
-        "documentation": "https://ollama.com/download",
     },
 }
 
@@ -282,8 +272,6 @@ def _detect_provider(config: Optional[Dict[str, Any]] = None) -> str:
         return name
 
     for preset_name, preset in PROVIDER_PRESETS.items():
-        if preset_name == "ollama":
-            continue
         if _env(preset["api_key_env"]):
             logger.info("AI bootstrap: detected provider '%s' from %s", preset_name, preset["api_key_env"])
             return preset_name
@@ -356,7 +344,7 @@ def build_provider_and_models(config: Optional[Dict[str, Any]] = None) -> Option
         )
         return None
 
-    if not api_key and provider_name != "ollama":
+    if not api_key:
         logger.warning(
             "AI bootstrap: no API key for provider '%s'. Set CODX_JUNIOR_AI_API_KEY. Skipping.",
             provider_name,
@@ -522,7 +510,7 @@ def bootstrap_ai_from_env(
         already_configured = [
             provider.name
             for provider in settings.ai_providers or []
-            if provider.name != DEFAULT_PROVIDER
+            if (provider.name or "").lower() not in LEGACY_DEFAULT_PROVIDERS
         ]
         force = force or bool(config) or _env(ENV_FORCE) == "1"
 
@@ -561,12 +549,12 @@ def bootstrap_ai_from_env(
 
         settings.ai_providers = [
             existing for existing in (settings.ai_providers or [])
-            if existing.name not in (provider.name, DEFAULT_PROVIDER)
+            if existing.name not in (provider.name, *LEGACY_DEFAULT_PROVIDERS)
         ] + [provider]
 
         settings.ai_models = [
             existing for existing in (settings.ai_models or [])
-            if existing.ai_provider not in (provider.name, DEFAULT_PROVIDER)
+            if existing.ai_provider not in (provider.name, *LEGACY_DEFAULT_PROVIDERS)
         ] + models
 
         for slot, value in slots.items():

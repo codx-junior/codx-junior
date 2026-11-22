@@ -1,5 +1,6 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
+import { $storex } from '@/store'
 import { priorityMeta } from './companyMeta'
 
 const props = defineProps({
@@ -107,6 +108,14 @@ function submit() {
   close()
 }
 
+// Creating a project is a company-level action: it opens the global "New
+// project" dialog (rendered once at the app root, driven by the ui store flag
+// `newProject`). Once the project exists, CompanyView reloads the company
+// references so the new project is immediately available to link.
+function openNewProject() {
+  $storex.ui.showNewProject(true)
+}
+
 function remove(project) {
   if (!window.confirm(`Unlink "${project.name || project.project_id}" from the company? The codx-junior project itself is untouched.`)) return
   emit('delete', project.project_id)
@@ -132,9 +141,19 @@ function openMissions(projectId) {
           The codx-junior projects this company runs. Missions are dispatched into these projects.
         </p>
       </div>
-      <button v-if="!allProjects" class="btn btn-sm btn-primary" :disabled="busy" @click="openLink">
-        <i class="fa-solid fa-link"></i> Link project
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          class="btn btn-sm btn-ghost border border-base-content/10"
+          :disabled="busy"
+          title="Create a new codx-junior project for this company"
+          @click="openNewProject"
+        >
+          <i class="fa-solid fa-folder-plus"></i> New project
+        </button>
+        <button v-if="!allProjects" class="btn btn-sm btn-primary" :disabled="busy" @click="openLink">
+          <i class="fa-solid fa-link"></i> Link project
+        </button>
+      </div>
     </header>
 
     <div v-if="allProjects" class="rounded-2xl border border-primary/20 bg-primary/5 p-4">

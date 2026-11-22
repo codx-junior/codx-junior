@@ -89,7 +89,7 @@ from codx.junior.meets.model import (
 from codx.junior.meets.profiles import participant_snapshot
 from codx.junior.meets.service import MeetingService, event_payload
 from codx.junior.meets.store import MeetStoreError
-from codx.junior.security.user_management import get_authenticated_user
+from codx.junior.security.user_management import get_optional_authenticated_user
 from codx.junior.voice.speech import SpeechSynthesizer, SpeechUnavailable
 
 logger = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def _resolve_identity(request: Request) -> tuple:
     Returns:
         Tuple of ``(username, sid, avatar)``.
     """
-    user = get_authenticated_user(request)
+    user = get_optional_authenticated_user(request)
     username = (
         getattr(user, "username", None)
         or request.headers.get("x-username")

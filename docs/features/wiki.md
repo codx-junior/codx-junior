@@ -157,14 +157,14 @@ docker compose up --build
 # open http://localhost:8080
 ```
 
-The assistant uses any OpenAI-compatible local endpoint (Ollama, vLLM, LM
+The assistant uses any OpenAI-compatible local endpoint (vLLM, LM
 Studio). It reads the generated `docs.json` and markdown pages directly and does
 not need a running codx-junior instance.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `WIKI_AI_BASE_URL` | `http://127.0.0.1:11434/v1` | Local OpenAI-compatible API |
-| `WIKI_AI_API_KEY` | `ollama` | Token for the local endpoint |
+| `WIKI_AI_API_KEY` | `local` | Token for the local endpoint |
 | `WIKI_AI_MODEL` | `qwen2.5:7b` | Model used by the assistant |
 | `WIKI_AI_TIMEOUT` | `120` | Request timeout in seconds |
 | `WIKI_PORT` | `8080` | Published site port |

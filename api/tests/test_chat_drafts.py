@@ -219,8 +219,11 @@ def test_conversation_serialisation_hides_the_draft():
     assert chat_api._conversation_messages(chat) == []
 
     # The composer that owns it still reads it through the dedicated route.
+    # Called as a plain function, the ``Depends`` default is not resolved: pass
+    # the anonymous caller explicitly (the legacy shared-draft behaviour).
     draft_payload = chat_api.api_get_chat_draft(
-        _FakeRequest(manager=manager, query_params={"chat_id": chat.id})
+        _FakeRequest(manager=manager, query_params={"chat_id": chat.id}),
+        authenticated=None,
     )
     assert draft_payload["content"] == DRAFT_TEXT
 

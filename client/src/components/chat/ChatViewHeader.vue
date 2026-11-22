@@ -3,6 +3,7 @@ import ChatModeSelector from './ChatModeSelector.vue'
 import ChatStatusSelector from './ChatStatusSelector.vue'
 import ChatCostSelector from './ChatCostSelector.vue'
 import ProjectDetailt from '../ProjectDetailt.vue'
+import TicketAutonomyControl from '../tickets/TicketAutonomyControl.vue'
 </script>
 
 <template>
@@ -63,6 +64,9 @@ import ProjectDetailt from '../ProjectDetailt.vue'
         >
           <i class="fa-solid fa-phone"></i>
         </button>
+
+        <!-- Autonomous ticket: only on ticket chats -->
+        <TicketAutonomyControl v-if="isTicket" :chat="chat" />
 
         <!-- Details toggle -->
         <button
@@ -426,6 +430,9 @@ import ProjectDetailt from '../ProjectDetailt.vue'
             <i class="fa-solid fa-file text-sm"></i>
           </button>
 
+          <!-- Autonomous ticket: only on ticket chats -->
+          <TicketAutonomyControl v-if="isTicket" :chat="chat" />
+
           <!-- Chat Mode Selector (After Parent Flags) -->
           <div class="shrink-0">
             <ChatModeSelector 
@@ -500,6 +507,10 @@ export default {
     // Channel chrome switch (see `channelMode` prop)
     isChannel() {
       return this.channelMode
+    },
+    // Cross-project tickets carry the autonomous-work control.
+    isTicket() {
+      return this.chat?.mode === 'ticket'
     },
     // The header shows a live call on this very chat.
     isOnVoiceCall() {

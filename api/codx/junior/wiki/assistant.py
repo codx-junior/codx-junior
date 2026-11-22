@@ -9,7 +9,7 @@ so the UI can offer citations.
 
 Retrieval is local and deterministic (title/description/tag scoring over the
 docs-site manifest plus full-text page reads). The knowledge base is queried as
-an optional enrichment; if Milvus is unavailable the assistant still works.
+an optional enrichment; if the knowledge index is unavailable the assistant still works.
 
 Mermaid diagram of the flow:
 

@@ -39,7 +39,9 @@ ticket chat remains the source of truth and every read refreshes the entry.
 | --- | --- | --- |
 | Child project (nested `.codx/project.json`) | ✅ | It lives inside the parent's tree and the parent may already write there |
 | Linked project with **read/write** permission (`read_write_project_dependencies`) | ✅ | Placing a ticket writes a chat in the target |
-| Linked project with **read-only** permission (`read_project_dependencies`) | ❌ | A read-only link cannot be written |
+| Linked project with **read-only** permission (`read_project_dependencies`) | ✅ | A ticket is a *request*: the target owns the resulting chat and decides what to do, so no file write permission is needed |
+| Linked project from the legacy `project_dependencies` list | ✅ | The same request channel, without granting direct file access |
+| Parent project (the project whose control plane contains this one) | ✅ | A child project may need to ask its parent for a change |
 | The project itself | ❌ | Handle the change directly |
 
 The target is resolved by **name, id or folder name**, and an unknown target
@@ -95,6 +97,7 @@ accept its own request.
 | `ticket_update(ticket_id, comment, status, kind, priority, name, profiles, assignees, note)` | Comment and/or move the ticket |
 | `ticket_query(ticket_id, direction, status, target_project, limit, include_closed)` | Read one ticket or list the queue of both directions |
 | `ticket_abandon(ticket_id, reason)` | Withdraw a ticket this project placed |
+| `ticket_autonomy(action, ticket_id, ...)` | Target-side: configure, queue, run, cancel and inspect an autonomous ticket |
 
 `direction` is `outgoing` (placed by this project), `incoming` (placed here) or
 `all`.
@@ -133,6 +136,12 @@ ticket_abandon(ticket_id="c4b9ef9f-...", reason="fixed in the platform")
 | POST | `/api/tickets/{ticket_id}/status` | Move the ticket (accept / decline / done) |
 | POST | `/api/tickets/{ticket_id}/abandon` | Withdraw a placed ticket |
 | GET | `/api/tickets/{ticket_id}/ledger` | Raw ledger entry of the requester |
+| GET | `/api/tickets/autonomy` | Autonomous tickets of the project + worker heartbeat |
+| GET | `/api/tickets/{ticket_id}/autonomy` | Autonomy state of one ticket (readable from both sides) |
+| POST | `/api/tickets/{ticket_id}/autonomy` | Configure autonomy (target only) |
+| POST | `/api/tickets/{ticket_id}/autonomy/queue` | Enable + queue the ticket |
+| POST | `/api/tickets/{ticket_id}/autonomy/run?wait=true` | Run now (optionally blocking) |
+| POST | `/api/tickets/{ticket_id}/autonomy/cancel` | Stop a queued/running ticket |
 
 ## 7. How a target processes its queue
 
@@ -147,7 +156,42 @@ Nothing special is required: the tickets are on a normal board.
 4. Move the card to `Done` when the change ships: the requester sees it on the
    next `ticket_query`.
 
-## 8. Code map
+## 8. Autonomous tickets
+
+A ticket can be worked by its target **without a human in the loop**. The
+requester asks for it with `ticket_create(..., autonomous=True)`; the target
+accepts the request (the safe gate), owns the profile and declares the
+validation gate. A trusted target may set `auto_accept=True` to skip the
+explicit acceptance:
+
+```python
+ticket_autonomy(
+    action="configure",
+    ticket_id="c4b9ef9f-...",
+    enabled=True,
+    profile="software_developer",
+    max_rounds=6,
+    validation={"source": "commands", "commands": ["pytest tests/test_login.py -q"]},
+)
+```
+
+The runtime (`codx/junior/ticketing/autonomy.py`) accepts the ticket, creates an
+isolated git worktree, then loops:
+
+1. the agent dives into the repository and implements the request;
+2. the runtime runs the validation gate (**never** the model's own claim);
+3. a red gate is fed back as the next round; a green gate closes the ticket
+   (`done`) with the delivery report and the evidence;
+4. `max_rounds`, `max_runtime_minutes` and `budget_cxjcoins` stop a runaway run;
+   a missing gate is reported as `blocked`, never as done.
+
+The background worker (`codx/junior/ticketing/worker.py`) takes the queued
+tickets; the API can also run one inline (`?wait=true`) for debugging. A
+cross-process lock guarantees one run per ticket. See
+[docs/features/autonomous-tickets.md](../../docs/features/autonomous-tickets.md)
+for the full contract.
+
+## 9. Code map
 
 | Path | Responsibility |
 | --- | --- |
@@ -156,10 +200,14 @@ Nothing special is required: the tickets are on a normal board.
 | `codx/junior/ticketing/__init__.py` | Model re-exports (`TicketService` is imported from `.service` to keep imports cycle-free) |
 | `codx/junior/tools/ticket_tools.py` | The four LLM tools + their JSON definitions |
 | `codx/junior/api/tickets.py` | The HTTP router (auto-discovered under `/api`) |
+| `codx/junior/ticketing/autonomy.py` | `TicketAutonomyService`: acceptance, rounds, validation gate, workspace and completion |
+| `codx/junior/ticketing/worker.py` | Background worker + heartbeat for queued autonomous tickets |
+| `codx/junior/ticketing/prompts.py` | Work-order and failure prompts of the autonomous loop |
 | `codx/junior/db.py` | `Chat.ticket` field (the ticketing payload of a chat) |
 | `tests/test_ticketing.py` | Lifecycle, ownership, board, ledger and tool coverage |
+| `tests/test_ticket_autonomy.py` | Autonomous loop, validation gate, candidates and requester view |
 
-## 9. Invariants
+## 10. Invariants
 
 * A ticket id **is** a chat id: one identity, no second lookup table.
 * The ticket chat is stored by the **target** (`owner_project_id`), never by the

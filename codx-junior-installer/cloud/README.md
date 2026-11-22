@@ -1,10 +1,15 @@
 # codx-junior on a cloud VM — unattended install
 
+> **Updated:** `bootstrap.sh` is now a compatibility shim to
+> [`../install.sh`](../install.sh). The cloud-init/AWS/GCP files keep working:
+> with no `--mode`/`--domain` the shim selects `--mode server --no-tls`
+> (plain HTTP on the published port), exactly the old behaviour. Add
+> `--domain x.example.com --acme-email ops@example.com` for Traefik + ACME, or
+> `--mode dind` for an isolated nested instance.
+
 One script, no questions, no interactive prompt: a fresh VM becomes a running
-codx-junior. This is the automated path on top of the
-[demo installer](../demo/README.md) — it installs Docker, downloads the
-repository, writes the settings and then runs the same `demo/up.sh` a human
-would run, so there is only one place that knows how the stack starts.
+codx-junior. It installs Docker, materializes the runtime assets, writes the
+settings and starts the single-container stack.
 
 > **Shortcut:** from anywhere, without cloning, this directory is reachable
 > through the one-line installer in the repository root, which also handles
@@ -50,7 +55,7 @@ chat works immediately.
 | | |
 |---|---|
 | VM | 2 vCPU, **4 GB RAM**, 20 GB disk, x86_64 (Ubuntu 22.04+/Debian 12+, or Amazon Linux 2023) |
-| AI key | one key from OpenAI, DeepSeek, Gemini, OpenRouter, Mistral or Groq (or an Ollama endpoint you own) |
+| AI key | one key from OpenAI, DeepSeek, Gemini, OpenRouter, Mistral or Groq (or any OpenAI-compatible endpoint you own) |
 | Network | inbound TCP `19981` — from your IP, or 80/443 if you put a TLS proxy in front (see §6) |
 | Root | the script needs `sudo` (it installs Docker) |
 
@@ -173,8 +178,8 @@ Precedence: **default < settings file < environment < command line flags**.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `CODX_JUNIOR_AI_PROVIDER` | `deepseek` | `openai` `deepseek` `gemini` `openrouter` `mistral` `groq` `ollama` `custom` — it also decides the models |
-| `CODX_JUNIOR_AI_API_KEY` | — | **required** (not for a local `ollama`) |
+| `CODX_JUNIOR_AI_PROVIDER` | `deepseek` | `openai` `deepseek` `gemini` `openrouter` `mistral` `groq` `custom` — it also decides the models |
+| `CODX_JUNIOR_AI_API_KEY` | — | **required** (any non-empty value for a local server that does not check it) |
 | `CODX_JUNIOR_AI_API_KEY_FILE` | — | read the key from a file instead (keeps it out of `ps`/argv) |
 | `CODX_JUNIOR_AI_API_URL` | preset | OpenAI-compatible endpoint; required for `custom` |
 | `CODX_JUNIOR_AI_MODEL` | preset | override the chat model |
@@ -196,15 +201,18 @@ Flags of the same name exist for everything (`--provider`, `--key`, `--port`,
 | Path | Contents |
 |---|---|
 | `/opt/codx-junior/src` | git checkout of this repository (upgrade with `codx-junior upgrade`) |
-| `/opt/codx-junior/src/codx-junior-installer/demo/.env` | the settings `up.sh` wrote (mode 600 — **it holds the API key**) |
+| `/opt/codx-junior/lib` | installer/runtime assets used by the systemd unit and CLI |
+| `/opt/codx-junior/config/<instance>.env` (or the `--env-file` you passed) | the settings file (mode 600 — **it holds the API key**) |
+| `/opt/codx-junior/data/settings` | global settings, users, chats (bind mount) |
+| `/opt/codx-junior/data/analytics` | AI logs, token usage (bind mount) |
 | `/opt/codx-junior/projects` | your projects |
-| `/etc/codx-junior/settings.env` | the input settings (mode 600) |
-| `/etc/default/codx-junior` | home + port for the `codx-junior` CLI |
+| `/etc/codx-junior/settings.env` | the input settings when the caller passes it (mode 600) |
+| `/usr/local/bin/codx-junior` | operations CLI |
 | `/var/log/codx-junior-install.log` | full install log |
-| docker volumes `codx-junior-settings`, `codx-junior-analytics` | global settings, AI logs, token usage |
 
-The key is stored twice on purpose: `settings.env` is what you edit,
-`demo/.env` is what the container reads. Both are `600 root`.
+The key lives in the settings file (and in the input file when one is passed);
+both are mode 600. There are no settings/analytics named volumes in host mode:
+the data is under `<home>/data`, which is easier to back up.
 
 ## 8. Verify
 
@@ -241,7 +249,7 @@ The installer also puts a small CLI on the machine:
 idempotent; projects and settings are untouched).
 
 **Change the provider later:** edit `/etc/codx-junior/settings.env`, then
-`codx-junior up` — `up.sh` re-applies the configuration. You can also pick a
+`codx-junior up` — `install.sh up` re-applies the configuration. You can also pick a
 different provider in the UI (Settings → AI); the preset models come from the
 same catalogue the installer uses.
 
@@ -268,7 +276,7 @@ sudo rm -rf /opt/codx-junior /etc/codx-junior /etc/default/codx-junior /usr/loca
 |---|---|
 | `permission denied while trying to connect to the Docker daemon` | the script did not finish installing Docker; run `sudo systemctl start docker` and re-run |
 | install log stops after "Downloading the repository" | no outbound network / GitHub blocked — set `CODX_JUNIOR_REPO` to your mirror |
-| stops at "pull access denied" | `codxjunior/codx-junior:demo` is **not published yet**; the installer falls back to a local build. On a small VM set `CODX_JUNIOR_BUILD=1` so it does not retry the pull, and give it 4 GB RAM |
+| stops at "pull access denied" | `codxjuniorai/codx-junior:latest` is not reachable; build the image from the checkout with `--build` (the complete image needs ~8–12 GB disk) |
 | killed during the build (`exit 137`) | out of memory while building: use a 4 GB instance, or a machine with swap |
 | URL unreachable from your laptop | the port is blocked: cloud firewall (Hetzner/DO/AWS) or `ufw status` on the host |
 | page loads but chats fail | the provider key was rejected: `docker exec codx-junior-demo curl -fsS http://127.0.0.1:19980/api/bootstrap` and `codx-junior logs` |
@@ -280,7 +288,7 @@ Single container, single user, no TLS of its own:
 
 - no workspaces, browser/computer sessions or the infra panel — those need
   `docker.sock` and are part of the [server deployment](../README.md#6-server-deployment-tls-workspaces-local-models)
-- no local models (LocalAI/Ollama are not started; bring your own endpoint via
+- no local models (bring your own OpenAI-compatible endpoint via
   `custom`)
 - no vector database container — knowledge/RAG runs on embedded LanceDB
 - no automatic domain or certificate — the Caddy snippet in §6 is the whole story

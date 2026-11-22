@@ -84,7 +84,7 @@ class WikiIndex:
         except Exception as ex:
             logger.error("Error saving wiki index: %s", ex)
 
-    def index_to_milvus(self, index: Dict) -> None:
+    def index_to_knowledge(self, index: Dict) -> None:
         documents = []
         indexed_sources = set()
 
@@ -169,9 +169,9 @@ class WikiIndex:
         if documents:
             try:
                 self.db.index_documents(documents)
-                logger.info("Indexed %d wiki documents to Milvus", len(documents))
+                logger.info("Indexed %d wiki documents to the knowledge base", len(documents))
             except Exception as ex:
-                logger.error("Error indexing wiki to Milvus: %s", ex)
+                logger.error("Error indexing wiki to the knowledge base: %s", ex)
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

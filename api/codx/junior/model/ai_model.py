@@ -1,13 +1,12 @@
-import os
 from pydantic import BaseModel, Field
 from enum import Enum
 from typing import Union, Optional, List
 
 class AIProvider(BaseModel):
     name: Optional[str] = Field(default="", description="Provider name") 
-    provider: Optional[str] = Field(default="llmfactory", description="OpenAI compatible LLM protocols like: OpenAI, Ollama") 
-    api_url: Optional[str] = Field(description="Optional url if provider is remote", default="http://0.0.0.0:11434/v1")
-    api_key: Optional[str] = Field(description="Optional api key", default="sk-llmfactory")
+    provider: Optional[str] = Field(default="", description="OpenAI-compatible provider protocol")
+    api_url: Optional[str] = Field(description="Optional url if provider is remote", default="")
+    api_key: Optional[str] = Field(description="Optional api key", default="")
     admin_url: Optional[str] = Field(description="Optional url if provider has an admin url", default="")
     pricing_url: Optional[str] = Field(description="Optional url to the provider's pricing page", default="")
     input_k_tokens_cxjcoins: Optional[float] = Field(
@@ -155,27 +154,5 @@ class AISettings(BaseModel):
         description="Resolved explicit thinking mode (enabled/disabled)."
     )
 
-
-KNOWLEDGE_MODEL = os.environ.get('CODX_JUNIOR_LLMFACTORY_KNOWLEDGE_MODEL')
-EMBEDDINGS_MODEL = os.environ.get('CODX_JUNIOR_LLMFACTORY_EMBEDDINGS_MODEL')
-
-OLLAMA_PROVIDER = AIProvider(name="llmfactory",
-                            provider="llmfactory",
-                            api_url=os.environ.get('CODX_JUNIOR_LLMFACTORY_URL'),
-                            api_key=os.environ.get('CODX_JUNIOR_LLMFACTORY_KEY'))
-
-OLLAMA_EMBEDDINGS_MODEL = AIModel(name="embeddings",
-                                ai_model=EMBEDDINGS_MODEL, 
-                                model_type=AIModelType.embeddings,
-                                ai_provider="llmfactory",
-                                settings=AIEmbeddingModelSettings(chunk_size=2048, vector_size=768),
-                                url=f"https://llmfactory.com/library/{EMBEDDINGS_MODEL}")
-
-OLLAMA_KNOWLEDGE_MODEL = AIModel(name="knowledge",
-                            ai_model=KNOWLEDGE_MODEL,
-                            model_type=AIModelType.llm,
-                            ai_provider="llmfactory",
-                            settings=AILLMModelSettings(),
-                            url=f"https://llmfactory.com/library/{KNOWLEDGE_MODEL}")
 
 # Made with ❤️ by codx-junior

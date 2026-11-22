@@ -10,7 +10,7 @@ Log in with the `admin` user. The first password you type becomes the admin pass
 
 Open **Settings → Global settings → AI Models**.
 
-1. Add a **provider**: a name, its OpenAI-compatible API URL and an API key. OpenAI, Ollama, LocalAI, LiteLLM and vLLM all work. You can also set the provider's pricing page and its cost in cxjcoins per 1K tokens.
+1. Add a **provider**: a name, its OpenAI-compatible API URL and an API key. Any OpenAI-compatible endpoint works, including a local server you run yourself. You can also set the provider's pricing page and its cost in cxjcoins per 1K tokens.
 2. Add the **models** you want to use from that provider.
 3. Pick the default model for each purpose:
 

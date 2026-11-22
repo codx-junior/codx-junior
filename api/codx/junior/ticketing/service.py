@@ -7,10 +7,11 @@ The service is the single implementation behind the LLM tools
 It owns three things:
 
 1. **Who may be ticketed** — :meth:`TicketService.targets` resolves the projects
-   this one can place tickets on: its **child projects** and the **linked
-   projects with read/write permission**. A read-only link cannot receive a
-   ticket: a ticket creates a chat inside the target project, and that is a
-   write.
+   this one can place tickets on: its **child projects**, **every linked
+   project** (the legacy ``project_dependencies`` list, read-only links and
+   read/write links) and the projects that **contain it** (its parents). A ticket
+   is a request, not a direct edit, so a read-only link may receive one: the
+   target owns the chat and decides what to do with the request.
 2. **Where the ticket lives** — the ticket chat is stored by the TARGET project
    (``Chat.owner_project_id``) on its ``tickets`` board, so the target owns the
    queue and processes it with the tooling it already has (boards, profiles,
@@ -71,6 +72,7 @@ from codx.junior.ticketing.model import (
     TICKET_ACTION_PLACED,
     TICKET_ACTION_STATUS,
     TICKET_ACTION_UPDATED,
+    TICKET_AUTONOMY_QUEUED,
     TICKET_BOARD,
     TICKET_BOARD_DESCRIPTION,
     TICKET_DEFAULT_KIND,
@@ -78,6 +80,7 @@ from codx.junior.ticketing.model import (
     TICKET_MODE,
     TICKET_RELATION_CHILD,
     TICKET_RELATION_LINKED,
+    TICKET_RELATION_PARENT,
     TICKET_SIDE_SOURCE,
     TICKET_SIDE_TARGET,
     TICKET_SOURCE_STATUSES,
@@ -86,6 +89,7 @@ from codx.junior.ticketing.model import (
     TICKET_STATUS_OPEN,
     TICKET_TARGET_STATUSES,
     TICKET_TERMINAL_STATUSES,
+    TicketAutonomy,
     TicketRecord,
     can_transition,
     column_for_status,
@@ -247,30 +251,140 @@ class TicketService:
     # Targets
     # ------------------------------------------------------------------
 
-    def targets(self) -> List[Dict[str, Any]]:
+    def _ancestor_projects(self) -> List["CODXJuniorSettings"]:
         """
-        Return the projects this one may place a ticket on.
+        Return the projects whose control plane contains this project.
 
-        Allowed targets are the **child projects** (the project and every
-        ``.codx/project.json`` nested inside it) and the **linked projects with
-        read/write permission** (``read_write_project_dependencies``). A
-        read-only link is excluded on purpose: placing a ticket writes a chat in
-        the target project.
+        A child project often needs to ask the parent for a change, and the
+        parent is linked to it by the same tree relation that makes it a parent.
+        The ancestors are resolved from disk (one ``.codx/project.json`` per
+        containing folder), never from the global catalogue.
 
         Returns:
-            A list of ``{project_id, project_name, relationship, write, path}``
-            dicts, deduplicated by control-plane path and without the current
-            project.
+            The ancestor project settings, nearest first. Missing or broken
+            manifests are skipped so a ticket is never blocked by one folder.
+        """
+        from codx.junior.settings import CODXJuniorSettings
+
+        root = _clean(getattr(self.settings, "abs_project_path", "")) or os.path.dirname(
+            _clean(getattr(self.settings, "codx_path", ""))
+        )
+        if not root:
+            return []
+        try:
+            current = os.path.dirname(os.path.normpath(os.path.abspath(root)))
+        except (OSError, ValueError):  # pragma: no cover - defensive
+            return []
+
+        projects: List["CODXJuniorSettings"] = []
+        visited = set()
+        while current and current not in visited:
+            visited.add(current)
+            project_file = os.path.join(current, ".codx", "project.json")
+            if os.path.isfile(project_file):
+                try:
+                    projects.append(
+                        CODXJuniorSettings.from_project_file(project_file)
+                    )
+                except Exception as ex:  # pragma: no cover - never break a ticket
+                    logger.warning(
+                        "ticketing: cannot read ancestor project '%s': %s",
+                        project_file,
+                        ex,
+                    )
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return projects
+
+    def _target_candidates(
+        self,
+    ) -> List[Tuple["CODXJuniorSettings", str, bool]]:
+        """
+        Return every project this one may place a ticket on, with its relation.
+
+        A ticket is a request, not a direct edit, so the file-level write
+        permission of a link does **not** decide whether it can receive one. The
+        candidates are, in priority order:
+
+        * **child** projects nested anywhere in this project's tree;
+        * **linked** projects from every dependency list (legacy
+          ``project_dependencies``, read-only ``read_project_dependencies`` and
+          read/write ``read_write_project_dependencies``);
+        * **parent** projects, the ones whose control plane contains this one.
+
+        Returns:
+            ``(settings, relationship, writable)`` tuples, deduplicated by
+            control-plane path and without the current project. ``writable`` is
+            the file-tool permission of the relation, not a ticket restriction.
         """
         own_path = _clean(getattr(self.settings, "codx_path", ""))
-        result: List[Dict[str, Any]] = []
+        candidates: List[Tuple["CODXJuniorSettings", str, bool]] = []
         seen = {own_path}
 
-        def _add(project: Any, relationship: str) -> None:
+        def _add(project: Any, relationship: str, writable: bool) -> None:
             path = _clean(getattr(project, "codx_path", ""))
             if not path or path in seen:
                 return
             seen.add(path)
+            candidates.append((project, relationship, bool(writable)))
+
+        try:
+            for project in self.settings.get_sub_projects() or []:
+                _add(project, TICKET_RELATION_CHILD, True)
+        except Exception as ex:  # pragma: no cover - discovery must never break
+            logger.warning("ticketing: cannot read child projects: %s", ex)
+
+        write_paths = set()
+        try:
+            write_paths = {
+                _clean(getattr(project, "codx_path", ""))
+                for project in self.settings.get_read_write_dependency_projects() or []
+            }
+        except Exception as ex:  # pragma: no cover - detection must never break
+            logger.warning(
+                "ticketing: cannot read read/write linked projects: %s", ex
+            )
+
+        try:
+            for project in self.settings.get_dependency_projects() or []:
+                _add(
+                    project,
+                    TICKET_RELATION_LINKED,
+                    _clean(getattr(project, "codx_path", "")) in write_paths,
+                )
+        except Exception as ex:  # pragma: no cover - detection must never break
+            logger.warning("ticketing: cannot read linked projects: %s", ex)
+
+        try:
+            for project in self._ancestor_projects() or []:
+                _add(project, TICKET_RELATION_PARENT, False)
+        except Exception as ex:  # pragma: no cover - detection must never break
+            logger.warning("ticketing: cannot read parent projects: %s", ex)
+
+        return candidates
+
+    def targets(self) -> List[Dict[str, Any]]:
+        """
+        Return the projects this one may place a ticket on.
+
+        Allowed targets are the **child projects** (every
+        ``.codx/project.json`` nested inside this project), **every linked
+        project** (legacy, read-only or read/write dependency) and the **parent
+        projects** that contain this one. A ticket is a request, so a read-only
+        link may receive one even though the file tools cannot write there.
+
+        Returns:
+            A list of ``{project_id, project_name, relationship, write, path}``
+            dicts, deduplicated by control-plane path and without the current
+            project. ``relationship`` is ``child``, ``linked`` or ``parent``;
+            ``write`` reports the file-tool permission of the relation (it does
+            not restrict ticketing).
+        """
+        result: List[Dict[str, Any]] = []
+        for project, relationship, writable in self._target_candidates():
+            path = _clean(getattr(project, "codx_path", ""))
             result.append(
                 {
                     "project_id": _clean(getattr(project, "project_id", "")) or None,
@@ -279,25 +393,10 @@ class TicketService:
                         _clean(getattr(project, "abs_project_path", "")) or path
                     ),
                     "relationship": relationship,
-                    "write": True,
+                    "write": writable,
                     "path": _clean(getattr(project, "abs_project_path", "")) or None,
                 }
             )
-
-        try:
-            for project in self.settings.get_sub_projects() or []:
-                _add(project, TICKET_RELATION_CHILD)
-        except Exception as ex:  # pragma: no cover - discovery must never break
-            logger.warning("ticketing: cannot read child projects: %s", ex)
-
-        try:
-            for project in self.settings.get_read_write_dependency_projects() or []:
-                _add(project, TICKET_RELATION_LINKED)
-        except Exception as ex:  # pragma: no cover - detection must never break
-            logger.warning(
-                "ticketing: cannot read read/write linked projects: %s", ex
-            )
-
         return result
 
     def target_names(self) -> List[str]:
@@ -323,15 +422,17 @@ class TicketService:
 
         Raises:
             TicketError: When no target was given, it is the current project, or
-                it is not a child // read-write linked project of this one (the
+                it is not a child, linked or parent project of this one (the
                 message lists the valid targets).
         """
         wanted = _clean(reference).lower()
-        available = self.targets()
         if not wanted:
             raise TicketError(
                 "a target project is required; valid targets: "
-                + (", ".join(self.target_names()) or "none (no child or read/write linked project)")
+                + (
+                    ", ".join(self.target_names())
+                    or "none (no child, linked or parent project)"
+                )
             )
 
         own_names = {
@@ -346,7 +447,7 @@ class TicketService:
                 "directly instead"
             )
 
-        for candidate in self._target_settings(available):
+        for candidate, _relationship, _writable in self._target_candidates():
             names = {
                 _clean(getattr(candidate, "project_id", "")).lower(),
                 _clean(getattr(candidate, "project_name", "")).lower(),
@@ -371,31 +472,25 @@ class TicketService:
             available: Output of :meth:`targets`.
 
         Returns:
-            Matching settings, resolved without scanning the global catalogue.
+            Matching settings, resolved from the same candidates ``targets()``
+            uses (children, every linked project and parents).
         """
-        wanted_ids = {
-            _clean(target.get("project_id")) for target in available if target.get("project_id")
+        wanted_paths = {
+            _clean(target.get("path")) for target in available if target.get("path")
         }
+        wanted_ids = {
+            _clean(target.get("project_id"))
+            for target in available
+            if target.get("project_id")
+        }
+        if not wanted_paths and not wanted_ids:
+            return []
         projects: List["CODXJuniorSettings"] = []
-        candidates: List[Any] = []
-        try:
-            candidates.extend(self.settings.get_sub_projects() or [])
-        except Exception:  # pragma: no cover - defensive
-            pass
-        try:
-            candidates.extend(self.settings.get_read_write_dependency_projects() or [])
-        except Exception:  # pragma: no cover - defensive
-            pass
-        seen = set()
-        for project in candidates:
-            key = _clean(getattr(project, "codx_path", ""))
-            if not key or key in seen:
-                continue
-            seen.add(key)
+        for project, _relationship, _writable in self._target_candidates():
+            path = _clean(getattr(project, "abs_project_path", ""))
             project_id = _clean(getattr(project, "project_id", ""))
-            if wanted_ids and project_id and project_id not in wanted_ids:
-                continue
-            projects.append(project)
+            if path in wanted_paths or (project_id and project_id in wanted_ids):
+                projects.append(project)
         return projects
 
     # ------------------------------------------------------------------
@@ -744,13 +839,17 @@ class TicketService:
         tags: Optional[List[str]] = None,
         assignees: Optional[List[str]] = None,
         content: Optional[str] = None,
+        autonomous: bool = False,
+        autonomy_profile: Optional[str] = None,
+        auto_accept: bool = False,
     ) -> TicketRecord:
         """
         Place a ticket on another project and return its id.
 
         Args:
-            target: Target project (name, id or folder) — must be a child project
-                or a read/write linked project (see :meth:`targets`).
+            target: Target project (name, id or folder) — must be a child,
+                a linked project (read-only or read/write) or a parent project
+                (see :meth:`targets`).
             name: Short title of the request.
             description: Complete request (context, expected behaviour,
                 acceptance criteria). This is what the target reads.
@@ -762,6 +861,17 @@ class TicketService:
             tags: Optional tags for triage.
             assignees: Optional usernames of the target project.
             content: First message; defaults to the description.
+            autonomous: Ask the target to work the ticket autonomously. The
+                target still owns the validation gate; this only enables the
+                queue so the worker picks it up.
+            autonomy_profile: Optional profile (agent) hint for the run.
+            auto_accept: Let the autonomous runtime accept the ticket on its
+                first run. Defaults to False: the target project accepts the
+                request (card move or `ticket_autonomy` enable/queue) before any
+                code runs, which is the safe gate for cross-project requests.
+                This is an internal/target-side flag: the source-facing
+                ``ticket_create`` tool and ``POST /api/tickets`` never expose it,
+                so a requester cannot bypass the target's consent.
 
         Returns:
             The created :class:`TicketRecord` (its ``ticket_id`` is the id to
@@ -811,6 +921,26 @@ class TicketService:
             note=f"ticket placed on '{target_name}'",
             status=TICKET_STATUS_OPEN,
         )
+        if autonomous:
+            # The requester can only ask for autonomy; the target owns the
+            # profile, the validation gate and the decision to run it.
+            ticket.autonomy = TicketAutonomy(
+                enabled=True,
+                profile=_clean(autonomy_profile) or None,
+                auto_accept=bool(auto_accept),
+                state=TICKET_AUTONOMY_QUEUED,
+                queued_at=now_iso(),
+                requested_by=self.user,
+                updated_at=now_iso(),
+            )
+            ticket.append_event(
+                action=TICKET_ACTION_UPDATED,
+                project_id=source_project_id,
+                project_name=source_name,
+                user=self.user,
+                note="autonomous work requested by the requester",
+                status=TICKET_STATUS_OPEN,
+            )
 
         message = Message(
             doc_id=str(uuid.uuid4()),
@@ -1295,6 +1425,16 @@ class TicketService:
             lines.append(f"- reference: {record.reference}")
         if record.column:
             lines.append(f"- board: {record.board or TICKET_BOARD} / {record.column}")
+        autonomy = record.autonomy or {}
+        if autonomy.get("enabled"):
+            detail = f"- autonomy: **{autonomy.get('state') or 'off'}**"
+            if autonomy.get("rounds"):
+                detail += f" · {autonomy['rounds']} round(s)"
+            if autonomy.get("validation_passed"):
+                detail += " · validated"
+            if autonomy.get("last_error"):
+                detail += f" · last error: {autonomy['last_error']}"
+            lines.append(detail)
         if record.last_message:
             lines.append(f"- last message: {record.last_message}")
         return "\n".join(lines)

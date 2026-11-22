@@ -1,0 +1,80 @@
+# =============================================================================
+# codx-junior — TRAEFIK MASTER overlay
+#
+# Edge proxy for a standalone server: binds :80/:443, obtains ACME
+# certificates (HTTP-01) and routes the public domain(s) to the app on :19981.
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.master.yaml up -d
+#
+# Required interpolation variables (written by codx-junior-installer/install.sh):
+#   CODX_DOMAIN_RULE   Host(`a.example.com`) || Host(`b.example.com`)
+#   CODX_ACME_EMAIL    account e-mail for Let's Encrypt
+#   CODX_INSTANCE      instance slug (router/container names)
+#   CODX_PROXY_NETWORK Docker network shared with the proxy (default codx-proxy)
+#
+# Do NOT also run a reverse proxy in front of this one unless it forwards
+# X-Forwarded-* AND you switch the app to slave mode. Two masters would fight
+# for ports 80/443 and issue duplicate certificates.
+# =============================================================================
+services:
+  codx-junior:
+    networks:
+      - internal
+      - proxy
+    labels:
+      - traefik.docker.network=${CODX_PROXY_NETWORK:-codx-proxy}
+      # HTTPS: the public entrypoint, certificate from the resolver below.
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.entrypoints=websecure
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.tls=true
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.tls.certresolver=${CODX_CERT_RESOLVER:-letsencrypt}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}.service=${CODX_INSTANCE:-codx-junior}
+      # HTTP: redirect to HTTPS. Keep a dedicated router (instead of the global
+      # entrypoint redirect) so ACME HTTP-01 challenges are never redirected.
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-http.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-http.entrypoints=web
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-http.middlewares=${CODX_INSTANCE:-codx-junior}-redirect
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-http.service=${CODX_INSTANCE:-codx-junior}
+      - traefik.http.middlewares.${CODX_INSTANCE:-codx-junior}-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.${CODX_INSTANCE:-codx-junior}-redirect.redirectscheme.permanent=true
+
+  traefik:
+    image: ${CODX_TRAEFIK_IMAGE:-traefik:v3.3}
+    container_name: ${CODX_INSTANCE:-codx-junior}-traefik
+    restart: unless-stopped
+    command:
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${CODX_PROXY_NETWORK:-codx-proxy}
+      - --providers.http.endpoint=http://codx-junior:19980/api/traefik/config
+      - --providers.http.pollinterval=10s
+      - --providers.http.polltimeout=5s
+      - --api.dashboard=false
+      - --log.level=INFO
+      - --accesslog=true
+      - --certificatesresolvers.${CODX_CERT_RESOLVER:-letsencrypt}.acme.email=${CODX_ACME_EMAIL:?CODX_ACME_EMAIL is required}
+      - --certificatesresolvers.${CODX_CERT_RESOLVER:-letsencrypt}.acme.storage=/acme/acme.json
+      - --certificatesresolvers.${CODX_CERT_RESOLVER:-letsencrypt}.acme.httpchallenge.entrypoint=web
+      # --acme-ca staging points this at the staging directory (no rate-limit
+      # pain while rehearsing DNS/firewall); prod is the default.
+      - --certificatesresolvers.${CODX_CERT_RESOLVER:-letsencrypt}.acme.caserver=${CODX_ACME_CA_URL:-https://acme-v02.api.letsencrypt.org/directory}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Read-only: Traefik must never be able to change host containers.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # acme.json must be a file owned by root, mode 600. The installer creates
+      # ${CODX_DATA_DIR}/traefik with those permissions before starting.
+      - ${CODX_DATA_DIR:?CODX_DATA_DIR is required}/traefik:/acme
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    name: ${CODX_PROXY_NETWORK:-codx-proxy}
+    # false: this instance owns the network; true: a master Traefik on the host
+    # already created it. Slave mode forces true.
+    external: ${CODX_PROXY_EXTERNAL:-false}

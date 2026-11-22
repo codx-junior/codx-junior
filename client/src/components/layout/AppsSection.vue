@@ -78,11 +78,17 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         @click="handleNavigateToNewChat"
       />
 
+      <!-- New company: a company is the top-level element ABOVE projects, so
+           creating one lives here, next to its workspace. It opens the company
+           shell with the create dialog already requested (`?new=1`) — the
+           dialog itself is owned by views/CompanyView.vue, so it is never
+           duplicated. Creating a project is a company-level action and lives
+           in the company workspace (Projects panel). -->
       <NavItem
-        icon="fas fa-folder-plus"
-        label="New Project"
+        icon="fas fa-building-circle-arrow-right"
+        label="New company"
         :is-collapsed="isCollapsed"
-        @click="handleNewProject"
+        @click="handleNewCompany"
       />
 
       <!-- Tasks: the general table of the latest tasks across every board.
@@ -289,10 +295,21 @@ export default {
           : `Unpinned ${project.project_name}`
       })
     },
-    // Opens the global "New project" modal. The modal itself is rendered once
-    // at the app root and driven by the ui store flag `newProject`.
-    handleNewProject() {
-      this.$ui.showNewProject(true)
+    // New company: opens the company shell asking it to show its "Create
+    // company" dialog (query flag `new`). It is a router push — the company
+    // shell is a full screen, not a project panel.
+    handleNewCompany() {
+      const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
+      const router = this.$storex.$router
+      if (company?.slug) {
+        router.push({
+          name: 'company-home',
+          params: { companySlug: company.slug },
+          query: { new: '1' }
+        }).catch(() => {})
+      } else {
+        router.push('/').catch(() => {})
+      }
       this.$emit('close')
     },
     handleNavigateToNewChat() {

@@ -228,14 +228,14 @@ def _username(user: Optional[CodxUser]) -> str:
     """
     Return the username of *user*, tolerating an unauthenticated session.
 
-    ``get_authenticated_user`` returns ``None`` (it does not raise) when the
-    request carries no valid ``authentication`` header, so the explorer must
-    never dereference the user blindly: doing so turned every route into a
-    500 ``AttributeError: 'NoneType' object has no attribute 'username'`` and
-    the UI rendered an empty source list.
+    The explorer routes depend on the strict authentication dependency, so a
+    real request always carries a user. The helper still tolerates ``None``
+    because a route can be mounted without the dependency (tests, internal
+    callers); dereferencing blindly used to turn every route into a
+    500 ``AttributeError: 'NoneType' object has no attribute 'username'``.
 
     Args:
-        user: Authenticated user, or ``None`` for an anonymous request.
+        user: Authenticated user, or ``None`` for an unauthenticated call.
 
     Returns:
         The username, or ``"anonymous"`` when there is none.

@@ -1,11 +1,12 @@
 """
 Ticketing: cross-project requests expressed as chats.
 
-A project can place a **ticket** on another project — one of its child projects
-or a linked project with read/write permission — to request a bug fix, a feature
-or a change. The ticket is a chat, so the two projects communicate in the same
-conversation the target uses to work, and the target keeps full control of its
-queue (review, accept, decline, schedule, assign profiles, ask a human...).
+A project can place a **ticket** on another project — one of its child projects,
+one of its linked projects (read-only, read/write or the legacy dependency list)
+or a parent project — to request a bug fix, a feature or a change. The ticket is
+a chat, so the two projects communicate in the same conversation the target uses
+to work, and the target keeps full control of its queue (review, accept, decline,
+schedule, assign profiles, ask a human...).
 
 The package is split so importing it never drags the chat machinery along:
 
@@ -28,7 +29,10 @@ Made with ❤️ by codx-junior
 from .model import (
     ChatTicket,
     ChatTicketEvent,
+    TicketAutonomy,
     TicketRecord,
+    TicketValidation,
+    TICKET_AUTONOMY_STATES,
     TICKET_BOARD,
     TICKET_DEFAULT_KIND,
     TICKET_KINDS,
@@ -53,7 +57,10 @@ from .model import (
 __all__ = [
     "ChatTicket",
     "ChatTicketEvent",
+    "TicketAutonomy",
     "TicketRecord",
+    "TicketValidation",
+    "TICKET_AUTONOMY_STATES",
     "TICKET_BOARD",
     "TICKET_DEFAULT_KIND",
     "TICKET_KINDS",

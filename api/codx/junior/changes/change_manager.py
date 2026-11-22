@@ -6,7 +6,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from codx.junior.events.event_manager import EventManager
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.globals import (
   MAX_OUTDATED_TIME_TO_PROCESS_FILE_CHANGE_IN_SECS,
   MAX_OUTDATED_TIME_TO_PROVESS_FILE_MENTIONS_IN_SECS,

@@ -12,6 +12,7 @@ import BoardQuickChat from './components/kanban/board/BoardQuickChat.vue'
 import NewMeetingModal from './components/meet/NewMeetingModal.vue'
 import IncomingMeetInvitation from './components/meet/IncomingMeetInvitation.vue'
 import VoiceCallOverlay from './components/voice/VoiceCallOverlay.vue'
+import FileViewerModal from './components/filebrowser/FileViewerModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -161,6 +162,17 @@ onMounted(() => {
              form (and its prefilled path) instead of reusing the previous one. -->
         <NewProject :key="String($ui.newProject?.path || 'new-project')" />
       </modal>
+
+      <!-- File references in markdown messages (utils/markdownFileLinks.js)
+           open here in single mode: the chat/board underneath stays in place.
+           Desktop mode opens a `file-viewer` panel instead — the decision is
+           made by $ui.openFileViewer. -->
+      <FileViewerModal
+        v-if="$ui.filePreview"
+        :key="$ui.filePreview.filePath"
+        :file-path="$ui.filePreview.filePath"
+        @close="$ui.closeFileViewer()"
+      />
     </template>
   </div>
 

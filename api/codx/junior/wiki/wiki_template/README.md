@@ -15,12 +15,12 @@ Set the local OpenAI-compatible endpoint before starting:
 
 ```bash
 WIKI_AI_BASE_URL=http://host.docker.internal:11434/v1 \
-WIKI_AI_API_KEY=ollama \
+WIKI_AI_API_KEY=local \
 WIKI_AI_MODEL=qwen2.5:7b \
 docker compose up --build
 ```
 
-Ollama bound to `127.0.0.1` on the host is reachable through
+A local OpenAI-compatible server bound to `127.0.0.1` on the host is reachable through
 `host.docker.internal`; for other providers use their `/v1` base URL.
 
 ## Without Docker

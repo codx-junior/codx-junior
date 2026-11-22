@@ -20,7 +20,7 @@ from codx.junior.globals import (
     MAX_OUTDATED_TIME_TO_PROVESS_FILE_MENTIONS_IN_SECS,
 )
 from codx.junior.knowledge.knowledge_keywords import KnowledgeKeywords
-from codx.junior.knowledge.knowledge_milvus import Knowledge
+from codx.junior.knowledge.knowledge_manager import Knowledge
 from codx.junior.model.model import KnowledgeSearch
 from codx.junior.profiling.profiler import profile_function
 from codx.junior.project.project_discover import find_project_by_name

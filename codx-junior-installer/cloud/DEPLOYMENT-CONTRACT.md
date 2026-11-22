@@ -23,8 +23,8 @@ settings file ──▶ install.sh ──▶ codx-junior-installer/cloud/bootstr
 
 | key | honoured | meaning |
 |---|---|---|
-| `CODX_JUNIOR_AI_PROVIDER` | `[verified]` | `openai` `deepseek` `gemini` `openrouter` `ollama` `custom` |
-| `CODX_JUNIOR_AI_API_KEY` | `[verified]` | provider key; omitted for `ollama` |
+| `CODX_JUNIOR_AI_PROVIDER` | `[verified]` | `openai` `deepseek` `gemini` `openrouter` `mistral` `groq` `custom` |
+| `CODX_JUNIOR_AI_API_KEY` | `[verified]` | provider key (any non-empty value for a local server that does not check it) |
 | `CODX_JUNIOR_AI_MODEL` | `[verified]` | override the preset model |
 | `CODX_JUNIOR_AI_API_URL` | `[verified]` | OpenAI-compatible endpoint (required for `custom`) |
 | `CODX_JUNIOR_WEB_PORT` | `[verified]` | published port, default `19981` |
@@ -35,12 +35,19 @@ settings file ──▶ install.sh ──▶ codx-junior-installer/cloud/bootstr
 | `CODX_JUNIOR_NON_INTERACTIVE` | `[verified]` | `1` = never prompt (see §3) |
 | `CODX_JUNIOR_ADMIN_USER` | `[verified]` | first admin username (see §5) |
 | `CODX_JUNIOR_ADMIN_PASSWORD` | `[verified]` | first admin password, bcrypt-hashed, never logged |
-| `CODX_JUNIOR_ADMIN_EMAIL` | `[verified]` | first admin email (optional) |
+| `CODX_JUNIOR_ADMIN_EMAIL` | `[verified]` | first admin email (optional, usable as a login identifier) |
+| `CODX_JUNIOR_WORKSPACE_TOKEN` | `[verified]` | scoped per-instance API key for machine clients (see §5b) |
 | `CODX_JUNIOR_IMAGE` | `[verified]` | force the container image; overrides the ref→tag mapping |
 | `CODX_JUNIOR_BUILD_*` | `[verified]` | `VERSION`/`REF`/`COMMIT` reported by `/api/health`; set by the release build, not by you |
 
-`CODX_JUNIOR_REF`, `CODX_JUNIOR_PROJECTS_PATH` and `CODX_JUNIOR_PUBLIC_URL` are
+`CODX_JUNIOR_REF`, `CODX_JUNIOR_PROJECTS_PATH`, `CODX_JUNIOR_PUBLIC_URL` and
+`CODX_JUNIOR_WORKSPACE_TOKEN` are
 confirmed: keep writing them exactly as you do today.
+
+> **`CODX_JUNIOR_OWNER_EMAIL` is not a platform key.** It is not read anywhere
+> in this repository and must not be written: the first-boot admin contract is
+> `CODX_JUNIOR_ADMIN_USER` / `CODX_JUNIOR_ADMIN_PASSWORD` /
+> `CODX_JUNIOR_ADMIN_EMAIL` (§5).
 
 **Upgrades never touch data.** `CODX_JUNIOR_PROJECTS_PATH` lives outside the
 checkout, so re-running the installer upgrades code and leaves every project,
@@ -53,9 +60,9 @@ chat and database file untouched.
 | path | how | minimum box | wall clock | notes |
 |---|---|---|---|---|
 | **pull** (supported for unattended installs) | `install.sh --ref <tag>` | 2 vCPU / 4 GB / 40 GB | ~3-6 min (image pull dominates) | nothing is compiled on the box |
-| **build** (developers, explicit) | `install.sh ... ` then `demo/up.sh --build` | 4 vCPU / 8 GB / 20 GB free | ~20 min | `--build` is the *only* way to compile |
+| **build** (developers, explicit) | `install.sh ... --build` | 4 vCPU / 8 GB / 30 GB free | ~20 min | `--build` is the *only* way to compile |
 
-A failed pull is **fatal** (`[verified]`, `demo/up.sh`): the installer prints the
+A failed pull is **fatal** (`[verified]`, `install.sh`): the installer prints the
 tag, the `--build` alternative and "nothing was started", then exits non-zero.
 There is no silent fallback to a build — on a paid 2 vCPU box that fallback used
 to be a 20 minute compile with nobody watching.
@@ -66,9 +73,9 @@ to be a 20 minute compile with nobody watching.
 install.sh --ref v1.2.3 --non-interactive </dev/null
 ```
 
-* `vX.Y.Z` → image `codxjunior/codx-junior:vX.Y.Z` (`[verified]`)
-* anything else (`main`, a branch name, a raw commit) → `codxjunior/codx-junior:demo`
-* `--dev` (developers only) → `codxjunior/codx-junior:dev`, built from the checkout
+* `vX.Y.Z` → image `codxjuniorai/codx-junior:vX.Y.Z` (`[verified]`)
+* anything else (`main`, a branch name, a raw commit) → `codxjuniorai/codx-junior:latest`
+* `--dev` (developers only) → `codxjuniorai/codx-junior:dev`, built from the checkout
 
 The project is **pre-1.0**: the first release tag is `v0.0.1` and the installer
 reports `install.sh 0.0.1`. Tags stay orderable (`v0.0.1` < `v0.1.0` < `v1.0.0`),
@@ -149,6 +156,40 @@ CODX_JUNIOR_ADMIN_EMAIL=admin@example.com
 * remove the key from the file after the first successful boot if your platform can
   rewrite it.
 
+`CODX_JUNIOR_ADMIN_*` is the **stable bootstrap contract** for hosted installs.
+`CODX_JUNIOR_ADMIN_EMAIL` is stored on the account and works as a login
+identifier (§7b), so the customer can sign in with the email they registered.
+
+---
+
+## 5b. Scoped workspace credential
+
+A console that provisions a workspace should not have to hold the owner's
+password. Write a per-instance random secret:
+
+```env
+CODX_JUNIOR_WORKSPACE_TOKEN=<random, at least 32 bytes recommended>
+```
+
+The API accepts it as a bearer on every protected route (`[verified]`,
+`api/codx/junior/security/workspace_api.py`):
+
+```bash
+curl -fsS https://x.example.com/api/users/me/refresh \
+     -H "Authorization: Bearer $CODX_JUNIOR_WORKSPACE_TOKEN"
+```
+
+* it authenticates **as the workspace owner** (`CODX_JUNIOR_ADMIN_USER`, else the
+  first admin, else a `workspace-service` principal with the `admin` role), so it
+  can create tasks and open support flows;
+* it is compared in constant time and never logged;
+* it is independent of the interactive password: changing the customer password
+  does not invalidate it, and rotating the token does not touch the account;
+* **rotation** = write the new value to the settings file and recreate the
+  container (`docker compose up -d`). The environment is read per request, so the
+  old value stops working as soon as the new container starts;
+* when it is absent the whole feature is off and such a bearer answers `401`.
+
 ---
 
 ## 6. Readiness: `GET /api/health`
@@ -165,9 +206,29 @@ instead of `/`:
   "uptime_seconds": 41.7,
   "event_loop_lag_ms": { "last_ms": 1.2, "max_ms": 18.0 },
   "projects_cached": 1,
-  "api_log_pipeline": { "queue_depth": 0, "written_events": 12 }
+  "api_log_pipeline": { "queue_depth": 0, "written_events": 12 },
+  "workspace_api": {
+    "contract_version": 1,
+    "auth_headers": ["authorization", "authentication"],
+    "auth_header_precedence": "authorization",
+    "scoped_token": true,
+    "scoped_token_configured": true,
+    "scoped_token_env": "CODX_JUNIOR_WORKSPACE_TOKEN",
+    "login_by_email": true,
+    "login_endpoint": "/api/users/login",
+    "session_endpoint": "/api/users/me/refresh",
+    "projects_endpoint": "/api/projects",
+    "tasks_endpoint": "/api/chats/tasks",
+    "codx_path_accepts_project_root": true,
+    "tasks_default_project": true,
+    "default_codx_path": "/data/projects/<project>/.codx"
+  }
 }
 ```
+
+`workspace_api` is the machine-client contract: a pipeline asserts it instead of
+hard-coding assumptions, and an image that predates it simply omits the block.
+`default_codx_path` is `null` while no project has been created yet.
 
 `version` / `ref` / `commit` come from the image build (`[verified]`,
 `api/codx/junior/version.py`); they answer `"unknown"` only for a local
@@ -200,18 +261,76 @@ Anything else is a failed install: the installer exits non-zero and starts nothi
 
 ---
 
+## 7b. The machine-client API contract
+
+This is the exact surface a provisioning console codes against (`[verified]`,
+`api/codx/junior/security/workspace_api.py`). Every route below accepts either
+`Authorization: Bearer <token>` (standard, and what a gateway/APM proxy
+preserves) or `authentication: Bearer <token>` (the bundled UI's historical
+spelling). When both are present `Authorization` wins.
+
+| Operation | Method + path | Auth | Request | Response |
+| --- | --- | --- | --- | --- |
+| Readiness | `GET /api/health` | none | — | `{status, ref, commit, workspace_api}` |
+| Owner login | `POST /api/users/login` | none | `{username: <email or username>, password}` | `200 {token, …}` or `401` |
+| Session check | `GET /api/users/me/refresh` | bearer | — | `200 {username, …}` or `401` |
+| List projects | `GET /api/projects` | bearer | — | `{projects: [{codx_path, …}], workspaces}` |
+| Create task | `POST /api/chats/tasks[?codx_path=…]` | bearer | `{name, description, board?, column?, …}` | `200 {id, …}` |
+| Any protected route | — | bearer | — | `401` when the credential is absent/invalid |
+
+Rules the API guarantees:
+
+* **No anonymous writes.** A protected route receives a user or answers `401`
+  with a stable body: `{"detail": {"code": "missing_credentials" | "invalid_credentials", "message": …}}`.
+  `GET /api/users/me/refresh` answers `401`, never the `500` it used to.
+* **Login by email.** The login identifier is matched against `username` first,
+  then against the account email, case-insensitively. A wrong password and an
+  unknown email return the SAME `401` body (no account enumeration). An
+  identifier that matches several accounts answers `409` with
+  `code: "ambiguous_login"`.
+* **`codx_path` discovery.** `codx_path` accepts either the project folder or its
+  `.codx` folder, and `GET /api/projects` returns the canonical `.codx` value for
+  every project. When `codx_path` is omitted, `POST /api/chats/tasks` uses the
+  workspace's default project (the only project, or the first discovered one).
+  When no project exists yet, create one first:
+  `POST /api/projects?project_path=<folder>`. A path that is not a project
+  answers `422` with `code: "codx_path_not_found"`; a missing path with no
+  default project answers `422` with `code: "codx_path_required"`. Neither
+  answers `500`.
+
+```bash
+B=https://x.example.com
+T=$(curl -fsS -X POST $B/api/users/login -H 'Content-Type: application/json' \
+      -d '{"username":"'$CODX_JUNIOR_ADMIN_EMAIL'","password":"'$CODX_JUNIOR_ADMIN_PASSWORD'"}' \
+    | jq -r .token)
+
+# Scoped console credential (no password):
+curl -fsS $B/api/users/me/refresh -H "Authorization: Bearer $CODX_JUNIOR_WORKSPACE_TOKEN"
+
+# First task: the client does not need to know the layout.
+curl -fsS -X POST "$B/api/chats/tasks" -H "Authorization: Bearer $CODX_JUNIOR_WORKSPACE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"First task","description":"Created by the hosted console"}'
+```
+
+A fresh install creates **no project implicitly**: the console creates the first
+one with `POST /api/projects?project_path=<folder>` (or clones a repository by
+passing its URL) and then reads its `codx_path` from the response.
+
+---
+
 ## 8. Known gaps
 
 * The release workflow has never run in this repository (no tag exists yet), so
   the first `v*` push is its real smoke test. Until then a pinned `--ref vX.Y.Z`
   fails at the pull — loudly, by design.
-* `demo/up.sh --build` reports `"unknown"` build provenance; `--dev` and release
+* `install.sh --build` reports `"unknown"` build provenance; `--dev` and release
   images both carry a real `version`/`ref`/`commit` (from `git describe` and
   from the CI build args respectively).
 * `.codx` is the control plane. `.dockerignore` drops only the **generated** data
   plane (chat turns, browser sessions, atlas, db, logs — 1.5 GB on a developer
   box) and keeps every tracked artifact (profiles, tasks, boards, views, teams,
-  workspaces) in the context, so `./up.sh --dev` builds against the real control
+  workspaces) in the context, so `./dev-install.sh` builds against the real control
   plane. The release image never `COPY`s `.codx`: it is created at first boot
   inside the `codx-junior-settings` volume. **Nothing is untracked from the
   repository** — no `git rm --cached`.

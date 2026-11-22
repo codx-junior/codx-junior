@@ -48,6 +48,7 @@ export default defineConfig({
             { text: 'Suggested replies', link: '/features/suggested-replies' },
             { text: 'Voice conversation', link: '/features/voice-conversation' },
             { text: 'Kanban and tasks', link: '/features/kanban' },
+            { text: 'Autonomous tickets', link: '/features/autonomous-tickets' },
             { text: 'codx-junior harness (@codx-junior)', link: '/features/codx-junior-harness' },
             { text: 'DSH task sync', link: '/features/dsh-sync' },
             { text: 'Vibe coding', link: '/features/vibe-coding' },

@@ -57,6 +57,42 @@
         </template>
       </nav>
 
+      <!-- New folder: created under the open folder (or the project root) -->
+      <div v-if="allowCreate" class="flex flex-col gap-1">
+        <div v-if="creatingFolder" class="flex items-center gap-2">
+          <i class="fa-solid fa-folder-plus text-warning text-[11px] flex-shrink-0" aria-hidden="true"></i>
+          <input
+            ref="newFolderInput"
+            v-model="newFolderName"
+            type="text"
+            class="input input-xs input-bordered min-w-0 flex-1 font-mono text-[11px]"
+            placeholder="new-folder-name"
+            spellcheck="false"
+            aria-label="New folder name"
+            @keyup.enter="createFolder"
+            @keyup.esc="cancelCreateFolder"
+          />
+          <button class="btn btn-xs btn-primary" :disabled="creating || !newFolderName.trim()" @click="createFolder">
+            <span v-if="creating" class="loading loading-spinner loading-xs"></span>
+            <i v-else class="fa-solid fa-check"></i>
+            Create
+          </button>
+          <button class="btn btn-xs btn-ghost" :disabled="creating" @click="cancelCreateFolder">Cancel</button>
+        </div>
+        <div v-else class="flex items-center gap-2">
+          <button class="btn btn-xs btn-ghost gap-1" @click="startCreateFolder">
+            <i class="fa-solid fa-folder-plus" aria-hidden="true"></i>
+            New folder
+          </button>
+          <span class="min-w-0 flex-1 truncate text-[11px] opacity-60" :title="createTargetLabel">
+            in {{ createTargetLabel }}
+          </span>
+        </div>
+        <p v-if="createError" class="text-[11px] text-error">
+          <i class="fa-solid fa-triangle-exclamation mr-1" aria-hidden="true"></i>{{ createError }}
+        </p>
+      </div>
+
       <!-- Folder listing -->
       <div class="flex-1 min-h-0 overflow-y-auto rounded-lg border border-base-content/10 divide-y divide-base-content/10">
         <div v-if="loading" class="flex items-center justify-center gap-2 p-6 text-xs opacity-70">
@@ -153,7 +189,9 @@ export default {
     modelValue: { type: Array, default: () => [] },
     title: { type: String, default: 'Project folders' },
     /** Render inside the caller's dialog instead of opening one (wizards). */
-    embedded: { type: Boolean, default: false }
+    embedded: { type: Boolean, default: false },
+    /** Offer creating a folder under the open folder (or the project root). */
+    allowCreate: { type: Boolean, default: true }
   },
   data() {
     return {
@@ -162,7 +200,12 @@ export default {
       folders: [],
       loading: false,
       error: null,
-      selected: [...(this.modelValue || [])]
+      selected: [...(this.modelValue || [])],
+      // Inline "new folder" form
+      creatingFolder: false,
+      creating: false,
+      createError: null,
+      newFolderName: ''
     }
   },
   computed: {
@@ -210,6 +253,10 @@ export default {
       ))
       if (this.allowMultiple) return kept
       return kept.slice(0, 1)
+    },
+    /** Folder the new folder is created in (the open one, or the project root). */
+    createTargetLabel() {
+      return this.currentPath || this.projectName
     },
     selectionLabel() {
       if (!this.selection.length) return 'Nothing selected'
@@ -278,6 +325,48 @@ export default {
     },
     isSelected(relativePath) {
       return this.selection.includes(relativePath)
+    },
+    startCreateFolder() {
+      this.creatingFolder = true
+      this.creating = false
+      this.createError = null
+      this.newFolderName = ''
+      this.$nextTick(() => this.$refs.newFolderInput?.focus())
+    },
+    cancelCreateFolder() {
+      this.creatingFolder = false
+      this.newFolderName = ''
+      this.createError = null
+    },
+    /**
+     * Create a folder under the currently open folder (the project root when no
+     * folder is open) and select it, so it can be picked without navigating.
+     */
+    async createFolder() {
+      if (this.creating) return
+      const name = String(this.newFolderName || '').trim().replace(/^\/+|\/+$/g, '')
+      if (!name) return
+      if (!this.api?.files?.create) {
+        this.createError = 'File API not available for this project'
+        return
+      }
+      const relative = this.currentPath ? `${this.currentPath}/${name}` : name
+      this.creating = true
+      this.createError = null
+      try {
+        await this.api.files.create(this.absolutePath(relative), true)
+        this.creatingFolder = false
+        this.newFolderName = ''
+        await this.load(this.currentPath)
+        if (!this.allowMultiple) this.selected = [relative]
+      } catch (ex) {
+        console.error('[BrowserFolderPicker] Error creating folder:', ex)
+        this.createError = ex?.response?.data?.error ||
+          ex?.message ||
+          'Could not create the folder'
+      } finally {
+        this.creating = false
+      }
     },
     toggleRoot() {
       this.selected = this.isRootSelected ? [] : ['']

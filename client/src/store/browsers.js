@@ -3,8 +3,49 @@ import { $storex } from '.'
 import { API } from '../api/api'
 import { desktopSizeOptions } from '../utils/desktopSizes'
 import { SESSION_LABELS } from '../utils/sessionLabels'
+import { getParticipantId } from '../utils/collabIdentity'
+import { normalizeControlState } from '../utils/sessionControl'
 
 export const namespaced = true
+
+/**
+ * Coalescing/TTL for the session list.
+ *
+ * The co-working screen mounts the sidebar, the panel and (after a reload) the
+ * deep-linked viewer, each of which used to fire its own `GET /api/computers`.
+ * Sharing the in-flight promise and keeping the result for a moment removes
+ * that burst without making the list stale (explicit refresh uses `force`).
+ */
+const LOAD_SESSIONS_TTL_MS = 1500
+let loadSessionsPromise = null
+let loadSessionsAt = 0
+
+// Control requests already announced to the owner (one toast per request).
+const notifiedControlRequests = new Set()
+
+/** Tell the current control owner that somebody is asking for the screen. */
+function notifyIncomingControlRequest(session) {
+  const request = session?.control_request
+  const user = $storex.users?.user || null
+  if (!request || !user) return
+  const participantId = getParticipantId()
+  const isOwner = session.controller === 'user' && session.control_owner && (
+    session.control_owner === user.username ||
+    session.control_owner === participantId
+  )
+  if (!isOwner || notifiedControlRequests.has(request.id)) return
+  notifiedControlRequests.add(request.id)
+  notify('info', `${request.name || request.username || 'A participant'} requests control`)
+}
+
+/** Identity payload shared by presence and control calls. */
+function participantPayload() {
+  const user = $storex.users?.user || null
+  return {
+    participant_id: getParticipantId(),
+    display_name: user?.name || user?.username || 'Guest'
+  }
+}
 
 export const state = () => ({
   sessions: [],
@@ -97,13 +138,13 @@ export const mutations = mutationTree(state, {
   },
 
   addSession(state, session) {
-    state.sessions.push(session)
+    state.sessions.push(normalizeControlState(session))
   },
 
   updateSession(state, session) {
     const index = state.sessions.findIndex(s => s.id === session.id)
     if (index !== -1) {
-      state.sessions[index] = session
+      state.sessions[index] = normalizeControlState(session)
     }
   },
 
@@ -302,10 +343,12 @@ const DEFAULT_GRID_SIZE = 6
  * sessions existed on the server.
  */
 function normalizeSessionList(response) {
-  if (Array.isArray(response)) return response
-  if (Array.isArray(response?.sessions)) return response.sessions
-  if (Array.isArray(response?.computers)) return response.computers
-  return []
+  const list = Array.isArray(response)
+    ? response
+    : (Array.isArray(response?.sessions)
+        ? response.sessions
+        : (Array.isArray(response?.computers) ? response.computers : []))
+  return list.map(normalizeControlState)
 }
 
 export const actions = actionTree(
@@ -321,23 +364,41 @@ export const actions = actionTree(
      * The legacy route is tried before giving up, and a real failure is kept in
      * `state.error` so the list can show it with a retry.
      */
-    async loadSessions({ commit }) {
-      commit('setLoading', true)
-      commit('clearError')
-      try {
-        const response = await API.computers.list()
-        commit('setSessions', normalizeSessionList(response))
-      } catch (error) {
+    async loadSessions({ state, commit }, options = {}) {
+      const force = typeof options === 'boolean' ? options : !!options?.force
+      const ttl = typeof options === 'object' && options?.ttl != null
+        ? Number(options.ttl)
+        : LOAD_SESSIONS_TTL_MS
+      if (!force && loadSessionsPromise) return loadSessionsPromise
+      if (!force && state.sessions.length && Date.now() - loadSessionsAt < ttl) {
+        return state.sessions
+      }
+      const task = (async () => {
+        commit('setLoading', true)
+        commit('clearError')
         try {
-          const legacy = await API.browsers.list()
-          commit('setSessions', normalizeSessionList(legacy))
-          console.warn('[Browsers] /api/computers failed, using the legacy /api/browsers endpoint:', error?.message)
-        } catch (legacyError) {
-          commit('setError', error.message || 'Failed to load sessions')
-          console.error('[Browsers] Error loading sessions:', error, legacyError)
+          const response = await API.computers.list()
+          commit('setSessions', normalizeSessionList(response))
+        } catch (error) {
+          try {
+            const legacy = await API.browsers.list()
+            commit('setSessions', normalizeSessionList(legacy))
+            console.warn('[Browsers] /api/computers failed, using the legacy /api/browsers endpoint:', error?.message)
+          } catch (legacyError) {
+            commit('setError', error.message || 'Failed to load sessions')
+            console.error('[Browsers] Error loading sessions:', error, legacyError)
+          }
+        } finally {
+          commit('setLoading', false)
         }
+        return state.sessions
+      })()
+      loadSessionsPromise = task
+      try {
+        return await task
       } finally {
-        commit('setLoading', false)
+        loadSessionsPromise = null
+        loadSessionsAt = Date.now()
       }
     },
 
@@ -389,6 +450,7 @@ export const actions = actionTree(
           // Default on the backend too: the desktop follows the client viewport
           // (KasmVNC remote resize) instead of a fixed desktop size.
           desktop_auto_resize: sessionData.desktop_auto_resize ?? null,
+          control_mode: sessionData.control_mode || null,
           vnc_host: sessionData.vnc_host || null,
           vnc_port: sessionData.vnc_port || null,
           vnc_password: sessionData.vnc_password || null,
@@ -731,26 +793,89 @@ export const actions = actionTree(
       socket.on('codx-junior-browser-control', (payload) => {
         if (payload?.session) {
           commit('updateSession', payload.session)
+          notifyIncomingControlRequest(payload.session)
         } else if (payload?.session_id) {
           const session = state.sessions.find(item => item.id === payload.session_id)
           if (session) {
             session.controller = payload.controller
+            session.control_mode = payload.control_mode
+            session.control_owner = payload.control_owner
+            session.control_owner_name = payload.control_owner_name
+            session.control_request = payload.control_request
             session.handoff_reason = payload.handoff_reason
             session.user_active_until = payload.user_active_until
           }
         }
       })
+      socket.on('codx-junior-browser-participants', (payload) => {
+        if (payload?.session) {
+          commit('updateSession', payload.session)
+          notifyIncomingControlRequest(payload.session)
+          return
+        }
+        if (!payload?.session_id) return
+        const session = state.sessions.find(item => item.id === payload.session_id)
+        if (!session) return
+        session.participants = payload.participants || []
+        session.control_mode = payload.control_mode
+        session.control_owner = payload.control_owner
+        session.control_owner_name = payload.control_owner_name
+        session.control_request = payload.control_request
+      })
     },
 
-    async takeControl({ commit, dispatch }, sessionId) {
+    /**
+     * Join a shared session and keep its presence fresh.
+     *
+     * Safe to call more than once: the backend upserts the participant. The
+     * interval lives in the caller so switching sessions can leave the old one.
+     */
+    async joinSession({ commit }, { sessionId, controlMode = null } = {}) {
+      if (!sessionId) return null
+      try {
+        const response = await API.computers.join(sessionId, {
+          ...participantPayload(),
+          ...(controlMode ? { control_mode: controlMode } : {})
+        })
+        if (response?.id) commit('updateSession', response)
+        return response
+      } catch (error) {
+        console.warn('[Browsers] Could not join session presence:', sessionId, error?.message)
+        return null
+      }
+    },
+
+    /** Remove this tab from a session's participant list. */
+    async leaveSession({ commit }, sessionId) {
+      if (!sessionId) return null
+      try {
+        const response = await API.computers.leave(sessionId, { ...participantPayload() })
+        if (response?.id) commit('updateSession', response)
+        return response
+      } catch (error) {
+        console.warn('[Browsers] Could not leave session presence:', sessionId, error?.message)
+        return null
+      }
+    },
+
+    /**
+     * Ask for the control lease.
+     *
+     * The backend decides: in `auto` mode (or while the AI drives) it is
+     * granted immediately; in `request` mode it creates a pending request the
+     * current owner must approve.
+     */
+    async takeControl({ commit }, { sessionId, reason = 'User took control from the live view' } = {}) {
       if (!sessionId) return null
       commit('setControlLoading', true)
       try {
         const response = await API.computers.control(sessionId, 'take_control', {
-          reason: 'User took control from the live view'
+          ...participantPayload(),
+          reason
         })
         if (response?.session) commit('updateSession', response.session)
-        notify('info', 'You have control. The AI is paused.')
+        const pending = !!response?.session?.control_request
+        notify(pending ? 'info' : 'success', response?.message || (pending ? 'Control request sent' : 'You have control'))
         return response
       } catch (error) {
         notify('error', error.message || 'Could not take control')
@@ -760,16 +885,87 @@ export const actions = actionTree(
       }
     },
 
+    /** Explicit alias for request mode. */
+    async requestControl({ dispatch }, { sessionId, reason } = {}) {
+      return dispatch('takeControl', {
+        sessionId,
+        reason: reason || 'User requested control from the live view'
+      })
+    },
+
+    /** Give the human lease back to the AI. */
     async giveBackControl({ commit }, sessionId) {
       if (!sessionId) return null
       commit('setControlLoading', true)
       try {
-        const response = await API.computers.control(sessionId, 'give_back')
+        const response = await API.computers.control(sessionId, 'give_back', {
+          ...participantPayload()
+        })
         if (response?.session) commit('updateSession', response.session)
-        notify('success', 'Control returned to the AI')
+        notify('success', response?.message || 'Control returned to the AI')
         return response
       } catch (error) {
         notify('error', error.message || 'Could not return control')
+        throw error
+      } finally {
+        commit('setControlLoading', false)
+      }
+    },
+
+    /** Approve the pending request (control owner or admin only). */
+    async approveControlRequest({ commit }, { sessionId, requestId = null } = {}) {
+      if (!sessionId) return null
+      commit('setControlLoading', true)
+      try {
+        const response = await API.computers.control(sessionId, 'approve_request', {
+          ...participantPayload(),
+          request_id: requestId
+        })
+        if (response?.session) commit('updateSession', response.session)
+        notify('success', response?.message || 'Control request approved')
+        return response
+      } catch (error) {
+        notify('error', error.message || 'Could not approve the request')
+        throw error
+      } finally {
+        commit('setControlLoading', false)
+      }
+    },
+
+    /** Deny the pending request, keeping the current lease. */
+    async denyControlRequest({ commit }, { sessionId, requestId = null } = {}) {
+      if (!sessionId) return null
+      commit('setControlLoading', true)
+      try {
+        const response = await API.computers.control(sessionId, 'deny_request', {
+          ...participantPayload(),
+          request_id: requestId
+        })
+        if (response?.session) commit('updateSession', response.session)
+        notify('info', response?.message || 'Control request denied')
+        return response
+      } catch (error) {
+        notify('error', error.message || 'Could not deny the request')
+        throw error
+      } finally {
+        commit('setControlLoading', false)
+      }
+    },
+
+    /** Change how humans share control (`auto` / `request`). */
+    async setControlMode({ commit }, { sessionId, mode } = {}) {
+      if (!sessionId || !mode) return null
+      commit('setControlLoading', true)
+      try {
+        const response = await API.computers.control(sessionId, 'set_mode', {
+          ...participantPayload(),
+          mode
+        })
+        if (response?.session) commit('updateSession', response.session)
+        notify('success', response?.message || `Control mode: ${mode}`)
+        return response
+      } catch (error) {
+        notify('error', error.message || 'Could not change the control mode')
         throw error
       } finally {
         commit('setControlLoading', false)

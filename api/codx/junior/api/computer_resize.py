@@ -28,6 +28,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from codx.junior.api.browser import _browser_manager, get_session_context
 from codx.junior.api.browser_models import BrowserSessionResponse
+from codx.junior.api.session_access import (
+    requester_from_request,
+    require_user_control,
+)
 from codx.junior.computer.backend import DesktopControlError, UnsupportedComputerActionError
 from codx.junior.computer.resize import (
     MAX_HEIGHT,
@@ -154,6 +158,13 @@ async def resize_computer_desktop(
     session = manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    # Changing the framebuffer is an input to the machine: only the human
+    # control owner (or an admin) may do it while another person drives.
+    require_user_control(
+        session,
+        requester_from_request(request, session_ctx),
+        allow_unclaimed=True,
+    )
     if session.kind == "browser":
         raise HTTPException(
             status_code=400,

@@ -213,9 +213,14 @@ export const actions = actionTree(
     },
 
     async refresh({ state }) {
-      if (state.activeId) {
-        await $storex.company.select({ companyId: state.activeId, skipList: true })
-      }
+      if (!state.activeId) return
+      // A company-level edit (name, slug, logo…) changes the summary list, not
+      // only the snapshot: reload it too or the switcher, the sidebar header and
+      // the remembered slug keep showing the previous company name until a full
+      // page reload.
+      const companies = await API.companies.list().catch(() => state.companies)
+      if (Array.isArray(companies)) mutations.setCompanies(state, companies)
+      await $storex.company.select({ companyId: state.activeId, skipList: true })
     },
 
     async setAllProjects({ state }, value) {

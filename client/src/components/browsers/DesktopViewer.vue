@@ -1,7 +1,14 @@
 <script>
 import NoVNC from '../NoVNC.vue'
 import SaveComputerModal from './SaveComputerModal.vue'
+import SessionControlBar from './SessionControlBar.vue'
 import { SESSION_LABELS } from '@/utils/sessionLabels'
+import { getParticipantId } from '@/utils/collabIdentity'
+import {
+  isControlOwner,
+  overlayControlFor,
+  viewerIdentity
+} from '@/utils/sessionControl'
 
 /**
  * Live view + action bar for desktop computer sessions.
@@ -19,13 +26,13 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
  */
 export default {
   name: 'DesktopViewer',
-  components: { NoVNC, SaveComputerModal },
+  components: { NoVNC, SaveComputerModal, SessionControlBar },
   props: {
     session: { type: Object, default: null },
     sessionId: { type: String, default: null },
     meetId: { type: String, default: null }
   },
-  emits: ['ask-ai'],
+  emits: ['ask-ai', 'control-change'],
   data() {
     return {
       screenshot: null,
@@ -50,7 +57,12 @@ export default {
       lastAction: null,
       pollTimer: null,
       desktopWidth: 1920,
-      desktopHeight: 1080
+      desktopHeight: 1080,
+      participantId: getParticipantId(),
+      viewerKey: 0,
+      resizeObserver: null,
+      resizeTimer: null,
+      lastResizeRequest: ''
     }
   },
   computed: {
@@ -112,6 +124,36 @@ export default {
     control() {
       return this.activeSession?.controller || 'ai'
     },
+    currentUser() {
+      return this.$storex.users?.user || null
+    },
+    identity() {
+      return viewerIdentity(this.currentUser, this.participantId)
+    },
+    ownsControl() {
+      return isControlOwner(this.activeSession, this.identity)
+    },
+    overlay() {
+      return overlayControlFor(this.activeSession, this.identity)
+    },
+    /** Changes whenever the lease/mode moves: the iframe/credentials follow it. */
+    controlSignature() {
+      const session = this.activeSession
+      if (!session) return ''
+      return [
+        session.controller,
+        session.control_mode,
+        session.control_owner,
+        this.ownsControl ? 'owner' : 'viewer'
+      ].join('|')
+    },
+    autoResize() {
+      return this.activeSession?.desktop_auto_resize !== false
+    },
+    /** Selkies/KasmVNC resize themselves; only RFB/screenshot need the API. */
+    usesNativeAutoResize() {
+      return this.isKasm || (this.isLinux && !!this.vncEmbedUrl)
+    },
     userActive() {
       const until = this.activeSession?.user_active_until
       return !!until && new Date(until).getTime() > Date.now()
@@ -148,10 +190,15 @@ export default {
       handler() {
         this.resetForSession()
       }
+    },
+    controlSignature(value, previous) {
+      if (!previous || value === previous) return
+      this.onControlChanged()
     }
   },
   beforeUnmount() {
     this.stopPolling()
+    this.stopResizeObserver()
     this.restoreKasmPath()
   },
   methods: {
@@ -162,6 +209,7 @@ export default {
     },
     resetForSession() {
       this.stopPolling()
+      this.stopResizeObserver()
       this.vncPath = null
       this.vncPassword = ''
       this.viewerUser = ''
@@ -171,6 +219,7 @@ export default {
       this.screenshot = null
       this.screenshotData = null
       this.error = null
+      this.lastResizeRequest = ''
       if (!this.activeSession) return
       this.desktopWidth = this.activeSession.desktop_width || 1920
       this.desktopHeight = this.activeSession.desktop_height || 1080
@@ -186,6 +235,84 @@ export default {
         this.takeScreenshot()
         this.startPolling()
       }
+      // "Client size" is the default: RFB/screenshot desktops follow the
+      // panel, native Selkies/KasmVNC viewers do it themselves. A fixed size
+      // (`desktop_auto_resize=false`) never sends resize calls and the image
+      // stays scaled (`object-fit: contain`).
+      this.$nextTick(() => this.startResizeObserver())
+    },
+    startResizeObserver() {
+      this.stopResizeObserver()
+      if (!this.autoResize || this.usesNativeAutoResize) return
+      if (!this.isRunning || typeof ResizeObserver === 'undefined') return
+      const element = this.$refs.liveView
+      if (!element) return
+      this.resizeObserver = new ResizeObserver(() => this.scheduleClientResize())
+      this.resizeObserver.observe(element)
+      // Send the first size once the panel has laid out.
+      this.scheduleClientResize()
+    },
+    stopResizeObserver() {
+      if (this.resizeObserver) {
+        this.resizeObserver.disconnect()
+        this.resizeObserver = null
+      }
+      if (this.resizeTimer) {
+        window.clearTimeout(this.resizeTimer)
+        this.resizeTimer = null
+      }
+    },
+    scheduleClientResize() {
+      if (!this.autoResize || this.usesNativeAutoResize || !this.isRunning) return
+      if (this.resizeTimer) window.clearTimeout(this.resizeTimer)
+      // Debounced: a splitter drag fires dozens of resize events, and the
+      // backend resizes through a `docker exec`/RFB round trip.
+      this.resizeTimer = window.setTimeout(() => this.applyClientResize(), 700)
+    },
+    async applyClientResize() {
+      const sessionId = this.activeSessionId
+      const element = this.$refs.liveView
+      if (!sessionId || !element || !this.autoResize) return
+      const width = Math.round(element.clientWidth || 0)
+      const height = Math.round(element.clientHeight || 0)
+      if (width < 320 || height < 240) return
+      const request = `${width}x${height}`
+      if (request === this.lastResizeRequest) return
+      this.lastResizeRequest = request
+      try {
+        const response = await this.$storex.api.computers.resizeDesktop(sessionId, {
+          mode: 'client',
+          width,
+          height,
+          scale: window.devicePixelRatio || 1
+        })
+        if (response?.session) {
+          this.$storex.browsers.updateSession(response.session)
+        }
+        if (response?.width) this.desktopWidth = response.width
+        if (response?.height) this.desktopHeight = response.height
+      } catch (error) {
+        // A machine that cannot resize keeps the scaled framebuffer; do not
+        // turn that into a user-facing error every time the panel changes.
+        this.lastResizeRequest = ''
+      }
+    },
+    onControlChanged() {
+      // Another participant took (or released) the lease: refresh credentials
+      // and remount the live view so a view-only password can never keep
+      // driving after the transfer.
+      if (this.isKasm) {
+        this.reloadViewerCredentials()
+      } else if (this.overlay.interactive) {
+        this.viewerKey += 1
+      }
+      this.$emit('control-change', this.activeSession)
+    },
+    async reloadViewerCredentials() {
+      // Refresh the password first: remounting the frame before the new role
+      // arrives would reconnect with the previous (possibly full) credential.
+      await this.loadViewerCredentials()
+      this.viewerKey += 1
     },
     startPolling() {
       this.stopPolling()
@@ -230,7 +357,10 @@ export default {
     async loadViewerCredentials() {
       if (!this.activeSessionId) return
       try {
-        const response = await this.$storex.api.computers.viewerCredentials(this.activeSessionId)
+        // Observers deliberately receive the view-only password: KasmVNC then
+        // refuses their input even if they bypass the UI overlay.
+        const role = this.ownsControl ? 'control' : 'view'
+        const response = await this.$storex.api.computers.viewerCredentials(this.activeSessionId, role)
         this.viewerUser = response?.user || 'kasm_user'
         this.viewerPassword = response?.password || ''
       } catch (error) {
@@ -376,10 +506,39 @@ export default {
       if (result) this.command = ''
     },
     async takeControl() {
-      await this.$storex.browsers.takeControl(this.activeSessionId)
+      await this.$storex.browsers.takeControl({ sessionId: this.activeSessionId })
+    },
+    async requestControl() {
+      await this.$storex.browsers.requestControl({ sessionId: this.activeSessionId })
     },
     async giveBack() {
       await this.$storex.browsers.giveBackControl(this.activeSessionId)
+    },
+    async approveControl(requestId) {
+      await this.$storex.browsers.approveControlRequest({
+        sessionId: this.activeSessionId,
+        requestId
+      })
+    },
+    async denyControl(requestId) {
+      await this.$storex.browsers.denyControlRequest({
+        sessionId: this.activeSessionId,
+        requestId
+      })
+    },
+    async setControlMode(mode) {
+      await this.$storex.browsers.setControlMode({
+        sessionId: this.activeSessionId,
+        mode
+      })
+    },
+    /** First click on the observer overlay: take or ask, per the mode. */
+    handleOverlayClick() {
+      if (this.overlay.action === 'request_control') {
+        this.requestControl()
+        return
+      }
+      if (this.overlay.action === 'take_control') this.takeControl()
     },
     askAi() {
       this.$emit('ask-ai')
@@ -421,13 +580,6 @@ export default {
 
       <span class="flex-1"></span>
 
-      <button v-if="control === 'user'" class="btn btn-xs btn-primary" @click="giveBack">
-        <i class="fa-solid fa-robot"></i><span class="hidden sm:inline">Give back</span>
-      </button>
-      <button v-else class="btn btn-xs btn-outline" :disabled="!isRunning" @click="takeControl">
-        <i class="fa-solid fa-hand"></i><span class="hidden sm:inline">Take control</span>
-      </button>
-
       <!-- Secondary actions and the KasmVNC login: they cost no height here -->
       <details ref="overflow" class="dropdown dropdown-end">
         <summary class="btn btn-xs btn-ghost" title="More actions" aria-label="More actions">
@@ -468,10 +620,26 @@ export default {
                 <i class="fa-regular fa-copy"></i>
               </button>
             </div>
-            <p class="text-base-content/40 mt-1">Injected automatically for this session</p>
+            <p class="text-base-content/40 mt-1">
+              {{ ownsControl ? 'Full control credentials' : 'View-only credentials (take control to type)' }}
+            </p>
           </div>
         </div>
       </details>
+    </div>
+    <div v-if="activeSession" class="px-2 py-1.5 border-b border-base-content/10 bg-base-100 flex-shrink-0">
+      <SessionControlBar
+        :session="activeSession"
+        :current-user="currentUser"
+        :participant-id="participantId"
+        :busy="$storex.browsers.isControlling"
+        @take-control="takeControl"
+        @request-control="requestControl"
+        @release-control="giveBack"
+        @approve-request="approveControl"
+        @deny-request="denyControl"
+        @set-mode="setControlMode"
+      />
     </div>
     <div v-if="activeSession?.handoff_reason" class="flex items-center gap-2 px-3 py-2 border-b border-warning/30 bg-warning/10 text-xs flex-shrink-0">
       <i class="fa-solid fa-hand text-warning"></i>
@@ -480,7 +648,7 @@ export default {
     </div>
 
     <!-- Live view -->
-    <div class="flex-1 min-h-0 relative bg-black/90">
+    <div ref="liveView" class="flex-1 min-h-0 relative bg-black/90">
       <NoVNC
         v-if="canUseVnc && vncPath"
         :path="vncPath"
@@ -490,6 +658,7 @@ export default {
       />
       <iframe
         v-else-if="isLinux && vncEmbedUrl && isRunning"
+        :key="viewerKey"
         :src="vncEmbedUrl"
         class="w-full h-full border-0 bg-black"
         title="Linux desktop live view"
@@ -513,7 +682,34 @@ export default {
           <span>{{ isRunning ? 'Connecting to the desktop…' : 'Session is stopped' }}</span>
         </template>
       </div>
-      <div v-if="actionLoading" class="absolute top-2 right-2 badge badge-primary badge-sm gap-1">
+      <!-- Observer gate: the live view stays visible, but pointer input is
+           captured until this human owns the lease (auto = click to take,
+           request = click to ask). KasmVNC also enforces it with the
+           view-only password in the iframe. -->
+      <div
+        v-if="overlay.interactive && isRunning"
+        class="absolute inset-0 z-20 flex items-end justify-center pb-4"
+        :class="isKasm ? 'pointer-events-none' : 'cursor-pointer'"
+        role="button"
+        tabindex="0"
+        :aria-label="overlay.label"
+        :title="overlay.hint"
+        @click="handleOverlayClick"
+        @keydown.enter.prevent="handleOverlayClick"
+        @keydown.space.prevent="handleOverlayClick"
+      >
+        <div
+          class="pointer-events-auto rounded-xl border border-base-content/15 bg-base-100/95 px-4 py-2 text-center shadow-2xl backdrop-blur cursor-pointer"
+          @click="handleOverlayClick"
+        >
+          <p class="flex items-center justify-center gap-2 text-sm font-semibold">
+            <i class="fa-solid" :class="overlay.action === 'request_control' ? 'fa-paper-plane text-warning' : 'fa-hand text-primary'"></i>
+            {{ overlay.label }}
+          </p>
+          <p class="text-[11px] opacity-70">{{ overlay.hint }}</p>
+        </div>
+      </div>
+      <div v-if="actionLoading" class="absolute top-2 right-2 z-30 badge badge-primary badge-sm gap-1">
         <span class="loading loading-spinner loading-xs"></span> working…
       </div>
       <p v-if="error" class="absolute bottom-2 left-2 right-2 rounded bg-error/90 text-error-content text-[11px] px-2 py-1">

@@ -163,6 +163,74 @@ def resolution_from_client(
     )
 
 
+#: Fixed sizes offered by the desktop-size selector.  Kept in sync with
+#: ``client/src/utils/desktopSizes.js`` so the API and the UI agree even when
+#: the client is older/newer than the backend.
+DESKTOP_SIZE_PRESETS = (
+    (3840, 2160, "4K UHD"),
+    (2560, 1440, "QHD"),
+    (1920, 1080, "Full HD"),
+    (1680, 1050, "16:10"),
+    (1600, 900, "HD+"),
+    (1440, 900, "16:10"),
+    (1366, 768, "laptop"),
+    (1280, 1024, "5:4"),
+    (1280, 720, "HD"),
+    (1024, 768, "XGA"),
+)
+
+
+def desktop_size_options() -> list[dict]:
+    """
+    Return the desktop-size selector options served by
+    ``GET /api/computers/desktop-sizes``.
+
+    ``auto`` is first and is the default: the remote desktop follows the
+    client viewport instead of being letterboxed.  ``custom`` is last and asks
+    the UI for a width/height pair.
+
+    Returns:
+        list[dict]: Options shaped like ``ComputerDesktopSizePreset``.
+    """
+    options = [
+        {
+            "id": "auto",
+            "label": "Auto (fit to window)",
+            "width": 0,
+            "height": 0,
+            "auto": True,
+            "custom": False,
+            "description": (
+                "The desktop resizes to the client window, so it always fills "
+                "the panel (default)"
+            ),
+        }
+    ]
+    for width, height, label in DESKTOP_SIZE_PRESETS:
+        options.append({
+            "id": f"{width}x{height}",
+            "label": f"{width} × {height} ({label})",
+            "width": width,
+            "height": height,
+            "auto": False,
+            "custom": False,
+            "description": "The desktop keeps this resolution; the viewer scales it",
+        })
+    options.append({
+        "id": "custom",
+        "label": "Custom…",
+        "width": 0,
+        "height": 0,
+        "auto": False,
+        "custom": True,
+        "description": (
+            f"Set the width and height manually ({MIN_WIDTH}–{MAX_WIDTH} × "
+            f"{MIN_HEIGHT}–{MAX_HEIGHT})"
+        ),
+    })
+    return options
+
+
 def xrandr_resize_script(width: Any, height: Any) -> str:
     """
     Build the POSIX shell script that resizes an X11 desktop with ``xrandr``.

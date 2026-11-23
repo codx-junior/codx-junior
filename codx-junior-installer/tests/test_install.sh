@@ -247,6 +247,7 @@ run_input "local
 
 
 
+
 deepseek
 sk-test
 
@@ -266,6 +267,7 @@ else
 fi
 
 run_input "dind
+slave
 slave
 demo.codx-junior.ai
 traefik
@@ -293,7 +295,43 @@ else
     fail "interactive DIND slave wizard keeps the public domain"
 fi
 
-# --- 11. the root front door delegates ---------------------------------------
+# --- 11. dind + local + slave ------------------------------------------------
+run_input "dind
+local
+slave
+demo.codx-junior.ai
+traefik
+letsencrypt
+websecure
+y
+
+
+
+
+deepseek
+sk-test
+
+y" "${ROOT}" bash "${INSTALLER}" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "traefik_mode=slave" && out_has "dind_mode=local"; then
+    pass "dind local slave combines local access with the slave proxy"
+else
+    fail "dind local slave combines local access with the slave proxy" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "docker-compose.slave.yaml" && out_has "docker-compose.local.yaml"; then
+    pass "dind local slave includes both proxy and local-publish overlays"
+else
+    fail "dind local slave includes both proxy and local-publish overlays"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "domains=demo.codx-junior.ai" && out_has "public_url=https://demo.codx-junior.ai"; then
+    pass "dind local slave keeps the public domain"
+else
+    fail "dind local slave keeps the public domain"
+fi
+
+# --- 12. the root front door delegates ---------------------------------------
 run "${ROOT}" bash "${ROOT}/install.sh" --version
 CHECKED=$((CHECKED + 1))
 if [[ ${RUN_RC} -eq 0 ]] && out_has "codx-junior install.sh 2.0.0"; then

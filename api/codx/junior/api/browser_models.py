@@ -93,6 +93,23 @@ class BrowserSessionResponse(BaseModel):
     last_action_at: Optional[str] = Field(default=None, description="Timestamp of the last action")
     controller: str = Field(default="ai", description="Who may drive: ai, user or none")
     controller_chat_id: Optional[str] = Field(default=None, description="Chat owning the control lease")
+    control_mode: str = Field(
+        default="auto",
+        description="How humans share control: auto (click takes it) or request (owner approves)",
+    )
+    control_owner: Optional[str] = Field(
+        default=None,
+        description="Username (or guest participant id) currently owning the human lease",
+    )
+    control_owner_name: Optional[str] = Field(
+        default=None, description="Display name of the human control owner"
+    )
+    participants: List[Dict[str, Any]] = Field(
+        default_factory=list, description="Humans connected to the session"
+    )
+    control_request: Optional[Dict[str, Any]] = Field(
+        default=None, description="Pending request-control ask (id, participant, name, timestamp)"
+    )
     user_active_until: Optional[str] = Field(default=None, description="Recent user input keeps the AI paused until")
     handoff_reason: Optional[str] = Field(default=None, description="Why the AI handed control to the user")
     last_user_event_at: Optional[str] = Field(default=None, description="Last real user interaction captured in the page")
@@ -184,6 +201,13 @@ class BrowserSessionCreateRequest(BaseModel):
         description=(
             "Let the desktop follow the viewer size (default). False pins "
             "desktop_width/desktop_height and scales the image locally"
+        ),
+    )
+    control_mode: Optional[str] = Field(
+        default=None,
+        description=(
+            "How humans share control: 'auto' (a click takes it, default) or "
+            "'request' (the current owner approves)"
         ),
     )
     control: Optional[str] = Field(
@@ -406,10 +430,29 @@ class BrowserControlRequest(BaseModel):
     """Move the human/AI control lease of a browser session."""
 
     action: str = Field(
-        description="take_control/take, give_back/release, pause, resume, handoff, status"
+        description=(
+            "status, take_control/take, request_control/request, approve_request, "
+            "deny_request, give_back/release/resume, pause, handoff, set_mode"
+        )
     )
     chat_id: Optional[str] = Field(default=None, description="Chat requesting/owning the lease")
     reason: Optional[str] = Field(default=None, description="Why the AI hands control to the user")
+    participant_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Browser tab/device id of the caller. Normally sent as the "
+            "x-participant-id header; accepted here for non-browser clients"
+        ),
+    )
+    display_name: Optional[str] = Field(
+        default=None, description="Name shown to the control owner in a request"
+    )
+    request_id: Optional[str] = Field(
+        default=None, description="Pending request id for approve/deny (optional)"
+    )
+    mode: Optional[str] = Field(
+        default=None, description="Control mode for action=set_mode: auto or request"
+    )
 
 
 class BrowserControlResponse(BaseModel):
@@ -418,6 +461,24 @@ class BrowserControlResponse(BaseModel):
     success: bool = True
     message: str
     session: BrowserSessionResponse
+
+
+class ComputerPresenceRequest(BaseModel):
+    """Register/heartbeat one human connection to a shared session."""
+
+    participant_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Browser tab/device id. Normally sent as the x-participant-id "
+            "header; accepted here for non-browser clients"
+        ),
+    )
+    display_name: Optional[str] = Field(default=None, description="Name shown to other participants")
+    avatar: Optional[str] = Field(default=None, description="Avatar URL")
+    control_mode: Optional[str] = Field(
+        default=None,
+        description="Optional control mode to apply: auto or request (owner/admin only)",
+    )
 
 
 class BrowserScreenshotRequest(BaseModel):
@@ -560,6 +621,10 @@ class SioBrowserCreateRequest(BaseModel):
         default=None,
         description="Let the desktop follow the viewer size (default) or pin the resolution",
     )
+    control_mode: Optional[str] = Field(
+        default=None,
+        description="How humans share control: auto (default) or request",
+    )
     control: Optional[str] = Field(default=None, description="Force the control channel")
     vnc_host: Optional[str] = Field(default=None, description="Remote VNC host")
     vnc_port: Optional[int] = Field(default=5900, description="Remote VNC port")
@@ -638,6 +703,13 @@ class ComputerViewerCredentialsResponse(BaseModel):
     live_view: str
     user: Optional[str] = None
     password: Optional[str] = None
+    role: str = Field(
+        default="control",
+        description="control (full input) or view (observers without the lease)",
+    )
+    view_only: bool = Field(
+        default=False, description="True when the returned password is view-only"
+    )
     note: Optional[str] = None
 
 # ============================================================================

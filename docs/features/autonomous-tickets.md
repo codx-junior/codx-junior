@@ -25,22 +25,14 @@ budget on the same failure): fix the cause and queue it again with
 
 ## Place an autonomous ticket
 
-### From the New task dialog (UI)
+### Creating one
 
-The app-level **New** / **New task** dialog now has a **Type** selector:
+The **New chat / New task** dialog is for local work: its **Mode** selector is
+**Chat** (stay involved) or **Task** (autonomous delivery, final report). It does
+not place cross-project tickets any more.
 
-1. Open **New task** (sidebar **New**, or the board’s **+**).
-2. Set **Type** to **Ticket to another project**.
-3. Pick the **Target project** and leave **Work autonomously on the target until its
-   validation is green** checked.
-4. Write the request (the first line is the title, the rest is the description), then
-   click **Place ticket**.
-5. The ticket lands on the target’s `tickets` board. The target accepts it (card move
-   to **Accepted**, or **Queue** in the ticket chat) and the autonomous run starts.
-
-The source keeps the ticket id in its ledger; `ticket_query` and
-`GET /api/tickets` list it. The target sees the full conversation and the delivery
-report on the card.
+A cross-project ticket is placed from a chat with the `ticket_create` tool or
+`POST /api/tickets`:
 
 ### From a chat (tool)
 

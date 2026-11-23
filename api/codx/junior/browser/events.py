@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 BROWSER_ACTIVITY_EVENT = "codx-junior-browser-activity"
 BROWSER_CONTROL_EVENT = "codx-junior-browser-control"
+BROWSER_PARTICIPANTS_EVENT = "codx-junior-browser-participants"
 BROWSER_STATUS_EVENT = "codx-junior-browser-status"
 
 
@@ -43,7 +44,45 @@ def broadcast_control(session: Any) -> None:
     broadcast(BROWSER_CONTROL_EVENT, {
         "session_id": getattr(session, "id", None),
         "controller": getattr(session, "controller", None),
+        "control_mode": getattr(session, "control_mode", None),
+        "control_owner": getattr(session, "control_owner", None),
+        "control_owner_name": getattr(session, "control_owner_name", None),
+        "control_request": (
+            session.control_request.to_dict()
+            if getattr(session, "control_request", None)
+            else None
+        ),
         "handoff_reason": getattr(session, "handoff_reason", None),
         "user_active_until": getattr(session, "user_active_until", None),
+        "session": data,
+    })
+
+
+def broadcast_participants(session: Any) -> None:
+    """Publish the current participant list of a session."""
+    try:
+        participants = [
+            p.to_dict() if hasattr(p, "to_dict") else dict(p)
+            for p in (getattr(session, "participants", None) or [])
+        ]
+        data = (
+            session.to_public_dict()
+            if hasattr(session, "to_public_dict")
+            else {}
+        )
+    except Exception:
+        participants = []
+        data = {}
+    broadcast(BROWSER_PARTICIPANTS_EVENT, {
+        "session_id": getattr(session, "id", None),
+        "participants": participants,
+        "control_mode": getattr(session, "control_mode", None),
+        "control_owner": getattr(session, "control_owner", None),
+        "control_owner_name": getattr(session, "control_owner_name", None),
+        "control_request": (
+            session.control_request.to_dict()
+            if getattr(session, "control_request", None)
+            else None
+        ),
         "session": data,
     })

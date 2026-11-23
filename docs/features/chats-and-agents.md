@@ -21,7 +21,7 @@ Chats can be nested: a chat can have sub-chats (sub-tasks), threads on a message
 | Mode | Use it to |
 | --- | --- |
 | `chat` | Have a normal conversation with the AI about the project. |
-| `task` | Refine a single document, such as a specification or a plan, message after message. |
+| `task` | Autonomous delivery in the new-task dialog: do it end to end, validate it and report back (also used to refine a single document message after message). |
 | `agent` | Let the AI use tools in a loop to complete the work. |
 | `vibe` | Code with the AI while watching the file changes and the app preview. See [Vibe coding](/features/vibe-coding). |
 | `topic` | Run a team channel where people and AI post messages. See [Teams](/features/teams). |
@@ -29,6 +29,20 @@ Chats can be nested: a chat can have sub-chats (sub-tasks), threads on a message
 | `browser` | Work with a web page inside the chat. |
 | `slides` | Produce a presentation. |
 | `tutorial` | Write a tutorial organised in chapters. |
+
+## Chat vs Task mode in the new-task dialog
+
+The **New chat / New task** dialog has two explicit processing modes:
+
+| Mode | What happens |
+| --- | --- |
+| **Chat** | You stay in the loop: the agent answers and can offer suggested replies / next-step buttons. Use it for questions, reviews and agile back-and-forth. |
+| **Task** | “Do it, don’t bother me until it is done”: the turn runs end to end, no suggested-reply menu, and closes with the final delivery report. The `codx-junior` profile’s complete-delivery contract applies. |
+
+Both create a normal board card. **Task** sets `Chat.mode = "task"` and adds the
+end-to-end/final-report contract to the first message; **Chat** keeps the caller
+mode (`chat`, or the grid menu’s `prview` / `topic` / `vibe`). In Task mode the
+suggested-replies prompt is not sent to the model.
 
 ## Agent tools
 

@@ -683,33 +683,25 @@ import {
               </label>
             </div>
 
-            <!-- Desktop size (browser/Linux) -->
-            <div v-if="!isVm" class="grid grid-cols-2 gap-2">
-              <label class="flex flex-col gap-1">
-                <span class="text-xs font-semibold">Desktop width</span>
-                <input
-                  v-model.number="form.desktopWidth"
-                  type="number"
-                  min="640"
-                  max="7680"
-                  step="1"
-                  class="input input-sm input-bordered w-full"
-                  placeholder="1920"
-                />
-              </label>
-              <label class="flex flex-col gap-1">
-                <span class="text-xs font-semibold">Desktop height</span>
-                <input
-                  v-model.number="form.desktopHeight"
-                  type="number"
-                  min="480"
-                  max="4320"
-                  step="1"
-                  class="input input-sm input-bordered w-full"
-                  placeholder="1080"
-                />
-              </label>
-            </div>
+            <!-- Desktop size (browser/Linux): auto (client size) is the default -->
+            <DesktopSizeSelect
+              v-if="!isVm"
+              :key="form.kind"
+              v-model:auto="form.desktopAutoResize"
+              v-model:width="form.desktopWidth"
+              v-model:height="form.desktopHeight"
+              :options="$storex.browsers.desktopSizeOptions"
+              :disabled="creating"
+            />
+
+            <!-- Shared control between the people watching this machine -->
+            <label v-if="!isVm" class="flex flex-col gap-1">
+              <span class="text-xs font-semibold">Control sharing</span>
+              <select v-model="form.controlMode" class="select select-sm select-bordered w-full" :disabled="creating">
+                <option value="auto">Auto — anyone can click and take control</option>
+                <option value="request">Request — the current driver must approve</option>
+              </select>
+            </label>
 
             <!-- Shared memory (browser/Linux) -->
             <label v-if="!isVm" class="flex flex-col gap-1">
@@ -921,6 +913,11 @@ const emptyForm = () => ({
   shmSize: '',
   desktopWidth: '',
   desktopHeight: '',
+  // Default: the desktop follows the client viewport. False pins width/height.
+  desktopAutoResize: true,
+  // How several humans share the control lease when this machine is opened
+  // by more than one person: auto (first click) or request (owner approves).
+  controlMode: 'auto',
   // One KEY=VALUE per line
   env: ''
 })
@@ -929,6 +926,7 @@ const emptyForm = () => ({
 const DOWNLOADS_FOLDER = '.codx/browser_downloads'
 const COMPUTER_DOWNLOADS_FOLDER = '.codx/computer_downloads'
 
+import DesktopSizeSelect from './DesktopSizeSelect.vue'
 import { SESSION_LABELS } from '@/utils/sessionLabels'
 import {
   declaredEnv,
@@ -941,7 +939,7 @@ import {
 
 export default {
   name: 'BrowserSessionCreateModal',
-  components: { BrowserFolderPicker, ComputerImageLibrary },
+  components: { BrowserFolderPicker, ComputerImageLibrary, DesktopSizeSelect },
   data() {
     return {
       form: emptyForm(),
@@ -1250,18 +1248,22 @@ export default {
       }
 
       const folder = this.downloadsFolderPath || `${DOWNLOADS_FOLDER}/<session id>`
-      if (this.form.readonly) {
-        return {
-          path: '/downloads',
-          note: `Saved at ${folder}: the mounted folders are read-only.`
-        }
-      }
-
-      const covering = this.coveringMount(this.downloadsFolderPath)
+      const covering = this.form.readonly
+        ? null
+        : this.coveringMount(this.downloadsFolderPath)
       if (!covering) {
+        // Same rule as the backend: a selected project folder that no mounted
+        // folder already exposes is mounted at its own project path, so it is
+        // reachable where the user chose it (not at a generic /downloads).
+        if (this.form.readonly) {
+          return {
+            path: `${this.homePath}/${folder}`,
+            note: `Saved at ${folder}: the mounted folders are read-only, the downloads folder is mounted writable.`
+          }
+        }
         return {
-          path: '/downloads',
-          note: `Saved at ${folder}: outside the mounted folders.`
+          path: folder ? `${this.homePath}/${folder}` : this.homePath,
+          note: `Saved at ${folder}: mounted at its project path.`
         }
       }
       const rest = this.downloadsFolderPath.slice(this.normalizeFolder(covering.folder).length)
@@ -1317,7 +1319,9 @@ export default {
       this.form.folders = kept.sort((a, b) => a.localeCompare(b))
     },
     onPickerSelect(selection) {
-      if (this.picker === 'downloads') {
+      // The downloads picker is the same component opened from the settings:
+      // its selection must fill `downloadsFolder`, never the mounted folders.
+      if (this.view === 'downloads' || this.picker === 'downloads') {
         const chosen = (selection || [])[0] || ''
         this.form.downloadsFolder = this.normalizeFolder(chosen)
         this.form.downloads = 'custom'
@@ -1474,6 +1478,8 @@ export default {
       this.form.shmSize = ''
       this.form.desktopWidth = ''
       this.form.desktopHeight = ''
+      this.form.desktopAutoResize = true
+      this.form.controlMode = 'auto'
       this.form.env = ''
       // VM CPU/RAM/disk have their own top-level section now: do not reset
       // them from the advanced panel. Browser/Linux CPU/RAM are still advanced.
@@ -1496,7 +1502,9 @@ export default {
         shm_size: this.isVm ? null : (this.form.shmSize.trim() || null),
         extra_env: this.parseEnv(),
         desktop_width: this.isVm ? null : (Number(this.form.desktopWidth) || null),
-        desktop_height: this.isVm ? null : (Number(this.form.desktopHeight) || null)
+        desktop_height: this.isVm ? null : (Number(this.form.desktopHeight) || null),
+        desktop_auto_resize: this.isVm ? null : this.form.desktopAutoResize !== false,
+        control_mode: this.isVm ? null : this.form.controlMode
       }
     },
     errorMessage(error) {
@@ -1570,6 +1578,7 @@ export default {
   mounted() {
     // The standalone library browser can open this dialog with a card already
     // picked: apply it and start on the settings step (the image is done).
+    this.$storex.browsers.loadDesktopSizes()
     const pendingImage = this.$storex.browsers.pendingLibraryImage
     if (pendingImage) {
       this.onImageSelected(pendingImage)

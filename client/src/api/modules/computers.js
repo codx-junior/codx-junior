@@ -71,9 +71,34 @@ export const computersModule = (API) => ({
     return API.get(`/api/computers/images/catalog${qs ? `?${qs}` : ''}`)
   },
 
-  /** Credentials for the embedded KasmVNC live view. */
-  async viewerCredentials(sessionId) {
-    return API.post(`/api/computers/${sessionId}/viewer-credentials`, {})
+  /**
+   * Credentials for the embedded KasmVNC live view.
+   *
+   * @param {string} sessionId - Session id.
+   * @param {string} [role] - `control` (owner) or `view` (observer). Omit to
+   *   let the backend decide from the control lease.
+   */
+  async viewerCredentials(sessionId, role = '') {
+    const qs = role ? `?role=${encodeURIComponent(role)}` : ''
+    return API.post(`/api/computers/${sessionId}/viewer-credentials${qs}`, {})
+  },
+
+  // ── Presence / shared control ──────────────────────────────────────────
+
+  /**
+   * Join a shared session (also the presence heartbeat).
+   *
+   * Idempotent; call on open and every ~15 s. Returns the session with the
+   * participant list and control state, so the viewer does not need a second
+   * request.
+   */
+  async join(sessionId, payload = {}) {
+    return API.post(`/api/computers/${sessionId}/join`, payload)
+  },
+
+  /** Leave a shared session (best effort, also sent on page unload). */
+  async leave(sessionId, payload = {}) {
+    return API.post(`/api/computers/${sessionId}/leave`, payload)
   },
 
   // ── Desktop size ───────────────────────────────────────────────────────
@@ -239,11 +264,17 @@ export const computersModule = (API) => ({
     return API.post(`/api/computers/${sessionId}/stop`, {})
   },
 
-  async control(sessionId, action, { chatId = null, reason = null } = {}) {
-    const payload = { action }
-    if (chatId) payload.chat_id = chatId
-    if (reason) payload.reason = reason
-    return API.post(`/api/computers/${sessionId}/control`, payload)
+  /**
+   * Move the control lease.
+   *
+   * `payload` is forwarded as-is (participant_id, display_name, request_id,
+   * mode...); the legacy `chatId` alias is mapped to `chat_id`.
+   */
+  async control(sessionId, action, payload = {}) {
+    const body = { action, ...(payload || {}) }
+    if (body.chatId && !body.chat_id) body.chat_id = body.chatId
+    delete body.chatId
+    return API.post(`/api/computers/${sessionId}/control`, body)
   },
 
   // ── Actions (browser page or desktop) ──────────────────────────────────

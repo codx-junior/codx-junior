@@ -7,6 +7,7 @@ import ChatModeSelector from '../../chat/ChatModeSelector.vue'
 import ChatProfileSelector from '../../chat/ChatProfileSelector.vue'
 import IconSelector from '../../ui/IconSelector.vue'
 import ProjectDetailt from '../../ProjectDetailt.vue'
+import BoardQuickChat from './BoardQuickChat.vue'
 import { getCurrentInstance } from 'vue'
 
 const instance = getCurrentInstance()
@@ -22,459 +23,24 @@ defineExpose({
 <template>
   <div class="sprint-board-modals">
 
-    <!-- ── New Task / Subtask Modal ── -->
-    <!-- Fullscreen while compact: on mobile the ticket dialog owns the viewport
-         instead of floating over a backdrop you can dismiss by accident. -->
-    <modal close :fullscreen="compact" @close="closeNewTask" v-if="showNewTask">
-      <!-- The title lives in the modal header: that bar is always there, so
-           using it hands the body the ~40px an in-body heading would take. -->
-      <template #header>
-        <h2 class="min-w-0 flex items-center gap-2 font-semibold text-sm md:text-base">
-          <i class="fa-solid fa-plus text-primary text-xs"></i>
-          <span class="truncate">{{ newTask.parentId ? 'Add Subtask' : 'New Task' }}</span>
-          <span
-            v-if="isUrgent"
-            class="badge badge-xs badge-warning gap-1 shrink-0 font-semibold"
-            :title="`Due ${newTask.deadline}`"
-          >
-            <i class="fa-solid fa-bolt text-[8px]"></i> Urgent
-          </span>
-        </h2>
-      </template>
-
-      <div :class="compact ? 'p-0' : 'p-1'">
-        <!-- Project (icon only) · Task name · Mode -->
-        <div class="flex items-center gap-2" :class="compact ? 'mb-2.5' : 'mb-3'">
-          <div class="shrink-0">
-            <ProjectDetailt
-              :iconify="true"
-              :model-value="selectedProject"
-              @update:model-value="onProjectSelected"
-              @select="onProjectSelected"
-            />
-          </div>
-          <!-- Multiline brief: the first line titles the card, the lines below
-               become the task's first message. Enter submits (quick capture),
-               Shift+Enter adds a line and the field grows with the content. -->
-          <textarea
-            ref="taskNameInput"
-            v-model="newTask.name"
-            :rows="nameRows"
-            :placeholder="compact ? 'What needs to be done?' : 'Describe what needs to be done…'"
-            class="grow textarea resize-none leading-snug"
-            :class="compact ? 'textarea-sm' : null"
-            @keydown.enter.exact.prevent="addNewTask"
-            @keydown.ctrl.enter.prevent="addNewTask"
-            @keydown.meta.enter.prevent="addNewTask"
-          ></textarea>
-          <!-- Mode: board tasks only. A quick ticket is always a chat, so the
-               compact dialog drops the selector and keeps the "chat" default. -->
-          <div v-if="!compact && newTask.processing !== 'ticket'" class="">
-            <ChatModeSelector
-              :selected-mode="newTask.mode"
-              @mode-changed="newTask.mode = $event"
-            />
-          </div>
-        </div>
-
-        <!-- Processing: a normal task or a request on another project -->
-        <div v-if="!newTask.parentId" class="flex items-center gap-2 mb-2" :class="{ 'mb-1': compact }">
-          <span class="text-[10px] font-semibold uppercase tracking-wider text-base-content/50">Type</span>
-          <select v-model="newTask.processing" class="select select-xs select-bordered">
-            <option value="task">Task</option>
-            <option value="ticket">Ticket to another project</option>
-          </select>
-          <span v-if="newTask.processing === 'ticket'" class="text-[10px] text-base-content/50">
-            The target accepts it before it runs
-          </span>
-        </div>
-
-        <!-- Cross-project ticket: target project + autonomous request -->
-        <div v-if="newTask.processing === 'ticket' && !newTask.parentId" class="form-control mb-3">
-          <label class="label py-1">
-            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Target project</span>
-          </label>
-          <div v-if="ticketTargetsLoading" class="text-xs text-base-content/50 flex items-center gap-2">
-            <span class="loading loading-spinner loading-xs"></span> Finding projects…
-          </div>
-          <select
-            v-else
-            v-model="newTask.ticket_target"
-            class="select select-sm select-bordered"
-            :disabled="!ticketTargets.length"
-          >
-            <option v-for="target in ticketTargets" :key="target.project_id || target.project_name" :value="target.project_id || target.project_name">
-              {{ target.project_name }} · {{ target.relationship }}
-            </option>
-          </select>
-          <div v-if="!ticketTargetsLoading && !ticketTargets.length" class="text-xs text-warning mt-1">
-            No project can receive a ticket from this one. Link a child, read-only or read/write
-            project first.
-          </div>
-          <label class="flex items-center gap-2 mt-2 cursor-pointer">
-            <input v-model="newTask.ticket_autonomous" type="checkbox" class="checkbox checkbox-xs checkbox-primary" />
-            <span class="text-xs">Work autonomously on the target until its validation is green</span>
-          </label>
-          <div v-if="ticketError" class="text-xs text-error mt-1">{{ ticketError }}</div>
-        </div>
-
-        <!-- Column selector — kanban boards (sprint columns are the task status) -->
-        <div v-if="isKanban && newTask.processing !== 'ticket'" class="form-control mb-3">
-          <label class="label py-1">
-            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Column</span>
-          </label>
-          <div class="flex flex-col gap-1.5">
-            <label
-              v-for="col in columns"
-              :key="col.id || col.title"
-              class="flex items-center gap-2.5 px-2 py-1.5 rounded-lg border cursor-pointer transition-all duration-150"
-              :class="newTask.column === col.title
-                ? 'border-primary/40 bg-primary/10'
-                : 'border-base-100 hover:border-base-content/20'"
-            >
-              <input
-                type="radio"
-                :value="col.title"
-                v-model="newTask.column"
-                class="radio radio-xs radio-primary"
-              />
-              <span
-                class="w-2 h-2 rounded-full shrink-0"
-                :style="col.color ? `background: ${col.color}` : ''"
-                :class="!col.color ? 'bg-base-content/20' : ''"
-              ></span>
-              <span class="text-sm text-base-content/80">{{ col.title }}</span>
-              <!-- Profiles this column applies to new tasks -->
-              <span
-                v-if="col.profiles?.length"
-                class="badge badge-xs badge-ghost gap-1 shrink-0 ml-auto tooltip tooltip-left"
-                :data-tip="`Profiles: ${col.profiles.join(', ')}`"
-              >
-                <i class="fa-solid fa-user text-[8px]"></i>{{ col.profiles.length }}
-              </span>
-            </label>
-            <div v-if="!columns.length" class="text-xs text-base-content/30 px-2 py-1 italic">
-              No columns yet — task will be added uncategorized
-            </div>
-          </div>
-        </div>
-
-        <!-- Initial message, files & images -->
-        <div class="form-control" :class="compact ? 'mb-2.5' : 'mb-3'">
-          <label v-if="!compact" class="label py-1">
-            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Initial message</span>
-            <span class="label-text-alt text-[10px] text-base-content/40">Optional · type @ to find files</span>
-          </label>
-
-          <!-- The chat composer: message, profiles & model selectors, attachments -->
-          <div class="relative">
-            <ChatInputBox
-              ref="composer"
-              :selected-model="newTask.llm_model"
-              :ai-models="aiModels"
-              :profiles="profiles"
-              :selected-profiles="selectedProfiles"
-              :cursor-word="cursorWord"
-              @send="runNewTask"
-              @keydown="onComposerKeyDown"
-              @paste="onComposerPaste"
-              @drop.stop="onComposerDrop"
-              @model-changed="onModelChanged"
-              @profiles-selected="onProfilesSelected"
-              @upload-files="onUploadFiles"
-              @update:cursor-word="onCursorWord"
-            />
-
-            <!-- File intellisense — same behaviour as the chat composer -->
-            <ChatIntelliSense
-              ref="intelliSense"
-              :suggestions="intelliSenseSuggestions"
-              :active-index="intelliSenseIndex"
-              :query="intelliSenseQuery"
-              :search-controller="searchController"
-              :progress="intelliSenseProgress"
-              :top="true"
-              @select="onIntelliSenseSelect"
-              @hover="intelliSenseIndex = $event"
-              @accept-multi="onIntelliSenseAcceptMulti"
-              @cancel="cancelIntelliSense"
-            />
-          </div>
-
-          <!-- Uploaded files / images -->
-          <ChatAttachmentPreview
-            v-if="newTask.attachments.length"
-            :attachments="newTask.attachments"
-            @remove-attachment="removeAttachment"
-          />
-
-          <!-- Project files: dropped on the composer or referenced with @file.py -->
-          <div v-if="composerFiles.length" class="flex flex-wrap gap-1 mt-1">
-            <span
-              v-for="file in composerFiles"
-              :key="file"
-              class="badge badge-sm badge-ghost gap-1 max-w-full"
-              :title="file"
-            >
-              <i class="fa-solid fa-file text-[10px]"></i>
-              <span class="truncate max-w-[12rem]">{{ fileName(file) }}</span>
-              <button
-                type="button"
-                class="hover:text-error"
-                :aria-label="`Remove ${fileName(file)}`"
-                @click.stop="removeComposerFile(file)"
-              >
-                <i class="fa-solid fa-xmark text-[10px]"></i>
-              </button>
-            </span>
-          </div>
-        </div>
-
-        <!-- Quick options — compact: urgent due date + cost budget dropdown -->
-        <div v-if="compact" class="flex items-center gap-2 mb-2.5">
-          <button
-            type="button"
-            class="btn btn-sm gap-1.5"
-            :class="isUrgent ? 'btn-warning' : 'btn-ghost border border-base-100'"
-            :aria-pressed="isUrgent"
-            :title="isUrgent
-              ? `Urgent · due ${newTask.deadline} (click to clear)`
-              : 'Urgent: mark it due tomorrow'"
-            @click="toggleUrgent"
-          >
-            <i class="fa-solid fa-bolt text-xs"></i>
-            Urgent
-          </button>
-          <!-- Non urgent: the task is created as usual but armed outside the
-               human working window, so the agent works on it off-hours -->
-          <button
-            type="button"
-            class="btn btn-sm gap-1.5"
-            :class="newTask.nonUrgent ? 'btn-info' : 'btn-ghost border border-base-100'"
-            :aria-pressed="newTask.nonUrgent"
-            :title="newTask.nonUrgent
-              ? 'Non urgent · worked on outside working hours (click to clear)'
-              : 'Non urgent: let the agent work on it outside working hours'"
-            @click="toggleNonUrgent"
-          >
-            <i class="fa-solid fa-moon text-xs"></i>
-            Non urgent
-          </button>
-          <ChatCostSelector
-            variant="chip"
-            class="ml-auto"
-            label="Cost budget"
-            :cost="0"
-            :estimation-cost="newTask.estimation_cost"
-            @cost-changed="newTask.estimation_cost = $event"
-          />
-        </div>
-
-        <!-- Assignees & Deadline -->
-        <div v-if="!compact" class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-          <!-- Assignees (one or more users) -->
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Assignees</span>
-            </label>
-            <div class="dropdown">
-              <button
-                type="button"
-                tabindex="0"
-                class="btn btn-sm btn-ghost border border-base-100 w-full justify-start gap-1.5"
-              >
-                <i class="fa-solid fa-user-plus text-xs"></i>
-                <span class="text-xs font-medium">
-                  {{ newTask.users.length ? `${newTask.users.length} assigned` : 'Assign users' }}
-                </span>
-              </button>
-              <ul
-                tabindex="0"
-                class="dropdown-content menu bg-base-200 border border-base-100 rounded-box z-40 w-56 max-h-56 overflow-y-auto p-1 mt-1 shadow-lg"
-              >
-                <li v-for="u in allUsers" :key="u.username">
-                  <label class="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      class="checkbox checkbox-xs checkbox-primary"
-                      :value="u.username"
-                      v-model="newTask.users"
-                    />
-                    <div class="avatar placeholder">
-                      <div class="w-5 h-5 rounded-full bg-base-300 text-[9px] text-base-content/60">
-                        <img v-if="u.avatar" :src="u.avatar" :alt="u.username" />
-                        <span v-else>{{ initial(u) }}</span>
-                      </div>
-                    </div>
-                    <span class="text-xs truncate">{{ u.username }}</span>
-                  </label>
-                </li>
-                <li v-if="!allUsers.length" class="menu-title text-xs opacity-40">No users</li>
-              </ul>
-            </div>
-            <!-- Selected assignees -->
-            <div v-if="selectedUsers.length" class="flex items-center -space-x-2 mt-2">
-              <div
-                v-for="u in selectedUsers"
-                :key="u.username"
-                class="avatar placeholder tooltip"
-                :data-tip="u.username"
-              >
-                <div class="w-6 h-6 rounded-full ring-1 ring-base-200 bg-base-300 text-[10px] text-base-content/60">
-                  <img v-if="u.avatar" :src="u.avatar" :alt="u.username" />
-                  <span v-else>{{ initial(u) }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Deadline -->
-          <div class="form-control">
-            <label class="label py-1">
-              <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">Deadline</span>
-            </label>
-            <input
-              v-model="newTask.deadline"
-              type="date"
-              class="input input-bordered input-sm w-full"
-            />
-            <div class="flex items-center gap-1.5 mt-2">
-              <button type="button" class="btn btn-xs btn-ghost" @click="setDeadline('today')">Today</button>
-              <button type="button" class="btn btn-xs btn-ghost" @click="setDeadline('tomorrow')">Tomorrow</button>
-              <button type="button" class="btn btn-xs btn-ghost" @click="setDeadline('week')">+1 week</button>
-              <button
-                v-if="newTask.deadline"
-                type="button"
-                class="btn btn-xs btn-ghost text-error"
-                title="Clear deadline"
-                aria-label="Clear deadline"
-                @click="newTask.deadline = null"
-              >
-                <i class="fa-solid fa-xmark text-xs"></i>
-              </button>
-              <!-- Non urgent: independent of the deadline, it only decides
-                   *when* the agent works on the task -->
-              <button
-                type="button"
-                class="btn btn-xs gap-1 ml-auto"
-                :class="newTask.nonUrgent ? 'btn-info' : 'btn-ghost border border-base-100'"
-                :aria-pressed="newTask.nonUrgent"
-                :title="newTask.nonUrgent
-                  ? 'Non urgent · worked on outside working hours (click to clear)'
-                  : 'Non urgent: let the agent work on it outside working hours'"
-                @click="toggleNonUrgent"
-              >
-                <i class="fa-solid fa-moon text-[10px]"></i>
-                Non urgent
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Cost budget (cxjcoins) — reusable component -->
-        <div v-if="!compact" class="mb-4">
-          <ChatCostSelector
-            variant="field"
-            label="Cost budget"
-            hint="Optional · AI stops when reached"
-            :cost="0"
-            :estimation-cost="newTask.estimation_cost"
-            @cost-changed="newTask.estimation_cost = $event"
-          />
-        </div>
-
-        <!-- Existing subtasks of the parent not yet in this sprint -->
-        <!-- Selecting one adds it to the sprint immediately and closes this dialog -->
-        <div v-if="!compact && newTask.parentId && parentChildren.length" class="form-control mb-4">
-          <label class="label py-1">
-            <span class="label-text text-xs font-semibold uppercase tracking-wider text-base-content/50">
-              Existing subtasks
-            </span>
-            <span class="label-text-alt text-xs text-base-content/40">
-              {{ parentChildren.length }} not in this sprint
-            </span>
-          </label>
-          <div class="flex flex-col gap-1 max-h-40 overflow-y-auto pr-1">
-            <button
-              v-for="child in parentChildren"
-              :key="child.id"
-              type="button"
-              class="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-transparent cursor-pointer transition-colors text-left hover:bg-base-content/5 hover:border-primary/30"
-              @click="selectParentChild(child)"
-            >
-              <i class="fa-solid fa-plus text-xs w-3 text-center shrink-0 text-base-content/30"></i>
-              <i :class="[statusIcon(child.status), 'text-xs w-3 text-center shrink-0']"></i>
-              <span class="flex-1 text-sm truncate">{{ child.name || 'Untitled' }}</span>
-              <span class="text-[10px] text-base-content/40 shrink-0">{{ statusLabel(child.status) }}</span>
-            </button>
-          </div>
-          <p class="text-[10px] text-base-content/40 mt-1.5 flex items-center gap-1">
-            <i class="fa-solid fa-circle-info"></i>
-            Selecting a subtask adds it to this sprint and closes this dialog.
-          </p>
-        </div>
-
-        <!-- Context note -->
-        <div v-if="!compact" class="flex gap-2 items-start p-2.5 rounded-lg bg-info/5 border border-info/15 mb-4">
-          <i class="fa-solid fa-circle-info text-info text-xs mt-0.5 shrink-0"></i>
-          <span class="text-xs text-base-content/50">
-            <template v-if="newTask.processing === 'ticket'">
-              The ticket is placed on <b>{{ selectedTicketTarget?.project_name || 'the target project' }}</b>.
-              <span v-if="newTask.ticket_autonomous"> It is requested to run autonomously; the target accepts it first.</span>
-            </template>
-            <!-- Kanban: destination is a board column (chat.column) -->
-            <template v-else-if="isKanban">
-              <template v-if="newTask.parentId">
-                Subtask of <b>{{ parentName || 'parent task' }}</b>, linked to its parent and added to
-                <b>{{ boardName }}</b> in the <b>{{ currentColumnLabel }}</b> column.
-              </template>
-              <template v-else>
-                The task is added to <b>{{ boardName }}</b> in the <b>{{ currentColumnLabel }}</b> column.
-              </template>
-            </template>
-            <!-- Sprint: destination is a task status -->
-            <template v-else>
-              <template v-if="newTask.parentId">
-                Subtask of <b>{{ parentName || 'parent task' }}</b>. It is linked to its parent and added to
-                <b>{{ sprintTitle }}</b> in the
-                <span :class="newTaskStatus.textColor">{{ newTaskStatus.label }}</span> column.
-              </template>
-              <template v-else>
-                The task is added to <b>{{ sprintTitle }}</b> and starts in the
-                <span :class="newTaskStatus.textColor">{{ newTaskStatus.label }}</span> column.
-              </template>
-            </template>
-          </span>
-        </div>
-
-        <!-- Actions -->
-        <div class="flex gap-2 items-center" :class="compact ? '' : 'justify-end'">
-          <span v-if="hasInitialContent && !compact && newTask.processing !== 'ticket'" class="text-[10px] text-base-content/40 mr-auto flex items-center gap-1">
-            <i class="fa-solid fa-play text-[8px]"></i> Run creates the task and starts the agent now
-          </span>
-          <button
-            class="btn btn-outline btn-sm gap-1.5"
-            :class="compact ? 'flex-1' : null"
-            @click="addNewTask"
-            :disabled="!newTask.name?.trim() || creating || (newTask.processing === 'ticket' && !newTask.ticket_target)"
-          >
-            <i class="fa-solid fa-plus text-xs"></i> {{ newTask.processing === 'ticket' ? 'Place ticket' : 'Add' }}
-          </button>
-          <button
-            v-if="newTask.processing !== 'ticket'"
-            class="btn btn-primary btn-sm gap-1.5"
-            :class="compact ? 'flex-1' : null"
-            title="Create the task and process it immediately"
-            @click="runNewTask"
-            :disabled="!newTask.name?.trim() || !hasInitialContent || creating"
-          >
-            <span v-if="creating" class="loading loading-spinner loading-xs"></span>
-            <i v-else class="fa-solid fa-play text-xs"></i>
-            Run
-          </button>
-        </div>
-      </div>
-    </modal>
+    <!-- ── The single New Task / Subtask dialog (boards and sprints) ── -->
+    <!-- It is the same BoardQuickChat used by the sidebar New entry: one
+         surface for normal tasks, cross-project tickets and budgets. -->
+    <BoardQuickChat
+      v-if="quickChatOpen"
+      :board-id="quickChat.boardId"
+      :board-type="quickChat.boardType"
+      :board-name="quickChat.boardName"
+      :columns="quickChat.columns"
+      :default-profiles="quickChat.profiles"
+      :initial-column="quickChat.initialColumn"
+      :initial-status="quickChat.initialStatus"
+      :initial-project-id="quickChat.projectId"
+      :parent-id="quickChat.parentId"
+      :mode="quickChat.mode || 'task'"
+      schedule-enabled
+      @close="quickChatOpen = false"
+    />
 
     <!-- ── Add existing tasks Modal ── -->
     <modal close @close="closeAddExisting" v-if="showAddExisting">
@@ -1200,6 +766,9 @@ export default {
   data() {
     return {
       showNewTask: false,
+      // Single new-task dialog for boards and sprints (BoardQuickChat)
+      quickChatOpen: false,
+      quickChat: {},
       showAddExisting: false,
       showNewColumn: false,
       showNewBoard: false,
@@ -1713,40 +1282,32 @@ export default {
     // column. A column's "+" button passes its own values; otherwise the first
     // column is used (so a custom first column always receives the new task).
     // The destination column also seeds the task's default profiles & project.
-    openNewTask({ parentId, status, column } = {}) {
-      // A subtask inherits its parent's project by default
+    openNewTask({ parentId, status, column, mode } = {}) {
+      // The board/sprint passes the column the user clicked (a column "+"
+      // button, the header action or a subtask). BoardQuickChat owns the rest:
+      // title, message, project, profiles, budget, schedule and ticket mode.
       const parent = parentId ? this.$storex.chats.chats?.[parentId] : null
-      const firstColumn = this.columns[0] || null
-      // Resolve the destination column: kanban by title, sprint by status
-      const targetColumn = this.findColumn({ title: column, status }) || firstColumn
-      // Profiles the caller pre-selects (launcher defaults), in front of the
-      // ones inherited from the destination column
-      const defaultProfiles = (this.defaultProfiles || [])
-        .map(profile => profile?.name || profile)
-        .filter(Boolean)
-      this.newTask = {
-        ...DEFAULT_NEW_TASK(),
+      const targetColumn = this.findColumn({ title: column, status })
+        || this.columns.find(candidate => candidate && !candidate.virtual)
+        || this.columns[0]
+        || null
+      const profiles = [
+        ...(this.defaultProfiles || []).map(profile => profile?.name || profile),
+        ...(targetColumn?.profiles || [])
+      ].filter(Boolean)
+      this.quickChat = {
+        boardId: this.sprintId || this.boardTitle || this.sprintTitle || 'tasks',
+        boardType: this.boardType,
+        boardName: this.boardTitle || this.sprintTitle,
+        columns: this.columns,
+        profiles: [...new Set(profiles)],
+        initialColumn: targetColumn?.title || column || null,
+        initialStatus: status || targetColumn?.status || null,
+        projectId: parent?.project_id || targetColumn?.project_id || null,
         parentId: parentId || null,
-        // The first column is the default landing status for a new task
-        status: status || firstColumn?.status || 'todo',
-        column: column || firstColumn?.title || '',
-        // A subtask follows its parent; otherwise the column defines the project
-        project_id: parent?.project_id || targetColumn?.project_id || null,
-        // Launcher defaults + profiles inherited from the destination column
-        selectedProfiles: [...new Set([...defaultProfiles, ...(targetColumn?.profiles || [])])]
+        mode: mode || 'task'
       }
-      this.composerText = ''
-      this.cursorWord = {}
-      this.ticketError = ''
-      this.intelliSenseDismissed = false
-      this.cancelIntelliSense()
-      this.showNewTask = true
-      this.loadTicketTargets()
-      this.initComposerProject()
-      this.$nextTick(() => {
-        this.$refs.composer?.setEditorText('')
-        this.$refs.taskNameInput?.focus()
-      })
+      this.quickChatOpen = true
     },
     closeNewTask() {
       this.showNewTask = false

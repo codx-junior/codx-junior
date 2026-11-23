@@ -8,6 +8,7 @@ One installer, one application image, four deployment modes.
 | a public server with Traefik + ACME | `server` | `sudo ./install.sh --mode server --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
 | sit behind an existing master proxy | `slave` | `sudo ./install.sh --mode slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
 | one isolated nested instance per container | `dind` | `sudo ./install.sh --mode dind --dind-mode server --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
+| DIND with local access **and** a slave proxy | `dind` + `local` + `slave` | `sudo ./install.sh --mode dind --dind-mode local --traefik slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
 
 Design, module audit and known issues:
 [`docs/installer-refactor.md`](../docs/installer-refactor.md).
@@ -37,11 +38,14 @@ deployment setting, showing the current value as the default:
 sudo ./install.sh
 ```
 
-It asks for the mode (`local` / `server` / `slave` / `dind`), domain, DIND inner
+It always asks for the **Traefik setup** (`none` / `master` / `slave`) in
+addition to the mode (`local` / `server` / `slave` / `dind`), domain, DIND inner
 mode, master proxy network/resolver/entrypoint, instance, installation root,
 projects folder, port, AI provider and key, coworking and Sysbox. Press Enter to
-accept a default. `--interactive` forces the wizard even when other flags are
-present; `--non-interactive` (or `--yes`) always disables it.
+accept a default. This is what allows combinations such as **dind + local +
+slave**: local access on `127.0.0.1:19981` plus a slave Traefik for a master.
+`--interactive` forces the wizard even when other flags are present;
+`--non-interactive` (or `--yes`) always disables it.
 
 ## One line: install or update
 
@@ -125,7 +129,11 @@ supports `--reload`, `--build`, `--logs`, `--down` and `--purge`.
 
 The wrapper runs its own dockerd and the same runtime compose. Data on the host
 lives under `<home>/data` plus `<instance>-dind` (nested image layers). Only one
-instance per host can be `--dind-mode server`; the rest use `--dind-mode slave`.
+instance per host can use `--traefik master`; the rest use `--traefik slave`.
+
+`--dind-mode local --traefik slave` is the hybrid: the app is published on
+`127.0.0.1:<port>` for local access and the same stack joins the master network
+through a slave Traefik.
 
 ## Operations
 

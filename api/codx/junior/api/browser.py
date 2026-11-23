@@ -68,6 +68,11 @@ from codx.junior.api.browser_models import (
 )
 from codx.junior.chat_manager import ChatManager
 from codx.junior.browser import events as browser_events
+from codx.junior.api.session_access import (
+    apply_control_action,
+    requester_from_request,
+    require_user_control,
+)
 from codx.junior.browser.recording import (
     RecordingState,
     RecordingStore,
@@ -381,6 +386,7 @@ async def create_session(request: Request, req: BrowserSessionCreateRequest):
             extra_env=req.extra_env,
             desktop_width=req.desktop_width,
             desktop_height=req.desktop_height,
+            control_mode=getattr(req, "control_mode", None),
             defer_start=bool(getattr(req, "background", False)),
         )
 
@@ -701,31 +707,35 @@ async def control_session(request: Request, session_id: str, req: BrowserControl
             raise HTTPException(status_code=404, detail="Session not found")
 
         runtime = await browser_manager.get_runtime(browser_session)
-        target = "page" if browser_session.kind == "browser" else "computer"
+        # The runtime keeps a cached session object; make it the same instance
+        # so control moves apply to the entity the AI actions check.
+        if getattr(runtime, "session", None) is not None:
+            runtime.session = browser_session
+        requester = requester_from_request(request, session, req)
         action = (req.action or "").strip().lower()
-        if action in ("status", "info"):
-            state = await runtime.state()
-            message = (
-                f"controller={state.get('controller')} "
-                f"(user_active={state.get('user_active')}, "
-                f"connected={state.get('connected')})"
-            )
-        elif action in ("handoff", "request_handoff", "request"):
+        if action in ("handoff", "request_handoff"):
             if not req.reason:
                 raise HTTPException(400, "reason is required for a handoff")
+            # The AI (or a chat) hands the screen to the human: keep the
+            # legacy "needs user" flag/notification, and let the first human
+            # that clicks claim the human lease.
+            browser_session.ensure_participant(
+                requester.participant_id,
+                username=requester.username,
+                name=requester.display_name,
+                avatar=requester.avatar,
+                role=requester.role,
+            )
             runtime.request_handoff(req.reason, chat_id=req.chat_id)
+            browser_session = getattr(runtime, "session", None) or browser_session
             message = f"Control handed to the user: {req.reason}"
-        elif action in ("take_control", "take", "pause"):
-            runtime.take_control(chat_id=req.chat_id, reason=req.reason or "user took control")
-            message = f"The user now controls the {target}"
-        elif action in ("give_back", "release", "resume"):
-            runtime.release(chat_id=req.chat_id)
-            message = "Control returned to the AI"
         else:
-            raise HTTPException(400, f"Unknown control action: {req.action}")
-
-        browser_session = getattr(runtime, "session", None) or browser_session
+            result = apply_control_action(browser_session, action, requester, req)
+            message = result["message"]
+        if action not in ("status", "info", "state"):
+            browser_manager.save_session(browser_session)
         browser_events.broadcast_control(browser_session)
+        browser_events.broadcast_participants(browser_session)
         return BrowserControlResponse(
             success=True,
             message=message,
@@ -858,6 +868,16 @@ async def execute_action(request: Request, session_id: str, req: BrowserSessionA
         if not browser_session:
             logger.error("execute_action: session not found: %s", session_id)
             raise HTTPException(status_code=404, detail="Session not found")
+
+        # Two humans can watch the same session; only the control owner (or an
+        # admin) may change the page. The live-view overlay is the friendly
+        # gate, this is the authoritative one. Read-only actions (snapshot,
+        # screenshot, links...) remain available to observers.
+        if action not in READ_ONLY_ACTIONS:
+            require_user_control(
+                browser_session,
+                requester_from_request(request, session),
+            )
 
         if browser_session.status != "running":
             logger.error(
@@ -1993,6 +2013,7 @@ async def sio_browser_create(sid: str, data: dict, codxjunior_session: CODXJunio
     extra_env = data.get("extra_env")
     desktop_width = data.get("desktop_width")
     desktop_height = data.get("desktop_height")
+    control_mode = data.get("control_mode")
 
     if not codxjunior_session:
         _emit(channel, {"status": "error", "message": "Missing codx_path", "error": "Missing codx_path"})
@@ -2045,6 +2066,7 @@ async def sio_browser_create(sid: str, data: dict, codxjunior_session: CODXJunio
             extra_env=extra_env,
             desktop_width=desktop_width,
             desktop_height=desktop_height,
+            control_mode=control_mode,
         )
 
         _emit(channel, {

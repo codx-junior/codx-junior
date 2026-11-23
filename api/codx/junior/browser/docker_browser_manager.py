@@ -119,13 +119,16 @@ RESERVED_BROWSER_ENV = {
 RESERVED_LINUX_ENV = {
     "PUID", "PGID", "TZ", "SUBFOLDER", "TITLE", "DISPLAY", "START_DOCKER",
     "SELKIES_MANUAL_WIDTH", "SELKIES_MANUAL_HEIGHT",
-    "SELKIES_IS_MANUAL_RESOLUTION_MODE",
+    "SELKIES_MANUAL_RESOLUTION", "SELKIES_IS_MANUAL_RESOLUTION_MODE",
+    "SELKIES_ENABLE_RESIZE",
 }
 RESERVED_VM_ENV = {
     "VERSION", "RAM_SIZE", "CPU_CORES", "DISK_SIZE", "USERNAME", "PASSWORD",
 }
 RESERVED_KASM_ENV = {
     "TZ", "DISPLAY", "VNC_PW", "VNC_VIEW_ONLY_PW", "VNC_RESOLUTION",
+    "KVNC_DESKTOP_ALLOW_RESIZE",
+    "KVNC_SERVER_ALLOW_ENVIRONMENT_VARIABLES_TO_OVERRIDE_CONFIG_SETTINGS",
 }
 
 
@@ -509,6 +512,8 @@ class DockerBrowserManager:
         can_use_project = self.can_share_project() if use_project is not False else False
         base = os.path.abspath(self.project_root_path) if can_use_project else None
         folder = (downloads_folder or "").strip().replace("\\", "/").strip("/")
+        # The user picked this folder explicitly (a default is derived below).
+        requested = bool(folder)
 
         if base:
             folder = folder or f"{DEFAULT_DOWNLOADS_FOLDER}/{session.id}"
@@ -544,6 +549,16 @@ class DockerBrowserManager:
                 "" if inside == "." else inside
             )
             session.downloads_own_mount = False
+        elif requested and relative is not None:
+            # The selected folder is a project folder that none of the shares
+            # already exposes (selective mounts).  Mount it at its project path
+            # instead of the generic ``/downloads``, so the folder the user
+            # picked keeps the same location inside the machine as in the
+            # project (``/home/<project_name>/<folder>``).
+            session.downloads_mount = (
+                self.home_path if not relative else f"{self.home_path}/{relative}"
+            )
+            session.downloads_own_mount = True
         else:
             session.downloads_mount = DEFAULT_DOWNLOADS_MOUNT
             session.downloads_own_mount = True
@@ -950,8 +965,11 @@ class DockerBrowserManager:
             session.live_scheme = spec.live_scheme
             session.strip_prefix = spec.strip_prefix
             session.viewer_user = spec.viewer_user
-            if spec.provider == "kasmweb" and not session.viewer_password:
-                session.viewer_password = secrets.token_urlsafe(9)
+            if spec.provider == "kasmweb":
+                session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
+                session.viewer_view_password = (
+                    session.viewer_view_password or secrets.token_urlsafe(9)
+                )
             if spec.provider == "kasmweb" and session.downloads_path:
                 # Kasmweb runs as uid 1000; the API/project group is added to
                 # the container, so group-write keeps the shared folder usable.
@@ -1263,6 +1281,23 @@ class DockerBrowserManager:
         browser sessions.
         """
         agent_script = self._prepare_computer_agent(session.id)
+        manual_size = not bool(session.desktop_auto_resize)
+        # Selkies definition (docs.selkies.io/ settings): `enable_resize` makes
+        # the display follow the browser; `manual_resolution` + width/height pin
+        # it.  Setting only width/height also forces manual mode, which is why
+        # the auto default must not send them at all.
+        resolution_env = []
+        if manual_size:
+            resolution_env = [
+                "-e", "SELKIES_MANUAL_RESOLUTION=true",
+                "-e", f"SELKIES_MANUAL_WIDTH={session.desktop_width or 1920}",
+                "-e", f"SELKIES_MANUAL_HEIGHT={session.desktop_height or 1080}",
+            ]
+        else:
+            resolution_env = [
+                "-e", "SELKIES_MANUAL_RESOLUTION=false",
+                "-e", "SELKIES_ENABLE_RESIZE=true",
+            ]
         cmd = [
             "docker",
             "run",
@@ -1279,9 +1314,7 @@ class DockerBrowserManager:
             "-e", f"TITLE={self._container_title(session)}",
             "-e", f"DISPLAY={self.display}",
             "-e", "START_DOCKER=false",
-            "-e", f"SELKIES_MANUAL_WIDTH={session.desktop_width or 1920}",
-            "-e", f"SELKIES_MANUAL_HEIGHT={session.desktop_height or 1080}",
-            "-e", f"SELKIES_IS_MANUAL_RESOLUTION_MODE={session.desktop_width or 1920}x{session.desktop_height or 1080}",
+            *resolution_env,
             *self._extra_env_args(session, RESERVED_LINUX_ENV),
             "-v", f"{profile_path}:/config",
             "-v", f"{agent_script}:/codx/computer_agent.py:ro",
@@ -1320,8 +1353,14 @@ class DockerBrowserManager:
         agent_script = self._prepare_computer_agent(session.id)
         viewer_password = session.viewer_password or secrets.token_urlsafe(9)
         session.viewer_password = viewer_password
+        # Observers get a separate password so KasmVNC itself refuses their
+        # keyboard/mouse, not only the UI overlay.  The full password stays on
+        # the session record and is handed out only to the control owner.
+        view_password = session.viewer_view_password or secrets.token_urlsafe(9)
+        session.viewer_view_password = view_password
         width = int(session.desktop_width or 1920)
         height = int(session.desktop_height or 1080)
+        auto_resize = bool(session.desktop_auto_resize)
         cmd = [
             "docker",
             "run",
@@ -1337,8 +1376,14 @@ class DockerBrowserManager:
             "--user", f"{os.environ.get('CODX_COMPUTER_KASM_UID', '1000')}:{os.getgid() or 1000}",
             "-e", "TZ=Etc/UTC",
             "-e", f"VNC_PW={viewer_password}",
-            "-e", f"VNC_VIEW_ONLY_PW={viewer_password}",
+            "-e", f"VNC_VIEW_ONLY_PW={view_password}",
             "-e", f"VNC_RESOLUTION={width}x{height}",
+            # KasmVNC resizes the framebuffer to the client viewport by default;
+            # `desktop.allow_resize=false` pins the configured size instead.
+            # The env override only works when the server allows env settings,
+            # so both variables are set.
+            "-e", f"KVNC_DESKTOP_ALLOW_RESIZE={'true' if auto_resize else 'false'}",
+            "-e", "KVNC_SERVER_ALLOW_ENVIRONMENT_VARIABLES_TO_OVERRIDE_CONFIG_SETTINGS=true",
             "-e", f"DISPLAY={self.display}",
             *self._extra_env_args(session, RESERVED_KASM_ENV),
             "-v", f"{agent_script}:/codx/computer_agent.py:ro",

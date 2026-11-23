@@ -20,6 +20,10 @@ there is one page, one history, one cookie jar and one live view.
   did recently.
 - Hand control back and forth explicitly. The AI pauses when the human types or
   clicks in the live view, and can request a handoff for login/MFA/captcha.
+- Share the live page with other people. **Auto** mode lets a click take the
+  control lease; **Request** mode asks the current owner to approve before the
+  keyboard/mouse moves. Observers keep watching, and the participant bubbles
+  show who is connected.
 - Keep the browser profile (cookies, logins, local storage) across restarts.
 - Save and replay per-site scripts in one tool call instead of one LLM turn per
   step.

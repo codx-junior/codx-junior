@@ -35,7 +35,10 @@ Made with ❤️ by codx-junior
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
+import mimetypes
 import os
 import re
 
@@ -148,6 +151,47 @@ _PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 #: overall number; it only limits how far back the daily ledger can look.
 SPEND_LEDGER_LIMIT = 2000
 
+#: Maximum size of the company logo stored in the document. The Settings picker
+#: downscales the file first, so this is a guard against a huge payload, not a
+#: limit the UI ever reaches.
+MAX_LOGO_LENGTH = 1024 * 1024
+
+#: Maximum size of an uploaded logo file. The Settings picker downscales the
+#: image before uploading, so this is a guard against a huge payload, not a limit
+#: the UI ever reaches.
+MAX_LOGO_FILE_BYTES = 2 * 1024 * 1024
+
+#: Image types accepted as an inline company logo (legacy documents keep the
+#: image inside ``company.json``; new uploads are stored as a file).
+LOGO_MEDIA_TYPES = (
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "image/svg+xml",
+    "image/bmp",
+    "image/x-icon",
+)
+
+#: Magic bytes of the image types accepted as a logo file, with the extension it
+#: is stored with. The payload is sniffed instead of trusting the client content
+#: type: that is what stops an arbitrary file from being written with an image
+#: extension and then served back to a browser.
+LOGO_FILE_SIGNATURES = (
+    (b"\x89PNG\r\n\x1a\n", ".png", "image/png"),
+    (b"\xff\xd8\xff", ".jpg", "image/jpeg"),
+    (b"GIF87a", ".gif", "image/gif"),
+    (b"GIF89a", ".gif", "image/gif"),
+    (b"BM", ".bmp", "image/bmp"),
+)
+
+#: Path of the endpoint that serves a company logo. The document stores this
+#: short URL instead of the image, so every read/write of ``company.json`` stays
+#: small; the optional ``?v=`` query is the cache buster of
+#: :meth:`CompanyManager.logo_url`.
+COMPANY_LOGO_PATH = re.compile(r"^/api/companies/[\w.-]+/logo(\?\S*)?$")
+
 #: Run statuses that mean "still working" (sync keeps the mission running).
 _ACTIVE_RUN_STATUSES = ("queued", "running")
 _TERMINAL_RUN_STATUSES = (
@@ -169,6 +213,37 @@ class CompanyConflict(CompanyValidationError):
 
 class CompanyDispatchError(RuntimeError):
     """A mission could not be dispatched to its project."""
+
+
+def detect_logo_type(content: bytes) -> Tuple[str, str]:
+    """
+    Recognise the image type of a logo payload.
+
+    The bytes are sniffed instead of trusting the content type the client sent:
+    a ``.png`` that is really an HTML document would otherwise be stored and
+    served back to the browser.
+
+    Args:
+        content: Raw file bytes.
+
+    Returns:
+        ``(extension, media_type)``; the extension includes the dot.
+
+    Raises:
+        CompanyValidationError: When the payload is not a supported image.
+    """
+    for signature, extension, media_type in LOGO_FILE_SIGNATURES:
+        if content.startswith(signature):
+            return extension, media_type
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    # SVG is text: allow an XML prolog, comments or attributes before <svg.
+    head = content[:2048].lstrip()
+    if head.startswith(b"<?xml") or b"<svg" in head:
+        return ".svg", "image/svg+xml"
+    raise CompanyValidationError(
+        "Unsupported logo file. Use a PNG, JPEG, GIF, WebP, BMP or SVG image"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +659,243 @@ class CompanyManager:
                 return True
         return False
 
+    def _unique_slug(self, base: str, exclude_id: str = "") -> str:
+        """
+        Return a slug derived from *base* that no other company is using.
+
+        The display name is not a primary key, the slug is. Renaming a company
+        to a name another one already used (or creating a second company with
+        the same name) is legitimate, so the derived slug gets a numeric suffix
+        (``acme``, ``acme-2``, ``acme-3`` …) instead of failing with a confusing
+        "already exists": the URL stays unique and the name the owner typed is
+        kept verbatim.
+
+        Args:
+            base: Name (or raw value) the slug is derived from.
+            exclude_id: Company id that may keep the slug (a rename of itself).
+
+        Returns:
+            A free slug.
+
+        Raises:
+            CompanyConflict: When no free slug can be built.
+        """
+        slug = slugify(base)
+        if not self._slug_in_use(slug, exclude_id=exclude_id):
+            return slug
+        for index in range(2, 1000):
+            candidate = f"{slug}-{index}"
+            if not self._slug_in_use(candidate, exclude_id=exclude_id):
+                return candidate
+        raise CompanyConflict(f"Cannot build a unique slug from '{base}'")
+
+    def _clean_logo(self, value: Any) -> str:
+        """
+        Validate and normalise the company logo.
+
+        The logo is a small brand asset rendered by the company shell. Three
+        forms are accepted:
+
+        * the URL this API serves an uploaded file from
+          (``/api/companies/<id>/logo``, see :meth:`save_logo`),
+        * an ``http(s)`` URL of an externally hosted image,
+        * a legacy inline ``data:image/...`` URL (the format used before the
+          logo became a file; old documents keep rendering with it).
+
+        Anything else — and any inline payload above :data:`MAX_LOGO_LENGTH` —
+        is rejected instead of being stored.
+
+        Args:
+            value: Raw ``logo`` value.
+
+        Returns:
+            The trimmed logo (``""`` clears it).
+
+        Raises:
+            CompanyValidationError: When the value is not a supported logo.
+        """
+        logo = self._clean(value)
+        if not logo:
+            return ""
+        if len(logo) > MAX_LOGO_LENGTH:
+            raise CompanyValidationError(
+                f"Logo is too large ({len(logo)} characters, max {MAX_LOGO_LENGTH})"
+            )
+        if logo.lower().startswith("data:image/"):
+            header, _, payload = logo.partition(",")
+            media = header[len("data:"):].split(";")[0].strip().lower()
+            if not payload or ";base64" not in header.lower():
+                raise CompanyValidationError(
+                    "Logo data URL must be base64 encoded"
+                )
+            if media not in LOGO_MEDIA_TYPES:
+                raise CompanyValidationError(
+                    "Unsupported logo type '%s'. Allowed: %s"
+                    % (media, ", ".join(LOGO_MEDIA_TYPES))
+                )
+            return logo
+        if logo.lower().startswith(("http://", "https://")):
+            return logo
+        if COMPANY_LOGO_PATH.match(logo):
+            return logo
+        raise CompanyValidationError(
+            "Logo must be an http(s) URL, the /api/companies/<id>/logo path "
+            "or an inline image data URL"
+        )
+
+    # ------------------------------------------------------------------
+    # Logo
+    # ------------------------------------------------------------------
+
+    def logo_url(self, company_id: str, content: bytes = b"") -> str:
+        """
+        Return the URL that serves the logo of a company.
+
+        The document stores this short path instead of the image itself, so a
+        multi-megabyte brand render never travels inside every ``company.json``
+        read and write. The ``v`` parameter is the digest of the stored bytes: it
+        changes exactly when the image changes, so the browser picks the new mark
+        without a hard reload and still caches an unchanged one.
+
+        Args:
+            company_id: Company id.
+            content: Image bytes (omitted only before the file is stored).
+
+        Returns:
+            The URL of :func:`codx.junior.api.company.api_company_logo`.
+        """
+        version = (
+            hashlib.md5(content).hexdigest()[:10]
+            if content
+            else str(int(self._now().timestamp()))
+        )
+        return f"/api/companies/{company_id}/logo?v={version}"
+
+    def save_logo(
+        self,
+        company_id: str,
+        content: bytes,
+        filename: str = "",
+        actor: str = "system",
+    ) -> Company:
+        """
+        Store an uploaded image as the company logo.
+
+        The bytes are written next to the company document (``logo.png`` …) and
+        the document only keeps the URL that serves them, so the image never
+        inflates the document nor the snapshot payload.
+
+        Args:
+            company_id: Company id.
+            content: Raw image bytes.
+            filename: Original file name (recorded in the audit trail).
+            actor: Username recorded in the audit trail.
+
+        Returns:
+            The updated company.
+
+        Raises:
+            CompanyValidationError: When the payload is empty, too large or not
+                a supported image.
+            CompanyNotFound: Unknown company.
+        """
+        if not content:
+            raise CompanyValidationError("The logo file is empty")
+        if len(content) > MAX_LOGO_FILE_BYTES:
+            raise CompanyValidationError(
+                "Logo is too large (%d bytes, max %d)"
+                % (len(content), MAX_LOGO_FILE_BYTES)
+            )
+        extension, _ = detect_logo_type(content)
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            self.store.write_logo(company.id, content, extension)
+            company.logo = self.logo_url(company.id, content)
+            saved = self.store.save(company)
+            self._event(
+                saved,
+                "company.logo",
+                "Company logo updated",
+                actor=actor,
+                extension=extension,
+                size=len(content),
+                filename=self._clean(filename) or None,
+            )
+            logger.info("Company logo updated: %s (%s)", saved.id, extension)
+            return saved
+
+    def clear_logo(self, company_id: str, actor: str = "system") -> Company:
+        """
+        Remove the company logo (file and stored URL).
+
+        Args:
+            company_id: Company id.
+            actor: Username recorded in the audit trail.
+
+        Returns:
+            The updated company.
+
+        Raises:
+            CompanyNotFound: Unknown company.
+        """
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            removed = self.store.remove_logo(company.id)
+            had_value = bool(self._clean(company.logo))
+            company.logo = ""
+            saved = self.store.save(company)
+            if removed or had_value:
+                self._event(
+                    saved,
+                    "company.logo",
+                    "Company logo removed",
+                    actor=actor,
+                )
+            return saved
+
+    def logo_asset(self, company_id: str) -> Dict[str, Any]:
+        """
+        Describe how the logo of a company must be served.
+
+        Args:
+            company_id: Company id.
+
+        Returns:
+            ``{"kind": "url", "url": ...}`` for an externally hosted logo,
+            ``{"kind": "file", "path": ..., "media_type": ...}`` for a stored
+            file and ``{"kind": "inline", "content": bytes, "media_type": ...}``
+            for a legacy inline data URL, so one endpoint answers for every
+            document version.
+
+        Raises:
+            CompanyNotFound: Unknown company.
+            CompanyValidationError: When the company has no logo.
+        """
+        company = self.get_company(company_id)
+        logo = self._clean(company.logo)
+        if logo.lower().startswith(("http://", "https://")):
+            return {"kind": "url", "url": logo}
+        path = self.store.logo_path(company.id)
+        if path:
+            media_type, _ = mimetypes.guess_type(path)
+            return {
+                "kind": "file",
+                "path": path,
+                "media_type": media_type or "application/octet-stream",
+            }
+        if logo.lower().startswith("data:image/"):
+            header, _, payload = logo.partition(",")
+            media_type = header[len("data:"):].split(";")[0].strip().lower()
+            try:
+                return {
+                    "kind": "inline",
+                    "content": base64.b64decode(payload, validate=False),
+                    "media_type": media_type or "image/png",
+                }
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("Company '%s' has an undecodable inline logo", company.id)
+        raise CompanyValidationError("This company has no logo")
+
     # ------------------------------------------------------------------
     # Company CRUD
     # ------------------------------------------------------------------
@@ -930,11 +1242,17 @@ class CompanyManager:
             CompanyValidationError: On invalid input.
             CompanyConflict: When the slug is already used.
         """
+        # ``Company`` derives the slug from the name, so an explicitly requested
+        # slug can only be detected on the raw payload, before the model is built.
+        explicit_slug = ""
         if isinstance(company, Company):
             company = company.model_copy(deep=True)
         else:
+            payload = dict(company or {})
+            if self._clean(payload.get("slug")):
+                explicit_slug = slugify(payload.get("slug"))
             try:
-                company = Company(**dict(company or {}))
+                company = Company(**payload)
             except Exception as ex:
                 raise CompanyValidationError(str(ex)) from ex
 
@@ -944,11 +1262,15 @@ class CompanyManager:
         company.name = self._clean(company.name)
         if not company.name:
             raise CompanyValidationError("company name is required")
-        company.slug = slugify(company.slug or company.name)
-        if self._slug_in_use(company.slug):
+        # An explicit slug is a hard requirement (deep links use it); a slug
+        # derived from the name is disposable and gets a suffix when it collides,
+        # so a second company with the same name is never refused.
+        if explicit_slug and self._slug_in_use(explicit_slug):
             raise CompanyConflict(
-                f"A company with slug '{company.slug}' already exists"
+                f"A company with slug '{explicit_slug}' already exists"
             )
+        company.slug = explicit_slug or self._unique_slug(company.name)
+        company.logo = self._clean_logo(company.logo)
         if not company.owner:
             company.owner = actor
 
@@ -1025,7 +1347,8 @@ class CompanyManager:
         values = self._patch_dict(patch)
         with self.store.lock(self._company_id(company_id)):
             company = self.get_company(company_id)
-            if "slug" in values and values["slug"]:
+            explicit_slug = bool(self._clean(values.get("slug")))
+            if explicit_slug:
                 slug = slugify(values["slug"])
                 if self._slug_in_use(slug, exclude_id=company.id):
                     raise CompanyConflict(
@@ -1037,6 +1360,14 @@ class CompanyManager:
                 if not name:
                     raise CompanyValidationError("company name is required")
                 values["name"] = name
+                if not explicit_slug and name != company.name:
+                    # The slug is the company URL and it is derived from the name:
+                    # renaming must move it too, otherwise the old name stays
+                    # occupied by a company that no longer uses it and the next
+                    # company created with that name fails with "already exists".
+                    values["slug"] = self._unique_slug(name, exclude_id=company.id)
+            if "logo" in values:
+                values["logo"] = self._clean_logo(values.get("logo"))
             if "all_projects" in values and values["all_projects"] is not None:
                 # The wildcard and the auto-sync flag are the same behaviour for
                 # the default company: switching to an explicit list must stop

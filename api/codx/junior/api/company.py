@@ -12,9 +12,15 @@ Route map
 GET    /api/companies                          list companies
 POST   /api/companies                          create (optional template)
 GET    /api/companies/references               projects / users / profiles pickers
+GET    /api/companies/onboarding               New-company wizard state
+POST   /api/companies/onboarding               advance / skip / reset the wizard
 GET    /api/companies/{company_id}             company document
 PUT    /api/companies/{company_id}             update company-level fields
 DELETE /api/companies/{company_id}             delete company
+
+GET    /api/companies/{id}/logo                brand image (public, plain img src)
+POST   /api/companies/{id}/logo                upload the logo (multipart 'file')
+DELETE /api/companies/{id}/logo                remove the logo
 
 GET    /api/companies/{id}/snapshot            dashboard payload (incl. members)
 GET    /api/companies/{id}/journal             audit journal
@@ -74,6 +80,7 @@ Made with ❤️ by codx-junior
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from types import SimpleNamespace
@@ -81,7 +88,8 @@ from datetime import datetime, timezone
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from codx.junior.company.manager import (
@@ -103,6 +111,7 @@ from codx.junior.security.user_management import (
     get_authenticated_user,
 )
 from codx.junior.company.assistant import CompanyAssistant
+from codx.junior.company.onboarding import build_status, merge_state
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +147,21 @@ class CompanyCreateRequest(BaseModel):
     all_projects: bool = Field(
         default=False,
         description="When true the company sees every discovered project",
+    )
+
+
+class OnboardingRequest(BaseModel):
+    """Advance, skip or re-run the installation onboarding wizard."""
+
+    status: str = Field(default="", description="pending | completed | skipped")
+    step: str = Field(default="", description="Wizard step id being resolved")
+    step_status: str = Field(default="", description="pending | done | skipped")
+    settings: Dict[str, Any] = Field(
+        default_factory=dict, description="Collected basic settings (AI models…)"
+    )
+    company_id: str = Field(default="", description="Company configured by the wizard")
+    reset: bool = Field(
+        default=False, description="Restore the pending state (run the wizard again)"
     )
 
 
@@ -602,6 +626,44 @@ def api_company_references(
     return _run(lambda: _manager().references(project_id=project_id))
 
 
+# ---------------------------------------------------------------------------
+# Installation onboarding (the "New company" wizard)
+# ---------------------------------------------------------------------------
+# Declared before ``/companies/{company_id}`` so "onboarding" is never parsed as
+# a company id. The state is installation-wide: the wizard is offered once after
+# install, can be skipped step by step and re-run at any time.
+
+
+@router.get("/companies/onboarding")
+def api_company_onboarding(
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Return the onboarding state, its steps and the companies to configure."""
+    manager = _manager()
+    try:
+        manager.ensure_default_company(actor=_actor(user))
+    except Exception as ex:  # bootstrap must not break the wizard
+        logger.warning("Could not provision the default company: %s", ex)
+    companies = _run(
+        lambda: manager.list_companies(include_archived=False, ensure_default=False)
+    )
+    return build_status(companies)
+
+
+@router.post("/companies/onboarding")
+def api_save_company_onboarding(
+    payload: OnboardingRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Advance/skip a wizard step, finish, skip the wizard or reset it."""
+    merge_state(payload.model_dump(), actor=_actor(user))
+    manager = _manager()
+    companies = _run(
+        lambda: manager.list_companies(include_archived=False, ensure_default=False)
+    )
+    return build_status(companies)
+
+
 @router.post("/companies", status_code=201)
 def api_create_company(
     payload: CompanyCreateRequest,
@@ -697,6 +759,82 @@ def api_delete_company(
     manager, company = _run(lambda: _get_editable(company_id, user))
     _assert_company_admin(company, user)
     return _run(lambda: manager.delete_company(company_id, actor=_actor(user)))
+
+
+@router.get("/companies/{company_id}/logo")
+def api_company_logo(company_id: str):
+    """
+    Serve the logo of a company.
+
+    Public on purpose (no ``Depends(get_authenticated_user)``): the shell renders
+    it with a plain ``<img src>``, which cannot carry the bearer token. The
+    response is only the brand image the company publishes — the document
+    itself keeps requiring authentication — and it follows the same criteria as
+    ``GET /api/images/{path}``.
+
+    Returns:
+        The stored image file, a redirect for an externally hosted logo, or the
+        decoded legacy inline data URL.
+
+    Raises:
+        HTTPException: 404 when the company has no logo.
+    """
+    try:
+        asset = _manager().logo_asset(company_id)
+    except CompanyValidationError as ex:
+        # "This company has no logo" is a missing resource, not a bad request.
+        raise HTTPException(status_code=404, detail=str(ex))
+    except Exception as ex:
+        raise _fail(ex)
+    headers = {"Cache-Control": "no-cache"}
+    if asset["kind"] == "url":
+        return RedirectResponse(asset["url"], status_code=307, headers=headers)
+    if asset["kind"] == "file":
+        return FileResponse(
+            asset["path"], media_type=asset["media_type"], headers=headers
+        )
+    return Response(
+        content=asset["content"], media_type=asset["media_type"], headers=headers
+    )
+
+
+@router.post("/companies/{company_id}/logo", status_code=201)
+async def api_upload_company_logo(
+    company_id: str,
+    file: UploadFile = File(
+        ..., description="Image file (PNG, JPEG, GIF, WebP, BMP or SVG)"
+    ),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    Upload the logo of a company the caller can edit.
+
+    The image is stored as a file next to the company document, so the response
+    is the updated company document with the new ``logo`` URL instead of a huge
+    payload.
+    """
+    manager, _company = _run(lambda: _get_editable(company_id, user))
+    content = await file.read()
+    return await asyncio.to_thread(
+        lambda: _run(
+            lambda: manager.save_logo(
+                company_id,
+                content,
+                filename=file.filename or "",
+                actor=_actor(user),
+            )
+        )
+    )
+
+
+@router.delete("/companies/{company_id}/logo")
+def api_delete_company_logo(
+    company_id: str,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Remove the company logo (company owners and managers)."""
+    manager, _company = _run(lambda: _get_editable(company_id, user))
+    return _run(lambda: manager.clear_logo(company_id, actor=_actor(user)))
 
 
 @router.get("/companies/{company_id}/snapshot")

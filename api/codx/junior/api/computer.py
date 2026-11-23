@@ -70,6 +70,11 @@ from codx.junior.api.browser import (
     update_session_script,
 )
 from codx.junior.api.browser_files import get_shared_files
+from codx.junior.api.session_access import (
+    requester_from_request,
+    require_user_control,
+)
+from codx.junior.browser import events as browser_events
 from codx.junior.api.browser_models import (
     BrowserSessionActionRequest,
     BrowserSessionChatRequest,
@@ -83,6 +88,9 @@ from codx.junior.api.browser_models import (
     BrowserSessionResponse,
     BrowserScreenshotRequest,
     BrowserScreenshotResponse,
+    ComputerDesktopSizePreset,
+    ComputerDesktopSizesResponse,
+    ComputerPresenceRequest,
     ComputerSessionActionRequest,
     ComputerScreenshotRequest,
     ComputerVncTicketResponse,
@@ -124,12 +132,20 @@ from codx.junior.computer.custom_images import (
     visible_to,
 )
 from codx.junior.computer.backend import DesktopControlError, UnsupportedComputerActionError
+from codx.junior.computer.resize import desktop_size_options
 from codx.junior.computer.runtime import ComputerControlError
 from codx.junior.computer.vnc_proxy import bridge_vnc, vnc_tickets
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/computers", tags=["computer"])
+
+#: Desktop actions that only read the machine. Observers may run them even when
+#: another human owns the control lease.
+READ_ONLY_DESKTOP_ACTIONS = {
+    "screenshot", "ocr", "screen_size", "windows", "active_window",
+    "mouse_position", "clipboard_get", "list_apps",
+}
 
 
 # ============================================================================
@@ -673,6 +689,28 @@ async def delete_saved_computer(request: Request, item_id: str):
 
 
 @router.get(
+    "/desktop-sizes",
+    response_model=ComputerDesktopSizesResponse,
+    summary="Desktop-size selector options",
+)
+async def list_desktop_sizes(request: Request):
+    """
+    Return the options for the desktop-size selector.
+
+    ``auto`` is first and is the default: the machine resizes to the client
+    viewport.  Fixed presets keep a resolution and let the viewer scale the
+    framebuffer; ``custom`` asks the UI for a width/height pair.
+    """
+    await get_session_context(request)
+    options = desktop_size_options()
+    return ComputerDesktopSizesResponse(
+        count=len(options),
+        default="auto",
+        presets=[ComputerDesktopSizePreset(**option) for option in options],
+    )
+
+
+@router.get(
     "/{session_id}",
     response_model=BrowserSessionResponse,
     summary="Get a computer session",
@@ -730,6 +768,12 @@ async def execute_computer_action(
     session = manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    action = (req.action or "").strip().lower()
+    if action not in READ_ONLY_DESKTOP_ACTIONS:
+        require_user_control(
+            session,
+            requester_from_request(request, session_ctx),
+        )
     if session.kind == "browser":
         browser_req = BrowserSessionActionRequest(
             action=req.action,
@@ -872,9 +916,89 @@ async def get_computer_files(request: Request, session_id: str, limit: int = 200
     return await get_shared_files(request, session_id, limit=limit)
 
 
+@router.post(
+    "/{session_id}/join",
+    response_model=BrowserSessionResponse,
+    summary="Join a shared session (presence heartbeat)",
+)
+async def join_computer_session(
+    request: Request,
+    session_id: str,
+    req: Optional[ComputerPresenceRequest] = None,
+):
+    """
+    Register this tab/device as a watcher of the session.
+
+    Idempotent and cheap: the client calls it on open and every ~15 s.  It also
+    returns the latest session record, so the participant list, control mode and
+    pending request stay fresh without polling the full list.
+    """
+    session_ctx = await get_session_context(request)
+    manager = _browser_manager(session_ctx)
+    browser_session = manager.get_session(session_id)
+    if not browser_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    requester = requester_from_request(request, session_ctx, req)
+    browser_session.ensure_participant(
+        requester.participant_id,
+        username=requester.username,
+        name=requester.display_name,
+        avatar=requester.avatar,
+        role=requester.role,
+    )
+    requested_mode = getattr(req, "control_mode", None) if req else None
+    if requested_mode and requested_mode != browser_session.control_mode:
+        browser_session.set_session_control_mode(
+            requested_mode,
+            username=requester.username,
+            participant_id=requester.participant_id,
+            is_admin=requester.is_admin,
+        )
+    manager.save_session(browser_session)
+    runtime = manager.peek_runtime(session_id)
+    if runtime is not None and getattr(runtime, "session", None) is not None:
+        runtime.session = browser_session
+    browser_events.broadcast_participants(browser_session)
+    return BrowserSessionResponse(**browser_session.to_public_dict())
+
+
+@router.post(
+    "/{session_id}/leave",
+    response_model=BrowserSessionResponse,
+    summary="Leave a shared session",
+)
+async def leave_computer_session(
+    request: Request,
+    session_id: str,
+    req: Optional[ComputerPresenceRequest] = None,
+):
+    """Remove this tab/device from the participant list (best effort)."""
+    session_ctx = await get_session_context(request)
+    manager = _browser_manager(session_ctx)
+    browser_session = manager.get_session(session_id)
+    if not browser_session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    requester = requester_from_request(request, session_ctx, req)
+    browser_session.leave_participant(requester.participant_id)
+    manager.save_session(browser_session)
+    runtime = manager.peek_runtime(session_id)
+    if runtime is not None and getattr(runtime, "session", None) is not None:
+        runtime.session = browser_session
+    browser_events.broadcast_participants(browser_session)
+    browser_events.broadcast_control(browser_session)
+    return BrowserSessionResponse(**browser_session.to_public_dict())
+
+
 @router.post("/{session_id}/control", response_model=BrowserControlResponse, summary="Control lease")
 async def control_computer(request: Request, session_id: str, req: BrowserControlRequest):
-    """Move the human/AI control lease (take_control, give_back, handoff, pause)."""
+    """
+    Move the human/AI control lease.
+
+    ``take_control``/``request_control`` claim or ask for the lease (honouring
+    the session's ``control_mode``), ``approve_request``/``deny_request`` let
+    the owner resolve a request, and ``give_back`` returns it to the AI.
+    ``set_mode`` switches the sharing mode between ``auto`` and ``request``.
+    """
     return await control_session(request, session_id, req)
 
 
@@ -1007,13 +1131,15 @@ async def save_computer_to_library(
     response_model=ComputerViewerCredentialsResponse,
     summary="Get live-view login credentials",
 )
-async def get_viewer_credentials(request: Request, session_id: str):
+async def get_viewer_credentials(request: Request, session_id: str, role: Optional[str] = None):
     """
-    Return the KasmVNC login user/password for the embedded live view.
+    Return the login credentials the embedded live view needs.
 
-    The password is stored only on the session record and deliberately omitted
-    from the general session response; this authenticated endpoint hands it to
-    the viewer that needs to log in.
+    Two humans may watch one machine: the control owner receives the full
+    password, observers receive the separate view-only password (KasmVNC then
+    refuses their input, even if they bypass the UI overlay).  Pass
+    ``?role=view`` to force the view-only credential (used by an observer's
+    iframe and by "watch only" links).
     """
     session_ctx = await get_session_context(request)
     manager = _browser_manager(session_ctx)
@@ -1025,12 +1151,37 @@ async def get_viewer_credentials(request: Request, session_id: str):
             status_code=400,
             detail="This session does not use password-protected KasmVNC",
         )
+    requester = requester_from_request(request, session_ctx)
+    requested_role = str(role or "").strip().lower()
+    # Only the human that actually owns the lease gets the full password. When
+    # the AI drives there is no human owner yet: the first click claims the
+    # lease (auto/request), and only then does the credential switch to full.
+    may_control = bool(requester.is_admin) or session.control_owner_matches(
+        requester.username,
+        requester.participant_id,
+    )
+    view_only = (
+        requested_role in ("view", "view-only", "viewer")
+        or not may_control
+    )
+    password = (
+        session.viewer_view_password or session.viewer_password
+        if view_only
+        else session.viewer_password
+    )
+    note = (
+        "View-only credentials: this window can watch but not type or click."
+        if view_only
+        else "Log in to the embedded KasmVNC view with these credentials."
+    )
     return ComputerViewerCredentialsResponse(
         session_id=session.id,
         live_view=session.live_view or "kasmvnc",
         user=session.viewer_user or "kasm_user",
-        password=session.viewer_password,
-        note="Log in to the embedded KasmVNC view with these credentials.",
+        password=password,
+        role="view" if view_only else "control",
+        view_only=view_only,
+        note=note,
     )
 
 

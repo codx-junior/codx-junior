@@ -137,6 +137,16 @@ instance's `dind-storage` volume.
 `--sysbox` uses `runtime: sysbox-runc` instead of `privileged: true` on hosts
 that provide Sysbox.
 
+To keep local access **and** publish through a master proxy, combine the inner
+app mode with the Traefik mode:
+
+```bash
+sudo ./install.sh --mode dind --dind-mode local --traefik slave \
+  --domain demo.example.com --proxy-network traefik \
+  --provider deepseek --key sk-...
+# 127.0.0.1:19981 locally + https://demo.example.com through the master
+```
+
 ## Requirements
 
 * A Linux server or workstation with **Docker** and the **compose v2 plugin**.

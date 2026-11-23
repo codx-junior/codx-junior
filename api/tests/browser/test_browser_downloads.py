@@ -258,9 +258,36 @@ def test_downloads_folder_outside_every_mount_gets_its_own_bind(tmp_path):
 
     docker.configure_share(session, share_folders=["docs"], downloads_folder="data/downloads")
 
-    assert session.downloads_mount == "/downloads"
+    # The selected folder keeps its project path inside the machine: it is not
+    # remapped to the generic /downloads mount.
+    assert session.downloads_mount == "/home/my-project/data/downloads"
     assert session.downloads_own_mount is True
-    assert f"{project / 'data' / 'downloads'}:/downloads" in docker._build_share_mounts(session)
+    assert (
+        f"{project / 'data' / 'downloads'}:/home/my-project/data/downloads"
+        in docker._build_share_mounts(session)
+    )
+
+
+def test_a_project_downloads_folder_keeps_its_path_without_any_share(tmp_path):
+    """Coworking with no project mount still exposes the picked folder by path."""
+    project = tmp_path / "my-project"
+    project.mkdir()
+    docker = DockerBrowserManager(
+        str(tmp_path / "sessions"),
+        project_id="project-1",
+        project_root_path=str(project),
+    )
+    session = BrowserSession(name="Coworking", kind="linux")
+
+    docker.configure_share(
+        session,
+        share_project=False,
+        downloads_folder="downloads",
+    )
+
+    assert session.downloads_folder == "downloads"
+    assert session.downloads_mount == "/home/my-project/downloads"
+    assert f"{project / 'downloads'}:/home/my-project/downloads" in docker._build_share_mounts(session)
 
 
 def test_downloads_folder_outside_the_project_is_rejected(tmp_path):

@@ -46,6 +46,7 @@ log "Nested daemon is ready"
 ARGS=(
     --container
     --mode "${MODE}"
+    --traefik "${CODX_TRAEFIK_MODE:-none}"
     --home /data
     --data-dir /data
     --projects /data/projects

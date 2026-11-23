@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { beginNetworkCall } from './telemetry'
+import { getParticipantId } from '../utils/collabIdentity'
 
 
 const interceptors = {
@@ -23,6 +24,9 @@ export class CodxJuniorConnection {
     return {
       "x-sid": this.sid || this.settings?.sid || '',
       "x-username": this.user?.username || '',
+      // Lets the backend separate two tabs of the same account when a
+      // co-working session is shared by several humans.
+      "x-participant-id": getParticipantId(),
       "Authentication": `Bearer ${this.user?.token}`
     };
   }

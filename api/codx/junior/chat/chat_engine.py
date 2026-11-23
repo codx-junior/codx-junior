@@ -3522,10 +3522,15 @@ class ChatEngine:
             # Suggested replies: teach the model the fenced `options` block the
             # chat UI turns into clickable answers (the user can always type a
             # different reply). Appended last so it is the most salient rule.
-            if final_system_prompt:
-                final_system_prompt += "\n\n" + RESPONSE_OPTIONS_SYSTEM_PROMPT
-            else:
-                final_system_prompt = RESPONSE_OPTIONS_SYSTEM_PROMPT
+            #
+            # Task/tutorial modes are autonomous/refine work: nobody is waiting
+            # to click an option, so the task mode contract is a final report,
+            # not a menu. Interactive chat mode keeps the suggested replies.
+            if not is_refine:
+                if final_system_prompt:
+                    final_system_prompt += "\n\n" + RESPONSE_OPTIONS_SYSTEM_PROMPT
+                else:
+                    final_system_prompt = RESPONSE_OPTIONS_SYSTEM_PROMPT
             
             ai = self.get_ai(llm_model=ai_settings.model, system=final_system_prompt)
 

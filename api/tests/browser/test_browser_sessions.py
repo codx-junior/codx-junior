@@ -404,3 +404,33 @@ def test_get_shared_files_lists_downloads(tmp_path):
     )
     assert files[0]["path"] == f".codx/browser_downloads/{session.id}/report.pdf"
     assert files[0]["size"] == 3
+
+def test_list_sessions_reuses_the_parsed_record_until_the_file_changes(tmp_path, monkeypatch):
+    """Opening the co-working list twice must not parse every JSON twice."""
+    from codx.junior.browser.browser_manager import BrowserManager
+
+    manager = BrowserManager.__new__(BrowserManager)
+    manager.sessions_path = str(tmp_path)
+    manager._session_records = {}
+    session = BrowserSession(name="Cached")
+    manager._save_session_file(session)
+    manager._session_records.clear()
+    manager._sessions_signature = ()
+
+    calls = []
+    original = manager._load_session_from_file
+
+    def counting(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(manager, "_load_session_from_file", counting)
+    first = manager.list_sessions()
+    second = manager.list_sessions()
+    assert [item.id for item in first] == [session.id]
+    assert [item.id for item in second] == [session.id]
+    assert len(calls) == 1
+    # A saved change invalidates the list and is visible on the next call.
+    session.name = "Renamed"
+    manager._save_session_file(session)
+    assert manager.list_sessions()[0].name == "Renamed"

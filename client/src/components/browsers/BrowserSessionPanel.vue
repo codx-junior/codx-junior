@@ -1,6 +1,7 @@
 <script>
 import BrowserViewer from './BrowserViewer.vue'
 import DesktopViewer from './DesktopViewer.vue'
+import DesktopSizeSelect from './DesktopSizeSelect.vue'
 import Chat from '@/components/chat/Chat.vue'
 import ConfirmDialog from '../ConfirmDialog.vue'
 import VerticalSplitter from '../layout/VerticalSplitter.vue'
@@ -11,7 +12,7 @@ import { SESSION_LABELS, label } from '@/utils/sessionLabels'
 
 export default {
   name: 'BrowserSessionPanel',
-  components: { BrowserViewer, DesktopViewer, Chat, ConfirmDialog, VerticalSplitter, CoworkingVolumeMappings, CoworkingFoldersBrowser, BrowserRecorder },
+  components: { BrowserViewer, DesktopViewer, DesktopSizeSelect, Chat, ConfirmDialog, VerticalSplitter, CoworkingVolumeMappings, CoworkingFoldersBrowser, BrowserRecorder },
   props: {
     // Present when the panel is rendered inside a meeting call. It enables
     // collaborative annotations and the "share with call" action.
@@ -45,7 +46,9 @@ export default {
       recordingPoll: null,
       recordingClock: null,
       recordingTick: 0,
-      recordingReviewing: false
+      recordingReviewing: false,
+      // Presence heartbeat of this tab in the selected session.
+      presenceTimer: null
     }
   },
   computed: {
@@ -171,7 +174,8 @@ export default {
               shm_size: session.shm_size || '',
               env: this.formatEnv(session.extra_env),
               desktop_width: session.desktop_width || '',
-              desktop_height: session.desktop_height || ''
+              desktop_height: session.desktop_height || '',
+              desktop_auto_resize: session.desktop_auto_resize !== false
             }
           }
         } else {
@@ -187,6 +191,8 @@ export default {
     },
     selectedSessionId(newId, oldId) {
       if (newId === oldId) return
+      this.stopPresence(oldId)
+      if (newId) this.startPresence(newId)
       this.showChat = false
       this.showChatMenu = false
       this.showChatPicker = false
@@ -290,7 +296,12 @@ export default {
           : (Number(this.editFormData.desktop_width) || null),
         desktop_height: this.isVmSession
           ? null
-          : (Number(this.editFormData.desktop_height) || null)
+          : (Number(this.editFormData.desktop_height) || null),
+        // "Client size" is the default: the machine follows the viewer. A
+        // fixed size pins width/height and the viewer scales the framebuffer.
+        desktop_auto_resize: this.isVmSession
+          ? null
+          : this.editFormData.desktop_auto_resize !== false
       }
     },
     async handleSaveSession(restart = false) {
@@ -1050,17 +1061,50 @@ export default {
       } catch (error) {
         this.notify('error', error.message || 'Could not discard the recording')
       }
+    },
+
+    // ── Shared-session presence ────────────────────────────────────────────
+    /**
+     * Register this tab in the session participant list and keep it fresh.
+     *
+     * The heartbeat is what makes "who is watching" and "who drives" visible
+     * to every client; the backend drops the participant after ~45 s without
+     * one, so a closed tab cannot block the lease forever.
+     */
+    startPresence(sessionId) {
+      if (this.presenceTimer) {
+        window.clearInterval(this.presenceTimer)
+        this.presenceTimer = null
+      }
+      if (!sessionId) return
+      this.$storex.browsers.joinSession({ sessionId })
+      this.presenceTimer = window.setInterval(() => {
+        if (!this.selectedSessionId) return
+        this.$storex.browsers.joinSession({ sessionId: this.selectedSessionId })
+      }, 15000)
+    },
+    stopPresence(sessionId = this.selectedSessionId) {
+      if (this.presenceTimer) {
+        window.clearInterval(this.presenceTimer)
+        this.presenceTimer = null
+      }
+      if (sessionId) {
+        this.$storex.browsers.leaveSession(sessionId)
+      }
     }
   },
   mounted() {
     document.addEventListener('mousedown', this.handleDocumentMousedown)
     window.addEventListener('keydown', this.handleWindowKeydown)
     this.loadRecordingState()
+    this.$storex.browsers.loadDesktopSizes()
+    if (this.selectedSessionId) this.startPresence(this.selectedSessionId)
   },
   beforeUnmount() {
     document.removeEventListener('mousedown', this.handleDocumentMousedown)
     window.removeEventListener('keydown', this.handleWindowKeydown)
     this.stopRecordingPoll()
+    this.stopPresence()
   }
 }
 </script>
@@ -1170,36 +1214,15 @@ export default {
             >{{ preset }}</button>
           </div>
 
-          <div v-if="!isVmSession" class="grid grid-cols-2 gap-3">
-            <div class="form-control">
-              <label class="label py-1">
-                <span class="label-text text-xs font-semibold">Desktop width</span>
-              </label>
-              <input
-                v-model.number="editFormData.desktop_width"
-                type="number"
-                min="640"
-                max="7680"
-                step="1"
-                class="input input-bordered input-sm w-full"
-                placeholder="1920"
-              />
-            </div>
-            <div class="form-control">
-              <label class="label py-1">
-                <span class="label-text text-xs font-semibold">Desktop height</span>
-              </label>
-              <input
-                v-model.number="editFormData.desktop_height"
-                type="number"
-                min="480"
-                max="4320"
-                step="1"
-                class="input input-bordered input-sm w-full"
-                placeholder="1080"
-              />
-            </div>
-          </div>
+          <DesktopSizeSelect
+            v-if="!isVmSession"
+            :key="editingSessionId || 'new'"
+            v-model:auto="editFormData.desktop_auto_resize"
+            v-model:width="editFormData.desktop_width"
+            v-model:height="editFormData.desktop_height"
+            :options="$storex.browsers.desktopSizeOptions"
+            :disabled="saving"
+          />
 
           <div class="form-control">
             <label class="label py-1">

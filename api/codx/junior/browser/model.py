@@ -41,6 +41,19 @@ CONTAINER_KINDS = ("browser", "linux", "macos", "windows")
 DESKTOP_KINDS = ("linux", "macos", "windows", "remote")
 #: Ways the AI can drive a session.
 CONTROL_MODES = ("cdp", "docker", "vnc", "ssh")
+#: Ways the *humans* sharing a session may take the control lease.
+#:
+#: - ``auto``    — the first participant that clicks the live view drives; the
+#:                 rest of the participants are observers until they take it.
+#: - ``request`` — clicking asks the current control owner, who must approve
+#:                 before the lease moves.  When the AI owns the lease there is
+#:                 no human to approve, so the request is granted at once.
+SESSION_CONTROL_MODES = ("auto", "request")
+DEFAULT_SESSION_CONTROL_MODE = "auto"
+#: How long a participant may stay silent before it is considered gone.
+PARTICIPANT_STALE_SECONDS = 45
+#: Safety cap for the participant list of one session.
+MAX_PARTICIPANTS = 25
 
 KIND_ALIASES = {
     "mac": "macos",
@@ -203,6 +216,17 @@ def default_control(kind: str) -> str:
     return "vnc"
 
 
+def normalize_session_control_mode(value: Any) -> str:
+    """
+    Normalize how humans share the control lease (``auto`` or ``request``).
+
+    Unknown/empty values fall back to the default (``auto``) instead of
+    failing: a persisted record from before this setting must keep working.
+    """
+    mode = str(value or "").strip().lower()
+    return mode if mode in SESSION_CONTROL_MODES else DEFAULT_SESSION_CONTROL_MODE
+
+
 class SharedFolder(BaseModel):
     """
     One host folder bind mounted inside a browser container.
@@ -297,6 +321,80 @@ class SharedFolder(BaseModel):
         return f"SharedFolder(name={self.name!r}, {self.host_path} -> {self.mount_path})"
 
 
+class SessionParticipant(BaseModel):
+    """
+    One human connected to a shared session.
+
+    ``id`` identifies the browser tab/device (the backend receives it as the
+    ``x-participant-id`` header), while ``username`` is the authenticated
+    account.  Ownership is resolved by username so two tabs of the same person
+    share the lease; guests (no authenticated user) are identified by ``id``.
+    """
+
+    id: str = Field(description="Participant id (browser tab/device)")
+    username: str = Field(default="", description="Authenticated username ('' for guests)")
+    name: Optional[str] = Field(default=None, description="Display name")
+    avatar: Optional[str] = Field(default=None, description="Avatar URL")
+    role: str = Field(default="user", description="Global role (user, manager, admin...)")
+    joined_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_seen: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _id(cls, value: Any) -> str:
+        """An empty id can never identify a participant: derive a stable one."""
+        text = str(value or "").strip()
+        return text or uuid4().hex
+
+    @property
+    def display_name(self) -> str:
+        """Name shown in the participant list."""
+        return (self.name or self.username or "Guest").strip()
+
+    @property
+    def is_guest(self) -> bool:
+        """True when the participant is not backed by an account."""
+        return not bool(self.username)
+
+    def touch(self, seconds: int = 0) -> None:
+        """Mark the participant as alive now (optionally shifted by seconds)."""
+        stamp = datetime.now(timezone.utc) + timedelta(seconds=max(0, int(seconds)))
+        self.last_seen = stamp.isoformat()
+
+    def is_stale(self, stale_seconds: int = PARTICIPANT_STALE_SECONDS) -> bool:
+        """True when the participant did not heartbeat within the window."""
+        try:
+            last = datetime.fromisoformat(self.last_seen)
+        except (TypeError, ValueError):
+            return True
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - last).total_seconds() > max(1, int(stale_seconds))
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the participant (public data only)."""
+        return self.model_dump(exclude_none=False)
+
+
+class SessionControlRequest(BaseModel):
+    """A pending request to take the control lease in ``request`` mode."""
+
+    id: str = Field(default_factory=lambda: uuid4().hex)
+    participant_id: str = Field(default="")
+    username: str = Field(default="")
+    name: Optional[str] = Field(default=None)
+    requested_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    @property
+    def display_name(self) -> str:
+        """Name shown to the control owner."""
+        return (self.name or self.username or "A participant").strip()
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the pending request."""
+        return self.model_dump(exclude_none=False)
+
+
 class BrowserSession(BaseModel):
     """
     Represents the state of a shared **computer** session.
@@ -385,6 +483,14 @@ class BrowserSession(BaseModel):
     viewer_password: Optional[str] = Field(
         default=None,
         description="Login password for the live view (never serialized to clients)"
+    )
+    viewer_view_password: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional view-only live-view password. Observers that do not own "
+            "the control lease receive this one instead of viewer_password "
+            "(never serialized to clients)"
+        )
     )
     cpu_cores: Optional[int] = Field(
         default=None,
@@ -579,6 +685,37 @@ class BrowserSession(BaseModel):
         default=None,
         description="Chat that owns the current control lease (when known)"
     )
+    # -- Shared control between humans ---------------------------------------
+    # A session can be watched by several people at once.  The control lease
+    # above already separates the AI from the human; these fields separate one
+    # human from another, so a second person can observe without stealing the
+    # screen (and, in request mode, must ask before driving).
+    control_mode: str = Field(
+        default=DEFAULT_SESSION_CONTROL_MODE,
+        description=(
+            "How humans share control: 'auto' (a click takes the lease) or "
+            "'request' (the current owner must approve)"
+        )
+    )
+    control_owner: Optional[str] = Field(
+        default=None,
+        description=(
+            "Username that currently owns the human control lease (the "
+            "participant id for guests). None when the AI drives"
+        )
+    )
+    control_owner_name: Optional[str] = Field(
+        default=None,
+        description="Display name of the human control owner"
+    )
+    participants: List[SessionParticipant] = Field(
+        default_factory=list,
+        description="Humans currently connected to the session (fresh heartbeats)"
+    )
+    control_request: Optional[SessionControlRequest] = Field(
+        default=None,
+        description="Pending 'request control' ask, waiting for the owner"
+    )
     needs_user: bool = Field(
         default=False,
         description=(
@@ -686,6 +823,7 @@ class BrowserSession(BaseModel):
         # may send "false"/"0"/"off", so coerce text instead of trusting it.
         if isinstance(data.get("desktop_auto_resize"), str):
             data["desktop_auto_resize"] = normalize_flag(data["desktop_auto_resize"])
+        data["control_mode"] = normalize_session_control_mode(data.get("control_mode"))
         if not data.get("engine"):
             data["engine"] = "chromium" if kind == "browser" else (
                 "remote" if kind == "remote" else "desktop"
@@ -737,7 +875,8 @@ class BrowserSession(BaseModel):
         public record is what the UI, Socket.IO events and API responses use.
         """
         data = self.to_dict()
-        for secret in ("vnc_password", "ssh_password", "ssh_key_path", "viewer_password"):
+        for secret in ("vnc_password", "ssh_password", "ssh_key_path",
+                       "viewer_password", "viewer_view_password"):
             data.pop(secret, None)
         return data
 
@@ -879,6 +1018,385 @@ class BrowserSession(BaseModel):
     # -------------------------------------------------------------------------
     # Co-browsing control
     # -------------------------------------------------------------------------
+    # -- Humans sharing one session ------------------------------------------
+    def prune_participants(self, stale_seconds: int = PARTICIPANT_STALE_SECONDS) -> bool:
+        """
+        Drop participants that stopped heartbeating.
+
+        The control owner and any pending request are released when their
+        participant disappears, otherwise a closed tab would block the machine
+        forever.  Returns True when the record changed.
+        """
+        before = [(p.id, p.last_seen) for p in (self.participants or [])]
+        fresh = [p for p in (self.participants or []) if not p.is_stale(stale_seconds)]
+        self.participants = fresh
+        if self.controller == "user" and self.control_owner and before:
+            owner = self.control_owner
+            owner_present = any(
+                (p.username and p.username == owner) or (not p.username and p.id == owner)
+                for p in fresh
+            )
+            if not owner_present:
+                # The owner's last tab is gone: hand the lease back to the AI
+                # instead of leaving the session locked for everyone else. A
+                # record with no participants at all is a reload race, so the
+                # owner is kept until their tab rejoins.
+                self.set_controller("ai")
+                self.user_active_until = None
+        if self.control_request:
+            request = self.control_request
+            still_there = any(
+                (request.username and p.username == request.username)
+                or (not request.username and p.id == request.participant_id)
+                for p in fresh
+            )
+            if not still_there:
+                self.control_request = None
+        return before != [(p.id, p.last_seen) for p in fresh]
+
+    @staticmethod
+    def _participant_matches(
+        participant: Optional[SessionParticipant],
+        username: Optional[str],
+        participant_id: Optional[str],
+    ) -> bool:
+        """True when *participant* is the identity described by username/id."""
+        if participant is None:
+            return False
+        if participant.username:
+            # Authenticated participants are matched by account only: a client
+            # cannot impersonate another account by sending its tab id.
+            return bool(username) and participant.username == username
+        return bool(participant_id) and participant.id == participant_id
+
+    def participant_for(
+        self,
+        username: Optional[str],
+        participant_id: Optional[str],
+    ) -> Optional[SessionParticipant]:
+        """Return the participant matching a username (or guest id)."""
+        return next(
+            (
+                p for p in (self.participants or [])
+                if self._participant_matches(p, username, participant_id)
+            ),
+            None,
+        )
+
+    def ensure_participant(
+        self,
+        participant_id: str,
+        username: Optional[str] = None,
+        name: Optional[str] = None,
+        avatar: Optional[str] = None,
+        role: str = "user",
+    ) -> SessionParticipant:
+        """
+        Register (or refresh) one connected human.
+
+        Idempotent: the same tab heartbeat only updates ``last_seen`` and the
+        profile fields, so it can safely run every few seconds.
+        """
+        self.prune_participants()
+        participant = next(
+            (p for p in (self.participants or []) if p.id == str(participant_id or "")),
+            None,
+        )
+        if participant is None:
+            if len(self.participants or []) >= MAX_PARTICIPANTS:
+                # Keep the record bounded: drop the least recently seen entry.
+                oldest = sorted(
+                    self.participants,
+                    key=lambda p: p.last_seen or "",
+                )[0]
+                self.participants = [p for p in self.participants if p.id != oldest.id]
+            participant = SessionParticipant(
+                id=participant_id,
+                username=(username or "").strip(),
+                name=(name or "").strip() or None,
+                avatar=(avatar or "").strip() or None,
+                role=(role or "user").strip() or "user",
+            )
+            self.participants = [*(self.participants or []), participant]
+        else:
+            participant.username = (username or participant.username or "").strip()
+            participant.name = (name or "").strip() or participant.name
+            participant.avatar = (avatar or "").strip() or participant.avatar
+            participant.role = (role or participant.role or "user").strip() or "user"
+            participant.touch()
+        self.mark_active()
+        return participant
+
+    def touch_participant(
+        self,
+        participant_id: str,
+        username: Optional[str] = None,
+        name: Optional[str] = None,
+        avatar: Optional[str] = None,
+        role: str = "user",
+    ) -> SessionParticipant:
+        """Alias of :meth:`ensure_participant` (heartbeat)."""
+        return self.ensure_participant(
+            participant_id,
+            username=username,
+            name=name,
+            avatar=avatar,
+            role=role,
+        )
+
+    def leave_participant(self, participant_id: str) -> bool:
+        """
+        Remove one tab/device from the session.
+
+        The lease is released when the last tab of the owner leaves; other
+        participants keep watching.  Returns True when something changed.
+        """
+        before = len(self.participants or [])
+        removed = next(
+            (p for p in (self.participants or []) if p.id == str(participant_id or "")),
+            None,
+        )
+        self.participants = [
+            p for p in (self.participants or []) if p.id != str(participant_id or "")
+        ]
+        changed = len(self.participants) != before
+        if removed is not None:
+            still_here = any(
+                self._participant_matches(p, removed.username, removed.id)
+                for p in self.participants
+            )
+            if not still_here and self.control_owner and (
+                self.control_owner == removed.id
+                or (removed.username and self.control_owner == removed.username)
+            ):
+                # Internal cleanup: the owner is gone, so there is nobody to
+                # authorize the release (auth checks only apply to API calls).
+                self.set_controller("ai")
+            if self.control_request:
+                request = self.control_request
+                request_still_here = any(
+                    (request.username and p.username == request.username)
+                    or (not request.username and p.id == request.participant_id)
+                    for p in self.participants
+                )
+                if not request_still_here:
+                    self.control_request = None
+        if changed:
+            self.mark_active()
+        return changed
+
+    def control_owner_matches(
+        self,
+        username: Optional[str],
+        participant_id: Optional[str] = None,
+    ) -> bool:
+        """True when the given human currently owns the control lease."""
+        if self.controller != "user" or not self.control_owner:
+            return False
+        if username:
+            # Account lease: the tab id is not an authorization factor.
+            return self.control_owner == username
+        return bool(participant_id) and self.control_owner == participant_id
+
+    def user_may_control(
+        self,
+        username: Optional[str],
+        participant_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> bool:
+        """
+        True when this human may send input to the machine right now.
+
+        The AI lease and the "paused" state do not block a human (they can
+        always take over); another human's lease does, unless an admin acts.
+        """
+        if is_admin:
+            return True
+        if self.controller != "user" or not self.control_owner:
+            return True
+        return self.control_owner_matches(username, participant_id)
+
+    def _claim_control(
+        self,
+        participant: SessionParticipant,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Move the human lease to *participant* (internal)."""
+        self.set_controller(
+            "user",
+            reason=reason or "user took control",
+        )
+        self.control_owner = participant.username or participant.id
+        self.control_owner_name = participant.display_name
+        self.control_request = None
+        self.mark_user_active(seconds=600)
+        self.mark_active()
+
+    def request_session_control(
+        self,
+        participant_id: str,
+        username: Optional[str] = None,
+        name: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Ask for the human control lease, honouring ``control_mode``.
+
+        Returns a dict with ``status``:
+        ``granted``, ``already_owner``, ``pending`` or ``unavailable``.
+        """
+        participant = self.ensure_participant(
+            participant_id,
+            username=username,
+            name=name,
+        )
+        if self.control_owner_matches(username, participant_id):
+            return {"status": "already_owner", "participant": participant.to_dict()}
+        # Auto mode, or nobody human owns the lease (AI/None): take it at once.
+        if self.control_mode == "auto" or not self.control_owner:
+            self._claim_control(participant, reason=reason)
+            return {"status": "granted", "participant": participant.to_dict()}
+        self.control_request = SessionControlRequest(
+            participant_id=participant.id,
+            username=participant.username,
+            name=participant.display_name,
+        )
+        self.mark_active()
+        return {
+            "status": "pending",
+            "request": self.control_request.to_dict(),
+            "owner": self.control_owner,
+            "owner_name": self.control_owner_name,
+        }
+
+    def _approver_may_resolve(
+        self,
+        username: Optional[str],
+        participant_id: Optional[str],
+        is_admin: bool = False,
+    ) -> bool:
+        """Only the current owner (or an admin) may resolve a request."""
+        return bool(is_admin) or self.control_owner_matches(username, participant_id)
+
+    def _request_matches(
+        self,
+        username: Optional[str],
+        participant_id: Optional[str],
+    ) -> bool:
+        """True when the pending request belongs to this human."""
+        request = self.control_request
+        if request is None:
+            return False
+        if username:
+            return request.username == username
+        if request.participant_id and participant_id and request.participant_id == participant_id:
+            return True
+        return bool(username) and request.username == username
+
+    def approve_session_control(
+        self,
+        username: Optional[str] = None,
+        participant_id: Optional[str] = None,
+        is_admin: bool = False,
+        request_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Approve the pending request and pass the lease to the requester."""
+        request = self.control_request
+        if request is None:
+            return {"status": "not_pending"}
+        if request_id and request.id != request_id:
+            return {"status": "not_pending"}
+        if not self._approver_may_resolve(username, participant_id, is_admin=is_admin):
+            return {"status": "not_allowed", "owner": self.control_owner}
+        requester = self.participant_for(request.username, request.participant_id)
+        if requester is None:
+            # The requester closed the tab while waiting: nothing to transfer.
+            self.control_request = None
+            self.mark_active()
+            return {"status": "requester_gone"}
+        self._claim_control(requester, reason="control request approved")
+        return {"status": "approved", "participant": requester.to_dict()}
+
+    def deny_session_control(
+        self,
+        username: Optional[str] = None,
+        participant_id: Optional[str] = None,
+        is_admin: bool = False,
+        request_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Reject the pending request, keeping the current lease."""
+        request = self.control_request
+        if request is None:
+            return {"status": "not_pending"}
+        if request_id and request.id != request_id:
+            return {"status": "not_pending"}
+        if not self._approver_may_resolve(username, participant_id, is_admin=is_admin):
+            return {"status": "not_allowed", "owner": self.control_owner}
+        self.control_request = None
+        self.mark_active()
+        return {"status": "denied", "request": request.to_dict()}
+
+    def release_session_control(
+        self,
+        username: Optional[str] = None,
+        participant_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> Dict[str, Any]:
+        """Give the human lease back to the AI."""
+        if self.controller == "user" and self.control_owner and not is_admin:
+            if not self.control_owner_matches(username, participant_id):
+                return {"status": "not_allowed", "owner": self.control_owner}
+        self.set_controller("ai")
+        self.control_owner = None
+        self.control_owner_name = None
+        self.control_request = None
+        self.mark_active()
+        return {"status": "released"}
+
+    def set_session_control_mode(
+        self,
+        mode: str,
+        username: Optional[str] = None,
+        participant_id: Optional[str] = None,
+        is_admin: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Change how humans share control (``auto`` / ``request``).
+
+        Only the current owner (or an admin, or anyone while the AI drives) may
+        change it.  Switching to ``auto`` resolves a pending request by granting
+        it: the request was the same click the owner just allowed.
+        """
+        value = normalize_session_control_mode(mode)
+        if self.control_owner and not is_admin and not self.control_owner_matches(
+            username, participant_id
+        ):
+            return {"status": "not_allowed", "owner": self.control_owner}
+        self.control_mode = value
+        if value == "auto" and self.control_request:
+            requester = self.participant_for(
+                self.control_request.username, self.control_request.participant_id
+            )
+            if requester is not None:
+                self._claim_control(requester, reason="auto control enabled")
+            else:
+                self.control_request = None
+        self.mark_active()
+        return {"status": "updated", "mode": value}
+
+    def control_state(self) -> Dict[str, Any]:
+        """Compact control/presence state for API responses and events."""
+        return {
+            "controller": self.controller,
+            "control_mode": self.control_mode,
+            "control_owner": self.control_owner,
+            "control_owner_name": self.control_owner_name,
+            "control_request": (
+                self.control_request.to_dict() if self.control_request else None
+            ),
+            "participants": [p.to_dict() for p in (self.participants or [])],
+        }
+
     def set_controller(
         self,
         controller: str,
@@ -902,6 +1420,11 @@ class BrowserSession(BaseModel):
             # otherwise a handoff would keep the AI blocked for its 10-minute
             # user-active window even after the human pressed "Give back".
             self.user_active_until = None
+        if value != "user":
+            # No human owns a lease that belongs to the AI (or is paused).
+            self.control_owner = None
+            self.control_owner_name = None
+            self.control_request = None
         self.mark_active()
 
     def mark_user_active(self, seconds: int = 10) -> None:

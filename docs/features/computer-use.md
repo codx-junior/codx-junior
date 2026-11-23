@@ -277,7 +277,7 @@ expose `/dev/kvm` (and `/dev/net/tun`). VMs are heavy: at least 2 GB RAM and
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/api/computers` | List all computer sessions. |
-| `POST` | `/api/computers` | Create `{ name, kind, os_version?, initial_url?, image?, image_provider?, library_item_id?, cpu_cores?, ram_size?, disk_size?, shm_size?, extra_env?, desktop_width?, desktop_height?, share_* }`. |
+| `POST` | `/api/computers` | Create `{ name, kind, os_version?, initial_url?, image?, image_provider?, library_item_id?, cpu_cores?, ram_size?, disk_size?, shm_size?, extra_env?, desktop_auto_resize?, desktop_width?, desktop_height?, control_mode?, share_* }`. |
 | `GET` | `/api/computers/{id}` | Details + live-view/control endpoints. |
 | `PUT` | `/api/computers/{id}` | Update name, VNC/SSH fields, image and resources (`image`, `cpu_cores`, `ram_size`, `disk_size`, `shm_size`, `extra_env`, desktop size). Applied on restart. |
 | `DELETE` | `/api/computers/{id}` | Stop, remove and delete. |
@@ -287,7 +287,11 @@ expose `/dev/kvm` (and `/dev/net/tun`). VMs are heavy: at least 2 GB RAM and
 | `GET` | `/api/computers/{id}/activity` | User/AI audit trail. |
 | `GET` | `/api/computers/{id}/cost` | AI cost of linked chats. |
 | `GET` | `/api/computers/{id}/files` | Mounted folders + saved files. |
-| `POST` | `/api/computers/{id}/control` | Control lease. |
+| `POST` | `/api/computers/{id}/control` | Control lease (`take_control`, `request_control`, `approve_request`, `deny_request`, `give_back`, `set_mode`). |
+| `POST` | `/api/computers/{id}/join` | Join/heartbeat presence (participant list + control state). |
+| `POST` | `/api/computers/{id}/leave` | Remove this tab from the participant list. |
+| `GET` | `/api/computers/desktop-sizes` | Selector options: `auto` (client size, default), fixed presets and `custom`. |
+| `POST` | `/api/computers/{id}/resize` | Fit the desktop to the viewer (`mode=client`) or apply a fixed size. |
 | `POST` | `/api/computers/{id}/restart` / `stop` | Lifecycle. |
 | `GET` | `/api/computers/images` | Browse Kasmweb/LinuxServer images (`provider`, `q`, `category`, `kind`). |
 | `GET` | `/api/computers/images/tags` | Tags for one repository (`provider`, `repository`). |
@@ -309,11 +313,24 @@ both prefixes operate on the same records.
   control. Desktops use the same `controller`/`user_active_until`/handoff
   protocol as browsers; the AI must call `computer_control(handoff)` for
   passwords, MFA, captchas and payment approvals.
-- **Secrets** — VNC/SSH passwords and the SSH key path are stripped from the
-  general session record (`to_public_dict`), Socket.IO events and activity
-  logs; they are stored in the session file (mode controlled by the project
-  `.codx`). The VNC password is returned only by the authenticated, one-time
-  `vnc-ticket` endpoint so the built-in viewer can authenticate.
+- **Several humans, one machine** — a session can be watched by more than one
+  person. `control_mode="auto"` (default) lets a click take the lease;
+  `control_mode="request"` makes the click a request the current owner has to
+  approve. Participants heartbeat every 15 s and are dropped after ~45 s, so a
+  closed tab cannot lock the machine. KasmVNC receives a separate view-only
+  password for observers, which enforces the same rule at the transport level.
+- **Client size vs fixed size** — `desktop_auto_resize` is `true` by default:
+  Selkies/KasmVNC follow the browser, and RFB/screenshot desktops are resized
+  through `/resize` (debounced). Set it to `false` with a width/height to keep a
+  fixed desktop; the viewer then scales the framebuffer with `object-fit:
+  contain`.
+- **Secrets** — VNC/SSH passwords, the KasmVNC control/view-only passwords and
+  the SSH key path are stripped from the general session record
+  (`to_public_dict`), Socket.IO events and activity logs; they are stored in the
+  session file (mode controlled by the project `.codx`). The VNC password is
+  returned only by the authenticated, one-time `vnc-ticket` endpoint, and the
+  KasmVNC password only by `viewer-credentials` (full for the control owner,
+  view-only for observers).
 - **Ticket-scoped live view** — the noVNC bridge only connects to the host/port
   captured when an authenticated HTTP request issued the ticket; tickets are
   single-use and expire in 60 s.

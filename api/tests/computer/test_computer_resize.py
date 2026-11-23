@@ -14,6 +14,7 @@ from codx.junior.computer.backend import (
     VncBackend,
 )
 from codx.junior.computer.resize import (
+    desktop_size_options,
     fit_resolution,
     parse_resolution,
     resolution_from_client,
@@ -244,3 +245,41 @@ def test_resize_requires_a_size():
     backend._client = _StubClient()
     with pytest.raises(Exception):
         asyncio.run(backend.execute("resize"))
+
+def test_desktop_size_options_default_to_auto_and_include_fixed_and_custom():
+    options = desktop_size_options()
+    assert options[0]["id"] == "auto"
+    assert options[0]["auto"] is True
+    assert options[0]["width"] == 0
+    assert options[-1]["id"] == "custom"
+    assert options[-1]["custom"] is True
+    fixed = [option for option in options if not option["auto"] and not option["custom"]]
+    assert {"1920x1080", "1366x768", "1024x768"}.issubset({o["id"] for o in fixed})
+    assert all(option["width"] > 0 and option["height"] > 0 for option in fixed)
+
+
+def test_desktop_sizes_route_is_registered_before_the_session_id_route():
+    from codx.junior.api.computer import router
+
+    paths = [getattr(route, "path", "") for route in router.routes]
+    assert "/computers/desktop-sizes" in paths
+    # Static route must be declared before the dynamic /{session_id} catch-all,
+    # otherwise FastAPI would try to load a session named "desktop-sizes".
+    assert paths.index("/computers/desktop-sizes") < paths.index("/computers/{session_id}")
+    assert "/computers/{session_id}/join" in paths
+    assert "/computers/{session_id}/leave" in paths
+
+
+def test_desktop_sizes_endpoint_returns_the_auto_default():
+    import asyncio
+    from types import SimpleNamespace
+
+    from codx.junior.api.computer import list_desktop_sizes
+
+    class _State:
+        codx_junior_session = object()
+
+    response = asyncio.run(list_desktop_sizes(SimpleNamespace(state=_State())))
+    assert response.default == "auto"
+    assert response.count == len(response.presets)
+    assert response.presets[0].id == "auto"

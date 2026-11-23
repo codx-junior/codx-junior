@@ -190,6 +190,15 @@ class BrowserManager:
         self._runtimes: Dict[str, Any] = {}
         self._runtimes_guard = threading.Lock()
         self._cost_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+        # Session records are read on almost every API call (list, get, action,
+        # activity).  Parsing the same JSON each time made opening the
+        # co-working panel feel slow; keep the parsed record keyed by the file
+        # signature and hand out copies so callers cannot mutate the cache.
+        self._session_records: Dict[str, Tuple[int, int, BrowserSession]] = {}
+        # None means "rebuild"; an empty tuple would also be the signature of
+        # a project with no sessions, which must not return a stale list.
+        self._sessions_signature: Optional[Tuple[Any, ...]] = None
+        self._sessions_list: List[BrowserSession] = []
         logger.debug("BrowserManager initialized at '%s'", self.sessions_path)
 
     # -------------------------------------------------------------------------
@@ -228,18 +237,44 @@ class BrowserManager:
             if f.is_file() and ".trash" not in f.parts
         ]
 
+    def _session_file_signature(self) -> Tuple[Any, ...]:
+        """Cheap signature of every session file (path + mtime + size)."""
+        signature = []
+        for file_path in self._session_file_paths():
+            try:
+                stat = os.stat(file_path)
+                signature.append((file_path, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                continue
+        return tuple(sorted(signature))
+
     # -------------------------------------------------------------------------
     # CRUD
     # -------------------------------------------------------------------------
 
     def list_sessions(self) -> List[BrowserSession]:
-        """Return all browser sessions for this project."""
+        """
+        Return all browser sessions for this project.
+
+        The parsed list is cached until a session file changes.  Copies are
+        returned because several callers (runtime, API, tools) update fields
+        and persist them explicitly.
+        """
+        signature = self._session_file_signature()
+        if signature == getattr(self, "_sessions_signature", None):
+            return [
+                session.model_copy(deep=True)
+                for session in getattr(self, "_sessions_list", [])
+            ]
         sessions = []
         for file_path in self._session_file_paths():
             session = self._load_session_from_file(file_path)
             if session:
                 sessions.append(session)
-        return sorted(sessions, key=lambda s: s.created_at, reverse=True)
+        sessions.sort(key=lambda s: s.created_at, reverse=True)
+        self._sessions_signature = signature
+        self._sessions_list = sessions
+        return [session.model_copy(deep=True) for session in sessions]
 
     def get_session(self, session_id: str) -> Optional[BrowserSession]:
         """
@@ -362,6 +397,7 @@ class BrowserManager:
         extra_env: Optional[Dict[str, str]] = None,
         desktop_width: Optional[int] = None,
         desktop_height: Optional[int] = None,
+        control_mode: Optional[str] = None,
         defer_start: bool = False,
     ) -> BrowserSession:
         """
@@ -404,6 +440,7 @@ class BrowserManager:
             shm_size: Docker shared memory for browser/Linux containers.
             extra_env: Extra environment variables passed to the image.
             desktop_width/desktop_height: Desktop/browser window size in pixels.
+            control_mode: How humans share control (``auto`` or ``request``).
 
         Returns:
             Created BrowserSession
@@ -492,6 +529,7 @@ class BrowserManager:
             extra_env=extra_env or {},
             desktop_width=desktop_width or 1920,
             desktop_height=desktop_height or 1080,
+            control_mode=(control_mode or "").strip().lower() or "auto",
         )
         if image_spec is not None:
             session.image = image_spec.image
@@ -501,8 +539,9 @@ class BrowserManager:
             session.live_scheme = image_spec.live_scheme
             session.strip_prefix = image_spec.strip_prefix
             session.viewer_user = image_spec.viewer_user
-            if image_spec.provider == "kasmweb" and not session.viewer_password:
-                session.viewer_password = secrets.token_urlsafe(9)
+            if image_spec.provider == "kasmweb":
+                session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
+                session.viewer_view_password = session.viewer_view_password or secrets.token_urlsafe(9)
         if library_item is not None:
             session.library_item_id = library_item.id
             session.library_item_name = library_item.name
@@ -514,8 +553,9 @@ class BrowserManager:
             session.strip_prefix = bool(library_item.strip_prefix)
             session.control = library_item.control or session.control
             session.viewer_user = library_item.viewer_user
-            if (library_item.provider or "").lower() == "kasmweb" and not session.viewer_password:
-                session.viewer_password = secrets.token_urlsafe(9)
+            if (library_item.provider or "").lower() == "kasmweb":
+                session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
+                session.viewer_view_password = session.viewer_view_password or secrets.token_urlsafe(9)
         if session.ssh_host and "shell" not in (session.capabilities or []):
             session.capabilities = [*(session.capabilities or []), "shell"]
         if not session.name:
@@ -793,8 +833,12 @@ class BrowserManager:
                 session.viewer_user = spec.viewer_user
                 if spec.provider == "kasmweb":
                     session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
+                    session.viewer_view_password = (
+                        session.viewer_view_password or secrets.token_urlsafe(9)
+                    )
                 else:
                     session.viewer_password = None
+                    session.viewer_view_password = None
         session.mark_active()
         self._save_session_file(session)
         # Extra image env values can contain credentials: audit the names only.
@@ -915,6 +959,10 @@ class BrowserManager:
                 ).start()
             except Exception as e:
                 logger.exception("Error moving session folder to trash: %s", e)
+        self.__dict__.setdefault("_session_records", {}).pop(
+            self._session_file_path(session_id), None
+        )
+        self._sessions_signature = None
 
     # -------------------------------------------------------------------------
     # Project folder sharing
@@ -1668,15 +1716,34 @@ class BrowserManager:
             except OSError:
                 pass
             logger.debug("Saved session metadata: %s", session.id[:8])
+            try:
+                stat = os.stat(file_path)
+                self.__dict__.setdefault("_session_records", {})[file_path] = (
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    session.model_copy(deep=True),
+                )
+                # The list is rebuilt lazily from the new files.
+                self._sessions_signature = None
+            except OSError:
+                pass
         except Exception as e:
             logger.exception("Error saving session file: %s", e)
 
     def _load_session_from_file(self, file_path: str) -> Optional[BrowserSession]:
-        """Load and deserialize a session from a JSON file."""
+        """Load and deserialize a session from a JSON file (signature cache)."""
         try:
+            stat = os.stat(file_path)
+            signature = (stat.st_mtime_ns, stat.st_size)
+            records = self.__dict__.setdefault("_session_records", {})
+            cached = records.get(file_path)
+            if cached and cached[0] == signature[0] and cached[1] == signature[1]:
+                return cached[2].model_copy(deep=True)
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.loads(f.read())
-            return BrowserSession.from_dict(data)
+            session = BrowserSession.from_dict(data)
+            records[file_path] = (signature[0], signature[1], session)
+            return session.model_copy(deep=True)
         except Exception as e:
             logger.exception("Error loading session from '%s': %s", file_path, e)
             return None

@@ -56,6 +56,22 @@ export const companiesModule = (API) => ({
     return API.get(`${BASE}/references${toQuery({ project_id: projectId })}`)
   },
 
+  /**
+   * Installation onboarding (the "New company" wizard): stored state, the
+   * step catalog, the companies that can be configured and `needs_setup`.
+   */
+  onboarding() {
+    return API.get(`${BASE}/onboarding`)
+  },
+
+  /**
+   * Advance, skip or finish the wizard, or `{ reset: true }` to run it again.
+   * Settings collected in the wizard (`default_model`…) are merged server side.
+   */
+  saveOnboarding(payload = {}) {
+    return API.post(`${BASE}/onboarding`, payload)
+  },
+
   /** One company document. */
   get(companyId) {
     return API.get(`${BASE}/${encodeURIComponent(companyId)}`)
@@ -77,6 +93,28 @@ export const companiesModule = (API) => ({
   /** Update company-level fields. */
   update(companyId, payload) {
     return API.put(`${BASE}/${encodeURIComponent(companyId)}`, payload)
+  },
+
+  /**
+   * Upload the company logo (multipart, field `file`).
+   *
+   * The image is stored as a file next to the company document and the endpoint
+   * answers with the updated company, whose `logo` is the URL that serves it
+   * (`GET /api/companies/{id}/logo`).
+   *
+   * @param {string} companyId
+   * @param {Blob|File} file Image bytes picked (or downscaled) by the browser.
+   * @returns {Promise<Object>} The updated company.
+   */
+  uploadLogo(companyId, file) {
+    const form = new FormData()
+    form.append('file', file, file.name || 'logo.png')
+    return API.post(`${BASE}/${encodeURIComponent(companyId)}/logo`, form)
+  },
+
+  /** Remove the stored logo (file and document field). */
+  removeLogo(companyId) {
+    return API.delete(`${BASE}/${encodeURIComponent(companyId)}/logo`)
   },
 
   /**

@@ -50,11 +50,24 @@ export default {
     }
   },
   emits: ['update:auto', 'update:width', 'update:height'],
+  data() {
+    return {
+      // Explicitly picked "Custom…": keeps the manual inputs visible even when
+      // the current width/height happen to match a preset.
+      customSelected: false
+    }
+  },
+  watch: {
+    auto(value) {
+      if (value) this.customSelected = false
+    }
+  },
   computed: {
     availableOptions() {
       return desktopSizeOptions(this.options)
     },
     selected() {
+      if (this.customSelected) return CUSTOM_DESKTOP_SIZE.id
       // The stored size may come from a saved computer that used a size which
       // is not in the selector: it shows as `Custom…` instead of losing it.
       const id = desktopSizeId({ auto: this.auto, width: this.width, height: this.height }, this.availableOptions)
@@ -87,12 +100,18 @@ export default {
      */
     select(value) {
       if (value === AUTO_DESKTOP_SIZE.id) {
+        this.customSelected = false
         this.$emit('update:auto', true)
         return
       }
       this.$emit('update:auto', false)
       const option = this.availableOptions.find(item => item.id === value)
-      if (!option || option.custom) return
+      if (!option) return
+      if (option.custom) {
+        this.customSelected = true
+        return
+      }
+      this.customSelected = false
       this.$emit('update:width', option.width)
       this.$emit('update:height', option.height)
     },

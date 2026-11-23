@@ -80,7 +80,9 @@ Modes:
   --mode server             public server: Traefik master :80/:443 + ACME
   --mode slave              behind a master proxy: Traefik slave :80 only
   --mode dind               Docker-in-Docker instance (one per customer)
-  --dind-mode MODE          inner mode for dind: local|server|slave [local]
+  --dind-mode MODE          inner app mode for dind: local|server|slave [local]
+  --traefik MODE            Traefik setup: none|master|slave (always asked in
+                            the wizard; derived from the mode otherwise)
   Default: server as root, local otherwise.
 
 Settings:
@@ -238,53 +240,58 @@ interactive_wizard() {
         effective="${DIND_MODE}"
     fi
 
+    # Always ask. The default is derived from the mode/inner mode, but the
+    # user can combine them, e.g. dind + local + slave.
+    resolve_traefik_mode
+    while true; do
+        TRAEFIK_MODE="$(ask_choice "Traefik setup" "none master slave" "${TRAEFIK_MODE:-none}")"
+        if [[ "${MODE}" == "dind" && "${DIND_MODE}" != "local" && "${TRAEFIK_MODE}" == "none" ]]; then
+            warn "dind/${DIND_MODE} needs a Traefik setup; choose master or slave"
+            continue
+        fi
+        if [[ "${MODE}" == "slave" && "${TRAEFIK_MODE}" == "none" ]]; then
+            warn "--mode slave needs a Traefik setup; choose master or slave"
+            continue
+        fi
+        break
+    done
+
     local domain_default="${DOMAINS[0]:-}"
     if [[ "${domain_default}" == "localhost" ]]; then
         domain_default=""
     fi
     local domain=""
-    if [[ "${effective}" == "local" ]]; then
-        domain="localhost"
+    if [[ "${TRAEFIK_MODE}" == "none" ]]; then
+        NO_TLS=1
+        if [[ "${effective}" == "local" ]]; then
+            domain="localhost"
+        else
+            domain="$(ask "Domain (optional; blank = serve on the web port)" "${domain_default}")"
+        fi
     else
+        NO_TLS=0
         while true; do
-            domain="$(ask "Domain (blank = plain HTTP on the web port)" "${domain_default}")"
-            if [[ -z "${domain}" ]]; then
-                if [[ "${effective}" == "server" && "${MODE}" != "dind" ]]; then
-                    break
-                fi
-                warn "a domain is required for ${effective} mode"
-                continue
-            fi
-            if [[ "${domain}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            domain="$(ask "Domain" "${domain_default}")"
+            if [[ -n "${domain}" && "${domain}" =~ ^[A-Za-z0-9.-]+$ ]]; then
                 break
             fi
-            warn "invalid domain: ${domain}"
+            warn "a valid domain is required for Traefik '${TRAEFIK_MODE}'"
         done
     fi
 
-    NO_TLS=0
-    if [[ "${effective}" == "server" ]]; then
-        if [[ -z "${domain}" ]]; then
-            NO_TLS=1
-        else
-            while true; do
-                local acme=""
-                acme="$(ask "ACME email (blank = plain HTTP)" "${ACME_EMAIL}")"
-                if [[ -n "${acme}" ]]; then
-                    ACME_EMAIL="${acme}"
-                    break
-                fi
-                if [[ "${MODE}" == "dind" ]]; then
-                    warn "dind/server needs TLS: enter an ACME email"
-                    continue
-                fi
-                NO_TLS=1
+    if [[ "${TRAEFIK_MODE}" == "master" ]]; then
+        while true; do
+            local acme=""
+            acme="$(ask "ACME email" "${ACME_EMAIL}")"
+            if [[ -n "${acme}" ]]; then
+                ACME_EMAIL="${acme}"
                 break
-            done
-        fi
+            fi
+            warn "the master needs an ACME email"
+        done
     fi
 
-    if [[ "${effective}" == "slave" ]]; then
+    if [[ "${TRAEFIK_MODE}" == "slave" ]]; then
         local net_default="${PROXY_NETWORK:-traefik}"
         [[ "${net_default}" == "codx-proxy" ]] && net_default="traefik"
         PROXY_NETWORK="$(ask "Master Traefik Docker network" "${net_default}")"
@@ -307,7 +314,8 @@ interactive_wizard() {
     fi
 
     local instance_default="${INSTANCE:-codx-junior}"
-    if [[ ( "${MODE}" == "dind" || "${MODE}" == "slave" ) && -n "${domain}" && "${domain}" != "localhost" ]]; then
+    if [[ -n "${domain}" && "${domain}" != "localhost" \
+          && ( "${MODE}" == "dind" || "${MODE}" == "slave" || "${TRAEFIK_MODE}" == "slave" ) ]]; then
         instance_default="$(slugify "${domain}")"
     fi
     while true; do
@@ -397,7 +405,7 @@ interactive_wizard() {
     fi
 
     DOMAINS=()
-    if [[ "${effective}" != "local" && -n "${domain}" ]]; then
+    if [[ "${TRAEFIK_MODE}" != "none" && -n "${domain}" ]]; then
         DOMAINS=("${domain}")
     fi
     if [[ "${ENV_FILE_EXPLICIT}" != "1" ]]; then
@@ -410,6 +418,7 @@ interactive_wizard() {
     printf '\n' >&2
     log "Configuration"
     log "  mode      : ${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
+    log "  traefik   : ${TRAEFIK_MODE}"
     log "  domain    : ${domain:-<none>}"
     log "  instance  : ${INSTANCE}"
     log "  home      : ${HOME_DIR}"
@@ -420,7 +429,7 @@ interactive_wizard() {
     if [[ "${MODE}" == "dind" ]]; then
         log "  sysbox    : ${SYSBOX}"
     fi
-    if [[ "${effective}" == "slave" ]]; then
+    if [[ "${TRAEFIK_MODE}" == "slave" ]]; then
         log "  proxy     : ${PROXY_NETWORK} (${MASTER_ENTRYPOINT}, resolver ${MASTER_CERT_RESOLVER})"
     fi
 
@@ -534,6 +543,7 @@ ACME_EMAIL="${CODX_ACME_EMAIL:-${DEFAULT_ACME_EMAIL}}"
 ACME_CA="${CODX_ACME_CA:-prod}"
 MASTER_CERT_RESOLVER="${CODX_MASTER_CERT_RESOLVER:-letsencrypt}"
 MASTER_ENTRYPOINT="${CODX_MASTER_ENTRYPOINT:-websecure}"
+TRAEFIK_MODE="${CODX_JUNIOR_TRAEFIK:-}"
 CERT_RESOLVER="${CODX_CERT_RESOLVER:-letsencrypt}"
 NO_TLS="${CODX_NO_TLS:-0}"
 MODE_CLI=0
@@ -584,6 +594,8 @@ while [[ $# -gt 0 ]]; do
         --mode=*)               MODE="${1#*=}"; MODE_CLI=1; shift ;;
         --dind-mode)            need "$@"; DIND_MODE="$2"; shift 2 ;;
         --dind-mode=*)          DIND_MODE="${1#*=}"; shift ;;
+        --traefik|--proxy)      need "$@"; TRAEFIK_MODE="$2"; shift 2 ;;
+        --traefik=*|--proxy=*)  TRAEFIK_MODE="${1#*=}"; shift ;;
         --provider|--ai-provider|-p) need "$@"; PROVIDER="$2"; shift 2 ;;
         --provider=*)           PROVIDER="${1#*=}"; shift ;;
         --key|-k)               need "$@"; API_KEY="$2"; shift 2 ;;
@@ -671,11 +683,36 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- Traefik setup ----------------------------------------------------------
+# MODE answers "where does the app run"; TRAEFIK_MODE answers "which proxy
+# wraps it". Keeping them separate is what makes dind + local + slave possible.
+resolve_traefik_mode() {
+    [[ -n "${TRAEFIK_MODE}" ]] && return 0
+    case "${MODE}" in
+        local)
+            TRAEFIK_MODE="none" ;;
+        server)
+            if [[ "${NO_TLS}" == "1" ]]; then TRAEFIK_MODE="none"; else TRAEFIK_MODE="master"; fi ;;
+        slave)
+            TRAEFIK_MODE="slave" ;;
+        dind)
+            case "${DIND_MODE}" in
+                local)  TRAEFIK_MODE="none" ;;
+                server) TRAEFIK_MODE="master" ;;
+                slave)  TRAEFIK_MODE="slave" ;;
+            esac ;;
+    esac
+}
+
 # --- defaults after parsing -------------------------------------------------
 case "${MODE}" in local|server|slave|dind) ;; *) die "invalid --mode '${MODE}' (local|server|slave|dind)" ;; esac
 case "${DIND_MODE}" in local|server|slave) ;; *) die "invalid --dind-mode '${DIND_MODE}' (local|server|slave)" ;; esac
+resolve_traefik_mode
+case "${TRAEFIK_MODE}" in none|master|slave) ;; *) die "invalid --traefik '${TRAEFIK_MODE}' (none|master|slave)" ;; esac
 EFFECTIVE_MODE="${MODE}"
-[[ "${MODE}" == "dind" ]] && EFFECTIVE_MODE="${DIND_MODE}"
+if [[ "${MODE}" == "dind" ]]; then
+    EFFECTIVE_MODE="${DIND_MODE}"
+fi
 # Backwards compatibility: `curl ... | sudo bash` with no mode/domain used to
 # serve plain HTTP on the published port. Keep that default, but make it loud.
 if [[ "${MODE}" == "server" && "${MODE_CLI}" == "0" && "${NO_TLS}" == "0" && "${NO_TLS_CLI}" == "0" && "${#DOMAINS[@]}" -eq 0 ]]; then
@@ -703,6 +740,7 @@ if [[ "${INTERACTIVE}" == "1" ]]; then
     if [[ "${MODE}" == "dind" ]]; then
         EFFECTIVE_MODE="${DIND_MODE}"
     fi
+    resolve_traefik_mode
 fi
 
 # An unattended caller (cloud-init) must never block on a prompt. Closing stdin
@@ -775,35 +813,42 @@ done
 unset local_seen
 DOMAINS=("${NORMALIZED_DOMAINS[@]+"${NORMALIZED_DOMAINS[@]}"}")
 PRIMARY_DOMAIN="${DOMAINS[0]:-localhost}"
-# local mode never uses a domain; ignore one inherited from the environment.
-if [[ "${EFFECTIVE_MODE}" == "local" ]]; then
+# A domain is only meaningful when a proxy is in front; local mode with no
+# proxy ignores one inherited from the environment.
+if [[ "${TRAEFIK_MODE}" == "none" && "${EFFECTIVE_MODE}" == "local" ]]; then
     DOMAINS=()
     PRIMARY_DOMAIN="localhost"
 fi
 
-if [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" ]] && [[ "${#DOMAINS[@]}" -eq 0 ]]; then
-    die "--mode server needs --domain (or CODX_JUNIOR_DOMAIN); use --no-tls for plain HTTP"
+if [[ "${TRAEFIK_MODE}" != "none" ]] && [[ "${#DOMAINS[@]}" -eq 0 ]]; then
+    die "Traefik '${TRAEFIK_MODE}' needs --domain (or CODX_JUNIOR_DOMAIN)"
 fi
-if [[ "${EFFECTIVE_MODE}" == "slave" ]] && [[ "${#DOMAINS[@]}" -eq 0 ]]; then
-    die "--mode slave needs --domain (or CODX_JUNIOR_DOMAIN)"
+if [[ "${TRAEFIK_MODE}" == "master" && "${NO_TLS}" == "1" ]]; then
+    die "--traefik master cannot be combined with --no-tls"
 fi
-if [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" && -z "${ACME_EMAIL}" ]]; then
-    die "--mode server needs --acme-email for Let's Encrypt (or --no-tls)"
+if [[ "${TRAEFIK_MODE}" == "master" && -z "${ACME_EMAIL}" ]]; then
+    die "--traefik master needs --acme-email for Let's Encrypt"
 fi
 if [[ "${MODE}" == "dind" && "${DIND_MODE}" == "server" && "${NO_TLS}" == "1" ]]; then
     die "dind/server needs TLS; use --dind-mode local for a plain-HTTP DIND instance"
 fi
-if [[ "${EFFECTIVE_MODE}" == "slave" ]]; then
+if [[ "${MODE}" == "dind" && "${TRAEFIK_MODE}" == "none" && "${DIND_MODE}" != "local" ]]; then
+    die "dind without Traefik needs --dind-mode local (no port would be published otherwise)"
+fi
+if [[ "${MODE}" == "slave" && "${TRAEFIK_MODE}" == "none" ]]; then
+    die "--mode slave needs a Traefik setup (use --mode server --traefik none for plain HTTP)"
+fi
+if [[ "${TRAEFIK_MODE}" == "slave" ]]; then
     PROXY_EXTERNAL="${PROXY_EXTERNAL:-true}"
 else
     PROXY_EXTERNAL="${PROXY_EXTERNAL:-false}"
 fi
 # Inside the DIND wrapper the "proxy network" is a nested bridge that compose
 # creates; only a host install joins an external master network.
-if [[ "${CONTAINER}" == "1" && "${MODE}" == "slave" ]]; then
+if [[ "${CONTAINER}" == "1" && "${TRAEFIK_MODE}" == "slave" ]]; then
     PROXY_EXTERNAL="false"
 fi
-if [[ "${EFFECTIVE_MODE}" != "local" && "${BIND_ADDRESS_CLI}" == "0" && -z "${CODX_BIND_ADDRESS:-}" ]]; then
+if [[ "${TRAEFIK_MODE}" == "none" && "${EFFECTIVE_MODE}" != "local" && "${BIND_ADDRESS_CLI}" == "0" && -z "${CODX_BIND_ADDRESS:-}" ]]; then
     BIND_ADDRESS="0.0.0.0"
 fi
 if [[ -z "${SYSTEMD}" ]]; then
@@ -843,9 +888,11 @@ detect_public_ip() {
 
 if [[ -n "${CODX_JUNIOR_PUBLIC_URL:-}" ]]; then
     PUBLIC_URL="${CODX_JUNIOR_PUBLIC_URL}"
+elif [[ "${TRAEFIK_MODE}" != "none" ]]; then
+    PUBLIC_URL="https://${PRIMARY_DOMAIN}"
 elif [[ "${EFFECTIVE_MODE}" == "local" ]]; then
     PUBLIC_URL="http://localhost:${WEB_PORT}"
-elif [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "1" ]]; then
+elif [[ "${EFFECTIVE_MODE}" == "server" ]]; then
     if [[ "${PRIMARY_DOMAIN}" != "localhost" ]]; then
         if [[ "${WEB_PORT}" == "80" ]]; then
             PUBLIC_URL="http://${PRIMARY_DOMAIN}"
@@ -976,27 +1023,33 @@ resolve_runtime() {
 
 select_compose_files() {
     COMPOSE_FILES=(-f "${RUNTIME_DIR}/docker-compose.yaml")
-    case "${MODE}" in
-        local)
-            COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.local.yaml") ;;
-        server)
-            if [[ "${NO_TLS}" == "0" ]]; then
-                COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.master.yaml")
-            else
-                COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.local.yaml")
-            fi ;;
+    case "${TRAEFIK_MODE}" in
+        none)
+            [[ "${CONTAINER}" == "1" ]] \
+                || COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.local.yaml") ;;
+        master)
+            COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.master.yaml") ;;
         slave)
             COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.slave.yaml") ;;
     esac
+    # Local access alongside a proxy: `local` + `slave` is the "dind local
+    # slave" case. It publishes the app on 127.0.0.1 and still joins the master
+    # network with a slave Traefik.
+    if [[ "${CONTAINER}" != "1" && "${EFFECTIVE_MODE}" == "local" && "${TRAEFIK_MODE}" != "none" ]]; then
+        COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.local.yaml")
+    fi
     if [[ "${COWORKING}" == "1" ]]; then
         COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.coworking.yaml")
     fi
     if [[ "${CONTAINER}" == "1" ]]; then
-        case "${MODE}" in
-            local)  COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-local.yaml") ;;
-            server) COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-master.yaml") ;;
+        case "${TRAEFIK_MODE}" in
+            none)   COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-local.yaml") ;;
+            master) COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-master.yaml") ;;
             slave)  COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-slave.yaml") ;;
         esac
+        if [[ "${EFFECTIVE_MODE}" == "local" && "${TRAEFIK_MODE}" != "none" ]]; then
+            COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-local.yaml")
+        fi
     fi
     if [[ "${DO_BUILD}" == "1" && "${CONTAINER}" != "1" ]]; then
         COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.build.yaml")
@@ -1031,7 +1084,8 @@ build_compose_env() {
         "CODX_DIND_IMAGE=${DIND_IMAGE}"
         "CODX_DIND_PRIVILEGED=$([[ "${SYSBOX}" == "1" ]] && echo false || echo true)"
         "CODX_MODE=${EFFECTIVE_MODE}"
-        "CODX_HEALTH_PORT=$([[ "${EFFECTIVE_MODE}" == "local" ]] && echo "${WEB_PORT}" || echo 80)"
+        "CODX_TRAEFIK_MODE=${TRAEFIK_MODE}"
+        "CODX_HEALTH_PORT=$([[ "${TRAEFIK_MODE}" == "none" ]] && echo "${WEB_PORT}" || echo 80)"
         "CODX_DIND_SYSBOX=${SYSBOX}"
         "CODX_BUILD_CONTEXT=${CODX_BUILD_CONTEXT:-../..}"
     )
@@ -1097,6 +1151,7 @@ write_settings() {
     set_env_var CODX_ENV_FILE "${ENV_FILE}" "${ENV_FILE}"
     set_env_var CODX_DATA_DIR "${DATA_DIR}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_MODE "${MODE}" "${ENV_FILE}"
+    set_env_var CODX_JUNIOR_TRAEFIK "${TRAEFIK_MODE}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_INSTANCE "${INSTANCE}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_DOMAIN "${PRIMARY_DOMAIN}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_PUBLIC_URL "${PUBLIC_URL}" "${ENV_FILE}"
@@ -1330,7 +1385,7 @@ wait_health() {
     if [[ "${EFFECTIVE_MODE}" == "local" ]]; then
         curl -fsS --max-time 5 "http://127.0.0.1:${WEB_PORT}/api/health" >/dev/null 2>&1 \
             || warn "the UI port did not answer /api/health yet (it may still be starting)"
-    elif [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" && "${SKIP_TLS_WAIT}" != "1" ]]; then
+    elif [[ "${TRAEFIK_MODE}" == "master" && "${NO_TLS}" == "0" && "${SKIP_TLS_WAIT}" != "1" ]]; then
         log "Waiting for the certificate of ${PRIMARY_DOMAIN} (max 5 min; needs its A record and :80)"
         local ok=0
         for i in $(seq 1 60); do
@@ -1359,7 +1414,7 @@ apply_bootstrap() {
 
 # --- network / port checks --------------------------------------------------
 ensure_proxy_network() {
-    [[ "${EFFECTIVE_MODE}" == "slave" ]] || return 0
+    [[ "${TRAEFIK_MODE}" == "slave" ]] || return 0
     if docker network inspect "${PROXY_NETWORK}" >/dev/null 2>&1; then
         return 0
     fi
@@ -1420,18 +1475,22 @@ install_dind() {
     local dind_dir="${DIND_DIR}"
 
     DIND_COMPOSE=( -f "${dind_dir}/docker-compose.yaml" )
-    case "${DIND_MODE}" in
-        local)  DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.local.yaml" ) ;;
-        server) DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.master.yaml" ) ;;
+    case "${TRAEFIK_MODE}" in
+        master) DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.master.yaml" ) ;;
         slave)  DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.slave.yaml" ) ;;
     esac
+    # Local access is independent of the proxy: this is what composes
+    # dind + local + slave.
+    if [[ "${DIND_MODE}" == "local" ]]; then
+        DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.local.yaml" )
+    fi
     [[ "${SYSBOX}" == "1" ]] && DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.sysbox.yaml" )
 
     if [[ "${SYSBOX}" == "1" && "${DRY_RUN}" != "1" ]]; then
         docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"sysbox-runc"' \
             || die "the 'sysbox-runc' Docker runtime is not installed (see https://github.com/nestybox/sysbox)"
     fi
-    if [[ "${DIND_MODE}" == "server" ]]; then
+    if [[ "${TRAEFIK_MODE}" == "master" ]]; then
         check_ports
     fi
     ensure_proxy_network
@@ -1467,7 +1526,7 @@ install_dind() {
     write_settings
     write_compose_wrapper
 
-    log "Starting DIND instance ${INSTANCE} (dind/${DIND_MODE})"
+    log "Starting DIND instance ${INSTANCE} (app=${DIND_MODE}, traefik=${TRAEFIK_MODE})"
     compose up -d --remove-orphans
 
     wait_health
@@ -1491,12 +1550,10 @@ open_firewall() {
     fi
     command -v ufw >/dev/null 2>&1 || { warn "ufw is not available; open the ports in the provider firewall"; return 0; }
     ufw allow OpenSSH >/dev/null 2>&1 || ufw allow 22/tcp >/dev/null 2>&1 || true
-    if [[ "${MODE}" == "local" ]]; then
-        ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true
-    elif [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" ]]; then
+    if [[ "${TRAEFIK_MODE}" == "master" ]]; then
         ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
-    elif [[ "${EFFECTIVE_MODE}" == "server" || "${EFFECTIVE_MODE}" == "local" ]]; then
+    elif [[ "${TRAEFIK_MODE}" == "none" ]]; then
         ufw allow "${WEB_PORT}/tcp" >/dev/null 2>&1 || true
     fi
     ufw --force enable >/dev/null 2>&1 || true
@@ -1512,6 +1569,7 @@ summary() {
  codx-junior is running
 
    mode     : ${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)
+   traefik  : ${TRAEFIK_MODE}
    URL      : ${PUBLIC_URL}
    projects : ${PROJECTS}
    settings : ${settings} (mode 600)
@@ -1540,6 +1598,7 @@ run_config() {
     cat <<CONFIG
 mode=${MODE}
 dind_mode=${DIND_MODE}
+traefik_mode=${TRAEFIK_MODE}
 instance=${INSTANCE}
 home=${HOME_DIR}
 data=${DATA_DIR}
@@ -1571,7 +1630,7 @@ run_install() {
     log "  projects  : ${PROJECTS}"
     log "  image     : ${IMAGE}"
     log "  domain    : ${DOMAINS[*]:-<none>}"
-    log "  proxy     : $([[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" ]] && echo "traefik master (${CERT_RESOLVER})" || { [[ "${EFFECTIVE_MODE}" == "slave" ]] && echo "traefik slave on ${PROXY_NETWORK}" || echo "none"; })"
+    log "  traefik   : $([[ "${TRAEFIK_MODE}" == "master" ]] && echo "master (${CERT_RESOLVER})" || { [[ "${TRAEFIK_MODE}" == "slave" ]] && echo "slave on ${PROXY_NETWORK}" || echo "none"; })"
     log "  coworking : ${COWORKING}"
 
     if [[ "${DRY_RUN}" != "1" ]]; then
@@ -1585,7 +1644,7 @@ run_install() {
     select_compose_files
     build_compose_env
 
-    if [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" ]]; then
+    if [[ "${TRAEFIK_MODE}" == "master" ]]; then
         check_ports
     fi
     ensure_proxy_network
@@ -1609,7 +1668,7 @@ run_install() {
 
     mkdir -p "${DATA_DIR}/traefik"
     chmod 700 "${DATA_DIR}/traefik" 2>/dev/null || true
-    if [[ "${EFFECTIVE_MODE}" == "server" && "${NO_TLS}" == "0" ]]; then
+    if [[ "${TRAEFIK_MODE}" == "master" ]]; then
         # Traefik refuses to start when acme.json is world-readable.
         [[ -f "${DATA_DIR}/traefik/acme.json" ]] || : > "${DATA_DIR}/traefik/acme.json"
         chmod 600 "${DATA_DIR}/traefik/acme.json" 2>/dev/null || true
@@ -1665,11 +1724,13 @@ run_upgrade() {
 select_dind_files() {
     resolve_dind_dir
     DIND_COMPOSE=( -f "${DIND_DIR}/docker-compose.yaml" )
-    case "${MODE}" in
-        local)  DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.local.yaml" ) ;;
-        server) DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.master.yaml" ) ;;
+    case "${TRAEFIK_MODE}" in
+        master) DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.master.yaml" ) ;;
         slave)  DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.slave.yaml" ) ;;
     esac
+    if [[ "${DIND_MODE}" == "local" ]]; then
+        DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.local.yaml" )
+    fi
     [[ "${SYSBOX}" == "1" ]] && DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.sysbox.yaml" )
     COMPOSE_FILES=("${DIND_COMPOSE[@]}")
     RUNTIME_DIR="${DIND_DIR}"
@@ -1688,6 +1749,7 @@ run_status() {
     fi
     printf 'instance : %s\n' "${INSTANCE}"
     printf 'mode     : %s\n' "${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
+    printf 'traefik  : %s\n' "${TRAEFIK_MODE}"
     printf 'url      : %s\n' "${PUBLIC_URL}"
     printf 'settings : %s\n' "${ENV_FILE}"
     printf 'health   : %s\n' "$(container_health "${INSTANCE}")"
@@ -1763,7 +1825,7 @@ run_doctor() {
     printf 'systemd       : '
     if [[ -d /run/systemd/system ]]; then echo "ok"; else echo "not PID 1 (the unit is skipped)"; fi
     printf 'proxy network : '
-    if docker network inspect "${PROXY_NETWORK}" >/dev/null 2>&1; then echo "${PROXY_NETWORK} exists"; else echo "${PROXY_NETWORK} missing"; [[ "${EFFECTIVE_MODE}" == "slave" ]] && rc=1; fi
+    if docker network inspect "${PROXY_NETWORK}" >/dev/null 2>&1; then echo "${PROXY_NETWORK} exists"; else echo "${PROXY_NETWORK} missing"; [[ "${TRAEFIK_MODE}" == "slave" ]] && rc=1; fi
     printf 'port 80/443   : '
     if command -v ss >/dev/null 2>&1 && ss -ltn 'sport = :80' 2>/dev/null | grep -q LISTEN; then echo "80 in use"; else echo "free"; fi
     printf 'docker socket : '

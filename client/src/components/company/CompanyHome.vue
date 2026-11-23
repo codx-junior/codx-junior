@@ -39,6 +39,11 @@ const emit = defineEmits([
 ])
 
 const company = computed(() => props.snapshot?.company || {})
+// Identity of the company that is open: the logo is an image source (http(s)
+// URL or inline data URL); older documents keep a FontAwesome class there.
+const logo = computed(() => String(company.value.logo || '').trim())
+const logoIsImage = computed(() => /^(data:image\/|https?:\/\/|\/)/i.test(logo.value))
+const companyInitials = computed(() => initials(company.value.name || 'Company'))
 const counts = computed(() => props.snapshot?.counts || {})
 const teams = computed(() => props.snapshot?.teams || [])
 const missions = computed(() => props.snapshot?.missions || [])
@@ -446,7 +451,30 @@ function openEvent(event) {
 
 <template>
   <div class="company-dashboard">
-    <h1 class="sr-only">Company overview</h1>
+    <!-- Company identity: the owner always sees which company is open. -->
+    <header class="cp-card cp-card-pad mb-4 flex flex-wrap items-center gap-3" aria-label="Company">
+      <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[14px] bg-[var(--cp-lime)] text-[16px] font-black text-[var(--cp-lime-ink)] shadow-sm">
+        <img
+          v-if="logoIsImage"
+          :src="logo"
+          :alt="company.name || 'Company logo'"
+          class="h-full w-full object-cover"
+          @error="hideBrokenImage"
+        />
+        <i v-else-if="logo" :class="logo"></i>
+        <span v-else>{{ companyInitials }}</span>
+      </span>
+      <div class="min-w-0 flex-1">
+        <p class="cp-eyebrow">Company</p>
+        <h1 class="mt-0.5 truncate text-xl font-extrabold tracking-tight md:text-2xl">{{ company.name || 'Your company' }}</h1>
+        <p class="mt-0.5 line-clamp-2 text-[10.5px] leading-relaxed cp-muted">{{ company.mission || company.description || 'Add the company purpose in Settings.' }}</p>
+      </div>
+      <div class="flex shrink-0 items-center gap-1.5">
+        <button class="cp-chip" title="Edit this company" @click="emit('open-settings')">
+          <i class="fa-solid fa-pen text-[9px]"></i> Edit
+        </button>
+      </div>
+    </header>
 
     <div class="grid gap-4 min-[1180px]:grid-cols-12 min-[1180px]:gap-5">
       <!-- ── Main column ─────────────────────────────────────────────────── -->

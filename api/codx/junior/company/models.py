@@ -1541,7 +1541,10 @@ class Company(BaseModel):
     vision: str = Field(default="", description="Where the company is going")
     values: List[str] = Field(default_factory=list, description="Operating values")
     website: str = Field(default="", description="Public website")
-    logo: str = Field(default="", description="Logo URL")
+    logo: str = Field(
+        default="",
+        description="Logo URL (served by GET /api/companies/{id}/logo)",
+    )
     color: str = Field(default="#6366f1", description="UI accent colour")
     status: str = Field(default="active", description="active | paused | archived")
     owner: str = Field(default="", description="Owner username")

@@ -5,6 +5,7 @@ Storage layout (one folder per company, mirroring ``.codx`` projects)::
 
     <companies_root>/<company_id>/company.json   # the Company document
     <companies_root>/<company_id>/journal.jsonl  # append-only event journal
+    <companies_root>/<company_id>/logo.png       # brand asset (optional)
 
 Why one folder per company
 --------------------------
@@ -41,6 +42,13 @@ logger = logging.getLogger(__name__)
 
 COMPANY_FILE = "company.json"
 JOURNAL_FILE = "journal.jsonl"
+
+#: Base name of the logo file kept next to the document. The extension follows
+#: the image type, so the folder stays readable (``logo.png``, ``logo.svg``).
+LOGO_BASENAME = "logo"
+
+#: Extensions a stored logo file may use.
+LOGO_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg")
 
 #: Environment variable that overrides the companies root (tests, containers).
 COMPANIES_PATH_ENV = "CODX_JUNIOR_COMPANIES_PATH"
@@ -170,6 +178,95 @@ class CompanyStore:
     def journal_path(self, company_id: str) -> str:
         """Return the path of the append-only journal."""
         return os.path.join(self.company_dir(company_id), JOURNAL_FILE)
+
+    # -- logo --------------------------------------------------------------
+
+    def logo_path(self, company_id: str) -> Optional[str]:
+        """
+        Return the stored logo file of a company, when it has one.
+
+        The logo lives next to the document, so a company folder stays
+        self-contained and deleting the company deletes its brand asset too.
+        At most one logo file exists (:meth:`write_logo` replaces it), but the
+        extension is unknown, hence the scan.
+
+        Args:
+            company_id: Company id.
+
+        Returns:
+            Absolute path of the logo file, or ``None`` when there is none.
+        """
+        folder = self.company_dir(company_id)
+        if not os.path.isdir(folder):
+            return None
+        for name in sorted(os.listdir(folder)):
+            stem, extension = os.path.splitext(name)
+            if stem == LOGO_BASENAME and extension.lower() in LOGO_EXTENSIONS:
+                return os.path.join(folder, name)
+        return None
+
+    def write_logo(self, company_id: str, content: bytes, extension: str) -> str:
+        """
+        Store the logo file of a company, replacing the previous one.
+
+        The bytes are written to a temporary file and moved into place, so a
+        crash never leaves a half-written image being served. Any other
+        ``logo.*`` file is removed, otherwise a PNG uploaded after an SVG would
+        leave two candidates behind.
+
+        Args:
+            company_id: Company id.
+            content: Raw image bytes.
+            extension: File extension including the dot (``.png``).
+
+        Returns:
+            Absolute path of the written file.
+
+        Raises:
+            OSError: If the file cannot be written.
+        """
+        extension = extension if extension.startswith(".") else f".{extension}"
+        folder = self.company_dir(company_id)
+        os.makedirs(folder, exist_ok=True)
+        target = os.path.join(folder, f"{LOGO_BASENAME}{extension.lower()}")
+        temporary = f"{target}.tmp"
+        with open(temporary, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        for name in os.listdir(folder):
+            stem, other = os.path.splitext(name)
+            if stem == LOGO_BASENAME and other.lower() in LOGO_EXTENSIONS:
+                leftover = os.path.join(folder, name)
+                if leftover != target:
+                    try:
+                        os.remove(leftover)
+                    except OSError:  # pragma: no cover - defensive
+                        logger.warning("Could not remove old company logo: %s", leftover)
+        return target
+
+    def remove_logo(self, company_id: str) -> bool:
+        """
+        Delete the logo file of a company.
+
+        Args:
+            company_id: Company id.
+
+        Returns:
+            True when a file was removed.
+        """
+        removed = False
+        while True:
+            path = self.logo_path(company_id)
+            if not path:
+                return removed
+            try:
+                os.remove(path)
+                removed = True
+            except OSError:  # pragma: no cover - defensive
+                logger.warning("Could not remove company logo: %s", path)
+                return removed
 
     # -- existence / listing ----------------------------------------------
 

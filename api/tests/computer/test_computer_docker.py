@@ -40,7 +40,12 @@ def test_linux_run_command_uses_webtop_and_mounts_the_agent(tmp_path, monkeypatc
     assert "computer_12345678" in cmd
     assert f"SUBFOLDER=/computer/{session.id}/" in cmd
     assert "/tmp/agent.py:/codx/computer_agent.py:ro" in cmd
-    assert "SELKIES_MANUAL_WIDTH=1920" in joined
+    # Auto (client size) is the default: the manual mode must stay off so
+    # Selkies follows the browser instead of letterboxing a fixed 1920x1080.
+    assert "SELKIES_MANUAL_RESOLUTION=false" in joined
+    assert "SELKIES_ENABLE_RESIZE=true" in joined
+    assert "SELKIES_MANUAL_WIDTH=1920" not in joined
+    assert "SELKIES_IS_MANUAL_RESOLUTION_MODE" not in joined
     assert "traefik.http.routers.codx-computer-12345678.rule=" in joined
     assert f"PathPrefix(`/computer/{session.id}/`)" in joined
     assert "3000" in joined
@@ -197,3 +202,82 @@ def test_vm_without_project_does_not_mount_shared_twice(tmp_path, monkeypatch):
     mounts = manager._build_share_mounts(session)
     assert len(mounts) == 1
     assert mounts[0].endswith(":/shared")
+
+
+def test_linux_fixed_desktop_pins_selkies_resolution(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    session = BrowserSession(
+        name="Linux",
+        kind="linux",
+        desktop_auto_resize=False,
+        desktop_width=1600,
+        desktop_height=900,
+    )
+    session.id = "52345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    manager.configure_share(session, share_project=False)
+    cmd = manager._build_linux_run_command(
+        session,
+        "computer_52345678",
+        str(tmp_path / "profile"),
+        f"/computer/{session.id}/",
+        "codx-computer-52345678",
+    )
+    joined = " ".join(cmd)
+
+    assert "SELKIES_MANUAL_RESOLUTION=true" in joined
+    assert "SELKIES_MANUAL_WIDTH=1600" in joined
+    assert "SELKIES_MANUAL_HEIGHT=900" in joined
+    assert "SELKIES_ENABLE_RESIZE=true" not in joined
+
+
+def test_kasm_auto_resize_is_default_and_has_view_only_password(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    session = BrowserSession(name="Kasm", kind="linux")
+    session.id = "62345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    session.image = "kasmweb/desktop:1.16.0"
+    session.image_provider = "kasmweb"
+    session.live_view = "kasmvnc"
+    manager.configure_share(session, share_project=False)
+    cmd = manager._build_kasm_run_command(
+        session,
+        "computer_62345678",
+        str(tmp_path / "profile"),
+        f"/computer/{session.id}/",
+        "codx-computer-62345678",
+    )
+    joined = " ".join(cmd)
+
+    assert "KVNC_DESKTOP_ALLOW_RESIZE=true" in joined
+    assert session.viewer_password
+    assert session.viewer_view_password
+    # Observers must never receive the controller password.
+    assert session.viewer_view_password != session.viewer_password
+    assert f"VNC_PW={session.viewer_password}" in joined
+    assert f"VNC_VIEW_ONLY_PW={session.viewer_view_password}" in joined
+
+
+def test_kasm_fixed_desktop_disables_remote_resize(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch)
+    session = BrowserSession(
+        name="Kasm",
+        kind="linux",
+        desktop_auto_resize=False,
+        desktop_width=1366,
+        desktop_height=768,
+    )
+    session.id = "72345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    session.image = "kasmweb/desktop:1.16.0"
+    session.image_provider = "kasmweb"
+    session.live_view = "kasmvnc"
+    manager.configure_share(session, share_project=False)
+    cmd = manager._build_kasm_run_command(
+        session,
+        "computer_72345678",
+        str(tmp_path / "profile"),
+        f"/computer/{session.id}/",
+        "codx-computer-72345678",
+    )
+    joined = " ".join(cmd)
+
+    assert "KVNC_DESKTOP_ALLOW_RESIZE=false" in joined
+    assert "VNC_RESOLUTION=1366x768" in joined

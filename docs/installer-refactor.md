@@ -392,7 +392,7 @@ Everything that Traefik sees must be instance-scoped:
     LanceDB-only; the workspace and legacy deployment pages need the same pass
     when that code is removed.
 22. **Tests.** The legacy `demo/tests` scripts were removed with `demo/up.sh`.
-    **Done:** 32 checks in `codx-junior-installer/tests/test_install.sh` and a
+    **Done:** 35 checks in `codx-junior-installer/tests/test_install.sh` and a
     12-combination `docker compose config` matrix. The full image build itself
     still needs a CI/publish run (it is large).
 23. **The DevOps `traefik` tool still expects the old container name and a

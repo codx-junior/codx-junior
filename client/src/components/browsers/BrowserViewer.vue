@@ -82,15 +82,6 @@
         </summary>
         <ul class="dropdown-content menu menu-xs bg-base-100 rounded-box shadow-lg border border-base-content/10 w-60 p-1 z-40">
           <li>
-            <button
-              class="flex items-center gap-2"
-              @click="closeOverflow(); isUserController ? giveBackControl() : takeControl()"
-            >
-              <i :class="isUserController ? 'fa-solid fa-robot' : 'fa-solid fa-hand'"></i>
-              <span>{{ isUserController ? 'Give control back to the AI' : 'Take control' }}</span>
-            </button>
-          </li>
-          <li>
             <button class="flex items-center gap-2" @click="closeOverflow(); reloadLiveView()">
               <i class="fa-solid fa-rotate"></i>
               <span>Reload live view</span>
@@ -140,6 +131,21 @@
       </details>
     </div>
 
+    <div v-if="activeSession" class="px-2 py-1.5 border-b border-base-content/10 bg-base-100 flex-shrink-0">
+      <SessionControlBar
+        :session="activeSession"
+        :current-user="currentUser"
+        :participant-id="participantId"
+        :busy="isControlling"
+        @take-control="takeControl"
+        @request-control="requestControl"
+        @release-control="giveBackControl"
+        @approve-request="approveControlRequest"
+        @deny-request="denyControlRequest"
+        @set-mode="setControlMode"
+      />
+    </div>
+
     <!-- Handoff banner: the AI paused and the human must complete something -->
     <div
       v-if="handoffReason"
@@ -187,6 +193,27 @@
               <button v-if="activeSession" class="btn btn-sm btn-success" @click="restartSession">
                 <i class="fa-solid fa-play"></i> Start browser
               </button>
+            </div>
+            <!-- Observer gate: clicks are captured until this human owns the
+                 lease, so another participant cannot type over the page. -->
+            <div
+              v-if="overlay.interactive && isRunning && !annotating"
+              class="absolute inset-0 z-20 flex items-end justify-center pb-4 cursor-pointer"
+              role="button"
+              tabindex="0"
+              :aria-label="overlay.label"
+              :title="overlay.hint"
+              @click="handleOverlayClick"
+              @keydown.enter.prevent="handleOverlayClick"
+              @keydown.space.prevent="handleOverlayClick"
+            >
+              <div class="pointer-events-none rounded-xl border border-base-content/15 bg-base-100/95 px-4 py-2 text-center shadow-2xl backdrop-blur">
+                <p class="flex items-center justify-center gap-2 text-sm font-semibold">
+                  <i class="fa-solid" :class="overlay.action === 'request_control' ? 'fa-paper-plane text-warning' : 'fa-hand text-primary'"></i>
+                  {{ overlay.label }}
+                </p>
+                <p class="text-[11px] opacity-70">{{ overlay.hint }}</p>
+              </div>
             </div>
             <div
               v-if="loadingFrame && isRunning"
@@ -333,6 +360,13 @@
 
 <script>
 import BrowserAnnotationBoard from './BrowserAnnotationBoard.vue'
+import SessionControlBar from './SessionControlBar.vue'
+import { getParticipantId } from '@/utils/collabIdentity'
+import {
+  isControlOwner,
+  overlayControlFor,
+  viewerIdentity
+} from '@/utils/sessionControl'
 
 /**
  * BrowserViewer — shared AI/user co-browsing surface.
@@ -349,8 +383,8 @@ import BrowserAnnotationBoard from './BrowserAnnotationBoard.vue'
  */
 export default {
   name: 'BrowserViewer',
-  components: { BrowserAnnotationBoard },
-  emits: ['ask-ai', 'send-annotations', 'share-session'],
+  components: { BrowserAnnotationBoard, SessionControlBar },
+  emits: ['ask-ai', 'send-annotations', 'share-session', 'control-change'],
   props: {
     sessionId: { type: String, default: null },
     session: { type: Object, default: null },
@@ -376,7 +410,8 @@ export default {
       lastCostAt: 0,
       activityDrawerOpen: false,
       drawerId: `browser-activity-drawer-${Math.random().toString(36).slice(2, 9)}`,
-      escHandler: null
+      escHandler: null,
+      participantId: getParticipantId()
     }
   },
   computed: {
@@ -441,6 +476,25 @@ export default {
     controller() {
       return this.activeSession?.controller || 'ai'
     },
+    identity() {
+      return viewerIdentity(this.currentUser, this.participantId)
+    },
+    ownsControl() {
+      return isControlOwner(this.activeSession, this.identity)
+    },
+    overlay() {
+      return overlayControlFor(this.activeSession, this.identity)
+    },
+    controlSignature() {
+      const session = this.activeSession
+      if (!session) return ''
+      return [
+        session.controller,
+        session.control_mode,
+        session.control_owner,
+        this.ownsControl ? 'owner' : 'viewer'
+      ].join('|')
+    },
     isUserController() {
       return this.controller === 'user'
     },
@@ -502,6 +556,13 @@ export default {
     activityDrawerOpen(open) {
       // Refresh the audit trail when the drawer becomes visible
       if (open) this.refreshSessionData()
+    },
+    controlSignature(value, previous) {
+      if (!previous || value === previous) return
+      // Ownership moved: remount the page so an observer cannot keep typing
+      // in a live view it no longer owns (the iframe keeps its input state).
+      if (!this.ownsControl && !this.annotating) this.iframeKey += 1
+      this.$emit('control-change', this.activeSession)
     }
   },
   mounted() {
@@ -661,9 +722,17 @@ export default {
     async takeControl() {
       if (!this.activeSessionId) return
       try {
-        await this.$storex.browsers.takeControl(this.activeSessionId)
+        await this.$storex.browsers.takeControl({ sessionId: this.activeSessionId })
       } catch (error) {
         this.notify('error', error.message || 'Could not take control')
+      }
+    },
+    async requestControl() {
+      if (!this.activeSessionId) return
+      try {
+        await this.$storex.browsers.requestControl({ sessionId: this.activeSessionId })
+      } catch (error) {
+        this.notify('error', error.message || 'Could not request control')
       }
     },
     async giveBackControl() {
@@ -673,6 +742,40 @@ export default {
       } catch (error) {
         this.notify('error', error.message || 'Could not return control')
       }
+    },
+    async approveControlRequest(requestId) {
+      try {
+        await this.$storex.browsers.approveControlRequest({
+          sessionId: this.activeSessionId,
+          requestId
+        })
+      } catch (error) {
+        this.notify('error', error.message || 'Could not approve the request')
+      }
+    },
+    async denyControlRequest(requestId) {
+      try {
+        await this.$storex.browsers.denyControlRequest({
+          sessionId: this.activeSessionId,
+          requestId
+        })
+      } catch (error) {
+        this.notify('error', error.message || 'Could not deny the request')
+      }
+    },
+    async setControlMode(mode) {
+      try {
+        await this.$storex.browsers.setControlMode({
+          sessionId: this.activeSessionId,
+          mode
+        })
+      } catch (error) {
+        this.notify('error', error.message || 'Could not change the control mode')
+      }
+    },
+    handleOverlayClick() {
+      if (this.overlay.action === 'request_control') this.requestControl()
+      else if (this.overlay.action === 'take_control') this.takeControl()
     },
     restoreAddress() {
       const session = this.activeSession
@@ -708,7 +811,7 @@ export default {
     async refreshSession() {
       if (!this.activeSessionId) return
       try {
-        await this.$storex.browsers.loadSessions()
+        await this.$storex.browsers.loadSessions({ force: true })
         await this.refreshSessionData()
         this.iframeKey += 1
       } catch (error) {

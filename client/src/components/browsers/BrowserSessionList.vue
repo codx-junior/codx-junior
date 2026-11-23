@@ -466,7 +466,7 @@ export default {
       return 'bg-base-content/30'
     },
     reloadSessions() {
-      this.$storex.browsers.loadSessions()
+      this.$storex.browsers.loadSessions({ force: true })
     },
     handleRailNewSession() {
       // The dialog is self contained: it works from the collapsed rail too, so

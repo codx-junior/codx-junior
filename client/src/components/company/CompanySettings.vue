@@ -34,6 +34,14 @@ const autonomy = computed(() => company.value.autonomy || {})
 const counts = computed(() => props.snapshot?.counts || {})
 const members = computed(() => props.snapshot?.members || [])
 
+// ── Branding ──────────────────────────────────────────────────────────────
+// The logo is a file next to the company document, served by
+// `GET /api/companies/{id}/logo`; the document only keeps that URL. Older
+// companies still carry a data URL or an external URL, which render as they are.
+const logoDraft = ref('')
+const logoSaving = ref(false)
+const logoError = ref('')
+
 const profile = reactive({
   name: '',
   description: '',
@@ -297,7 +305,7 @@ function errorMessage(error) {
 async function saveProfile() {
   savingProfile.value = true
   try {
-    await api.update(props.companyId, {
+    const saved = await api.update(props.companyId, {
       name: profile.name.trim(),
       description: profile.description,
       mission: profile.mission,
@@ -305,13 +313,136 @@ async function saveProfile() {
       values: profile.values.split(',').map(value => value.trim()).filter(Boolean),
       website: profile.website
     })
-    emit('refresh')
+    await applySaved(saved)
     notify('Company context saved ✓', 'success')
   } catch (error) {
     notify(errorMessage(error), 'error')
   } finally {
     savingProfile.value = false
   }
+}
+
+/**
+ * Publish a saved company and follow its URL.
+ *
+ * The slug is the company address: after a rename the shell must move to the new
+ * one, otherwise the route keeps the old slug, the guard reopens another company
+ * and the rename looks like it did nothing.
+ *
+ * @param {Object} saved Company document returned by the API.
+ */
+async function applySaved(saved) {
+  emit('refresh')
+  const slug = saved?.slug || ''
+  if (slug && slug !== company.value.slug) {
+    await router.push({ name: 'company-home', params: { companySlug: slug } }).catch(() => {})
+  }
+}
+
+/** Tell whether a stored logo value is an image source (vs a legacy icon class). */
+function logoIsImageSource(value) {
+  return /^(data:image\/|https?:\/\/|\/)/i.test(String(value || '').trim())
+}
+
+/** Keep the logo draft in sync with the company the panel is showing. */
+watch(company, value => {
+  logoDraft.value = String(value?.logo || '')
+  logoError.value = ''
+}, { immediate: true })
+
+/**
+ * Read an image file into an <img> element.
+ *
+ * @param {File} file Image picked by the owner.
+ * @returns {Promise<HTMLImageElement>} The decoded image.
+ */
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(new Error('Cannot read that file.'))
+    reader.onload = () => {
+      const image = new Image()
+      image.onerror = () => reject(new Error('That file is not a readable image.'))
+      image.onload = () => resolve(image)
+      image.src = String(reader.result || '')
+    }
+    reader.readAsDataURL(file)
+  })
+}
+
+/**
+ * Downscale an image file so the upload stays small.
+ *
+ * The logo is a brand mark rendered at ~48 px, so 512 px covers a retina screen
+ * and keeps the upload far below the server limit. SVG is vector and a GIF may be
+ * animated: both are sent untouched.
+ *
+ * @param {File} file Image picked by the owner.
+ * @param {Number} maxSize Longest side of the uploaded image, in pixels.
+ * @returns {Promise<Blob|File>} The file to upload.
+ */
+async function downscaleImage(file, maxSize = 512) {
+  const type = String(file.type || '').toLowerCase()
+  if (type === 'image/svg+xml' || type === 'image/gif') return file
+  const image = await loadImage(file)
+  const width = image.width || maxSize
+  const height = image.height || maxSize
+  const scale = Math.min(1, maxSize / Math.max(width, height))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.round(width * scale))
+  canvas.height = Math.max(1, Math.round(height * scale))
+  const context = canvas.getContext('2d')
+  if (!context) return file
+  context.drawImage(image, 0, 0, canvas.width, canvas.height)
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+  if (!blob) return file
+  return new File([blob], 'logo.png', { type: 'image/png' })
+}
+
+/**
+ * Upload (or clear) the company logo.
+ *
+ * The image is a file next to the company document now, so it is uploaded — not
+ * embedded in the JSON — and the company comes back with the URL that serves it.
+ *
+ * @param {Blob|File|null} file Image to store; `null` removes the logo.
+ */
+async function saveLogo(file) {
+  logoSaving.value = true
+  logoError.value = ''
+  try {
+    const saved = file
+      ? await api.uploadLogo(props.companyId, file)
+      : await api.removeLogo(props.companyId)
+    logoDraft.value = String(saved?.logo || '')
+    await applySaved(saved)
+    notify(file ? 'Company logo saved ✓' : 'Company logo removed', 'success')
+  } catch (error) {
+    logoError.value = errorMessage(error)
+  } finally {
+    logoSaving.value = false
+  }
+}
+
+/** Owner picked a file: downscale it and upload it as the company logo. */
+async function pickLogo(event) {
+  const input = event?.target
+  const file = input?.files?.[0]
+  if (input) input.value = ''
+  if (!file) return
+  if (!String(file.type || '').startsWith('image/')) {
+    logoError.value = 'Pick an image file (png, jpeg, webp or svg).'
+    return
+  }
+  logoError.value = ''
+  let upload = null
+  try {
+    upload = await downscaleImage(file)
+  } catch (error) {
+    logoError.value = error?.message || 'Cannot read that image.'
+    return
+  }
+  await saveLogo(upload)
 }
 
 async function saveAutonomy() {
@@ -379,6 +510,40 @@ function ask(prompt) {
               <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.companyHint') }}</p>
             </div>
             <span class="cp-icon-tile cp-icon-tile--lime !h-7 !w-7"><i class="fa-solid fa-building text-[10px]"></i></span>
+          </div>
+
+          <!-- Logo: the mark the shell shows for this company -->
+          <div class="mt-3 flex items-center gap-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-2.5">
+            <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[13px] border border-[var(--cp-border)] bg-[var(--cp-surface)] text-[15px] font-black">
+              <img v-if="logoIsImageSource(logoDraft)" :src="logoDraft" :alt="company.name || 'Company logo'" class="h-full w-full object-cover" />
+              <i v-else-if="logoDraft" :class="logoDraft" class="text-[16px]"></i>
+              <i v-else class="fa-solid fa-image text-[14px] text-[var(--cp-muted-soft)]"></i>
+            </span>
+            <div class="min-w-0 flex-1">
+              <p class="text-[10.5px] font-bold">Company logo</p>
+              <p class="mt-0.5 text-[9px] leading-relaxed cp-muted">
+                PNG, JPEG, WebP or SVG. Shown in the left bar, the home view and the company switcher.
+              </p>
+              <p v-if="logoError" class="mt-1 text-[9px] text-[var(--cp-error-ink)]">{{ logoError }}</p>
+            </div>
+            <div class="flex shrink-0 items-center gap-1.5">
+              <label class="cp-chip !h-7 cursor-pointer !text-[8.5px]" :class="(!canManage || logoSaving) ? 'pointer-events-none opacity-50' : ''">
+                <span v-if="logoSaving" class="loading loading-spinner loading-xs"></span>
+                <i v-else class="fa-solid fa-upload text-[8px]"></i>
+                Upload
+                <input type="file" accept="image/*" class="hidden" :disabled="!canManage || logoSaving" @change="pickLogo" />
+              </label>
+              <button
+                v-if="logoDraft"
+                class="cp-chip !h-7 !text-[8.5px]"
+                :disabled="!canManage || logoSaving"
+                title="Remove the logo"
+                aria-label="Remove the logo"
+                @click="saveLogo(null)"
+              >
+                <i class="fa-solid fa-trash-can text-[8px]"></i>
+              </button>
+            </div>
           </div>
 
           <div class="mt-3 grid gap-2.5 sm:grid-cols-2">

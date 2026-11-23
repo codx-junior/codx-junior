@@ -32,7 +32,9 @@ const isMobile = computed(() => $storex.ui.isMobile)
 // The company is the root of the product. The router resolves / and legacy
 // URLs; this watcher covers the login transition (before the company store was
 // allowed to load) and keeps a logged-in user on the company home.
-const isCompanyRoute = computed(() => route.name === 'company-home')
+// `root` renders the company shell too (fresh install, no company yet), so it
+// is full screen as well.
+const isCompanyRoute = computed(() => route.name === 'company-home' || route.name === 'root')
 const isFullScreenRoute = computed(() => isCompanyRoute.value)
 
 async function enterCompanyHome() {
@@ -137,7 +139,7 @@ onMounted(() => {
         board-name="codx-junior"
         :columns="ASSISTANT_CHAT_COLUMNS"
         :default-profiles="['codx-junior']"
-        mode="task"
+        mode="chat"
         schedule-enabled
         @close="$ui.showNewAssistantChat(false)"
         @created="onAssistantChatCreated"

@@ -16,6 +16,7 @@ import CompanyAssistant from '@/components/company/CompanyAssistant.vue'
 import CompanyWorkplace from '@/components/company/CompanyWorkplace.vue'
 import CompanyChatPanel from '@/components/company/CompanyChatPanel.vue'
 import CompanyGoalDialog from '@/components/company/CompanyGoalDialog.vue'
+import CompanyWizard from '@/components/company/CompanyWizard.vue'
 import GenerateTeamDialog from '@/components/teams/GenerateTeamDialog.vue'
 import { useCompanyI18n, setCompanyLanguage } from '@/components/company/i18n'
 import '@/assets/company.css'
@@ -58,6 +59,12 @@ const newCompanyOpen = ref(false)
 const newCompanySaving = ref(false)
 const newCompanyError = ref('')
 const newCompanyForm = ref({ name: '', description: '' })
+// Setup assistant (the "New company" wizard). It opens by itself while the
+// installation onboarding is still pending and can be re-run from the user menu.
+const wizardOpen = ref(false)
+// Company the wizard configures. Empty runs the installation onboarding (new
+// company); set when a company was just created, so its own wizard opens.
+const wizardCompanyId = ref('')
 
 const chatsOpen = ref(false)
 const chatTeamId = ref('')
@@ -156,7 +163,41 @@ const roleLabel = computed(() => {
   return t('shell.member')
 })
 const workingProject = computed(() => $storex.projects.activeProject || null)
+// A company owns MANY projects. The selector in the top bar lists the ones
+// linked to this company and switches the active project without leaving the
+// current company section, so every company screen follows the same context.
+const companyProjectOptions = computed(() =>
+  ($storex.company.companyProjects || [])
+    .filter(item => item && item.project_id)
+    .map(item => ({
+      project_id: item.project_id,
+      project_name: item.project_name || item.project_id
+    }))
+)
+const activeProjectId = computed(() => {
+  const active = workingProject.value?.project_id
+  if (active && companyProjectOptions.value.some(option => option.project_id === active)) return active
+  return companyProjectOptions.value[0]?.project_id || ''
+})
+
+async function onSelectProject(event) {
+  const projectId = event?.target?.value
+  if (!projectId || projectId === workingProject.value?.project_id) return
+  const project = ($storex.projects.allProjects || []).find(item => item.project_id === projectId)
+  if (!project) return
+  try {
+    await $storex.projects.activeProjectChanged(project)
+    await refreshSnapshot()
+  } catch (error) {
+    notifyError(error)
+  }
+}
 const companyInitials = computed(() => initials(company.value?.name || 'Company'))
+// The logo is stored as an image source (an http(s) URL or an inline data URL).
+// Older documents keep a FontAwesome class there, so only real image sources are
+// rendered as an <img>.
+const companyLogo = computed(() => String(company.value?.logo || '').trim())
+const companyLogoIsImage = computed(() => /^(data:image\/|https?:\/\/|\/)/i.test(companyLogo.value))
 
 function initials(name) {
   return String(name || '?')
@@ -413,11 +454,53 @@ async function createCompany() {
       params: { companySlug: company.slug }
     }).catch(() => {})
     notify('Company created ✓', 'success')
+    // A brand new company is not configured yet: run ITS wizard (the company
+    // step first) instead of leaving the owner with an empty workspace.
+    openCompanyWizard(created.id)
   } catch (error) {
     newCompanyError.value = errorMessage(error)
   } finally {
     newCompanySaving.value = false
   }
+}
+
+// ── Setup assistant (New company wizard) ──────────────────────────────────
+// The wizard is the first thing a fresh installation runs. The state lives on
+// the server (`/api/companies/onboarding`), so it is offered once per install,
+// never re-opened after a decision, and re-runnable at any time from the menu.
+async function maybeOpenWizard({ force = false } = {}) {
+  try {
+    const onboarding = await api.onboarding()
+    if (force || onboarding?.needs_setup) wizardOpen.value = true
+    return onboarding
+  } catch (error) {
+    console.warn('[CompanyView] cannot read the setup state', error)
+    return null
+  }
+}
+
+function openSetupAssistant() {
+  userMenuOpen.value = false
+  wizardCompanyId.value = ''
+  wizardOpen.value = true
+}
+
+/**
+ * Open the wizard bound to one company (used right after creating it).
+ *
+ * @param {String} companyId Company to configure; empty runs the installation
+ *   onboarding, which may create a company.
+ */
+function openCompanyWizard(companyId = '') {
+  wizardCompanyId.value = companyId || ''
+  wizardOpen.value = true
+}
+
+async function onWizardDone() {
+  wizardOpen.value = false
+  wizardCompanyId.value = ''
+  await loadActiveCompany().catch(() => {})
+  await refreshSnapshot().catch(() => {})
 }
 
 // The main menu (left bar → "New company") reaches this shell with `?new=1`.
@@ -596,6 +679,7 @@ onMounted(async () => {
   const requested = String(route.params.section || route.query.section || route.query.tab || 'home')
   section.value = legacySection(requested)
   await loadActiveCompany()
+  await maybeOpenWizard()
   const preferredLanguage = $storex.api.user?.language
   if (preferredLanguage && preferredLanguage !== 'auto') setCompanyLanguage(preferredLanguage)
   const intent = route.query.assistant
@@ -664,8 +748,15 @@ watch(() => route.query.assistant, value => {
       >
         <div class="flex items-center gap-2.5 px-3.5 pb-2 pt-4">
           <button type="button" class="shrink-0 transition hover:scale-[1.03]" title="Company overview" @click="setSection('home')">
-            <span class="grid h-9 w-9 place-items-center rounded-[11px] bg-[var(--cp-lime)] text-[13px] font-black text-[var(--cp-lime-ink)] shadow-sm">
-              <i v-if="company?.logo" :class="company.logo"></i>
+            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-[11px] bg-[var(--cp-lime)] text-[13px] font-black text-[var(--cp-lime-ink)] shadow-sm">
+              <img
+                v-if="companyLogoIsImage"
+                :src="companyLogo"
+                :alt="company?.name || 'Company logo'"
+                class="h-full w-full object-cover"
+                @error="hideBrokenImage"
+              />
+              <i v-else-if="companyLogo" :class="companyLogo"></i>
               <span v-else>{{ companyInitials }}</span>
             </span>
           </button>
@@ -836,8 +927,15 @@ watch(() => route.query.assistant, value => {
         <div class="absolute inset-0 bg-black/45 backdrop-blur-sm" @click="navOpen = false"></div>
         <aside class="relative flex h-full w-[86%] max-w-[310px] flex-col border-r border-[var(--cp-border)] bg-[var(--cp-sidebar)] p-3 shadow-2xl">
           <div class="flex items-center gap-2.5 pb-2">
-            <span class="grid h-9 w-9 place-items-center rounded-[11px] bg-[var(--cp-lime)] text-[13px] font-black text-[var(--cp-lime-ink)]">
-              <i v-if="company?.logo" :class="company.logo"></i>
+            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-[11px] bg-[var(--cp-lime)] text-[13px] font-black text-[var(--cp-lime-ink)]">
+              <img
+                v-if="companyLogoIsImage"
+                :src="companyLogo"
+                :alt="company?.name || 'Company logo'"
+                class="h-full w-full object-cover"
+                @error="hideBrokenImage"
+              />
+              <i v-else-if="companyLogo" :class="companyLogo"></i>
               <span v-else>{{ companyInitials }}</span>
             </span>
             <div class="min-w-0 flex-1">
@@ -944,6 +1042,29 @@ watch(() => route.query.assistant, value => {
             </div>
 
             <div class="flex shrink-0 items-center gap-0.5 md:gap-1">
+              <!-- Project selector: the company runs several projects and every
+                   company screen reads the active one. Hidden when the company
+                   has a single project (nothing to choose). -->
+              <label
+                v-if="!isMobile && companyProjectOptions.length > 1"
+                class="cp-project-select"
+                title="Active project"
+              >
+                <i class="fa-solid fa-cube text-[10px] text-[var(--cp-accent-ink)]"></i>
+                <select
+                  :value="activeProjectId"
+                  aria-label="Active project"
+                  @change="onSelectProject"
+                >
+                  <option
+                    v-for="option in companyProjectOptions"
+                    :key="option.project_id"
+                    :value="option.project_id"
+                  >
+                    {{ option.project_name }}
+                  </option>
+                </select>
+              </label>
               <button
                 v-if="!isMobile"
                 class="cp-icon-btn"
@@ -1020,6 +1141,9 @@ watch(() => route.query.assistant, value => {
                   <div class="my-1 border-t border-[var(--cp-border)]"></div>
                   <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold transition hover:bg-[var(--cp-surface-soft)]" @click="openUserSettings">
                     <i class="fa-solid fa-sliders w-4 text-center text-[10px] cp-muted"></i>{{ t('shell.settings') }}
+                  </button>
+                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold transition hover:bg-[var(--cp-surface-soft)]" @click="openSetupAssistant">
+                    <i class="fa-solid fa-wand-magic-sparkles w-4 text-center text-[10px] cp-muted"></i>Setup assistant
                   </button>
                   <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold text-[var(--cp-error-ink)] transition hover:bg-[var(--cp-red-soft)]" @click="logoutCompany">
                     <i class="fa-solid fa-arrow-right-from-bracket w-4 text-center text-[10px]"></i>{{ t('shell.logout') }}
@@ -1276,6 +1400,16 @@ watch(() => route.query.assistant, value => {
         <button class="cp-chip mt-3 w-full justify-center" @click="exitOpen = false">Stay in the company</button>
       </div>
     </div>
+
+    <!-- ── Setup assistant (New company wizard) ──────────────────────────── -->
+    <CompanyWizard
+      :open="wizardOpen"
+      :company-id="wizardCompanyId"
+      :projects="companyReferences.projects || []"
+      :references="companyReferences"
+      @close="wizardOpen = false; wizardCompanyId = ''"
+      @done="onWizardDone"
+    />
 
   </div>
 </template>

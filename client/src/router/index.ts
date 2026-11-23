@@ -325,11 +325,14 @@ const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
-      // Bootstrap home. The guard replaces it with /<default-company-slug>.
+      // Bootstrap home. The guard replaces it with /<default-company-slug> when
+      // a company exists; when there is none yet the COMPANY SHELL renders here
+      // so codx-junior is company-first from the very first visit: the shell
+      // opens the onboarding wizard instead of the old project welcome screen.
       path: '/',
       name: 'root',
-      component: AppRouteView,
-      meta: { app: WELCOME_APP, ...mobile('Home', 'home', { hideTopBar: true }) }
+      component: CompanyView,
+      meta: { ...mobile('Company', 'more', { hideTopBar: true }), company: true }
     },
     { path: '/company', redirect: () => withQuery(defaultCompanyHome(), {}) },
     { path: '/solopreneur/:pathMatch(.*)*', redirect: () => defaultCompanyHome() },

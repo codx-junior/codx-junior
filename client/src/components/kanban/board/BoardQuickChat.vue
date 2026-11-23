@@ -2,6 +2,7 @@
 import ChatInputBox from '@/components/chat/ChatInputBox.vue'
 import ChatAttachmentPreview from '@/components/chat/ChatAttachmentPreview.vue'
 import ProjectDetailt from '@/components/ProjectDetailt.vue'
+import ChatCostSelector from '@/components/chat/ChatCostSelector.vue'
 </script>
 
 <template>
@@ -17,7 +18,7 @@ import ProjectDetailt from '@/components/ProjectDetailt.vue'
         </div>
         <i v-else class="fa-solid fa-comment-dots text-primary text-xs"></i>
 
-        <span class="shrink-0">{{ scheduleEnabled ? 'New chat' : 'Quick chat' }}</span>
+        <span class="shrink-0">{{ parentId ? 'New subtask' : (executionMode === 'task' ? 'New task' : (scheduleEnabled ? 'New chat' : 'Quick chat')) }}</span>
 
         <span
           v-if="assistantName"
@@ -108,6 +109,49 @@ import ProjectDetailt from '@/components/ProjectDetailt.vue'
         </p>
       </div>
 
+      <!-- ── Processing mode: involved chat or autonomous task ──────────────── -->
+      <div class="flex flex-col gap-1.5">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">Mode</span>
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="btn btn-sm flex-1 gap-1.5"
+            :class="executionMode === 'chat' ? 'btn-primary' : 'btn-outline'"
+            @click="executionMode = 'chat'"
+          >
+            <i class="fa-solid fa-comments text-xs"></i> Chat
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm flex-1 gap-1.5"
+            :class="executionMode === 'task' ? 'btn-primary' : 'btn-outline'"
+            @click="executionMode = 'task'"
+          >
+            <i class="fa-solid fa-robot text-xs"></i> Task
+          </button>
+        </div>
+        <p class="text-[11px] text-base-content/40">
+          <span v-if="executionMode === 'task'">
+            Does it end to end without asking; you get a final report.
+          </span>
+          <span v-else>
+            Keeps you in the loop with quick options and back-and-forth.
+          </span>
+        </p>
+      </div>
+
+      <!-- ── Destination column / sprint status ─────────────────────────────── -->
+      <div v-if="columnOptions.length > 1" class="flex flex-col gap-1.5">
+        <span class="text-xs font-semibold uppercase tracking-wider text-base-content/50">
+          {{ boardType === 'sprint' ? 'Status' : 'Column' }}
+        </span>
+        <select v-model="column" class="select select-sm select-bordered">
+          <option v-for="option in columnOptions" :key="option.title" :value="option.title">
+            {{ option.title }}
+          </option>
+        </select>
+      </div>
+
       <!-- ── Schedule ──────────────────────────────────────────────────────────
            A new chat/task does not have to start immediately. "Non-working
            hours" uses the installation's human working window, so autonomous
@@ -165,6 +209,16 @@ import ProjectDetailt from '@/components/ProjectDetailt.vue'
         v-if="attachments.length"
         :attachments="attachments"
         @remove-attachment="removeAttachment"
+      />
+
+      <!-- ── Optional budget (task mode) ─────────────────────────────────────── -->
+      <ChatCostSelector
+        variant="field"
+        label="Cost budget"
+        hint="Optional · the agent stops when reached"
+        :cost="0"
+        :estimation-cost="estimationCost"
+        @cost-changed="estimationCost = $event"
       />
 
       <!-- ── Actions ─────────────────────────────────────────────────────────── -->
@@ -231,6 +285,16 @@ export default {
     // Show the schedule selector. The New-chat entry enables it so a task can
     // run now, outside the human working hours, or at a concrete instant.
     scheduleEnabled: { type: Boolean, default: false },
+    // Column/status the new card lands in (boards and sprints pass the column
+    // the user clicked; the dialog can still change it).
+    initialColumn: { type: String, default: null },
+    initialStatus: { type: String, default: null },
+    // Project the task belongs to (a subtask follows its parent; a column can
+    // define its own project). The dialog's optional project selector can
+    // still change it.
+    initialProjectId: { type: String, default: null },
+    // Parent task when the dialog creates a subtask.
+    parentId: { type: String, default: null },
     // Chat mode of the created card ('chat' or 'task').
     mode: { type: String, default: 'chat' }
   },
@@ -245,8 +309,15 @@ export default {
       profiles: [],
       selectedProfiles: [],
       model: null,
+      // Destination column title (kanban) / status label (sprint)
+      column: null,
       attachments: [],
       cursorWord: {},
+      // 'chat' = stay involved; 'task' = autonomous run, final report only.
+      // Starts from the host's `mode` prop (board task vs assistant chat).
+      executionMode: this.mode === 'task' ? 'task' : 'chat',
+      // Optional budget of the task (cxjcoins); null = no limit
+      estimationCost: null,
       creating: false,
       maxAttachmentSizeMB: MAX_ATTACHMENT_SIZE_MB,
       // Scheduling: now (default), outside humans' working hours, or a fixed
@@ -267,7 +338,14 @@ export default {
     this.profilesCache = {}
     // The project is a default, not a requirement: the chat starts on the
     // current ACTIVE project and can be changed or cleared from the dialog.
-    this.selectedProject = this.activeProject
+    const initialProject = this.initialProjectId
+      ? (this.allProjectsById?.[this.initialProjectId] || null)
+      : null
+    this.selectedProject = initialProject || this.activeProject
+    this.column = this.initialColumn
+      || (this.columns || []).find(c => !c.virtual && c.status === this.initialStatus)?.title
+      || this.columnOptions[0]?.title
+      || null
     this.loadProfiles()
     this.loadAssistantProfile()
   },
@@ -309,10 +387,28 @@ export default {
     aiModels() {
       return this.$storex.projects.ai?.models || []
     },
-    // Column the chat lands in (kanban). Sprint boards resolve it themselves.
-    destinationColumn() {
-      const column = (this.columns || []).find(col => !col.virtual)
-      return column?.value || column?.title || null
+    // Destination columns offered by the host board (virtual columns are
+    // read-only groupings and never a creation target).
+    columnOptions() {
+      return (this.columns || [])
+        .filter(column => column && !column.virtual && (column.title || column.value))
+        .map(column => ({ ...column, title: column.title || column.value }))
+    },
+    selectedColumn() {
+      return this.columnOptions.find(column => column.title === this.column)
+        || this.columnOptions[0]
+        || null
+    },
+    // Project catalogue of the store, used to resolve `initialProjectId`.
+    allProjectsById() {
+      return this.$storex.projects.allProjectsById || {}
+    },
+    // Actual Chat.mode written on the card. "Chat" keeps the caller's mode
+    // (prview/topic/vibe from the grid menu, chat by default); "Task" is the
+    // autonomous task contract.
+    createMode() {
+      if (this.executionMode === 'task') return 'task'
+      return this.mode && this.mode !== 'task' ? this.mode : 'chat'
     },
     // Explains which project the chat goes to (and that it is optional)
     projectHint() {
@@ -324,18 +420,24 @@ export default {
         + 'Optional: clear it to create the chat without a project.'
     },
     hint() {
-      if (this.creating) return 'Creating the chat…'
+      if (this.creating) {
+        return this.executionMode === 'task' ? 'Starting the task…' : 'Creating the chat…'
+      }
       if (!this.hasProject) return 'Added to this board (no project)'
-      return 'Added to this board'
+      if (this.executionMode === 'task') return 'Autonomous task · final report when done'
+      return this.estimationCost ? 'Added to this board with a budget' : 'Added to this board'
     },
-    // Only the message is required — the project never blocks the chat
+    // Only the message (or an attachment) is required — the project never
+    // blocks the chat/task.
     canSubmit() {
       return !this.creating && !this.resolvingSchedule
     },
     // The action button explains what will happen with the card.
     primaryActionLabel() {
-      if (!this.scheduleEnabled || this.scheduleMode === 'now') return 'Chat'
-      return 'Schedule'
+      if (this.scheduleEnabled && this.scheduleMode !== 'now') {
+        return this.executionMode === 'task' ? 'Schedule task' : 'Schedule'
+      }
+      return this.executionMode === 'task' ? 'Start task' : 'Chat'
     },
     scheduleHint() {
       if (this.scheduleMode === 'non-working') {
@@ -468,10 +570,17 @@ export default {
     async submit(run) {
       if (!this.canSubmit) return
       const message = (this.$refs.composer?.getEditorText() || '').trim()
-      if (!message) {
+      if (!message && !this.attachments.length) {
         this.$ui?.addNotification?.({ text: 'Write a message to start the chat', type: 'warning' })
         return
       }
+      // Attachments-only cards still need a readable first message.
+      const baseMessage = message || 'Work on the attached content.'
+      // Task mode is the "do it, tell me when it is done" contract: no
+      // questions, no option menus, a final delivery report.
+      const effectiveMessage = this.executionMode === 'task'
+        ? `${baseMessage}\n\n---\n\nTask mode: complete this end to end without asking questions or offering options. Use the tools, implement and validate the result, and finish with a final report (What happened, What I did, Demo, Next tasks). Only stop for a hard blocker that makes the task impossible.`
+        : baseMessage
       let wakeAt = ''
       this.resolvingSchedule = true
       try {
@@ -487,7 +596,12 @@ export default {
         this.resolvingSchedule = false
       }
       // A scheduled card is not processed now: the autonomy worker wakes it.
-      this.createChat({ message, run: run && !wakeAt, wakeAt })
+      this.createChat({
+        message: effectiveMessage,
+        titleSource: baseMessage,
+        run: run && !wakeAt,
+        wakeAt
+      })
     },
     async resolveWakeAt() {
       if (!this.scheduleEnabled || this.scheduleMode === 'now') return ''
@@ -510,30 +624,40 @@ export default {
     // the board already uses for tasks assigned to another project. When the
     // project was cleared the chat keeps whatever project the board/column gave
     // it, so creating a board chat never requires a project.
-    async createChat({ message, run, wakeAt = '' }) {
+    async createChat({ message, titleSource, run, wakeAt = '' }) {
       this.creating = true
       try {
         const picked = this.selectedProfiles.map(profile => profile.name || profile)
         // The chat keeps the assistant it was opened for when no project
-        // profile was picked (New chat → codx-junior).
-        const profiles = picked.length ? picked : [...(this.defaultProfiles || [])]
-        const name = this.chatName(message)
+        // profile was picked (New chat → codx-junior). A board task with no
+        // column profile still gets the harness profile so Task mode can run.
+        const profiles = picked.length
+          ? picked
+          : ([...(this.defaultProfiles || [])].length
+            ? [...this.defaultProfiles].map(profile => profile?.name || profile)
+            : ['codx-junior'])
+        const name = this.chatName(titleSource || message)
 
+        const selected = this.selectedColumn
+        const taskStatus = selected?.status || selected?.value || this.initialStatus || null
         let chat = null
         if (this.boardType === 'sprint') {
           chat = await this.$storex.kanban.newSprintTask({
             name,
-            mode: this.mode,
+            mode: this.createMode,
             profiles,
+            status: taskStatus,
+            parentId: this.parentId || null,
             sprintId: this.boardId
           })
         } else {
           chat = await this.$storex.kanban.newTask({
             name,
-            mode: this.mode,
+            mode: this.createMode,
             profiles,
             board: this.boardId,
-            column: this.destinationColumn || 'tasks'
+            column: selected?.title || this.initialColumn || 'tasks',
+            parentId: this.parentId || null
           })
         }
 
@@ -546,6 +670,9 @@ export default {
         if (this.hasProject) updates.project_id = this.targetProject.project_id
         if (this.model) updates.llm_model = this.model
         if (wakeAt) updates.wake_at = wakeAt
+        if (this.estimationCost != null && this.estimationCost > 0) {
+          updates.estimation_cost = this.estimationCost
+        }
         if (Object.keys(updates).length) {
           await this.$storex.chats.updateChatInfo({ chat, updates })
         }
@@ -569,6 +696,11 @@ export default {
             type: 'success'
           })
         }
+
+        this.$ui?.addNotification?.({
+          text: `Task created · ${chat.name || name}`,
+          type: 'success'
+        })
 
         // Close the dialog right away and let the work continue in the
         // background: the current view is never switched to the new chat.

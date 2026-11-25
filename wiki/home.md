@@ -1,102 +1,102 @@
 ---
 title: codx-junior
-description: The hybrid AI + human workspace for building, running and documenting software projects.
-tags: [overview, install, getting-started]
+description: The AI developer you host — self-hosted, project-aware and review-first.
+tags: [overview, install, 0.0.1]
 ---
 
 # codx-junior
 
-> **TL;DR** — codx-junior is the open-source workspace where AI agents and
-> experienced developers build software together: chats, Kanban, dev
-> containers, knowledge, docs and harness integrations in one place.
+**The AI developer you host.** Your repo. Your model. Your machine.
 
-![Figure 1: codx-junior desktop workspace with a project, chat and Kanban board](/images/figure-01-codx-junior-desktop.svg)
+codx-junior is a self-hosted AI development workspace. Install one container,
+connect one OpenAI-compatible model and add one repository. A project-aware agent
+reads the code, makes the change, runs the tests and shows you the diff before
+you commit.
 
-*Figure 1 — The desktop workspace. Replace this placeholder with a full-width
-screenshot showing the project switcher, a chat and the Kanban board on one
-screen.*
+**0.0.1 is deliberately focused:** 17 features, one loop, no company OS. The
+wider platform (autonomous agents, meetings, dev containers, multi-user) is in
+the codebase but hidden behind the install-time feature list. See
+[what ships in 0.0.1](/0.0.1).
 
-## What is codx-junior?
+![The project workspace: tasks, the agent and the project in one place](/images/0.0.1/workspace.png)
 
-codx-junior combines the speed of AI automation with the judgement of human
-engineers. It gives a single developer the leverage of a small team:
+## Why codx-junior
 
-- **Project-aware chats and agents** that read the codebase, use tools, apply
-  patches, browse the web and work with containers.
-- **Kanban, sprints and tasks** where every card is a real conversation.
-- **Workspaces and dev containers** with live previews, routed through Traefik.
-- **Knowledge and a living wiki** generated from the project and kept fresh.
-- **Teams, messenger and company** views so humans and AI share one workspace.
-- **DSH harness integration** for headless DeepSeek Harness sessions.
+AI coding tools are good at producing code. codx-junior is built around what
+happens **after** the model has an idea: the context it needs, the review you
+keep, and the workspace where the change becomes a commit.
+
+* **You own the whole loop.** One Docker container, one model, one project
+  folder. Code, prompts, keys and knowledge stay on your machine. No seat
+  subscription, no model lock-in.
+* **Project-aware, not file-aware.** Every chat is bound to a repository and a
+  knowledge index built from it. Profiles carry your standards into every turn.
+* **The agent shows its work.** Tool calls, edits, test runs and diffs are
+  visible. The agent proposes; you review and commit.
+* **One workspace.** Chat, tasks, file explorer, knowledge search and Git review
+  in one browser workspace, with the repository as the unit of work.
+* **Open source.** AGPL-3.0, Python/FastAPI + Vue, a real REST API and a
+  local-first knowledge store. Bring the model you already pay for.
+
+## The 0.0.1 loop
+
+```
+install → connect model → add repository → chat → agent edits and tests
+        → review the diff → commit → (optionally) track the work as a task
+```
 
 ## Quick start
 
-1. Install the platform with the Docker or local setup guide.
-2. Open the dashboard and create or select a project.
-3. Open a chat, describe what you want and let the agent inspect the project.
-4. Use Kanban to turn the work into visible tasks.
-5. Open the wiki for a guided tour of the app and the project internals.
+```bash
+curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/install.sh \
+  | sudo bash -s -- --provider deepseek --key sk-xxxxxxxx
+# -> http://<server>:19981
+```
 
-## Tour of the app
+1. Sign in as `admin`, set a strong password and finish setup.
+2. Add a repository (Git URL or a folder on the server).
+3. Open **AI Models**, add the provider and pick the default model.
+4. Ask for a real change, review the diff and commit.
 
-### Chat and agents
+Full instructions: [Install](/install) · [What ships in 0.0.1](/0.0.1).
 
-![Figure 2: Chat panel with an agent using tools on a project](/images/figure-02-chat.svg)
+## The 0.0.1 tour
 
-*Figure 2 — A project chat. The screenshot should show the conversation, tool
-activity and the generated code/file changes.*
+### The project workspace
 
-### Kanban and planning
+![Project workspace with tasks](/images/0.0.1/workspace.png)
 
-![Figure 3: Kanban board with sprints and task cards](/images/figure-03-kanban.svg)
+The task board is the work queue. Each card is a task/chat bound to the project,
+with the profile, priority and status visible.
 
-*Figure 3 — The Kanban board, including columns, a task card and its linked
-chat.*
+### Review before you commit
 
-### Workspaces and previews
+![Git review with a diff](/images/0.0.1/git-review.png)
 
-![Figure 4: Dev workspace with a live preview](/images/figure-04-workspace.svg)
+Every change is a review: the tool activity, the unified diff and the commit
+button in one screen. No black-box pull request.
 
-*Figure 4 — A dev container workspace with the file tree, terminal and live
-preview side by side.*
+## What is not in 0.0.1
 
-### Knowledge and wiki
-
-![Figure 5: Wiki documentation site and assistant](/images/figure-05-wiki.svg)
-
-*Figure 5 — The project wiki with its navigation, search, diagrams and the
-documentation assistant.*
-
-## DSH harness integration
-
-codx-junior can mirror DeepSeek Harness sessions as normal tasks. The DSH Host
-plugin connects outbound, registers an instance and opens, prompts, renames or
-cancels sessions through the agent channel.
-
-- [DSH harness integration](wiki:integrations/dsh-harness)
-- `docs/features/dsh-sync.md` — task sync behavior
-- `HARNESS_INTEGRATION.md` — full harness specification
-
-## Install and configure
-
-The setup guide covers Docker, local development, environment variables,
-Traefik, Milvus and the first login. Start with the project overview and the
-setup page, then follow the "choose your path" links:
-
-- **I want to use codx-junior** → Quick start and the app tour.
-- **I want to operate it** → Deployment and operations.
-- **I want to contribute** → `codx-junior-api` and `codx-junior-ui` wikis.
+The following are documented in this wiki but **hidden** in the release:
+autonomous agents and tickets, teams and meetings, workspaces and browser
+desktops, the company assistant/business dashboard/CISO, budget and analytics,
+MCP, plugins, voice, multi-user and the in-app updater. They remain in the tree
+behind the install-time feature list; 0.1 turns them on feature by feature.
 
 ## Documentation map
 
-- [Project overview](wiki:project-overview/readme-md)
-- [Setup and installation](wiki:setup-and-installation)
-- [DSH harness integration](wiki:integrations/dsh-harness)
-- [Features](wiki:codx-junior.features)
-- `codx-junior-ui` — screens, sections and user workflows.
-- `codx-junior-api` — backend architecture, setup and operations.
+* [What ships in 0.0.1](/0.0.1) — the release definition.
+* [Install](/install) — one command to a running instance.
+* [Feature reference](/codx-junior.features) — the long catalogue, including the
+  roadmap features that 0.0.1 hides.
+* [Project overview](/setup-and-installation) — repository and architecture.
+* [Setup and operations](/setup-and-installation) — deployment modes and
+  maintenance.
+* [Public product docs](https://github.com/codx-junior/codx-junior/tree/main/docs)
+  — the curated site with feature guides.
 
-> [!TIP]
-> Use the sidebar project tree to jump between the product wiki, the UI wiki
-> and the API wiki. Use the assistant when you want an answer with citations
-> instead of a page.
+::: tip
+The navigation is curated for the public release. Internal engineering notes
+stay in the tree but are not linked here.
+:::

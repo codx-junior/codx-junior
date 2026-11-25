@@ -1,22 +1,33 @@
 # codx-junior
 
-**Your partner in crime to build ideas.**
+**The AI developer you host.**
 
-codx-junior is an open-source, multi-AI workspace that works with you across the
-whole life of a software project: brainstorm, design, code, test, review and
-ship. It runs on your own server, with your providers, your code and your data.
+Your repo. Your model. Your machine. codx-junior is a self-hosted AI development
+workspace: a project-aware agent reads your code, makes the change, runs the
+tests and shows you the diff before you commit.
 
-* **One container** — web UI, FastAPI, background worker and knowledge store.
+**0.0.1 is deliberately focused.** It ships the core loop — install, add a repo,
+chat, review, commit — in 17 features. The company OS, autonomous agents,
+meetings, dev containers and browser desktops are in the codebase but hidden for
+this release, so the product you install is one sharp edge rather than a
+platform you have to learn.
+
+* **One container** — web UI, FastAPI, background worker and embedded knowledge store.
 * **Any OpenAI-compatible provider** — OpenAI, DeepSeek, Gemini, OpenRouter,
-  Mistral, Groq, or a self-hosted gateway.
-* **A real workspace** — project-aware chats, agents, kanban, code review,
-  knowledge search, dev containers and a browser.
-* **Self-hosted** — projects, settings and analytics stay on your machine.
+  Mistral, Groq, or a self-hosted gateway. Your key, your cost.
+* **A real workspace** — project-aware chat, agent tools, profiles, knowledge,
+  files, tasks and Git review in one browser tab.
+* **Review-first** — every tool call and file change is visible; the agent
+  proposes, you commit.
+* **Self-hosted** — projects, settings, code and prompts stay on your machine.
 
 [GitHub](https://github.com/codx-junior/codx-junior) ·
-[Getting started](https://github.com/codx-junior/codx-junior/blob/main/docs/getting-started.md) ·
-[Configuration](https://github.com/codx-junior/codx-junior/blob/main/docs/configuration.md) ·
+[What ships in 0.0.1](https://github.com/codx-junior/codx-junior/blob/main/docs/0.0.1.md) ·
+[15-minute getting started](https://github.com/codx-junior/codx-junior/blob/main/docs/getting-started.md) ·
+[Feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md) ·
 [Issues](https://github.com/codx-junior/codx-junior/issues)
+
+![The codx-junior project workspace](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/0.0.1/workspace.png)
 
 ```bash
 docker pull codxjuniorai/codx-junior:latest
@@ -50,13 +61,27 @@ endpoint; set `CODX_JUNIOR_AI_API_URL` with the `/v1` suffix).
 Re-running the installer is the update path: projects and settings are kept.
 `install.sh --help` lists every option.
 
+### What ships in 0.0.1
+
+Install and first run · project import · project-aware chat and agent tools ·
+profiles · knowledge index · file explorer · vibe coding · tasks/Kanban · Git and
+code review · settings · REST/Socket.IO API · responsive shell.
+
+Hidden in 0.0.1: autonomous agents and tickets, teams and meetings, workspaces
+and browser desktops, the company assistant/business dashboard/CISO, budget and
+analytics, MCP, plugins, voice, multi-user and the in-app updater. They remain in
+the image behind the install-time feature list.
+
+Full release scope and per-feature fixes:
+[0.0.1 feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md).
+
 ### Requirements
 
 | | |
 |---|---|
 | Host | Linux with Docker 20.10+ and the compose v2 plugin |
 | Minimum box (pull only) | 2 vCPU / 4 GB RAM / 40 GB disk |
-| Recommended | 4 vCPU / 8 GB RAM for coworking desktops or local models |
+| Recommended | 4 vCPU / 8 GB RAM |
 | Disk for the image | ~8–12 GB (the image is intentionally complete) |
 | AI provider | one API key for an OpenAI-compatible provider |
 

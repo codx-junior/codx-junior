@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Public-navigation curation rule for the codx-junior wiki — ONE definition,
  * imported by both the site config and the site guard.
@@ -98,6 +97,16 @@ export const INTERNAL_RULES = [
     id: 'blob-hash-page',
     reason: 'generated page for a binary blob hash, not product documentation',
     test: (link, text) => `${link} ${text}`.includes('-blobs-'),
+  },
+  {
+    id: 'template-example',
+    reason: 'VitePress template example, not product documentation',
+    test: (link) => link === '/markdown-examples' || link === '/api-examples',
+  },
+  {
+    id: 'repository-readme-dump',
+    reason: 'repository README dump, not product documentation',
+    test: (link) => link.endsWith('/readme-md'),
   },
   {
     id: 'raw-file-dump',

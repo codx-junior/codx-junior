@@ -16,6 +16,16 @@ This page is the single, complete catalogue of **all features and functionalitie
 platform. It is written for final users (developers, tech leads, admins) and covers the
 product features, the platform and infrastructure, and the development tooling.
 
+::: warning 0.0.1 scope
+**The public release enables 17 features, not all 18 groups below.** The catalogue is the
+long reference: features marked **No** in the matrix at the end are hidden by the
+install-time feature profile and are roadmap, not the 0.0.1 promise. See
+[What ships in 0.0.1](/0.0.1) for the release definition and the
+[feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md)
+for the per-feature decision.
+:::
+
+
 ---
 
 ## Contents
@@ -797,36 +807,41 @@ routes are:
 
 ## 20. Feature matrix
 
-| # | Feature | Live in a chat? | Needs workspace? | Admin only |
-| --- | --- | :---: | :---: | :---: |
-| 1 | Chats and modes | ✅ | — | — |
-| 2 | Agents and tools | ✅ | optional | — |
-| 3 | Kanban and tasks | ✅ | — | — |
-| 4 | Vibe coding | ✅ | optional | — |
-| 5 | Workspaces (dev containers) | — | ✅ | — |
-| 6 | Teams and messenger | ✅ | — | — |
-| 7 | Knowledge (RAG) | ✅ | — | — |
-| 8 | Profiles | ✅ | — | — |
-| 9 | @codx mentions | — | — | — |
-| 10 | Wiki | ✅ | — | — |
-| 11 | Git and code review | ✅ | — | — |
-| 12 | AI providers and models | ✅ | — | ✅ |
-| 13 | Budget and analytics | ✅ | — | partial |
-| 14 | Users and security | — | — | ✅ |
-| 15 | Development tools | ✅ | optional | partial |
-| 16 | Plugins | ✅ | — | ✅ |
-| 17 | REST + OpenAI-compatible API | ✅ | — | — |
-| 18 | Installer, CLI and scripts | — | — | ✅ |
+| # | Feature | In 0.0.1 | Live in a chat? | Needs workspace? | Admin only |
+| --- | --- | :---: | :---: | :---: | :---: |
+| 1 | Chats and modes | ✅ | ✅ | — | — |
+| 2 | Agents and tools | ✅ | ✅ | optional | — |
+| 3 | Kanban and tasks | ✅ | ✅ | — | — |
+| 4 | Vibe coding | ✅ | ✅ | optional | — |
+| 5 | Workspaces (dev containers) | ❌ | — | ✅ | — |
+| 6 | Teams and messenger | ❌ | ✅ | — | — |
+| 7 | Knowledge (RAG) | ✅ | ✅ | — | — |
+| 8 | Profiles | ✅ | ✅ | — | — |
+| 9 | @codx mentions | ❌ | — | — | — |
+| 10 | Wiki | ❌ | ✅ | — | — |
+| 11 | Git and code review | ✅ | ✅ | — | — |
+| 12 | AI providers and models | ✅ | ✅ | — | ✅ |
+| 13 | Budget and analytics | ❌ | ✅ | — | partial |
+| 14 | Users and security | ❌ | — | — | ✅ |
+| 15 | Development tools | ✅ (file explorer) | ✅ | optional | partial |
+| 16 | Plugins | ❌ | ✅ | — | ✅ |
+| 17 | REST + OpenAI-compatible API | ✅ | ✅ | — | — |
+| 18 | Installer, CLI and scripts | ✅ | — | — | ✅ |
 
 ---
 
 ## Where to go next
 
-* **Self-host it**: [Getting started](/getting-started) and [Initial setup](/initial-setup).
-* **Understand the design**: [Architecture](/guide/architecture).
-* **Feature deep dives**: the [features](/features/) documentation section.
-* **Configuration**: [Configuration](/configuration).
-* **Managed team**: [Self-hosted or managed](/managed).
+* **What ships in 0.0.1**: [the release page](/0.0.1) and [install](/install).
+* **The public product docs**:
+  [getting started](https://github.com/codx-junior/codx-junior/blob/main/docs/getting-started.md),
+  [features](https://github.com/codx-junior/codx-junior/tree/main/docs/features) and
+  [configuration](https://github.com/codx-junior/codx-junior/blob/main/docs/configuration.md).
+* **Understand the design**:
+  [project overview](/setup-and-installation) and
+  [setup and operations](/setup-and-installation).
+* **The 0.0.1 release definition**:
+  [feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md).
 
 > You will never code alone! ❤️
 

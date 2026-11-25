@@ -1,5 +1,15 @@
 # Getting started
 
+::: tip 0.0.1 quick start
+**1.** Install one container with a provider key.
+**2.** Sign in as `admin` and set a strong password immediately.
+**3.** Add your repository (Git URL or a folder on the server).
+**4.** Open **AI Models**, add the provider and pick the default model.
+**5.** Ask for a change in a project chat, review the diff and commit.
+
+Read the [0.0.1 release page](/0.0.1) for what ships and what is hidden.
+:::
+
 This page shows how to self-host codx-junior. The engine is free and open
 source. If you would rather not run it yourself, see
 [Self-hosted or managed](/managed).

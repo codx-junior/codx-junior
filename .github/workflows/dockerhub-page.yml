@@ -1,0 +1,54 @@
+# =============================================================================
+# codx-junior — Docker Hub repository page
+#
+# WHY THIS EXISTS
+# The Docker Hub page is the first thing a user reads before pulling the image.
+# It is documentation, not a build artifact, so it has its own workflow: any
+# push to main (or a release tag) refreshes the page from DOCKERHUB.md without
+# rebuilding the image.
+#
+# The image itself is published by release.yml. This workflow only PATCHes the
+# Docker Hub repository metadata (short description + full README) through the
+# same script an operator can run locally:
+#
+#   DOCKERHUB_TOKEN=... bash scripts/dockerhub_description.sh
+#
+# Secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# =============================================================================
+
+name: dockerhub-page
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+# One writer at a time: the Hub API replaces the whole README, so overlapping
+# runs must not interleave an older page with a newer one.
+concurrency:
+  group: dockerhub-page
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: sync DOCKERHUB.md
+    # Only the integration branch and release tags may publish the public page;
+    # a manual dispatch from a feature branch is a no-op (use --dry-run locally
+    # to preview its DOCKERHUB.md).
+    if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Publish the repository page
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/dockerhub_description.sh --readme DOCKERHUB.md

@@ -502,10 +502,14 @@ describe('T5 — the Docker Hub image stays documented', () => {
     }
   })
 
-  it('the release workflow syncs that listing to Docker Hub', () => {
-    const workflow = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
+  it('the Docker Hub page workflow syncs that listing', () => {
+    const workflow = readFileSync(
+      join(REPO_ROOT, '.github', 'workflows', 'dockerhub-page.yml'),
+      'utf8',
+    )
     expect(workflow).toContain('DOCKERHUB.md')
     expect(workflow).toContain('scripts/dockerhub_description.sh')
+    expect(workflow).toContain('workflow_dispatch')
 
     const image = releaseImage()
     const [namespace, repository] = image.split('/')

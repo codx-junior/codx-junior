@@ -156,7 +156,8 @@ Tags, architectures, provenance and the git flow that publishes each tag are
 documented in [docs/docker-hub.md](../docs/docker-hub.md). CI publishes `latest`
 on every push to `main` and `vX.Y.Z` on every release tag; do not push those
 image tags by hand. The Docker Hub listing (short description and README) is
-published from [`../DOCKERHUB.md`](../DOCKERHUB.md) by the release workflow.
+published from [`../DOCKERHUB.md`](../DOCKERHUB.md) by the `dockerhub-page`
+workflow.
 
 Publish with the repository script (the break-glass path, or for the `dind`
 wrapper):

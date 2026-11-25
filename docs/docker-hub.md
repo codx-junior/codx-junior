@@ -12,7 +12,7 @@ wins — and this page is the bug.
 | Concern | File |
 |---|---|
 | Registry, tags, build args, smoke test | [`.github/workflows/release.yml`](https://github.com/codx-junior/codx-junior/blob/main/.github/workflows/release.yml) |
-| Docker Hub listing (description and README) | [`DOCKERHUB.md`](https://github.com/codx-junior/codx-junior/blob/main/DOCKERHUB.md), synced by the workflow |
+| Docker Hub listing (description and README) | [`DOCKERHUB.md`](https://github.com/codx-junior/codx-junior/blob/main/DOCKERHUB.md), synced by [`dockerhub-page.yml`](https://github.com/codx-junior/codx-junior/blob/main/.github/workflows/dockerhub-page.yml) |
 | Manual / multi-arch publish | [`scripts/dockerhub_publish.sh`](https://github.com/codx-junior/codx-junior/blob/main/scripts/dockerhub_publish.sh) |
 | Image contents | [`codx-junior-installer/demo/Dockerfile`](https://github.com/codx-junior/codx-junior/blob/main/codx-junior-installer/demo/Dockerfile) |
 | Ref → image tag mapping | [`codx-junior-installer/install.sh`](https://github.com/codx-junior/codx-junior/blob/main/codx-junior-installer/install.sh) |
@@ -25,16 +25,17 @@ wins — and this page is the bug.
 The listing on [Docker Hub](https://hub.docker.com/r/codxjuniorai/codx-junior)
 is not edited in the web UI. Its short description and full README come from
 [`DOCKERHUB.md`](https://github.com/codx-junior/codx-junior/blob/main/DOCKERHUB.md)
-in this repository. The release workflow's `document` job runs after the image
-has been built and smoke-tested (or alone for a `description_only` dispatch),
-and PATCHes the Docker Hub API with that file. A change to the listing is
-therefore reviewed like any other documentation change and cannot drift from
-the image documentation.
+in this repository. The dedicated
+[`dockerhub-page`](https://github.com/codx-junior/codx-junior/blob/main/.github/workflows/dockerhub-page.yml)
+workflow runs on every push to `main` (and on release tags) and PATCHes the
+Docker Hub API with that file. A change to the listing is therefore reviewed
+like any other documentation change and cannot drift from the image
+documentation. The image build stays in `release.yml`; the page can be updated
+without rebuilding anything.
 
 To update it immediately (for example after editing `DOCKERHUB.md` without
-cutting a release), either run the `release` workflow manually with
-`description_only` checked — that skips the image build — or run the script
-locally:
+waiting for a push), run the `dockerhub-page` workflow manually from the
+Actions tab on `main`, or run the script locally:
 
 ```bash
 DOCKERHUB_TOKEN=... bash scripts/dockerhub_description.sh --readme DOCKERHUB.md
@@ -313,8 +314,8 @@ to `docker login --password-stdin` and never appear on the command line.
 
 | Secret | Where | Used by |
 |---|---|---|
-| `DOCKERHUB_USERNAME` | GitHub repository secret | release workflow login and listing sync |
-| `DOCKERHUB_TOKEN` | GitHub repository secret | release workflow login and listing sync |
+| `DOCKERHUB_USERNAME` | GitHub repository secret | `release` and `dockerhub-page` workflows |
+| `DOCKERHUB_TOKEN` | GitHub repository secret | `release` and `dockerhub-page` workflows |
 | `DOCKERHUB_TOKEN` | environment or project secret vault (`Settings → Secrets`) | manual publish, description sync, AI tools |
 
 The token needs read/write access to the `codxjuniorai` organisation. Never
@@ -345,7 +346,7 @@ followed after the tool call returns.
 The image is easy to change and easy to stop documenting. Any change to the
 pipeline must update the matching row here, in the same pull request. The
 Docker Hub listing itself is source-controlled in `DOCKERHUB.md` and synced by
-the release workflow's `document` job.
+the `dockerhub-page` workflow.
 
 | If you change… | Also update |
 |---|---|
@@ -354,7 +355,7 @@ the release workflow's `document` job.
 | Dockerfile path or build context | `release.yml`, `codx-junior-installer/package.json`, this page |
 | platforms | this page (`Architectures`) and `PLATFORMS` in the script |
 | published tags (add/remove) | this page and the tag table in `DOCKERHUB.md` |
-| Docker Hub listing copy | `DOCKERHUB.md`; the `document` job publishes it |
+| Docker Hub listing copy | `DOCKERHUB.md`; the `dockerhub-page` workflow publishes it |
 | `dind` wrapper | this page (`DIND` section) and `codx-junior-installer/README.md` |
 | token or secret names | this page (`Credentials`) and the workflow comments |
 
@@ -366,8 +367,8 @@ Release checklist:
 4. Verify the published tag: `docker manifest inspect` (or
    `docker buildx imagetools inspect`) and `/api/health` ref/commit.
 5. Confirm the workflow created the GitHub release for the tag.
-6. Confirm the `document` job updated the Docker Hub page; if it failed, run
-   `bash scripts/dockerhub_description.sh` with a token.
+6. Confirm the `dockerhub-page` workflow updated the Docker Hub page; if it
+   failed, run `bash scripts/dockerhub_description.sh` with a token.
 
 ## Troubleshooting
 
@@ -379,7 +380,7 @@ Release checklist:
 | `/api/health` reports the wrong `ref` | A stale container or a different tag is running. Compare `ref`/`commit` with the tag you asked for; recreate the container. |
 | A DIND instance keeps an old inner image | `dind` pins nothing: the wrapper pulls `latest` for the inner install. Re-run `install.sh --update`; see [Getting started](/getting-started). |
 | `unauthorized: authentication required` | The token is missing, expired or read-only. Run `dockerhub_whoami`, rotate the token, and re-store the secret. |
-| The Docker Hub page shows old copy | The `document` job failed or has not run since the edit. Check the Actions run, then run `bash scripts/dockerhub_description.sh` with a token. |
+| The Docker Hub page shows old copy | The `dockerhub-page` workflow failed or has not run since the edit. Check the Actions run, then run `bash scripts/dockerhub_description.sh` with a token. |
 
 ## Related
 

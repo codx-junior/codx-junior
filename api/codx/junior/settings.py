@@ -1,7 +1,8 @@
 import os
 import json
 import logging
-import pathlib
+import threading
+import time
 import uuid
 import traceback
 
@@ -31,6 +32,33 @@ logger = logging.getLogger(__name__)
 
 ROOT_PATH = os.path.dirname(__file__)
 HOME=os.environ.get("HOME")
+
+# ── Child project discovery ─────────────────────────────────────────────────
+#
+# A child project is any nested folder carrying ``.codx/project.json``. The
+# discovery used to be a bare ``Path.rglob`` over the whole tree: it descended
+# into ``.git``, ``node_modules`` and the project control plane, so a single
+# ``read_folder``/``project_locate`` call could walk hundreds of thousands of
+# files (and every pytest fixture under ``.codx/tmp`` looked like a project).
+# Directories that can never hold a child project are pruned and the result is
+# cached; ``get_ignore_patterns`` calls this on every file listing, so it must
+# stay cheap.
+_SUB_PROJECTS_SKIP_DIRS = frozenset({
+    ".git", ".codx", ".hg", ".svn", ".venv", "venv", "virtualenv",
+    "node_modules", "bower_components", "site-packages", "__pycache__",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".cache",
+    ".worktrees", ".next", ".nuxt", "dist", "build", "coverage",
+    "target", ".idea", ".vscode",
+})
+_SUB_PROJECTS_CACHE_TTL_SECONDS = 30.0
+_SUB_PROJECTS_CACHE: Dict[Tuple[str, str], Tuple[float, List["CODXJuniorSettings"]]] = {}
+_SUB_PROJECTS_CACHE_LOCK = threading.RLock()
+
+
+def clear_sub_projects_cache() -> None:
+    """Drop the cached child-project discovery (settings reload, new project)."""
+    with _SUB_PROJECTS_CACHE_LOCK:
+        _SUB_PROJECTS_CACHE.clear()
 
 CODX_JUNIOR_SETTINGS_COMPUTED_PROPERTIES = ["codx_path", "metrics", "users", "is_git_root"]
 
@@ -879,23 +907,87 @@ class CODXJuniorSettings(BaseModel):
             data[key] = settings[key]
         logger.info(f"Saving project {valid_keys}: {data}")
         write_file(path, json.dumps(data, indent=2))
+        # A newly saved project can add/remove a child project marker: the
+        # cached discovery must not hide it.
+        clear_sub_projects_cache()
 
         return CODXJuniorSettings.from_project_file(path)
 
     def get_sub_projects(self):
-        try:
-            all_project_files = pathlib.Path(self.abs_project_path).rglob(
-                "**/.codx/project.json"
-            )
-            sub_projects = [
-                CODXJuniorSettings.from_project_file(str(project_file_path))
-                for project_file_path in all_project_files
-            ]
-            return [sb for sb in sub_projects if sb.codx_path != self.codx_path]
-        except Exception as ex:
-            logger.debug(f"Error get_sub_projects {ex}")
+        """
+        Return the projects nested inside this one (their own ``.codx`` folder).
 
-        return []
+        Discovery prunes VCS, dependency and cache folders and stops at the
+        first control-plane folder it finds, so it never walks ``.git``,
+        ``node_modules`` or ``.codx`` (which is where runtime/test fixtures
+        live). The result is cached for a few seconds: ``get_ignore_patterns``
+        calls it on every file listing and the atlas calls it on every build.
+
+        Returns:
+            List[CODXJuniorSettings]: Nested projects, sorted by root.
+        """
+        root = os.path.abspath(getattr(self, "abs_project_path", "") or "")
+        if not root or not os.path.isdir(root):
+            return []
+
+        own_codx = os.path.realpath(
+            getattr(self, "codx_path", "") or os.path.join(root, ".codx")
+        )
+        cache_key = (os.path.realpath(root), own_codx)
+        now = time.monotonic()
+        with _SUB_PROJECTS_CACHE_LOCK:
+            cached = _SUB_PROJECTS_CACHE.get(cache_key)
+            if cached and now - cached[0] < _SUB_PROJECTS_CACHE_TTL_SECONDS:
+                return list(cached[1])
+
+        try:
+            sub_projects = self._discover_sub_projects(root, own_codx)
+        except Exception as ex:  # pragma: no cover - never break a caller
+            logger.debug("Error get_sub_projects %s", ex)
+            return []
+
+        with _SUB_PROJECTS_CACHE_LOCK:
+            _SUB_PROJECTS_CACHE[cache_key] = (now, sub_projects)
+        return list(sub_projects)
+
+    def _discover_sub_projects(
+        self, root: str, own_codx: str
+    ) -> List["CODXJuniorSettings"]:
+        """Walk *root* (pruning heavy folders) and load each nested project."""
+        discovered: List["CODXJuniorSettings"] = []
+        seen = {own_codx}
+        for current_root, dirs, _files in os.walk(root):
+            # The marker is ``<project>/.codx/project.json``: check the current
+            # folder, then prune ``.codx`` so its tasks/sessions/temp fixtures
+            # are never mistaken for projects.
+            dirs[:] = [
+                directory for directory in dirs
+                if directory not in _SUB_PROJECTS_SKIP_DIRS
+                and not directory.startswith(".")
+            ]
+            if current_root == root:
+                continue
+            marker = os.path.join(current_root, ".codx", "project.json")
+            if not os.path.isfile(marker):
+                continue
+            try:
+                project = CODXJuniorSettings.from_project_file(marker)
+            except Exception as ex:  # pragma: no cover - corrupt project file
+                logger.debug("Skipping child project %s: %s", marker, ex)
+                continue
+            raw_codx = getattr(project, "codx_path", "") or ""
+            project_codx = os.path.realpath(raw_codx) if raw_codx else ""
+            if not project_codx or project_codx in seen:
+                continue
+            seen.add(project_codx)
+            discovered.append(project)
+
+        discovered.sort(
+            key=lambda project: os.path.abspath(
+                getattr(project, "abs_project_path", "") or ""
+            )
+        )
+        return discovered
 
     def is_valid_project(self):
         ai_settings = self.get_llm_settings()

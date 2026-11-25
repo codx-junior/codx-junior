@@ -88,7 +88,7 @@ def test_build_structure_reads_a_linked_project_tree(tmp_path, monkeypatch):
     related = _settings(linked, [])
     settings = _settings(main, [related])
 
-    def fake_collect(settings):
+    def fake_collect(settings, path_prefix=None):
         root = os.path.abspath(settings.abs_project_path)
         return ["src/main.py"] if root == str(linked) else []
 
@@ -114,7 +114,7 @@ def test_build_structure_resolves_a_linked_project_prefix(tmp_path, monkeypatch)
     related = _settings(linked, [])
     settings = _settings(main, [related])
 
-    def fake_collect(settings):
+    def fake_collect(settings, path_prefix=None):
         root = os.path.abspath(settings.abs_project_path)
         return ["src/main.py"] if root == str(linked) else []
 

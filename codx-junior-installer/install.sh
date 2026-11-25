@@ -62,6 +62,20 @@ DEFAULT_PROXY_NETWORK="codx-proxy"
 DEFAULT_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32"
 DEFAULT_ACME_EMAIL=""
 
+# ── 0.0.1 feature profile ────────────────────────────────────────────────────
+# The application image always contains every feature, but only the ids in
+# CODX_JUNIOR_ACTIVE_FEATURES are exposed. `core` is the 0.0.1 release profile:
+# it hides the company OS (and its first-run wizard) so the instance boots in
+# the plain project workspace. `all` is the full development/CI profile. A
+# customer can also pass a comma-separated subset, e.g. core,mcp.
+#
+# These lists are the installer's offline copy of the public contract in
+# docs/product/features-0.0.1.json (mirrored by api/codx/junior/features.json).
+# Keep them in sync: an unknown id must fail the install instead of silently
+# reappearing in a demo.
+CORE_FEATURE_IDS="install onboarding auth workspace-shell projects chats agent-tools profiles knowledge vibe-coding file-explorer kanban git-review settings api mobile themes-i18n"
+ALL_FEATURE_IDS="install onboarding auth workspace-shell projects chats agent-tools profiles knowledge vibe-coding file-explorer kanban git-review settings api mobile themes-i18n suggested-replies multi-user budget analytics workspaces coworking browser-use computer-use desktop mentions wiki company-business company-tickets company-assistant company-files company-security teams meetings calendar autonomous-agents autonomous-tickets channel-creator external-actors slack-whatsapp voice plugins mcp harness-dsh images logs infra self-update"
+
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIGINAL_ARGC=$#
 
@@ -173,6 +187,11 @@ Proxy / TLS:
   --tls none                alias of --no-tls (a proxy terminates TLS)
 
 Features:
+  --features PROFILE        core|all|id[,id...]                  [core]
+                            core is the 0.0.1 release: workspace mode, company
+                            OS hidden (no company wizard). all exposes everything.
+  --full-featured           alias of --features all
+  --core                    alias of --features core
   --coworking               mount /var/run/docker.sock (browser/desktops)
   --no-coworking            keep the socket out (default)
   --hidden                  hide codx-junior + child projects from the selector
@@ -371,6 +390,7 @@ write_dind_instance_files() {
         _dind_env CODX_JUNIOR_NO_AI "${NO_AI}"
         _dind_env CODX_JUNIOR_COWORKING 1
         _dind_env CODX_JUNIOR_HIDDEN "${HIDDEN}"
+        _dind_env CODX_JUNIOR_ACTIVE_FEATURES "${ACTIVE_FEATURES}"
         _dind_env CODX_DIND_SYSBOX "${SYSBOX}"
         _dind_env CODX_JUNIOR_KNOWLEDGE_BACKEND "${KNOWLEDGE_BACKEND}"
         _dind_env CODX_JUNIOR_IMAGE "${app_image}"
@@ -798,6 +818,7 @@ HIDDENHELP
         row "env file" "${ENV_FILE}"
     fi
     row "coworking" "${COWORKING}"
+    row "features" "$(features_label)"
     row "hidden" "${HIDDEN}"
     if [[ "${MODE}" == "dind" ]]; then
         row "sysbox" "${SYSBOX}"
@@ -1013,6 +1034,9 @@ DELETE_FILES=0
 DELETE_FILES_EXPLICIT=0
 CONFIRM_DELETE=0
 KNOWLEDGE_BACKEND="${CODX_JUNIOR_KNOWLEDGE_BACKEND:-lancedb}"
+ACTIVE_FEATURES="${CODX_JUNIOR_ACTIVE_FEATURES:-core}"
+ACTIVE_PROFILE="core"
+ACTIVE_FEATURE_LIST="${CORE_FEATURE_IDS}"
 
 DOMAINS=()
 DOMAIN_CLI=0
@@ -1091,6 +1115,12 @@ while [[ $# -gt 0 ]]; do
         --confirm-delete)       CONFIRM_DELETE=1; shift ;;
         --hidden)               HIDDEN=1; shift ;;
         --no-hidden|--show)     HIDDEN=0; shift ;;
+        --features)             need "$@"; ACTIVE_FEATURES="$2"; shift 2 ;;
+        --features=*)           ACTIVE_FEATURES="${1#*=}"; shift ;;
+        --full-featured|--all-features|--full)
+                                ACTIVE_FEATURES="all"; shift ;;
+        --core|--no-full-featured)
+                                ACTIVE_FEATURES="core"; shift ;;
         --coworking)            COWORKING=1; shift ;;
         --no-coworking)         COWORKING=0; shift ;;
         --allow-privileged)     ALLOW_PRIVILEGED=1; shift ;;
@@ -1125,6 +1155,74 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# --- feature profile --------------------------------------------------------
+# Resolve and validate the install-time feature set. The app reads the same
+# values from CODX_JUNIOR_ACTIVE_FEATURES; the installer never writes a typo
+# that the runtime would have to guess about.
+resolve_features() {
+    local value="${ACTIVE_FEATURES:-core}"
+    value="$(printf '%s' "${value}" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    [[ -n "${value}" ]] || value="core"
+
+    case "${value}" in
+        all)
+            ACTIVE_PROFILE="all"
+            ACTIVE_FEATURE_LIST="${ALL_FEATURE_IDS}" ;;
+        core)
+            ACTIVE_PROFILE="core"
+            ACTIVE_FEATURE_LIST="${CORE_FEATURE_IDS}" ;;
+        *)
+            local -a requested=()
+            local -a unknown=()
+            local id
+            local -a resolved=()
+            local expanded_core=0 expanded_all=0
+            IFS=',' read -r -a requested <<< "${value}"
+            for id in "${requested[@]}"; do
+                [[ -n "${id}" ]] || continue
+                case "${id}" in
+                    core)
+                        expanded_core=1
+                        local core_id
+                        for core_id in ${CORE_FEATURE_IDS}; do
+                            [[ " ${resolved[*]} " == *" ${core_id} "* ]] || resolved+=("${core_id}")
+                        done
+                        continue ;;
+                    all)
+                        expanded_all=1
+                        local all_id
+                        for all_id in ${ALL_FEATURE_IDS}; do
+                            [[ " ${resolved[*]} " == *" ${all_id} "* ]] || resolved+=("${all_id}")
+                        done
+                        continue ;;
+                esac
+                if [[ " ${ALL_FEATURE_IDS} " != *" ${id} "* ]]; then
+                    unknown+=("${id}")
+                    continue
+                fi
+                [[ " ${resolved[*]} " == *" ${id} "* ]] || resolved+=("${id}")
+            done
+            if (( ${#unknown[@]} > 0 )); then
+                die "invalid --features '${value}': unknown feature '$(IFS=','; printf '%s' "${unknown[*]}")' (valid profiles: core, all; valid ids: $(printf '%s' "${ALL_FEATURE_IDS}" | tr ' ' ','))"
+            fi
+            (( ${#resolved[@]} > 0 )) || die "invalid --features '${value}': the set is empty"
+            ACTIVE_FEATURE_LIST="${resolved[0]}"
+            for id in "${resolved[@]:1}"; do
+                ACTIVE_FEATURE_LIST="${ACTIVE_FEATURE_LIST},${id}"
+            done
+            # Keep the flag the user typed (so config shows `core,mcp`), but
+            # label a single expanded profile as that profile.
+            if (( ${#requested[@]} == 1 )); then
+                if [[ "${expanded_core}" == "1" ]]; then ACTIVE_PROFILE="core"
+                elif [[ "${expanded_all}" == "1" ]]; then ACTIVE_PROFILE="all"
+                else ACTIVE_PROFILE="custom"; fi
+            else
+                ACTIVE_PROFILE="custom"
+            fi
+            ACTIVE_FEATURES="${value}" ;;
+    esac
+}
+
 # --- Traefik setup ----------------------------------------------------------
 traefik_label() {
     if [[ "${TRAEFIK_MODE}" == "master" ]]; then
@@ -1132,6 +1230,14 @@ traefik_label() {
     else
         printf '%s' "${TRAEFIK_MODE}"
     fi
+}
+
+features_label() {
+    case "${ACTIVE_PROFILE}" in
+        core)   printf 'core (workspace mode; company hidden)' ;;
+        all)    printf 'all (full featured)' ;;
+        *)      printf 'custom: %s' "${ACTIVE_FEATURES}" ;;
+    esac
 }
 # MODE answers "where does the app run"; TRAEFIK_MODE answers "which proxy
 # wraps it". Keeping them separate is what makes dind + local + slave possible.
@@ -1157,6 +1263,8 @@ if [[ "${MODE}" == "dev" ]]; then
     DEV_MODE=1
 fi
 case "${MODE}" in local|server|slave|dind) ;; *) die "invalid --mode '${MODE}' (local|server|slave|dind)" ;; esac
+# `remove` must still work when an old env file holds a stale/unknown id.
+[[ "${COMMAND}" == "remove" ]] || resolve_features
 # DIND needs the nested Docker socket for coworking by design.
 [[ "${MODE}" == "dind" ]] && COWORKING=1
 if [[ "${COMMAND}" != "remove" && "${MODE}" == "dind" && "${DIND_MODE}" != "server" ]]; then
@@ -1700,6 +1808,7 @@ save_installer_state() {
     set_env_var CODX_JUNIOR_NO_AI "${NO_AI}" "${STATE_FILE}"
     set_env_var CODX_JUNIOR_COWORKING "${COWORKING}" "${STATE_FILE}"
     set_env_var CODX_JUNIOR_HIDDEN "${HIDDEN}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_ACTIVE_FEATURES "${ACTIVE_FEATURES}" "${STATE_FILE}"
     set_env_var CODX_ALLOW_PRIVILEGED "${ALLOW_PRIVILEGED}" "${STATE_FILE}"
     set_env_var CODX_DIND_SYSBOX "${SYSBOX}" "${STATE_FILE}"
     set_env_var CODX_DIND_STORAGE "${CODX_DIND_STORAGE:-${INSTANCE}-dind}" "${STATE_FILE}"
@@ -1738,6 +1847,7 @@ write_settings() {
     set_env_var CODX_JUNIOR_KNOWLEDGE_BACKEND "${KNOWLEDGE_BACKEND}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_COWORKING "${COWORKING}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_HIDDEN "${HIDDEN}" "${ENV_FILE}"
+    set_env_var CODX_JUNIOR_ACTIVE_FEATURES "${ACTIVE_FEATURES}" "${ENV_FILE}"
     set_env_var CODX_PROXY_NETWORK "${PROXY_NETWORK}" "${ENV_FILE}"
     set_env_var CODX_TRUSTED_PROXIES "${TRUSTED_PROXIES}" "${ENV_FILE}"
     set_env_var CODX_ACME_EMAIL "${ACME_EMAIL}" "${ENV_FILE}"
@@ -2272,6 +2382,7 @@ summary() {
    mode     : ${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)
    dev      : $([[ "${DEV_MODE}" == "1" ]] && { [[ "${MODE}" == "dind" ]] && echo "enabled (DEBUG=1 inside DIND)" || echo "enabled (DEBUG=1, live checkout)"; } || echo "disabled")
    traefik  : $(traefik_label)
+   features : $(features_label)
    URL      : ${PUBLIC_URL}
    projects : ${PROJECTS}
    settings : ${settings} (mode 600)
@@ -2322,6 +2433,8 @@ trusted_proxies=${TRUSTED_PROXIES}
 acme_email=${ACME_EMAIL}
 coworking=${COWORKING}
 hidden=${HIDDEN}
+features=${ACTIVE_FEATURES}
+active_features=${ACTIVE_FEATURE_LIST// /,}
 systemd=${SYSTEMD}
 dind_image=${DIND_IMAGE}
 sysbox=${SYSBOX}
@@ -2340,6 +2453,7 @@ run_install() {
     log "  domain    : ${DOMAINS[*]:-<none>}"
     log "  traefik   : $([[ "${TRAEFIK_MODE}" == "master" ]] && echo "primary (${CERT_RESOLVER})" || { [[ "${TRAEFIK_MODE}" == "slave" ]] && echo "slave on ${PROXY_NETWORK}" || echo "none"; })"
     log "  coworking : ${COWORKING}"
+    log "  features  : $(features_label)"
 
     if [[ "${DRY_RUN}" != "1" ]]; then
         ensure_docker

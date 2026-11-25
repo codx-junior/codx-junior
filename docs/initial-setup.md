@@ -6,11 +6,22 @@ After [installing codx-junior](/getting-started), open it in your browser.
 
 Log in with the `admin` user. The first password you type becomes the admin password; you can change it later in **Settings → User account**.
 
-## 2. Finish the company wizard
+## 2. Start in the workspace
 
-After the first login codx-junior shows the **company wizard**. The product stays
-locked until you finish it: there is no close button and no "skip setup", only
-**Start working** on the last step. This is the only time the wizard is a gate.
+The 0.0.1 installer defaults to the **`core` feature profile**: the company OS
+is hidden, so after the first login codx-junior opens the project workspace and
+there is **no company wizard**. Add your first repository next (step 4); the
+workspace then opens on that project.
+
+If the installation has no project yet, `/projects` lists what was discovered
+and offers **New project**.
+
+### Company wizard (full-featured installs only)
+
+Only an installation started with `--features all` (or `--full-featured`)
+exposes the company shell. On those installs the first login shows the company
+wizard and the product stays locked until it is finished: there is no close
+button and no "skip setup", only **Start working** on the last step.
 
 1. **Company** — the default company is pre-created with every discovered project.
    Give it the real name, description, mission, website and brand colour.
@@ -22,8 +33,8 @@ locked until you finish it: there is no close button and no "skip setup", only
 4. **Finish** — review and press **Start working**. The workspace opens with the
    company selected.
 
-You can run the assistant again at any time from the user menu →
-**Setup assistant**; a re-run never locks the product.
+The assistant can be re-run at any time from the user menu → **Setup assistant**;
+a re-run never locks the product.
 
 ## 3. Add an AI provider and models
 

@@ -30,6 +30,9 @@ function onAssistantChatCreated(chat) {
 
 const uiReady = computed(() => $storex.ui.uiReady)
 const isLogin = computed(() => !$storex.users.user)
+// Install-time feature profile. 0.0.1 installs default to `core`: the company
+// shell (and this wizard) is hidden and the app starts in the project workspace.
+const companyEnabled = computed(() => $storex.features?.companyEnabled !== false)
 
 // ── First-run gate ─────────────────────────────────────────────────────────
 // A fresh installation has no company basics yet. Until the owner finishes the
@@ -58,6 +61,15 @@ function checkSetup(force = false) {
   setupRequired.value = false
   setupCheck = (async () => {
     try {
+      // The feature profile decides whether the company shell exists at all.
+      // Load it first so a `core` install never flashes the wizard.
+      await $storex.features?.ensureLoaded?.()
+      if (!companyEnabled.value) {
+        // Workspace mode has no company wizard: do not depend on the company
+        // API to unlock the project shell.
+        setupRequired.value = false
+        return
+      }
       const status = await API.companies.onboarding()
       setupRequired.value = Boolean(
         status?.setup_required ?? status?.needs_setup
@@ -100,22 +112,41 @@ watch(isLogin, value => {
   checkSetup()
 }, { immediate: true })
 const isMobile = computed(() => $storex.ui.isMobile)
-// The company is the root of the product. The router resolves / and legacy
-// URLs; this watcher covers the login transition (before the company store was
-// allowed to load) and keeps a logged-in user on the company home.
-// `root` renders the company shell too (fresh install, no company yet), so it
-// is full screen as well.
+// The router resolves / and legacy URLs; this watcher covers the login
+// transition (before the feature/company stores were allowed to load) and keeps
+// a logged-in user on the right landing: the company home for `all` installs,
+// or the project workspace for the 0.0.1 `core` profile. Both `root` and the
+// company shell are full screen.
 const isCompanyRoute = computed(() => route.name === 'company-home' || route.name === 'root')
 const isFullScreenRoute = computed(() => isCompanyRoute.value)
 
-async function enterCompanyHome() {
+/**
+ * Landing target in workspace mode: the first/active project of the default
+ * company, or the `/projects` bootstrap while the installation has no project.
+ */
+function workspaceTarget() {
+  const company = $storex.company?.defaultCompany || $storex.company?.activeCompany
+  if (!company?.slug) return null
+  const all = $storex.company?.companyProjects || $storex.projects?.allProjects || []
+  const active = $storex.projects?.activeProject
+  const project = (active && all.some(
+    item => String(item.project_id) === String(active.project_id)
+  ))
+    ? active
+    : all[0]
+  if (!project?.project_name) return null
+  return { companySlug: company.slug, projectName: project.project_name }
+}
+
+async function enterDefaultHome() {
   if (isLogin.value) return
+  await $storex.features?.ensureLoaded?.().catch(() => {})
   await $storex.company.ensureLoaded().catch(() => {})
   const company = $storex.company.activeCompany || $storex.company.defaultCompany
-  if (!company?.slug) return
+  if (companyEnabled.value && !company?.slug) return
   if (route.name === 'legacy') {
     // Re-run the guard now that the user is known, so a legacy project URL
-    // resolves to its company workspace instead of being dropped.
+    // resolves to its workspace home instead of being dropped.
     router.replace({
       path: route.path,
       query: route.query,
@@ -124,14 +155,46 @@ async function enterCompanyHome() {
     }).catch(() => {})
     return
   }
+  // A reload/deep link on a company URL ran the router guard before the user
+  // (and therefore the feature profile) was known. Once the profile resolves to
+  // workspace mode, leave the company shell.
+  if (!companyEnabled.value && route.name === 'company-home') {
+    const target = workspaceTarget()
+    router.replace(
+      target
+        ? { name: 'home', params: target }
+        : { name: 'workspace-projects' }
+    ).catch(() => {})
+    return
+  }
+  if (companyEnabled.value && route.name === 'workspace-projects') {
+    router.replace({
+      name: 'company-home',
+      params: { companySlug: company.slug }
+    }).catch(() => {})
+    return
+  }
   if (route.name !== 'root') return
-  router.replace({
-    name: 'company-home',
-    params: { companySlug: company.slug }
-  }).catch(() => {})
+  if (companyEnabled.value) {
+    router.replace({
+      name: 'company-home',
+      params: { companySlug: company.slug }
+    }).catch(() => {})
+    return
+  }
+  const target = workspaceTarget()
+  router.replace(
+    target
+      ? { name: 'home', params: target }
+      : { name: 'workspace-projects' }
+  ).catch(() => {})
 }
 
-watch([isLogin, () => $storex.company.loaded], () => enterCompanyHome(), { immediate: true })
+watch(
+  [isLogin, () => $storex.company.loaded, () => $storex.features?.loaded],
+  () => enterDefaultHome(),
+  { immediate: true }
+)
 
 function openAccountSettings() {
   $storex.ui.openApp({ appKey: 'account' })
@@ -156,7 +219,7 @@ watchEffect(() => {
 onMounted(() => {
   // The launcher must never survive a reload.
   if (isMobile.value) $storex.ui.closeMobileMenu()
-  enterCompanyHome()
+  enterDefaultHome()
 })
 </script>
 
@@ -184,7 +247,7 @@ onMounted(() => {
       </div>
     </div>
 
-    <template v-else-if="setupRequired">
+    <template v-else-if="setupRequired && companyEnabled">
       <div class="h-full w-full bg-base-100">
         <CompanyWizard :open="true" mandatory @done="onSetupDone" />
       </div>

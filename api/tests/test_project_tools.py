@@ -669,3 +669,31 @@ def test_absolute_read_only_path_is_not_remapped_for_write(tmp_path):
 
     assert resolved == target
     assert not is_path_within_project(settings, resolved, write=True)
+
+
+def test_list_project_files_scopes_to_a_folder(project):
+    """A scoped listing only walks the requested subtree."""
+    files = project_tools.list_project_files(
+        settings=project, apply_custom_ignores=False, path_prefix="src"
+    )
+
+    assert files == ["src/auth_service.py", "src/user_session.py"]
+
+
+def test_project_file_inventory_is_cached_until_invalidated(project):
+    """The structure inventory is an in-memory image, refreshed on writes."""
+    project_tools.list_project_files(settings=project, apply_custom_ignores=False)
+    new_file = os.path.join(project.abs_project_path, "src", "fresh.py")
+    with open(new_file, "w", encoding="utf-8") as handle:
+        handle.write("VALUE = 1\n")
+
+    cached = project_tools.list_project_files(
+        settings=project, apply_custom_ignores=False
+    )
+    assert "src/fresh.py" not in cached
+
+    project_tools.invalidate_project_files_cache(project)
+    refreshed = project_tools.list_project_files(
+        settings=project, apply_custom_ignores=False
+    )
+    assert "src/fresh.py" in refreshed

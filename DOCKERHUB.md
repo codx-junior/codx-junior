@@ -179,7 +179,9 @@ docker buildx imagetools inspect codxjuniorai/codx-junior:latest
 
 ## Configuration
 
-Only the provider and key are required. Common settings:
+Only the provider and key are required. The installer defaults to the `core`
+0.0.1 profile (workspace mode, no company wizard); use `--full-featured` for the
+company-first product. Common settings:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -196,6 +198,7 @@ Only the provider and key are required. Common settings:
 | `CODX_JUNIOR_ADMIN_PASSWORD` | generated | first admin password (bcrypt-hashed, never logged) |
 | `CODX_JUNIOR_ADMIN_EMAIL` | — | optional login identifier for the first admin |
 | `CODX_JUNIOR_WORKSPACE_TOKEN` | — | scoped API key for machine clients |
+| `CODX_JUNIOR_ACTIVE_FEATURES` | `core` (installer) | `core` = workspace mode, company OS hidden; `all` = full product; or a comma-separated id list |
 
 Full reference:
 [`docs/configuration.md`](https://github.com/codx-junior/codx-junior/blob/main/docs/configuration.md)

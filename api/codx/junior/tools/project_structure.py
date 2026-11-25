@@ -273,7 +273,9 @@ def _validate_path(
     )
 
 
-def _collect_project_files(settings: "CODXJuniorSettings") -> List[str]:
+def _collect_project_files(
+    settings: "CODXJuniorSettings", path_prefix: Optional[str] = None
+) -> List[str]:
     """
     Collect project-relative file paths from the project and its child projects.
 
@@ -286,6 +288,9 @@ def _collect_project_files(settings: "CODXJuniorSettings") -> List[str]:
 
     Args:
         settings: CODXJuniorSettings instance with project configuration.
+        path_prefix: Optional project-relative folder. When set, only that
+            subtree is listed (and git is scoped to it), which keeps a
+            ``read_folder`` call proportional to the folder it reads.
 
     Returns:
         List[str]: Sorted, de-duplicated project-relative file paths.
@@ -296,10 +301,16 @@ def _collect_project_files(settings: "CODXJuniorSettings") -> List[str]:
          'child-project/src/main.py']
     """
     project_root = os.path.abspath(settings.abs_project_path)
+    target = str(path_prefix or "").strip("/")
+    if target == ".":
+        target = ""
     rel_files: set = set()
 
-    # Current project files, honoring only .gitignore
-    for rel_path in list_project_files(settings=settings, apply_custom_ignores=False):
+    # Current project files, honoring only .gitignore. ``list_project_files``
+    # serves this from its in-memory inventory after the first call.
+    for rel_path in list_project_files(
+        settings=settings, apply_custom_ignores=False, path_prefix=target
+    ):
         rel_files.add(os.path.normpath(rel_path))
 
     # Nested child projects, honoring each of their own .gitignore
@@ -315,14 +326,28 @@ def _collect_project_files(settings: "CODXJuniorSettings") -> List[str]:
 
         child_root = os.path.abspath(child.abs_project_path)
         prefix = os.path.relpath(child_root, project_root)
-        # Skip child projects that live outside this project root
-        if prefix.startswith(".."):
+        # Skip child projects that live outside this project root or inside the
+        # control plane (tasks/sessions/temp fixtures are not navigable code).
+        if prefix.startswith("..") or _is_control_plane_path(prefix):
             logger.debug("Skipping child project outside project root: %s", child_root)
             continue
 
+        # A scoped read only needs the child when the target is the child
+        # itself, inside it, or one of its ancestors.
+        child_prefix = ""
+        if target:
+            if prefix == target or prefix.startswith(target + "/"):
+                child_prefix = ""
+            elif target.startswith(prefix + "/"):
+                child_prefix = target[len(prefix) + 1:]
+            else:
+                continue
+
         try:
             child_files = list_project_files(
-                settings=child, apply_custom_ignores=False
+                settings=child,
+                apply_custom_ignores=False,
+                path_prefix=child_prefix,
             )
         except Exception as ex:
             logger.warning(
@@ -363,6 +388,16 @@ def _is_within(root: str, abs_path: str) -> bool:
         return os.path.commonpath([root_real, target_real]) == root_real
     except (ValueError, OSError):
         return False
+
+
+#: Path components that hold runtime/VCS data, never navigable child projects.
+_CONTROL_PLANE_PARTS = frozenset({".codx", ".git", ".tmp", "node_modules"})
+
+
+def _is_control_plane_path(relative_path: str) -> bool:
+    """True when a project-relative path lives in the control plane/VCS."""
+    parts = str(relative_path or "").replace(os.sep, "/").split("/")
+    return any(part in _CONTROL_PLANE_PARTS for part in parts if part)
 
 
 def _related_project_settings(
@@ -544,10 +579,35 @@ def _build_structure(
 
         # Read the project files directly from disk (including child projects),
         # filtering with only the repository .gitignore.
-        project_files: List[str] = _collect_project_files(settings=settings)
+        path_prefix = ""
+        if target_path and _is_within(project_root, str(target_path)):
+            path_prefix = os.path.relpath(str(target_path), project_root)
+        project_files: List[str] = _collect_project_files(
+            settings=settings, path_prefix=path_prefix
+        )
 
         if not project_files:
             return "No files found in the project."
+
+        # A scoped read only needs the files under the requested folder. The
+        # inventory is cached, but filtering before building the tree keeps the
+        # work proportional to the folder the caller asked for.
+        if target_path:
+            try:
+                target_prefix = os.path.relpath(
+                    str(target_path), project_root
+                ).replace(os.sep, "/")
+            except ValueError:
+                target_prefix = ""
+            if target_prefix and target_prefix != ".":
+                project_files = [
+                    relative
+                    for relative in project_files
+                    if relative == target_prefix
+                    or relative.startswith(target_prefix + "/")
+                ]
+                if not project_files:
+                    return f"No files found under `{target_prefix}`."
 
         structure_tree: Dict[str, Any] = {}
 

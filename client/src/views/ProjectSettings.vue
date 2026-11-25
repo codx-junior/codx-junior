@@ -188,9 +188,20 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                   <div class="text-xs text-base-content/60 mt-1">Author email used for commits created by codx-junior.</div>
                 </div>
                 <div>
-                  <label class="label-text block mb-2">Access Token</label>
-                  <input v-model="globalGit.git_access_token" type="text" class="input input-bordered w-full" />
-                  <div class="text-xs text-base-content/60 mt-1">Personal Access Token.</div>
+                  <label class="label-text block mb-2">Project Access Token</label>
+                  <input
+                    v-model="settings.git_access_token"
+                    type="text"
+                    class="input input-bordered w-full"
+                    placeholder="ghp_… / glpat_… / PAT"
+                  />
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Personal Access Token used for this project's fetch, pull and push. The Git
+                    view stores it here after a successful push when "store this token" is ticked.
+                    Leave it empty to fall back to the global token and environment. Supports
+                    <code>${ENV_VAR}</code> references so the secret can stay out of
+                    <code>project.json</code>.
+                  </div>
                 </div>
               </div>
 
@@ -628,6 +639,27 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                 </div>
                 <div class="w-96">
                   <input v-model="globalGit.email" type="email" placeholder="codx-junior@localhost" class="input input-bordered w-full" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Project Access Token</label>
+                  <p class="text-xs text-base-content/60">
+                    Personal Access Token used for this project's fetch, pull and push. The Git
+                    view stores it here after a successful push when "store this token" is ticked.
+                    Leave it empty to fall back to the global token and environment. Supports
+                    <code>${ENV_VAR}</code> references so the secret can stay out of
+                    <code>project.json</code>.
+                  </p>
+                </div>
+                <div class="w-96">
+                  <input
+                    v-model="settings.git_access_token"
+                    type="text"
+                    class="input input-bordered w-full"
+                    placeholder="ghp_… / glpat_… / PAT"
+                  />
                 </div>
               </div>
             </div>

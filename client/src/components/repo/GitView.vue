@@ -126,6 +126,8 @@ export default {
       // Remote operation waiting for credentials: { operation, remote, message }.
       // The values the user types never live here: they exist only inside the
       // dialog component and in the retry call, and are wiped right after it.
+      // When the user asked to store the token, it is written to the project
+      // settings after the remote accepts it (see `storeGitToken`).
       credentialRequest: null,
       // Working tree / diff split. The diff is the right panel so the file list
       // stays visible (and usable) while a file is being reviewed or edited.
@@ -1932,14 +1934,19 @@ export default {
      *
      * The values live only in this call: they are wiped as soon as the retry
      * settles, whatever its outcome. Nothing is stored, persisted or logged,
-     * and they are never shown again.
+     * unless the user ticked "store token": then the token is saved in the
+     * project settings **after the remote accepted it**, so a rejected value
+     * never replaces a working setting. Later fetch/pull/push calls use it
+     * automatically and no longer ask.
      *
-     * @param {Object} credential - `{ username, password, token }`.
+     * @param {Object} credential - `{ username, password, token, storeToken }`.
      */
     async submitCredentials(credential) {
       const request = this.credentialRequest
       // Work on the received object: it is the only copy outside the dialog.
       const values = credential || {}
+      // Only a token has a project setting where it can be persisted.
+      const storeToken = !!values.storeToken && !!String(values.token || '').trim()
       // Close the dialog (and drop its state) before the retry starts.
       this.credentialRequest = null
       if (!request || !this.api) return
@@ -1951,11 +1958,45 @@ export default {
           }),
           REMOTE_SUCCESS_MESSAGES[request.operation]
         )
+        if (storeToken && !this.error) {
+          await this.storeGitToken(values.token, request.operation)
+        }
       } finally {
         // The credential must not survive the retry: wipe the only copy left.
         values.username = ''
         values.password = ''
         values.token = ''
+        values.storeToken = false
+      }
+    },
+
+    /**
+     * Save an accepted git access token in the project settings.
+     *
+     * The value replaces `git_access_token`, the same setting the settings page
+     * edits and the backend resolves for every fetch/pull/push (falling back to
+     * the global setting and the environment). Storing it means the remote no
+     * longer answers `requires_credentials`, so the dialog is not shown again.
+     *
+     * @param {string} token - Token accepted by the remote.
+     * @param {string} operation - Operation that just succeeded (for the notice).
+     */
+    async storeGitToken(token, operation) {
+      const value = String(token || '').trim()
+      if (!value || !this.api?.settings) return
+      try {
+        // Merge into a fresh copy: the settings object may have changed while
+        // the dialog was open (other tabs, other settings editors).
+        const settings = await this.api.settings.read()
+        await this.api.settings.save({ ...settings, git_access_token: value })
+        // Keep the project the view was opened with in sync, so later saves
+        // from this pane do not write a stale (empty) token back.
+        if (this.project) this.project.git_access_token = value
+        this.notice = `${REMOTE_SUCCESS_MESSAGES[operation] || 'Operation completed'} — token saved to the project settings`
+      } catch (ex) {
+        // The remote operation already succeeded: report only the save failure.
+        this.notice = null
+        this.error = `The operation succeeded, but the token could not be saved to the project settings: ${this.errorMessage(ex)}`
       }
     },
 

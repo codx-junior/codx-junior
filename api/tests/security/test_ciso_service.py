@@ -273,6 +273,44 @@ def test_paths_scan_expands_directories(project):
     assert "src/nested/danger.py" in {finding["path"] for finding in record["findings"]}
 
 
+def test_project_scan_skips_git_ignored_files(project):
+    """A file git discards is generated, not repository content: never scanned."""
+    settings = FakeSettings(project)
+    write(os.path.join(project, ".gitignore"), ".codx/\ntmp/\n")
+    write(
+        os.path.join(project, "tmp", "scratch.py"),
+        "import os\nos.system('rm -rf /')\n",
+    )
+    started = service.start_scan(settings, scope="project", max_files=50)
+    record = wait_for(settings, started["scan_id"])
+
+    assert record["status"] == service.SCAN_STATUS_COMPLETED, record["error"]
+    paths = {finding["path"] for finding in record["findings"]}
+    assert not any(path.startswith("tmp/") for path in paths)
+    # Skipping ignored files must not turn the scan into a no-op: the tracked
+    # files are still analysed (the fixture commits a .env with a token).
+    rules = {finding["rule_id"] for finding in record["findings"]}
+    assert "configuration.secret-file" in rules
+
+
+def test_iter_project_files_lists_only_what_git_ships(project):
+    """The lister returns tracked files plus new ones git does not ignore."""
+    from codx.junior.security.ciso import scanner
+
+    write(os.path.join(project, ".gitignore"), ".codx/\ntmp/\n")
+    write(os.path.join(project, "tmp", "scratch.py"), "print('generated')\n")
+    write(os.path.join(project, "src", "new_module.py"), "print('new')\n")
+
+    files = {
+        os.path.relpath(path, project)
+        for path in scanner.iter_project_files(project, max_files=50)
+    }
+    assert "src/app.py" in files  # tracked
+    assert "src/new_module.py" in files  # new, not ignored
+    assert "tmp/scratch.py" not in files  # ignored by .gitignore
+    assert ".gitignore" in files
+
+
 def test_activity_reads_the_bounded_gate_tail(project):
     """The activity panel aggregates ciso_verdict entries from the audit journal."""
     settings = FakeSettings(project)

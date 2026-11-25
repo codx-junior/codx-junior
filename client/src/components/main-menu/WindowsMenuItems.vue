@@ -72,8 +72,8 @@ export default {
       search: '',
       items: [
         { label: 'Home', icon: 'fa-solid fa-home', action: 'home' },
-        { label: 'Company', icon: 'fa-solid fa-building-columns', action: 'company' },
-        { label: 'Company settings', icon: 'fa-solid fa-building-user', action: 'company-settings' },
+        { label: 'Company', icon: 'fa-solid fa-building-columns', action: 'company', company: true },
+        { label: 'Company settings', icon: 'fa-solid fa-building-user', action: 'company-settings', company: true },
         { label: 'Projects', icon: 'fa-solid fa-cubes', action: 'projects' },
         { label: 'New project', icon: 'fa-solid fa-plus', action: 'new-project' },
         { label: 'Wiki', icon: 'fa-solid fa-graduation-cap', action: 'wiki' },
@@ -108,6 +108,7 @@ export default {
       const term = this.search.trim().toLowerCase()
       return this.items
         .filter(item => !item.admin || this.isProjectAdmin)
+        .filter(item => !item.company || this.$storex.features?.companyEnabled !== false)
         .filter(item => !term || item.label.toLowerCase().includes(term))
     }
   },

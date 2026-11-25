@@ -7,6 +7,7 @@ Every caller (knowledge, chat RAG, atlas) goes through
 ``CODXJuniorSettings.find_dependency_project``, so the fallback lives there.
 """
 
+import json
 import os
 
 from codx.junior.settings import CODXJuniorSettings
@@ -128,3 +129,36 @@ def test_permission_lists_grant_the_expected_file_access(tmp_path, monkeypatch):
     assert settings.can_access_path(str(docs / "readme.md"))
     assert not settings.can_access_path(str(docs / "readme.md"), write=True)
     assert settings.can_access_path(str(design / "readme.md"), write=True)
+
+
+def test_sub_projects_ignore_control_plane_and_vendor_folders(tmp_path):
+    """Child discovery must not turn runtime/test fixtures into projects.
+
+    ``.codx`` holds pytest projects and sessions, ``node_modules``/``dist`` hold
+    dependencies. Walking them used to report dozens of "related projects" and
+    made ``project_locate(project='all')`` search them all.
+    """
+    root = tmp_path / "demo"
+    root.mkdir()
+    real = root / "plugins" / "junior"
+    nested = [
+        real,
+        root / ".codx" / "tmp" / "pytest-1" / "project",
+        root / "node_modules" / "package",
+        root / "dist" / "bundle",
+    ]
+    for folder in nested:
+        (folder / ".codx").mkdir(parents=True)
+        (folder / ".codx" / "project.json").write_text(
+            json.dumps({"project_name": folder.name}), encoding="utf-8"
+        )
+
+    settings = CODXJuniorSettings(
+        project_name="demo",
+        abs_project_path=str(root),
+        codx_path=str(root / ".codx"),
+    )
+
+    assert [project.project_name for project in settings.get_sub_projects()] == [
+        "junior"
+    ]

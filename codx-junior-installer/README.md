@@ -54,6 +54,27 @@ Traefik behind an existing primary.
 `--interactive` forces the wizard even when other flags are present;
 `--non-interactive` (or `--yes`) always disables it.
 
+## 0.0.1 feature profile (workspace mode by default)
+
+The image is complete; the installer chooses which surfaces it exposes through
+`CODX_JUNIOR_ACTIVE_FEATURES`.
+
+| Flag | Profile | What the user gets |
+|---|---|---|
+| *(default)* | `core` | Project workspace: projects, chats, tasks, files, Git, knowledge, settings. The company OS and its first-run wizard are hidden. |
+| `--full-featured` | `all` | The full product, including the company-first shell and the company wizard. |
+| `--features <id[,id]>` | custom | An explicit subset; `core` and `all` may be combined with ids (`--features core,mcp`). |
+
+The installer validates the ids against the 0.0.1 manifest: an unknown id fails
+the install instead of silently disappearing. `codx-junior config` prints both
+the requested profile and the resolved ids. The choice is written to the
+instance settings file and preserved on upgrade; re-run with
+`--full-featured` to turn the company OS back on.
+
+`CODX_JUNIOR_ACTIVE_FEATURES` may also be set in the environment. An
+**unset** value means `all` (the historical developer behaviour); the installer
+always writes an explicit `core` for a new 0.0.1 installation.
+
 ## Development option
 
 `--dev` is an option, not a deployment mode.
@@ -121,6 +142,8 @@ discovered from their compose labels. See `api/docs/system-update.md`.
 | server with TLS | add `--domain x.example.com --acme-email ops@example.com` |
 | localhost / CI | add `--mode local` |
 | live codx-junior development | add `--dev` (host); DIND gets `DEBUG=1` only |
+| company OS and company wizard | add `--full-featured` (default is workspace mode) |
+| a specific feature subset | `--features core,mcp` (ids in `docs/product/features-0.0.1.json`) |
 | hide codx-junior and its child projects | add `--hidden` (`--no-hidden` shows them) |
 | behind an existing primary proxy | `--mode server --traefik slave --domain x.example.com --proxy-network traefik` |
 | several instances on one host | `--mode dind --traefik primary\|slave --instance <name>` |

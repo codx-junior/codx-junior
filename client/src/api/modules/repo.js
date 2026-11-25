@@ -158,8 +158,10 @@ const withCredentialRequest = (error, operation) => {
  *
  * The values travel in the **JSON body only** — never in the query string, so
  * they never land in a URL that is logged or proxied — and the backend uses
- * them for that single git command: nothing is written to the project settings,
- * `.git/config`, a git credential store, `.codx` or the logs.
+ * them for that single git command. This helper never writes them to the
+ * project settings, `.git/config`, a git credential store, `.codx` or the logs;
+ * the Git view may separately store an accepted token in the project settings,
+ * but only when the user explicitly ticks "store this token".
  *
  * @param {Object} [credential] - `{ username, password, token }`.
  * @returns {Object} Body with only the fields that were filled in.

@@ -9,6 +9,7 @@ import * as projects from './project'
 import * as ui from './ui'
 import * as users from './users'
 import * as company from './company'
+import * as features from './features'
 import * as profiles from './profiles'
 import * as logs from './logs'
 import * as chats from './chats'
@@ -30,6 +31,7 @@ const modules = {
   ui,
   users,
   company,
+  features,
   profiles,
   logs,
   chats,

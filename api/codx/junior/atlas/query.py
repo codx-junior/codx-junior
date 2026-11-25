@@ -19,10 +19,12 @@ text, and generated/vendor paths are penalised.
 from __future__ import annotations
 
 import fnmatch
+import functools
 import logging
 import math
 import os
 import re
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -30,11 +32,20 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from codx.junior.runtime import runtime_file
 
-from .constants import ATLAS_DB_FILENAME, ATLAS_DIRNAME, DEFAULT_SCAN_SECONDS
+from .constants import (
+    ATLAS_DB_FILENAME,
+    ATLAS_DIRNAME,
+    ATLAS_INDEX_VERSION,
+    DEFAULT_SCAN_SECONDS,
+)
 from .indexer import AtlasIndexer
 from .models import AtlasHealth, AtlasPacket, Evidence
 from .related import child_paths
-from .store import AtlasStore
+from .store import (
+    AtlasStore,
+    is_corruption_error,
+    remove_database_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +125,17 @@ def _normalise_path(path: str) -> str:
 #: settings resolution, the indexer and its caches survive the tool calls.
 _ATLAS_LOCAL = threading.local()
 
+#: ``atlas_ready`` is called once per related project on every locate, and each
+#: call used to open a SQLite connection. Stat + cache keeps it to one syscall.
+_READY_CACHE: Dict[str, Tuple[float, int, int, bool]] = {}
+_READY_CACHE_LOCK = threading.Lock()
+_READY_CACHE_TTL_SECONDS = 5.0
+
+#: Two thread-local atlases of the same project can discover the same corrupt
+#: file at the same time. Serialize recovery so only one thread deletes and
+#: rebuilds the database.
+_RECOVERY_LOCK = threading.Lock()
+
 
 def _atlas_key(settings: Any) -> str:
     root = os.path.abspath(getattr(settings, "abs_project_path", "") or ".")
@@ -142,6 +164,32 @@ def shared_atlas(settings: Any) -> "ProjectAtlas":
     else:
         atlas.bind(settings)
     return atlas
+
+
+def _recoverable(method):
+    """
+    Rebuild the index once when a query discovers SQLite corruption.
+
+    The atlas is a rebuildable cache: surfacing "database disk image is
+    malformed" to the model is never useful. The corrupt database (and its WAL
+    sidecars) is deleted, a fresh build runs, and the query is retried once.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except sqlite3.DatabaseError as ex:
+            if not is_corruption_error(ex):
+                raise
+            logger.warning(
+                "Atlas: corrupt index during %s at %s (%s); rebuilding",
+                method.__name__,
+                self.root,
+                ex,
+            )
+            self._recover_from_corruption()
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class ProjectAtlas:
@@ -182,6 +230,9 @@ class ProjectAtlas:
         self._in_degree_cache: Dict[str, int] = {}
         self._degrees_loaded = False
         self._error: Optional[str] = None
+        #: True when a read served a stale/old index and a background rebuild
+        #: should be scheduled by the caller.
+        self.needs_refresh = False
 
     def bind(self, settings: Any) -> None:
         """Rebind a long-lived atlas to reloaded project settings."""
@@ -208,31 +259,56 @@ class ProjectAtlas:
             finally:
                 self._store = None
 
-    def ensure(self, force: bool = False) -> AtlasStore:
+    def ensure(self, force: bool = False, allow_rebuild: bool = True) -> AtlasStore:
+        """
+        Open the index, refreshing only when that is cheap.
+
+        Read paths pass ``allow_rebuild=False`` so a tool call never blocks on a
+        full reindex; ``needs_refresh`` then tells the caller to schedule the
+        rebuild in the background. ``allow_rebuild=True`` is used by the
+        explicit rebuild endpoint and the background curator.
+        """
         if self._store is None:
             self._degrees_loaded = False
             self._in_degree_cache.clear()
             try:
-                self._store = self.indexer.ensure(force=force)
+                self._store = self.indexer.ensure(
+                    force=force, allow_rebuild=allow_rebuild
+                )
                 self._load_degrees(self._store)
                 self._error = None
             except Exception as ex:
                 self._error = str(ex)
                 logger.exception("Atlas: cannot open index for %s", self.root)
                 raise
+        self.needs_refresh = bool(
+            getattr(self.indexer, "rebuild_recommended", False)
+        )
         return self._store
+
+    def _recover_from_corruption(self) -> None:
+        """Delete a corrupt index and build a fresh one (once, synchronously)."""
+        with _RECOVERY_LOCK:
+            self.close()
+            remove_database_files(self.db_path)
+            self._file_cache.clear()
+            self._degrees_loaded = False
+            self._in_degree_cache.clear()
+            self._store = None
+            self.ensure(force=True, allow_rebuild=True)
 
     def rebuild(self) -> AtlasHealth:
         if self._store is not None:
             self._store.close()
             self._store = None
-        self.ensure(force=True)
+        self.ensure(force=True, allow_rebuild=True)
         return self.health()
 
     # ── map ─────────────────────────────────────────────────────────────────
 
+    @_recoverable
     def map(self, query: str = "", path: str = "", limit: int = 12) -> AtlasPacket:
-        store = self.ensure()
+        store = self.ensure(allow_rebuild=False)
         stats = store.stats()
         domains = store.domain_counts()
         if query:
@@ -357,6 +433,7 @@ class ProjectAtlas:
 
     # ── locate ──────────────────────────────────────────────────────────────
 
+    @_recoverable
     def locate(
         self,
         query: str,
@@ -377,7 +454,7 @@ class ProjectAtlas:
                 gaps=["Pass a symbol, string, route, doc title or file pattern."],
             )
 
-        store = self.ensure()
+        store = self.ensure(allow_rebuild=False)
         tokens = _tokenize(query)
         candidates: Dict[str, Dict[str, Any]] = {}
         query_lower = query.lower()
@@ -539,8 +616,9 @@ class ProjectAtlas:
 
     # ── trace ───────────────────────────────────────────────────────────────
 
+    @_recoverable
     def trace(self, symbol: str, direction: str = "out", depth: int = 2) -> AtlasPacket:
-        store = self.ensure()
+        store = self.ensure(allow_rebuild=False)
         located = self.locate(symbol, limit=3, kind="symbol")
         if not located.evidence:
             located = self.locate(symbol, limit=3)
@@ -628,8 +706,9 @@ class ProjectAtlas:
 
     # ── impact ──────────────────────────────────────────────────────────────
 
+    @_recoverable
     def impact(self, paths: Sequence[str], depth: int = 2) -> AtlasPacket:
-        store = self.ensure()
+        store = self.ensure(allow_rebuild=False)
         if isinstance(paths, str):
             paths = [paths]
         requested = [str(path).strip() for path in (paths or []) if str(path).strip()]
@@ -716,9 +795,10 @@ class ProjectAtlas:
 
     # ── health ──────────────────────────────────────────────────────────────
 
+    @_recoverable
     def health(self) -> AtlasHealth:
         try:
-            store = self.ensure()
+            store = self.ensure(allow_rebuild=False)
         except Exception as ex:
             return AtlasHealth(
                 project=getattr(self.settings, "project_name", ""),
@@ -1149,23 +1229,78 @@ def atlas_db_path(settings: Any) -> str:
     return runtime_file(os.path.abspath(codx_path), ATLAS_DIRNAME, ATLAS_DB_FILENAME)
 
 
-def atlas_ready(settings: Any) -> bool:
-    """Return True only when a completed build exists (meta.built_at is set)."""
+def atlas_ready(settings: Any, refresh: bool = False) -> bool:
+    """
+    Return True only when a completed, current build exists.
+
+    "Current" means ``meta.built_at`` is set *and* the database was written by
+    the current index version: an old schema is treated as not ready so the
+    caller schedules a background rebuild instead of blocking on one. A
+    corrupt database is deleted here (it is a rebuildable cache) so the next
+    build starts from a clean file.
+
+    Args:
+        settings: Project settings.
+        refresh: Bypass the small stat-based readiness cache.
+    """
     if settings is None or not bool(getattr(settings, "project_atlas_enabled", False)):
         return False
     db_path = atlas_db_path(settings)
-    if not os.path.isfile(db_path):
-        return False
     try:
-        import sqlite3
+        stat = os.stat(db_path)
+    except OSError:
+        return False
 
+    now = time.monotonic()
+    cache_key = db_path
+    with _READY_CACHE_LOCK:
+        cached = _READY_CACHE.get(cache_key)
+        if (
+            cached is not None
+            and not refresh
+            and now - cached[0] < _READY_CACHE_TTL_SECONDS
+            and cached[1] == stat.st_mtime_ns
+            and cached[2] == stat.st_size
+        ):
+            return cached[3]
+
+    ready = False
+    try:
         connection = sqlite3.connect(db_path, timeout=1)
         try:
-            row = connection.execute(
+            built_at = connection.execute(
                 "SELECT value FROM meta WHERE key = 'built_at'"
+            ).fetchone()
+            version_row = connection.execute(
+                "SELECT value FROM meta WHERE key = 'index_version'"
             ).fetchone()
         finally:
             connection.close()
-        return bool(row and row[0])
+        try:
+            version = int(version_row[0]) if version_row and version_row[0] else 0
+        except (TypeError, ValueError):
+            version = 0
+        ready = bool(built_at and built_at[0]) and version == ATLAS_INDEX_VERSION
+    except sqlite3.DatabaseError as ex:
+        if is_corruption_error(ex):
+            logger.warning(
+                "Atlas: corrupt index at %s (%s); removing it so it can be rebuilt",
+                db_path,
+                ex,
+            )
+            with _RECOVERY_LOCK:
+                remove_database_files(db_path)
+        ready = False
     except Exception:
-        return False
+        ready = False
+
+    with _READY_CACHE_LOCK:
+        if len(_READY_CACHE) > 256:
+            _READY_CACHE.clear()
+        _READY_CACHE[cache_key] = (
+            now,
+            stat.st_mtime_ns,
+            stat.st_size,
+            ready,
+        )
+    return ready

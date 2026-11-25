@@ -217,15 +217,23 @@ check. Re-running it is the update path; projects and settings are kept.
 # Public server with HTTPS through the bundled Traefik:
 sudo ./install.sh --mode server --domain codx.example.com \
   --acme-email ops@example.com --provider deepseek --key sk-xxxxxxxx
+
+# Full product (company OS + company wizard); the default is workspace mode:
+sudo ./install.sh --full-featured --provider deepseek --key sk-xxxxxxxx
 ```
+
+A 0.0.1 install defaults to the `core` feature profile: the app starts in the
+project workspace and no company wizard is shown. `--full-featured` (or
+`--features all`) opts into the company-first product. See
+[the installer guide](codx-junior-installer/README.md#001-feature-profile-workspace-mode-by-default).
 
 Full options: [`install.sh --help`](codx-junior-installer/README.md) and the
 [getting-started guide](docs/getting-started.md).
 
 > [!IMPORTANT]
-> **First boot.** Sign in as `admin`, set a strong password and finish setup
-> **before** exposing the port to the internet. The complete first-run flow is in
-> [Initial setup](docs/initial-setup.md).
+> **First boot.** Sign in as `admin`, set a strong password and add your first
+> repository **before** exposing the port to the internet. The complete
+> first-run flow is in [Initial setup](docs/initial-setup.md).
 
 ### Try the demo loop
 

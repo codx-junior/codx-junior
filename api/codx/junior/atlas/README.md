@@ -11,8 +11,12 @@ questions models used to answer with `grep`/`glob`/semantic search:
 It is deliberately small: one SQLite database per project, no extra service.
 
 ```text
-<project .codx>/atlas/atlas.db
+<CODX_JUNIOR_RUNTIME_PATH>/<project-slug>/atlas/atlas.db
 ```
+
+It is a rebuildable cache: the project tree never contains it, and a corrupt
+file is deleted and rebuilt instead of surfacing `database disk image is
+malformed`.
 
 ## How it works
 
@@ -47,16 +51,20 @@ flowchart TD
 `ProjectAtlas.ensure()` checks the git HEAD and the working tree before a
 query:
 
-- HEAD moved → full rebuild;
+- HEAD moved or too many files changed → the current index is served and a
+  background rebuild is scheduled; a read never blocks on a full rebuild;
 - a few files changed → reindex only those files (and prune deleted ones);
 - no changes → reuse the index (freshness check cached for
-  `project_atlas_ttl_seconds`);
-- index version changed → drop/recreate the schema.
+  `project_atlas_ttl_seconds`, and `git status` is scoped to the project);
+- index version changed → the index is reported as not ready and rebuilt in the
+  background;
+- corrupt database → the file (and its WAL sidecars) is deleted and rebuilt.
 
-Full builds run in the background worker (`ensure_project_atlas`) and after a
-file change (`schedule_atlas_refresh`, debounced 3s). While a build is running,
-the tools return a bounded fallback result and ask the model to retry, so the
-first call never blocks on a full index.
+Full builds run in the background worker (`ensure_project_atlas`), after a file
+change (`schedule_atlas_refresh`, debounced 3s) and whenever a tool finds
+`ProjectAtlas.needs_refresh == True`. While a build is running, the tools
+return a bounded fallback result and ask the model to retry, so the first call
+never blocks on a full index.
 
 ## Tools
 
@@ -91,7 +99,12 @@ guessing;
 - `project_locate(query, project="codx-api")` searches one related project;
 - `project_locate(query, project="all")` searches this project and every
 related one, and each section reports the root needed to open the files
-(`project_read_file` accepts the absolute path);
+(`project_read_file` accepts the absolute path). The fan-out is bounded (12
+projects and an 8s budget per call) and only two unindexed projects are queued
+for a build; the rest are reported as skipped so one call cannot take minutes;
+- child discovery prunes VCS/dependency folders (`.git`, `.codx`,
+`node_modules`, `dist`, ...) and ignores projects found inside them, so pytest
+fixtures under `.codx/tmp` are no longer treated as related projects;
 - a child project's folder is **excluded** from the parent index because it owns
 its own atlas. This also keeps the parent under `project_atlas_max_files` in a
 monorepo. When `search_related_projects` is disabled the children stay in the

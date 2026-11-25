@@ -549,7 +549,7 @@ class GitEngine:
 
         Example:
             >>> engine._token_args()
-            ['-c', 'http.extraheader=Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hw']
+            ['-c', 'http.extraheader=Authorization: Basic <base64(x-access-token:PAT)>']
         """
         token = self.get_git_access_token()
         if not token:
@@ -1194,12 +1194,13 @@ class GitEngine:
             result = subprocess.run(cmd, input=content, text=True, capture_output=True)
             diff_out = result.stdout
 
-            git_command = f"""
-            cat << EOF | git --no-pager diff --shortstat --no-index -- - {path}
-            {content}
-            EOF
-            """
-            diff_stats_out = os.popen(git_command).read()
+            git_stats_cmd = [
+                "git", "--no-pager", "diff", "--shortstat", "--no-index", "--", path, "-"
+            ]
+            stats_result = subprocess.run(
+                git_stats_cmd, input=content, text=True, capture_output=True
+            )
+            diff_stats_out = stats_result.stdout
 
         return {
             "diff": diff_out.strip(),

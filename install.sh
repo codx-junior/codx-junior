@@ -64,6 +64,9 @@ Common settings:
   --coworking                mount the Docker socket (browser/desktops)
   --hidden                   hide codx-junior + child projects from the selector
   --no-hidden                show them (default)
+  --features PROFILE         core|all|id[,id...] (default: core)
+                             core = workspace mode, company OS hidden
+  --full-featured            alias of --features all
   --build | --build-dind     build the app / DIND image from this checkout
   --image IMAGE              app image [codxjuniorai/codx-junior:latest]
   --update                   update to the latest image (or --image)

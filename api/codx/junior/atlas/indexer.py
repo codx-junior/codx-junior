@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -37,7 +38,7 @@ from .constants import (
     DEFAULT_SCAN_SECONDS,
     DEFAULT_TTL_SECONDS,
 )
-from .store import AtlasStore
+from .store import AtlasStore, is_corruption_error, remove_database_files
 
 logger = logging.getLogger(__name__)
 
@@ -181,25 +182,67 @@ class AtlasIndexer:
         self.warnings: List[str] = []
         self._git_top_level: Optional[str] = None
         self._wiki_source_map: Optional[Dict[str, str]] = None
+        #: Set when a query found the index stale but was not allowed to block
+        #: on a full rebuild. Callers schedule a background refresh instead.
+        self.rebuild_recommended = False
 
     # ── public entry point ──────────────────────────────────────────────────
 
-    def ensure(self, force: bool = False) -> AtlasStore:
-        """Open the store and make sure it reflects the current working tree."""
+    def ensure(self, force: bool = False, allow_rebuild: bool = True) -> AtlasStore:
+        """
+        Open the store and make sure it reflects the current working tree.
+
+        Args:
+            force: Rebuild from scratch even when the index looks fresh.
+            allow_rebuild: When False, a read never blocks on a full rebuild.
+                The current index is served and ``rebuild_recommended`` is set
+                so the caller can refresh it in the background. This is what
+                keeps ``project_locate`` from taking minutes when a project (or
+                one of its related projects) needs reindexing.
+
+        Returns:
+            AtlasStore: The opened (and possibly refreshed) index.
+
+        Raises:
+            sqlite3.DatabaseError: Only when the database is unreadable for a
+                reason other than corruption.
+        """
+        try:
+            return self._ensure(force=force, allow_rebuild=allow_rebuild)
+        except sqlite3.DatabaseError as ex:
+            if not is_corruption_error(ex):
+                raise
+            logger.warning(
+                "Atlas: corrupt index at %s (%s); deleting and rebuilding",
+                self.db_path,
+                ex,
+            )
+            remove_database_files(self.db_path)
+            return self._ensure(force=True, allow_rebuild=True)
+
+    def _ensure(self, force: bool = False, allow_rebuild: bool = True) -> AtlasStore:
         started = time.time()
+        self.rebuild_recommended = False
         store = AtlasStore(self.db_path)
         try:
-            paths = store.file_paths()
             index_version = int(store.get_meta("index_version") or 0)
+            paths = store.file_paths()
             if paths and index_version != ATLAS_INDEX_VERSION:
                 logger.info(
                     "Atlas: index version %s -> %s, rebuilding",
                     index_version,
                     ATLAS_INDEX_VERSION,
                 )
+                # A schema change is rare and the old file may not even answer
+                # a query: rebuild it now. Read tools never reach this branch
+                # (``atlas_ready`` already reports the index as not ready).
                 store.reset_schema()
                 paths = []
             if force or not paths:
+                # A first build is unavoidable: without an index there is
+                # nothing to serve (the tools gate on ``atlas_ready`` so this
+                # only runs for an explicit atlas call or the background
+                # curator).
                 self._build_full(store, started)
                 return store
 
@@ -224,6 +267,11 @@ class AtlasIndexer:
             indexed_head = str(store.get_meta("commit") or "")
             if head and indexed_head and head != indexed_head:
                 logger.info("Atlas: HEAD changed, rebuilding %s", self.root)
+                if not allow_rebuild:
+                    # Serve the previous generation; the query re-verifies the
+                    # snippets against the current files.
+                    self.rebuild_recommended = True
+                    return store
                 self._build_full(store, started)
                 return store
 
@@ -237,6 +285,9 @@ class AtlasIndexer:
                     "Atlas: %d changed files, rebuilding instead of patching",
                     len(changed),
                 )
+                if not allow_rebuild:
+                    self.rebuild_recommended = True
+                    return store
                 self._build_full(store, started)
                 return store
             if changed:
@@ -1143,7 +1194,12 @@ class AtlasIndexer:
         return (output or "").strip()
 
     def _git_changes(self) -> Optional[List[str]]:
-        output = _run_git(self.root, "status", "--porcelain")
+        # Scope the status walk to this project: a project often lives inside a
+        # larger repository (or is the repository root), and an unscoped
+        # ``git status`` walks every file of the whole repository. On a large
+        # checkout that single subprocess can take seconds, which is exactly
+        # what made ``project_locate(project='all')`` take minutes.
+        output = _run_git(self.root, "status", "--porcelain", "--", ".")
         if output is None:
             return None
         changed: Set[str] = set()

@@ -8,6 +8,7 @@ Made with ❤️ by codx-junior
 import logging
 import os
 import shutil
+import subprocess
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Optional, List
@@ -158,10 +159,19 @@ class CODXJuniorSession:
         ):
             file_name = f"{self.settings.abs_project_path}/{file_name}".replace("//", "/")
 
-        cmd = f'code-server -r "{file_name}"'
-        os.system(cmd)
+        cmd = ["code-server", "-r", file_name]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                self.log_error(
+                    "code-server could not open %s: %s",
+                    file_name,
+                    result.stderr.strip(),
+                )
+        except OSError as ex:
+            self.log_error("code-server not available: %s", ex)
         return {
-            "cmd": cmd,
+            "cmd": " ".join(cmd),
             "project_path": self.settings.abs_project_path,
             "file_name": file_name,
         }

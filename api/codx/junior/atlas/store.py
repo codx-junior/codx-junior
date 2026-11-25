@@ -81,6 +81,74 @@ CREATE VIRTUAL TABLE IF NOT EXISTS atlas_fts USING fts5(
 """
 
 
+#: SQLite errors that mean "this file can never be read again". The atlas is a
+#: rebuildable cache, so the only correct reaction is to delete it and build a
+#: fresh database instead of surfacing the error to the model.
+_CORRUPTION_MARKERS = (
+    "database disk image is malformed",
+    "file is not a database",
+    "database corruption",
+    "malformed database schema",
+    "database is encrypted or is not a database",
+    # A half-created/old file without the atlas tables is just as unusable;
+    # the index is a cache, so recreating it is always safe.
+    "no such table: meta",
+    "no such table: files",
+    "no such table: nodes",
+    "no such table: edges",
+)
+_CORRUPTION_CODES = {
+    11,   # SQLITE_CORRUPT
+    26,   # SQLITE_NOTADB
+}
+_CORRUPTION_MESSAGES = {
+    "database disk image is malformed",
+    "file is not a database",
+    "malformed database schema",
+    "no such table: meta",
+    "no such table: files",
+}
+
+
+def is_corruption_error(error: Any) -> bool:
+    """
+    Return True when *error* reports an unreadable/corrupt SQLite database.
+
+    Examples:
+        >>> is_corruption_error(sqlite3.DatabaseError("database disk image is malformed"))
+        True
+        >>> is_corruption_error(ValueError("no such table: files"))
+        False
+    """
+    if error is None:
+        return False
+    if isinstance(error, BaseException) and getattr(
+        error, "sqlite_errorcode", None
+    ) in _CORRUPTION_CODES:
+        return True
+    message = str(error).strip().lower()
+    if message in _CORRUPTION_MESSAGES:
+        return True
+    return any(marker in message for marker in _CORRUPTION_MARKERS)
+
+
+def remove_database_files(db_path: str) -> None:
+    """
+    Delete an atlas database and its SQLite sidecar files.
+
+    The database lives in the project runtime folder and is always rebuildable,
+    so removing it loses no user data. Missing files are ignored.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        path = f"{db_path}{suffix}"
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            continue
+        except OSError as ex:  # pragma: no cover - best effort
+            logger.warning("Atlas: cannot remove %s: %s", path, ex)
+
+
 class AtlasStore:
     """Thin, transaction-oriented wrapper around the atlas SQLite database."""
 

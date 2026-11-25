@@ -33,6 +33,15 @@ DEPENDENCY = "dependency"
 #: How long the resolved project structure is reused.
 CACHE_TTL_SECONDS = 60.0
 
+#: A project fan-out must stay bounded: every related project is opened,
+#: searched and (when stale) refreshed. More than this is a configuration
+#: accident, not a useful search.
+MAX_RELATED_PROJECTS = 24
+
+#: Path components that only contain runtime/VCS data. A "project" living
+#: inside them is a pytest fixture or a control-plane artifact, never a child.
+_CONTROL_PLANE_PARTS = frozenset({".codx", ".git", ".tmp", "node_modules"})
+
 _CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -102,10 +111,20 @@ def _catalogue_project(name: str) -> Optional[Any]:
     return None
 
 
+def _is_control_plane_path(path: str) -> bool:
+    """True when *path* lives inside ``.codx``/``.git``/``node_modules``."""
+    parts = os.path.normpath(str(path or "")).replace(os.sep, "/").split("/")
+    return any(part in _CONTROL_PLANE_PARTS for part in parts if part)
+
+
 def _row(project: Any, own_root: str) -> Optional[Dict[str, Any]]:
-    """Describe one related project (``None`` when it has no root)."""
+    """Describe one related project (``None`` when it has no usable root)."""
     root = _root(project)
-    if not root:
+    if not root or not os.path.isdir(root):
+        return None
+    # Runtime/test fixtures under the control plane are not child projects.
+    if _is_control_plane_path(root):
+        logger.debug("Atlas: ignoring control-plane related project %s", root)
         return None
     return {
         "name": getattr(project, "project_name", "") or os.path.basename(root),
@@ -179,6 +198,14 @@ def _structure(settings: Any) -> List[Dict[str, Any]]:
         if cached and now - cached[0] < CACHE_TTL_SECONDS:
             return cached[1]
     rows = _resolve_structure(settings)
+    if len(rows) > MAX_RELATED_PROJECTS:
+        logger.warning(
+            "Atlas: %d related projects for %s; searching the first %d",
+            len(rows),
+            _root(settings) or getattr(settings, "project_name", ""),
+            MAX_RELATED_PROJECTS,
+        )
+        rows = rows[:MAX_RELATED_PROJECTS]
     with _CACHE_LOCK:
         _CACHE[key] = (now, rows)
     return rows

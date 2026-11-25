@@ -519,6 +519,14 @@ def apply_file_changes(
             llm_response=f"Apply changes failed during write: {error_msg}",
         )
 
+    # A write can add/remove a file for the structure tool: drop its inventory.
+    try:
+        from .project_tools import invalidate_project_files_cache
+
+        invalidate_project_files_cache(settings=settings)
+    except Exception:  # pragma: no cover - cache invalidation is best effort
+        pass
+
     rel_path = _to_relative_path(settings=settings, abs_path=abs_path)
     extension = abs_path.split(".")[-1] if "." in abs_path else ""
 

@@ -18,7 +18,10 @@ import glob
 import logging
 import os
 import re
+import shlex
 import subprocess
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from codx.junior.settings import CODXJuniorSettings
@@ -46,16 +49,67 @@ MAX_SEARCH_DOC_CHARS = 8000
 # Glob wildcards are recognized only by search tools that return file paths
 # (see find_project_files). Reading tools always use literal paths.
 GLOB_PATTERN_CHARS = ("*", "?", "[")
-# Lists tracked and untracked (non-ignored) files, honoring the repo .gitignore
-GIT_FILE_LIST_COMMAND = "git ls-files --cached --others --exclude-standard --full-name"
+# Lists tracked and untracked (non-ignored) files, honoring the repo .gitignore.
+# Run from the project folder: git then returns paths relative to it and only
+# for that subtree, so no extra ``rev-parse`` round-trip is needed.
+GIT_FILE_LIST_COMMAND = (
+    "git ls-files --cached --others --exclude-standard -z 2>/dev/null"
+)
 # Maximum number of matching project files returned by project_search
 MAX_FILE_MATCHES = 100
 # VCS internals never listed when only the repository .gitignore is applied
 VCS_IGNORE_PATTERNS = (".git",)
+# Folders that are never walked for project content (no .gitignore fallback).
+# Walking them turns one structure call into tens of thousands of stats.
+WALK_SKIP_DIRS = frozenset({
+    ".git", ".codx", ".hg", ".svn", ".venv", "venv", "virtualenv",
+    "node_modules", "bower_components", "__pycache__", ".mypy_cache",
+    ".pytest_cache", ".ruff_cache", ".tox", ".next", ".nuxt", "dist",
+    "build", "coverage", ".worktrees", ".cache",
+})
 # The control-plane folder is never part of the codebase: it holds tasks,
 # profiles, sessions, chats and databases. It has dedicated tools (search_codx)
 # and must not leak into codebase search/structure results.
 CODX_DIRNAME = ".codx"
+
+# ── Project file inventory cache ────────────────────────────────────────────
+# ``read_folder``/``project_structure`` used to rebuild the whole file list on
+# every call (git subprocess plus a stat per file, and again for every child
+# project). The inventory is an in-memory image of the project tree: one build
+# per project, reused by every structure/glob/search call until it expires.
+# It is a navigation cache, not a source of truth: the file tools always read
+# the file they are asked for from disk.
+PROJECT_FILES_CACHE_TTL_SECONDS = 10.0
+_PROJECT_FILES_CACHE: Dict[
+    Tuple[str, bool, Tuple[str, ...], str], Tuple[float, Tuple[str, ...]]
+] = {}
+_PROJECT_FILES_CACHE_LOCK = threading.RLock()
+_PROJECT_FILES_CACHE_MAX_ENTRIES = 64
+
+
+def invalidate_project_files_cache(settings: Any = None, root: str = "") -> None:
+    """
+    Drop the cached file inventory (after a write or a project settings reload).
+
+    Args:
+        settings: Project settings; every cached entry below its root is dropped.
+        root: Alternatively, an explicit project root.
+    """
+    raw_target = root or str(getattr(settings, "abs_project_path", "") or "")
+    with _PROJECT_FILES_CACHE_LOCK:
+        if not raw_target:
+            _PROJECT_FILES_CACHE.clear()
+            return
+        target = os.path.abspath(raw_target)
+        for key in list(_PROJECT_FILES_CACHE):
+            cached_root = key[0]
+            # A write in a child changes the parent's tree (and vice versa).
+            if (
+                cached_root == target
+                or cached_root.startswith(target + os.sep)
+                or target.startswith(cached_root + os.sep)
+            ):
+                _PROJECT_FILES_CACHE.pop(key, None)
 
 # ── Reading limits ──────────────────────────────────────────────────────────
 # Default/maximum characters returned by a single file read. Large files are
@@ -1239,15 +1293,22 @@ def project_read_file(
     return ToolResponse(user_response=user_response, llm_response=llm_response)
 
 
-def _list_git_files(project_root: str) -> Optional[List[str]]:
+def _list_git_files(
+    project_root: str, path_prefix: str = ""
+) -> Optional[List[str]]:
     """
     List absolute file paths tracked by git, honoring the repository ``.gitignore``.
 
     Uses ``git ls-files`` so that every folder and file ignored through
-    ``.gitignore`` (and its nested ignore files) is discarded automatically.
+    ``.gitignore`` (and its nested ignore files) is discarded automatically. The
+    command runs in ``project_root`` (no ``rev-parse`` round-trip): git returns
+    paths relative to that folder and only for its subtree.
 
     Args:
         project_root: Absolute path of the project root.
+        path_prefix: Optional project-relative folder to list. It is passed as
+            a git pathspec so git only walks that subtree (a scoped
+            ``read_folder`` no longer scans the whole repository).
 
     Returns:
         Optional[List[str]]: Absolute file paths inside ``project_root``, or
@@ -1257,25 +1318,24 @@ def _list_git_files(project_root: str) -> Optional[List[str]]:
         >>> _list_git_files("/project")
         ['/project/src/main.py', '/project/README.md', ...]
     """
-    top_level, _ = exec_command("git rev-parse --show-toplevel", cwd=project_root)
-    top_level = (top_level or "").strip()
-    if not top_level or not os.path.isdir(top_level):
-        logger.debug("Not a git repository: %s", project_root)
-        return None
-
-    stdout, _ = exec_command(GIT_FILE_LIST_COMMAND, cwd=top_level)
+    project_root = os.path.abspath(project_root)
+    command = GIT_FILE_LIST_COMMAND
+    prefix = str(path_prefix or "").strip("/")
+    if prefix and prefix != ".":
+        command = f"{command} -- {shlex.quote(prefix)}"
+    stdout, _ = exec_command(command, cwd=project_root)
     if not stdout:
         return None
 
-    project_root = os.path.abspath(project_root)
-    project_prefix = project_root + os.sep
     git_files = []
-    for rel_path in stdout.split("\n"):
+    seen = set()
+    for rel_path in stdout.split("\0"):
         rel_path = rel_path.strip()
-        if not rel_path:
+        if not rel_path or rel_path in seen:
             continue
-        abs_path = os.path.normpath(os.path.join(top_level, rel_path))
-        if not abs_path.startswith(project_prefix):
+        seen.add(rel_path)
+        abs_path = os.path.normpath(os.path.join(project_root, rel_path))
+        if not abs_path.startswith(project_root + os.sep):
             continue
         if not os.path.isfile(abs_path):
             continue
@@ -1283,7 +1343,9 @@ def _list_git_files(project_root: str) -> Optional[List[str]]:
     return git_files
 
 
-def _list_walk_files(project_root: str, ignore_patterns: List[str]) -> List[str]:
+def _list_walk_files(
+    project_root: str, ignore_patterns: List[str], path_prefix: str = ""
+) -> List[str]:
     """
     Fallback file listing that walks the filesystem when git is unavailable.
 
@@ -1301,11 +1363,15 @@ def _list_walk_files(project_root: str, ignore_patterns: List[str]) -> List[str]
         >>> _list_walk_files("/project", ["node_modules"])
         ['/project/src/main.py', '/project/README.md', ...]
     """
+    prefix = str(path_prefix or "").strip("/")
+    base = os.path.join(project_root, prefix) if prefix and prefix != "." else project_root
+    if not os.path.isdir(base):
+        return []
     walk_files = []
-    for current_root, dirs, files in os.walk(project_root):
+    for current_root, dirs, files in os.walk(base):
         dirs[:] = [
             d for d in dirs
-            if d != CODX_DIRNAME
+            if d not in WALK_SKIP_DIRS
             and not any(p and p in os.path.join(current_root, d) for p in ignore_patterns)
         ]
         for file_name in files:
@@ -1314,7 +1380,10 @@ def _list_walk_files(project_root: str, ignore_patterns: List[str]) -> List[str]
 
 
 def list_project_files(
-    settings: CODXJuniorSettings, apply_custom_ignores: bool = True
+    settings: CODXJuniorSettings,
+    apply_custom_ignores: bool = True,
+    refresh: bool = False,
+    path_prefix: str = "",
 ) -> List[str]:
     """
     List the project files, honoring ``.gitignore`` and optionally custom ignores.
@@ -1327,10 +1396,17 @@ def list_project_files(
     repository ``.gitignore`` is honored, which allows callers such as
     ``project_structure`` to navigate nested (child) projects.
 
+    The result is cached per (root, ignore mode, patterns) for a few seconds:
+    the file tools call it on every tree/glob/search request and rebuilding the
+    inventory is the expensive part. Pass ``refresh=True`` to bypass the cache.
+
     Args:
         settings: The project settings.
         apply_custom_ignores: Whether to also apply the project's custom ignore
             patterns on top of ``.gitignore``.
+        refresh: Rebuild and replace the cached inventory.
+        path_prefix: Optional project-relative folder. Only files below it are
+            listed, and git is scoped to that subtree.
 
     Returns:
         List[str]: Sorted list of project-relative file paths.
@@ -1349,11 +1425,22 @@ def list_project_files(
         # Only the repository .gitignore is applied (via git ls-files); VCS
         # internals are still excluded from the non-git walk fallback.
         ignore_patterns = list(VCS_IGNORE_PATTERNS)
+    ignore_patterns = tuple(str(pattern) for pattern in (ignore_patterns or ()))
+    prefix = str(path_prefix or "").strip("/")
+    if prefix == ".":
+        prefix = ""
 
-    abs_files = _list_git_files(project_root)
+    cache_key = (project_root, bool(apply_custom_ignores), ignore_patterns, prefix)
+    now = time.monotonic()
+    with _PROJECT_FILES_CACHE_LOCK:
+        cached = _PROJECT_FILES_CACHE.get(cache_key)
+        if cached is not None and not refresh and now - cached[0] < PROJECT_FILES_CACHE_TTL_SECONDS:
+            return list(cached[1])
+
+    abs_files = _list_git_files(project_root, prefix)
     if abs_files is None:
         logger.debug("Falling back to filesystem walk for project files")
-        abs_files = _list_walk_files(project_root, ignore_patterns)
+        abs_files = _list_walk_files(project_root, list(ignore_patterns), prefix)
 
     valid_files = [
         abs_path for abs_path in abs_files
@@ -1362,7 +1449,13 @@ def list_project_files(
         and not is_codx_path(project_root, abs_path)
     ]
 
-    return sorted({os.path.relpath(abs_path, project_root) for abs_path in valid_files})
+    files = sorted({os.path.relpath(abs_path, project_root) for abs_path in valid_files})
+    with _PROJECT_FILES_CACHE_LOCK:
+        if len(_PROJECT_FILES_CACHE) >= _PROJECT_FILES_CACHE_MAX_ENTRIES:
+            # Bounded cache: drop the oldest entry (dict keeps insertion order).
+            _PROJECT_FILES_CACHE.pop(next(iter(_PROJECT_FILES_CACHE)), None)
+        _PROJECT_FILES_CACHE[cache_key] = (now, tuple(files))
+    return files
 
 
 def find_project_files(
@@ -2684,6 +2777,8 @@ def project_write_file(file_path: str, content: str, **kwargs) -> ToolResponse:
         # Stage AFTER the write: staging first left a staged blob behind when
         # the write was blocked or failed.
         _add_changes_to_git(settings=owner, file_path=rel_path)
+        # A new/removed file changes the tree: refresh the structure inventory.
+        invalidate_project_files_cache(owner)
 
         logger.info("Successfully wrote to file: %s", file_path)
         file_size = len(content.encode("utf-8"))

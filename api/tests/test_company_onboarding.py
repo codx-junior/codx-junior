@@ -25,6 +25,10 @@ def _isolated_root(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "CODX_JUNIOR_COMPANIES_PATH", str(tmp_path / "companies")
     )
+    # These tests describe the company-first product; the 0.0.1 `core` profile
+    # (which hides the company shell) is covered by test_features.py and by the
+    # explicit workspace-mode test below.
+    monkeypatch.delenv("CODX_JUNIOR_ACTIVE_FEATURES", raising=False)
 
 
 def _manager():
@@ -233,6 +237,18 @@ def test_a_legacy_skip_does_not_open_the_gate():
     assert status["setup_required"] is True
     assert status["needs_setup"] is True
     assert status["completed"] is False
+
+
+def test_the_workspace_profile_skips_the_company_gate(monkeypatch):
+    """0.0.1 defaults to `core`: no company shell means no company wizard."""
+    monkeypatch.setenv("CODX_JUNIOR_ACTIVE_FEATURES", "core")
+
+    status = build_status([_company_summary()])
+
+    assert status["company_mode"] is False
+    assert status["setup_required"] is False
+    assert status["needs_setup"] is False
+    assert status["skippable"] is True
 
 
 def test_finishing_the_wizard_opens_the_gate():

@@ -536,6 +536,9 @@ async function createCompany() {
 // only renders after the first-run gate in App.vue is satisfied; from here the
 // assistant is re-runnable at any time (and configures a newly created company).
 async function maybeOpenWizard({ force = false } = {}) {
+  // 0.0.1 `core` installs hide the company shell (the router redirects away).
+  // This guard keeps a transient render from opening the company wizard.
+  if ($storex.features?.companyEnabled === false) return null
   try {
     const onboarding = await api.onboarding()
     if (force || onboarding?.needs_setup) wizardOpen.value = true

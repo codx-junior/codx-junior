@@ -50,6 +50,14 @@ const projects = computed(() => {
 
 const workspaces = computed(() => $storex.projects.projectApps || [])
 
+// The company OS is hidden in the 0.0.1 `core` profile: drop the company tile
+// from the mobile launcher instead of sending it to a guarded route.
+const companyEnabled = computed(() => $storex.features?.companyEnabled !== false)
+const featureGroups = computed(() => MOBILE_APP_GROUPS.map(group => ({
+  ...group,
+  apps: group.apps.filter(app => app.key !== 'company' || companyEnabled.value)
+})))
+
 const query = computed(() => search.value.trim().toLowerCase())
 
 function matches(text) {
@@ -57,8 +65,8 @@ function matches(text) {
 }
 
 const filteredGroups = computed(() => {
-  if (!query.value) return MOBILE_APP_GROUPS
-  return MOBILE_APP_GROUPS
+  if (!query.value) return featureGroups.value
+  return featureGroups.value
     .map(group => ({
       ...group,
       apps: group.apps.filter(app =>

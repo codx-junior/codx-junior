@@ -259,6 +259,72 @@ async function ensureProjectsLoaded() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// INSTALL-TIME FEATURE PROFILE
+//
+// The image is the same for every deployment. `core` (the 0.0.1 installer
+// default) hides the company OS, so the app starts in the project workspace;
+// `all` keeps the company-first product. The profile is read once from
+// `/api/features` before the first route resolves.
+// ─────────────────────────────────────────────────────────────────────────────
+async function ensureFeatureProfile() {
+  if (!$storex.api?.user) return
+  if ($storex.features?.loaded) return
+  try {
+    await $storex.features.ensureLoaded?.()
+  } catch {
+    // The store keeps the legacy company-first product on failure.
+  }
+}
+
+/** True when the company shell is exposed by this installation. */
+function companyModeEnabled() {
+  return $storex.features?.companyEnabled !== false
+}
+
+/**
+ * The workspace landing target for workspace mode.
+ *
+ * A workspace URL still needs the company slug (projects belong to the default
+ * company even when its UI is hidden) and one project. When no project exists
+ * yet, `/projects` is the bootstrap screen that lets the user add the first
+ * repository.
+ */
+function workspaceTarget() {
+  const company = $storex.company?.defaultCompany || $storex.company?.activeCompany
+  if (!company?.slug) return null
+  const all = $storex.projects?.allProjects || []
+  const visibleIds = new Set(
+    ($storex.company?.visibleProjectIds || []).map((id: any) => String(id))
+  )
+  const pool = visibleIds.size
+    ? all.filter((project: any) => visibleIds.has(String(project.project_id)))
+    : all
+  const active = $storex.projects?.activeProject
+  const project = (active && pool.some(
+    (item: any) => String(item.project_id) === String(active.project_id)
+  ))
+    ? active
+    : pool[0]
+  if (!project?.project_name) return null
+  return {
+    companySlug: company.slug,
+    projectName: project.project_name
+  }
+}
+
+function defaultWorkspaceHome(): any {
+  const target = workspaceTarget()
+  return target
+    ? { name: 'home', params: target }
+    : { name: 'workspace-projects' }
+}
+
+/** Landing route for the current feature profile. */
+function defaultHome(): any {
+  return companyModeEnabled() ? defaultCompanyHome() : defaultWorkspaceHome()
+}
+
 async function resolveLegacy(to: any) {
   if (!$storex.api.user) return true
   await $storex.company.ensureLoaded().catch(() => {})
@@ -268,26 +334,28 @@ async function resolveLegacy(to: any) {
     .filter(Boolean)
     .map(segment => decodeURIComponent(segment))
 
-  if (!segments.length) return defaultCompanyHome()
+  if (!segments.length) return defaultHome()
 
   // Old /company[/<id>] routes.
   if (segments[0] === 'company') {
     const byId = $storex.company.companies.find(item => item.id === segments[1])
-    if (byId) return withQuery(`/${byId.slug}`, to.query)
-    return withQuery(defaultCompanyHome(), to.query)
+    if (byId && companyModeEnabled()) return withQuery(`/${byId.slug}`, to.query)
+    return defaultHome()
   }
 
   const first = segments[0]
   const company = $storex.company.companies.find(item => item.slug === first)
   if (company) {
     // A company slug with an unknown tail: go to its home rather than 404.
-    return withQuery(`/${company.slug}`, to.query)
+    return companyModeEnabled()
+      ? withQuery(`/${company.slug}`, to.query)
+      : defaultHome()
   }
 
   const project = ($storex.projects.allProjects || []).find(item =>
     item.project_name === first || item.project_id === first
   )
-  if (!project) return withQuery(defaultCompanyHome(), to.query)
+  if (!project) return defaultHome()
 
   let target = null
   try {
@@ -297,7 +365,7 @@ async function resolveLegacy(to: any) {
     target = null
   }
   target = target || $storex.company.defaultCompany
-  if (!target?.slug) return withQuery(defaultCompanyHome(), to.query)
+  if (!target?.slug) return defaultHome()
 
   try {
     if ($storex.projects.activeProject?.project_id !== project.project_id) {
@@ -309,7 +377,7 @@ async function resolveLegacy(to: any) {
 
   // /<project>/company is the old company entry point.
   if (segments[1] === 'company') {
-    return withQuery(`/${target.slug}`, to.query)
+    return defaultHome()
   }
 
   let tail = segments.slice(1).join('/')
@@ -336,8 +404,8 @@ const router = createRouter({
       component: CompanyView,
       meta: { ...mobile('Company', 'more', { hideTopBar: true }), company: true }
     },
-    { path: '/company', redirect: () => withQuery(defaultCompanyHome(), {}) },
-    { path: '/solopreneur/:pathMatch(.*)*', redirect: () => defaultCompanyHome() },
+    { path: '/company', redirect: () => defaultHome() },
+    { path: '/solopreneur/:pathMatch(.*)*', redirect: () => defaultHome() },
     {
       path: '/channel',
       redirect: () => {
@@ -345,8 +413,19 @@ const router = createRouter({
         const projectName = activeProjectSegment()
         return companySlug && projectName
           ? { name: 'channel', params: { companySlug, projectName } }
-          : defaultCompanyHome()
+          : defaultHome()
       }
+    },
+    {
+      // Workspace bootstrap. In workspace mode a fresh installation has no
+      // project yet, so the project-scoped routes cannot render. This static
+      // route lists the discovered projects and opens the New Project dialog;
+      // the guard sends a user with a project straight to its home instead.
+      // In company mode the guard redirects it to the company home.
+      path: '/projects',
+      name: 'workspace-projects',
+      component: AppRouteView,
+      meta: { app: 'projects', ...mobile('Projects', 'more') }
     },
 
     {
@@ -408,16 +487,33 @@ router.$navigation.init()
 
 router.beforeEach(async (to, _from) => {
   if (to.path.startsWith('/auth')) return true
-  if (to.path.startsWith('/solopreneur')) return defaultCompanyHome()
+  if ($storex.api.user) await ensureFeatureProfile()
+  if (to.path.startsWith('/solopreneur')) return defaultHome()
   if (to.name === 'legacy') return resolveLegacy(to)
   if (!$storex.api.user) return true
 
   if (to.name === 'root') {
     await $storex.company.ensureLoaded().catch(() => {})
-    const home = defaultCompanyHome()
-    // No company yet (fresh bootstrap / API unavailable): let the shell render
-    // instead of redirecting to "/" in a loop.
+    await ensureProjectsLoaded()
+    const home = defaultHome()
+    // No company and no project (fresh bootstrap / API unavailable): let the
+    // shell render instead of redirecting to "/" in a loop.
     return home === '/' ? true : home
+  }
+
+  // Workspace mode (0.0.1 default): the company shell is hidden. Send company
+  // URLs to the project workspace, and send the company-first `/projects`
+  // bootstrap back to the company home when the company shell is enabled.
+  if (to.name === 'workspace-projects') {
+    if (companyModeEnabled()) return defaultCompanyHome()
+    // Direct visit / reload: a project may have been discovered since the
+    // bootstrap screen was opened. Prefer its workspace home.
+    await ensureProjectsLoaded()
+    const target = workspaceTarget()
+    return target ? { name: 'home', params: target } : true
+  }
+  if (to.meta?.company && !companyModeEnabled()) {
+    return defaultWorkspaceHome()
   }
 
   if (to.params.companySlug) {
@@ -444,7 +540,9 @@ router.beforeEach(async (to, _from) => {
           text: `Project "${projectName}" is not available in this company`,
           type: 'error'
         })
-        return `/${company.slug}`
+        return companyModeEnabled()
+          ? `/${company.slug}`
+          : defaultWorkspaceHome()
       }
       if ($storex.projects.activeProject?.project_id !== project.project_id) {
         try {
@@ -466,7 +564,7 @@ router.beforeEach((to) => {
     const projectName = activeProjectSegment()
     return companySlug && projectName
       ? { name: 'home', params: { companySlug, projectName }, replace: true }
-      : defaultCompanyHome()
+      : defaultHome()
   }
   return true
 })

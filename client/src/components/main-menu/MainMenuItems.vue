@@ -36,11 +36,17 @@ function openCompanySettings() {
     <i class="fa-solid fa-home"></i>
     Home
   </MenubarItem>
-  <MenubarItem @click="openCompanyWorkspace">
+  <MenubarItem
+    v-if="$storex.features?.companyEnabled !== false"
+    @click="openCompanyWorkspace"
+  >
     <i class="fa-solid fa-building-columns"></i>
     Company
   </MenubarItem>
-  <MenubarItem @click="openCompanySettings">
+  <MenubarItem
+    v-if="$storex.features?.companyEnabled !== false"
+    @click="openCompanySettings"
+  >
     <i class="fa-solid fa-building-user"></i>
     Company settings
   </MenubarItem>

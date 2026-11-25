@@ -21,6 +21,7 @@ Made with ❤️ by codx-junior
 import logging
 import os
 import re
+import subprocess
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from codx.junior.security.ciso import context as ciso_context
@@ -51,6 +52,15 @@ DEFAULT_SKIP_NAMES = frozenset({
     "package-lock.json", "poetry.lock", "yarn.lock", "pnpm-lock.yaml",
     "Pipfile.lock", "composer.lock", "go.sum", "Cargo.lock",
 })
+
+#: Folders never walked: control plane, vendored dependencies, tool caches.
+SKIP_DIR_NAMES = frozenset({
+    ".git", ".codx", "node_modules", "__pycache__", ".venv", "venv",
+    "dist", "build", ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
+})
+
+#: Seconds allowed to ask git for the file list (a hung git never hangs a scan).
+GIT_LIST_TIMEOUT_SECONDS = 20
 
 #: Number of rules the detectors apply (reported in every verdict).
 RULE_COUNT = (
@@ -617,31 +627,85 @@ def scan_diff(
     )
 
 
-def iter_project_files(
-    project_path: str,
-    max_files: int = 500,
-    policy: Optional[CisoPolicy] = None,
-) -> List[str]:
-    """List the text files of a project in a bounded, deterministic order.
+def _git(project_path: str, args: Sequence[str]) -> Tuple[int, str]:
+    """Run a read-only git command in *project_path*.
 
     Args:
-        project_path: Project root.
-        max_files: Maximum number of files returned.
-        policy: Effective policy (skip rules).
+        project_path: Working directory of the command.
+        args: Arguments after ``git --no-pager``.
 
     Returns:
-        list: Absolute paths, sorted, hidden/ignored folders excluded.
+        tuple: ``(returncode, stdout)``; ``returncode`` is -1 when git is
+        missing, cannot start or times out.
     """
-    policy = policy or CisoPolicy()
-    skip_dirs = {
-        ".git", ".codx", "node_modules", "__pycache__", ".venv", "venv",
-        "dist", "build", ".mypy_cache", ".pytest_cache", ".idea", ".vscode",
-    }
+    command = ["git", "--no-pager", "-c", "core.quotepath=false", *args]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=project_path,
+            capture_output=True,
+            text=True,
+            timeout=GIT_LIST_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as ex:
+        logger.debug("CISO: git %s failed: %s", " ".join(args), ex)
+        return -1, ""
+    return completed.returncode, completed.stdout
+
+
+def _git_listed_files(project_path: str) -> Optional[List[str]]:
+    """Return the files git would ship for *project_path*, or ``None``.
+
+    ``--cached`` is what is tracked and ``--others --exclude-standard`` the new
+    files git does **not** ignore: together they are exactly the content that
+    can reach a commit. A file git discards is *produced* by the project (a
+    scratch ``tmp/``, a build output, a downloaded artefact), so a credential
+    found there is not something the repository can fix and it eats the file
+    budget of the scan.
+
+    ``None`` means "no git working tree here": the scanner also runs inside
+    slim containers and on plain folders, where the filesystem walk is used.
+
+    Args:
+        project_path: Folder to list (project root or one of its subfolders).
+
+    Returns:
+        Optional[List[str]]: Absolute paths, or ``None`` without a repository.
+    """
+    code, stdout = _git(project_path, ["rev-parse", "--show-toplevel"])
+    toplevel = os.path.abspath(stdout.strip()) if stdout.strip() else ""
+    if code != 0 or not toplevel or not os.path.isdir(toplevel):
+        return None
+    relative_root = os.path.relpath(os.path.abspath(project_path), toplevel)
+    if relative_root.startswith(os.pardir):
+        return None
+    args = ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    if relative_root not in (".", ""):
+        # An explicitly selected folder that git ignores holds files no commit
+        # can carry: the caller pointed at it on purpose, so walk it instead.
+        ignored, _ = _git(toplevel, ["check-ignore", "-q", "--", relative_root])
+        if ignored == 0:
+            return None
+        args += ["--", relative_root]
+    code, stdout = _git(toplevel, args)
+    if code != 0:
+        return None
     files: List[str] = []
+    for item in stdout.split("\x00"):
+        if not item:
+            continue
+        absolute = os.path.abspath(os.path.join(toplevel, item))
+        if os.path.isfile(absolute):
+            files.append(absolute)
+    return files
+
+
+def _walk_project_files(project_path: str) -> Iterable[str]:
+    """Yield every file of a plain folder, skipping vendored/cache folders."""
     for root, dirs, names in os.walk(project_path):
         dirs[:] = sorted(
             d for d in dirs
-            if d not in skip_dirs
+            if d not in SKIP_DIR_NAMES
             and not d.startswith(".cache")
             and not d.startswith("pytest-of-")
             and not ciso_context.is_generated_path(os.path.relpath(
@@ -649,17 +713,57 @@ def iter_project_files(
             ))
         )
         for name in sorted(names):
-            absolute = os.path.abspath(os.path.join(root, name))
-            relative = os.path.relpath(absolute, project_path)
-            if ciso_context.is_generated_path(relative):
-                continue
-            if policy.ignores_path(relative) or name in DEFAULT_SKIP_NAMES:
-                continue
-            if is_binary_path(name):
-                continue
-            files.append(absolute)
-            if len(files) >= max_files:
-                return files
+            yield os.path.abspath(os.path.join(root, name))
+
+
+def _is_scannable(relative: str, policy: CisoPolicy) -> bool:
+    """Return True when *relative* is project content the scan must read."""
+    name = os.path.basename(relative)
+    for segment in relative.replace(os.sep, "/").split("/")[:-1]:
+        if segment in SKIP_DIR_NAMES:
+            return False
+        if segment.startswith(".cache") or segment.startswith("pytest-of-"):
+            return False
+    if ciso_context.is_generated_path(relative):
+        return False
+    if policy.ignores_path(relative) or name in DEFAULT_SKIP_NAMES:
+        return False
+    return not is_binary_path(name)
+
+
+def iter_project_files(
+    project_path: str,
+    max_files: int = 500,
+    policy: Optional[CisoPolicy] = None,
+) -> List[str]:
+    """List the text files of a project in a bounded, deterministic order.
+
+    Only the files git would ship are listed: tracked files plus new ones that
+    are not ignored. Walking the raw tree instead reports ignored artefacts
+    (``tmp/``, a build output, an extracted package) and spends the file budget
+    on files the repository deliberately discards; the plain filesystem walk is
+    reserved for folders outside a git working tree.
+
+    Args:
+        project_path: Project root (or one of its folders).
+        max_files: Maximum number of files returned.
+        policy: Effective policy (skip rules).
+
+    Returns:
+        list: Absolute paths, sorted, git-ignored files excluded.
+    """
+    policy = policy or CisoPolicy()
+    listed = _git_listed_files(project_path)
+    candidates = listed if listed is not None else _walk_project_files(project_path)
+    files: List[str] = []
+    for absolute in candidates:
+        relative = os.path.relpath(absolute, project_path)
+        if not _is_scannable(relative, policy):
+            continue
+        files.append(absolute)
+        if len(files) >= max_files:
+            break
+    files.sort()
     return files
 
 

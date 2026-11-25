@@ -18,11 +18,22 @@ import fnmatch
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .model import ToolResponse
 
 logger = logging.getLogger(__name__)
+
+#: ``project_locate(project='all')`` must stay interactive even when a project
+#: has dozens of related projects: search a bounded set, stop after a short
+#: budget and never queue a background build for every unindexed project.
+MAX_RELATED_TARGETS = 12
+MAX_WARMUPS_PER_CALL = 2
+RELATED_LOCATE_BUDGET_SECONDS = 8.0
+#: Wall-clock budget for the bounded filesystem fallback used when the atlas
+#: is unavailable.
+FALLBACK_SCAN_BUDGET_SECONDS = 2.0
 
 
 def _settings(kwargs: Dict[str, Any]) -> Any:
@@ -125,24 +136,50 @@ def _locate_related_projects(
     if not targets:
         targets = [current]
 
-    lines = [f"> atlas locate `{query}` across {len(targets)} project(s)", ""]
+    skipped = targets[MAX_RELATED_TARGETS:]
+    targets = targets[:MAX_RELATED_TARGETS]
+    lines = [f"> atlas locate `{query}` across {len(targets)} project(s)"]
+    if skipped:
+        lines.append(
+            f"> {len(skipped)} related project(s) skipped to keep the call fast: "
+            + ", ".join(f"`{item['name']}`" for item in skipped[:8])
+        )
+    lines.append("")
+
     evidence_count = 0
+    attempted = 0
+    warmups = 0
+    deadline = time.monotonic() + RELATED_LOCATE_BUDGET_SECONDS
+    timed_out = False
     for target in targets:
+        if time.monotonic() > deadline:
+            timed_out = True
+            lines.extend([
+                f"> stopped after {RELATED_LOCATE_BUDGET_SECONDS:.0f}s; "
+                "related projects can be searched one by one with "
+                "`project_locate(query, project='<name>')`.",
+                "",
+            ])
+            break
+        attempted += 1
         label = f"## `{target['name']}` ({target['kind']})"
         root = target["root"]
         if not target.get("indexed"):
-            _schedule_warmup(target["settings"])
-            lines.extend([
-                label,
-                "",
-                f"> no atlas yet for `{root}`; a build was scheduled. "
-                "Retry this call in a few seconds.",
-                "",
-            ])
+            if warmups < MAX_WARMUPS_PER_CALL:
+                _schedule_warmup(target["settings"])
+                warmups += 1
+                note = "a build was scheduled; retry this call in a few seconds."
+            else:
+                note = "no build is scheduled for it in this call."
+            lines.extend([label, "", f"> no atlas yet for `{root}`; {note}", ""])
             continue
         try:
             with shared_atlas(target["settings"]) as atlas:
                 packet = atlas.locate(query=query, **locate_args)
+                needs_refresh = atlas.needs_refresh
+            if needs_refresh and warmups < MAX_WARMUPS_PER_CALL:
+                _schedule_warmup(target["settings"])
+                warmups += 1
         except Exception as ex:
             logger.exception("project_locate failed for %s", target["name"])
             lines.extend([label, "", f"> atlas error: {ex}", ""])
@@ -163,11 +200,14 @@ def _locate_related_projects(
             "> No evidence in any project. Call `project_map()` to see the "
             "structure, or retry with a shorter identifier."
         )
+    summary = (
+        f"atlas: {evidence_count} locator(s) across {attempted} project(s) "
+        f"for `{query}`"
+    )
+    if timed_out:
+        summary += " (time budget reached)"
     return ToolResponse(
-        user_response=_one_line(
-            f"atlas: {evidence_count} locator(s) across {len(targets)} project(s) "
-            f"for `{query}`"
-        ),
+        user_response=_one_line(summary),
         llm_response="\n".join(lines).strip(),
     )
 
@@ -195,7 +235,10 @@ def _fallback_map(settings: Any, limit: int = 12) -> str:
     counts: Dict[str, int] = {}
     entry_points: List[str] = []
     scanned = 0
+    deadline = time.monotonic() + FALLBACK_SCAN_BUDGET_SECONDS
     for current_root, dirs, files in os.walk(root):
+        if time.monotonic() > deadline:
+            break
         dirs[:] = [
             directory for directory in dirs
             if directory not in {
@@ -269,6 +312,9 @@ def project_map(query: str = "", path: str = "", limit: int = 12, **kwargs) -> T
     try:
         with _atlas(settings) as atlas:
             packet = atlas.map(query=query, path=path, limit=limit)
+            needs_refresh = atlas.needs_refresh
+        if needs_refresh:
+            _schedule_warmup(settings)
         llm_response = packet.to_markdown()
         if related:
             llm_response = f"{llm_response}\n\n{related}"
@@ -371,6 +417,9 @@ def project_locate(
                 include_tests=include_tests,
                 kind=kind,
             )
+            needs_refresh = atlas.needs_refresh
+        if needs_refresh:
+            _schedule_warmup(settings)
         if not packet.evidence:
             fallback = _fallback_locate(settings, query, path=path, regex=regex, limit=limit)
             if fallback:
@@ -436,6 +485,9 @@ def project_trace(symbol: str, direction: str = "out", depth: int = 2, **kwargs)
     try:
         with _atlas(settings) as atlas:
             packet = atlas.trace(symbol=symbol, direction=direction, depth=depth)
+            needs_refresh = atlas.needs_refresh
+        if needs_refresh:
+            _schedule_warmup(settings)
         return ToolResponse(
             user_response=_one_line(packet.answer),
             llm_response=packet.to_markdown(),
@@ -473,6 +525,9 @@ def project_impact(paths: Any, depth: int = 2, **kwargs) -> ToolResponse:
     try:
         with _atlas(settings) as atlas:
             packet = atlas.impact(paths=paths or [], depth=depth)
+            needs_refresh = atlas.needs_refresh
+        if needs_refresh:
+            _schedule_warmup(settings)
         return ToolResponse(
             user_response=_one_line(packet.answer),
             llm_response=packet.to_markdown(),
@@ -535,8 +590,9 @@ def _fallback_locate(
     """
     Tiny literal/regex scan used only when the atlas cannot answer.
 
-    It is bounded to 800 files and 1 MB per file, and returns locators rather
-    than matching lines, so the model still gets a reading list.
+    It is bounded to 800 files, 1 MB per file and a short wall-clock budget,
+    and returns locators rather than matching lines, so the model still gets a
+    reading list without waiting for a cold filesystem.
     """
     root = _project_root(settings)
     base = os.path.normpath(os.path.join(root, path)) if path else root
@@ -551,7 +607,10 @@ def _fallback_locate(
     needle = query.lower()
     results: List[Tuple[str, str]] = []
     scanned = 0
+    deadline = time.monotonic() + FALLBACK_SCAN_BUDGET_SECONDS
     for current_root, dirs, files in os.walk(base):
+        if time.monotonic() > deadline:
+            return results
         dirs[:] = [
             directory for directory in dirs
             if directory not in {
@@ -561,6 +620,8 @@ def _fallback_locate(
         ]
         for file_name in files:
             if scanned >= 800 or len(results) >= limit:
+                return results
+            if time.monotonic() > deadline:
                 return results
             ext = os.path.splitext(file_name)[1].lower()
             if ext not in {

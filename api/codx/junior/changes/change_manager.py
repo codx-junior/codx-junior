@@ -146,6 +146,15 @@ class ChangeManager:
         except Exception as ex:
             logger.debug("Error scheduling atlas refresh for %s: %s", file_path, ex)
 
+        # The file tree changed: the structure tools must not serve a stale
+        # in-memory inventory.
+        try:
+            from codx.junior.tools.project_tools import invalidate_project_files_cache
+
+            invalidate_project_files_cache(self.settings)
+        except Exception as ex:
+            logger.debug("Error invalidating project file cache: %s", ex)
+
     def update_project_metrics(self):
         metrics_manager = CODXJuniorMetrics(settings=self.settings)
         self.metrics = metrics_manager.project_metrics()

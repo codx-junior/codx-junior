@@ -1,13 +1,15 @@
 """
 Installation onboarding — the "New company" wizard state.
 
-After codx-junior is installed the product renders the *company mode* and runs a
-short wizard that guides the owner through the first company, its projects and
-the basic AI settings. On a fresh installation the wizard is a **gate**: the
-owner must define the company basics and finish it before the product can be
-used. The wizard stays **re-runnable** at any time from the company menu, and an
-installation whose default company was already configured (an upgrade) is never
-locked out.
+When the installation exposes the company shell (``--features all`` /
+``--full-featured``) codx-junior renders the *company mode* and runs a short
+wizard that guides the owner through the first company, its projects and the
+basic AI settings. On a fresh installation the wizard is a **gate**: the owner
+must define the company basics and finish it before the product can be used.
+The default 0.0.1 ``core`` profile hides the company OS, so the gate stays
+open and the app starts in the project workspace. The wizard stays
+**re-runnable** at any time from the company menu, and an installation
+whose default company was already configured (an upgrade) is never locked out.
 
 Where the state lives
 ---------------------
@@ -42,6 +44,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from codx.junior.company.store import get_companies_root
+from codx.junior.features import company_enabled as company_feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +306,10 @@ def build_status(companies: Optional[List[Dict[str, Any]]] = None) -> Dict[str, 
     installation whose default company is already configured (an upgrade) is
     never locked out. The wizard can always be re-run from the company menu.
 
+    The gate only exists when the installation exposes the company shell. The
+    0.0.1 ``core`` feature profile hides the company OS, so the product starts
+    in the project workspace and this wizard must never block it.
+
     Args:
         companies: Company summaries (the wizard offers to *configure* an
             existing one instead of creating a duplicate).
@@ -310,8 +317,9 @@ def build_status(companies: Optional[List[Dict[str, Any]]] = None) -> Dict[str, 
     Returns:
         A dict with ``state``, the ``steps`` catalog, the ``companies``
         summaries, ``needs_setup``/``setup_required`` (the gate is closed),
-        ``completed``, ``has_companies``, ``default_company``,
-        ``default_configured`` and ``path`` (where the document lives).
+        ``company_mode``, ``completed``, ``has_companies``,
+        ``default_company``, ``default_configured`` and ``path`` (where the
+        document lives).
     """
     state = read_state()
     companies = companies or []
@@ -343,8 +351,13 @@ def build_status(companies: Optional[List[Dict[str, Any]]] = None) -> Dict[str, 
     # Finishing the wizard is the ONLY way to open it on a fresh installation.
     # An installation that already has a configured default company (an upgrade)
     # is never locked out, even if its onboarding document predates the wizard.
-    setup_required = no_companies or (
-        not completion_valid and not default_configured
+    #
+    # 0.0.1 hides the company OS by default (`core` feature profile). In that
+    # mode there is no company wizard to finish, so the gate stays open and the
+    # shell starts in the project workspace.
+    company_mode = company_feature_enabled()
+    setup_required = company_mode and (
+        no_companies or (not completion_valid and not default_configured)
     )
     return {
         "state": state,
@@ -354,6 +367,9 @@ def build_status(companies: Optional[List[Dict[str, Any]]] = None) -> Dict[str, 
         # wizard; it now also means "the product is locked".
         "needs_setup": setup_required,
         "setup_required": setup_required,
+        # The shell uses this to avoid treating a workspace-mode install as a
+        # company install with an unanswered wizard.
+        "company_mode": company_mode,
         "completed": completion_valid and not no_companies,
         "skippable": not setup_required,
         "has_companies": not no_companies,

@@ -19,8 +19,8 @@ const wizardSource = await read('../src/components/company/CompanyWizard.vue')
 test('the app shell is replaced by the company wizard until setup is done', () => {
   assert.match(
     appSource,
-    /v-else-if="setupRequired"/,
-    'App.vue gates the shell on the server setup state'
+    /v-else-if="setupRequired && companyEnabled"/,
+    'App.vue gates the shell on the server setup state only when the company shell is enabled'
   )
   assert.match(
     appSource,
@@ -31,6 +31,11 @@ test('the app shell is replaced by the company wizard until setup is done', () =
     appSource,
     /status\?\.setup_required \?\? status\?\.needs_setup/,
     'the gate reads the server setup flag, so a reload cannot bypass it'
+  )
+  assert.match(
+    appSource,
+    /if \(!companyEnabled\.value\) \{/,
+    'the gate is skipped when the feature profile hides the company shell'
   )
 })
 

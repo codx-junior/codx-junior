@@ -61,9 +61,11 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
          visible, whatever the user's workspace mode is. -->
     <div v-if="primaryNavExpanded || isCollapsed" class="flex flex-col gap-1">
       
-      <!-- Company is the top-level element of the product: it owns the
-           projects, teams and boards. It comes before every project app. -->
+      <!-- Company is the top-level element of the full product. The 0.0.1
+           `core` feature profile hides it (workspace mode): no company shell,
+           no company wizard, no company launcher. -->
       <NavItem
+        v-if="companyEnabled"
         icon="fas fa-building-columns"
         label="Company"
         :is-collapsed="isCollapsed"
@@ -85,6 +87,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
            duplicated. Creating a project is a company-level action and lives
            in the company workspace (Projects panel). -->
       <NavItem
+        v-if="companyEnabled"
         icon="fas fa-building-circle-arrow-right"
         label="New company"
         :is-collapsed="isCollapsed"
@@ -229,6 +232,11 @@ export default {
     // True when the active project is in the UI store's pinned list
     isActiveProjectPinned() {
       return this.$storex.ui.isActiveProjectPinned
+    },
+    // The company launcher only exists in the full product. 0.0.1 `core`
+    // installs start in the project workspace with the company OS hidden.
+    companyEnabled() {
+      return this.$storex.features?.companyEnabled !== false
     }
   },
   methods: {
@@ -314,6 +322,7 @@ export default {
     // company" dialog (query flag `new`). It is a router push — the company
     // shell is a full screen, not a project panel.
     handleNewCompany() {
+      if (!this.companyEnabled) return
       const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
       const router = this.$storex.$router
       if (company?.slug) {
@@ -362,7 +371,9 @@ export default {
       this.openApp('ciso')
     },
     handleNavigateToCompany() {
-      // Company is the root shell, never a project panel.
+      // Company is the root shell, never a project panel. Hidden in workspace
+      // mode, where the router keeps every company URL in the project shell.
+      if (!this.companyEnabled) return
       const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
       if (company?.slug) {
         this.$storex.$router.push({

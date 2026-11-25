@@ -1,13 +1,18 @@
 <script>
 /**
- * One-shot git credential prompt.
+ * Git credential prompt.
  *
  * Opened only when a remote operation answered `requires_credentials`, i.e. the
  * remote rejected the call and the project has no stored token. The values are
- * handed to the parent through `submit` and used for **that single operation**:
- * nothing is stored (no settings write, no localStorage / sessionStorage, no git
- * credential store) and the component wipes its own copy before emitting, so
- * after the retry no secret is left in the component state.
+ * handed to the parent through `submit` and used for **that single operation**
+ * by default: nothing is stored (no settings write, no localStorage /
+ * sessionStorage, no git credential store) and the component wipes its own copy
+ * before emitting, so after the retry no secret is left in the component state.
+ *
+ * The user may tick "store token": the parent then writes the accepted token to
+ * the project settings (`git_access_token`) so later fetch/pull/push calls
+ * authenticate without asking again. Only an access token can be persisted; a
+ * username/password pair always stays one-shot.
  *
  * @example
  * <GitCredentialsDialog
@@ -36,7 +41,10 @@ export default {
       // One-shot values; never persisted. Cleared on submit and on cancel.
       username: '',
       password: '',
-      token: ''
+      token: '',
+      // Ask the parent to save the token in the project settings after the
+      // remote accepts it, so later operations authenticate automatically.
+      storeToken: false
     }
   },
   computed: {
@@ -46,10 +54,25 @@ export default {
       if (this.token.trim()) return true
       return !!this.username.trim() && !!this.password.trim()
     },
+    /** Only an access token has a project setting to be stored in. */
+    canStoreToken() {
+      return !this.busy && !!this.token.trim()
+    },
+    /** Submit button label: storing the token is part of the same action. */
+    submitLabel() {
+      if (this.busy) return 'Retrying…'
+      return this.storeToken && this.canStoreToken ? 'Retry and store' : 'Retry once'
+    },
     /** `Push` / `Fetch` / `Pull`, used in the title and the explanation. */
     operationLabel() {
       const name = String(this.operation || '').toLowerCase()
       return name ? name.charAt(0).toUpperCase() + name.slice(1) : 'Operation'
+    }
+  },
+  watch: {
+    /** Clearing the token removes the only value that could be stored. */
+    token(value) {
+      if (!String(value || '').trim()) this.storeToken = false
     }
   },
   methods: {
@@ -59,7 +82,9 @@ export default {
       const credential = {
         username: this.username.trim(),
         password: this.password,
-        token: this.token.trim()
+        token: this.token.trim(),
+        // The parent persists the token only when it was accepted by the remote.
+        storeToken: this.storeToken && this.canStoreToken
       }
       this.reset()
       this.$emit('submit', credential)
@@ -74,6 +99,7 @@ export default {
       this.username = ''
       this.password = ''
       this.token = ''
+      this.storeToken = false
     }
   },
   mounted() {
@@ -149,9 +175,30 @@ export default {
           />
         </div>
 
+        <label
+          class="flex items-start gap-2 select-none"
+          :class="canStoreToken ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'"
+          for="git-credential-store-token"
+        >
+          <input
+            id="git-credential-store-token"
+            v-model="storeToken"
+            type="checkbox"
+            class="checkbox checkbox-sm checkbox-primary mt-0.5"
+            :disabled="!canStoreToken"
+          />
+          <span class="text-[11px] leading-tight">
+            Store this token in the project settings and don't ask again
+            <span class="block opacity-60">
+              Saved as the project <code>git_access_token</code>; later push, pull and fetch calls
+              authenticate automatically. Only an access token can be stored.
+            </span>
+          </span>
+        </label>
+
         <p class="text-[11px] opacity-50 leading-tight">
-          Used only for this operation: codx-junior does not save it, does not write it to the git
-          configuration and does not log it. It is retried once and then forgotten.
+          Used only for this operation unless you store it above. codx-junior does not write it to
+          the git configuration and does not log it.
         </p>
       </form>
 
@@ -160,7 +207,7 @@ export default {
         <button class="btn btn-sm btn-primary grow" :disabled="!canSubmit" @click="submit">
           <i class="fa-solid fa-spinner animate-spin" v-if="busy"></i>
           <i class="fa-solid fa-key" v-else></i>
-          {{ busy ? 'Retrying…' : 'Retry once' }}
+          {{ submitLabel }}
         </button>
       </div>
     </div>

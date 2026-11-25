@@ -407,6 +407,72 @@ else
     fail "changing the instance recomputes home and projects" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
 fi
 
+# --- 10b. install-time feature profile (0.0.1 defaults to workspace mode) ---
+# The release profile is `core`: the company OS is hidden, so the image starts
+# in the project workspace and never opens the company wizard. `all` is the
+# explicit full-featured opt-in.
+FEATURES_HOME="$(new_home features)"
+run "${ROOT}" bash "${INSTALLER}" --mode local --provider deepseek --key sk-test \
+    --home "${FEATURES_HOME}" --instance cjfeatures --port 18087 \
+    --no-wait --no-systemd --no-pull
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && grep -q '^CODX_JUNIOR_ACTIVE_FEATURES=core$' "${FEATURES_HOME}/config/cjfeatures.env" 2>/dev/null; then
+    pass "a default install writes the core (workspace-mode) feature profile"
+else
+    fail "a default install writes the core (workspace-mode) feature profile" \
+        "$(grep CODX_JUNIOR_ACTIVE_FEATURES "${FEATURES_HOME}/config/cjfeatures.env" 2>/dev/null)"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "core (workspace mode; company hidden)"; then
+    pass "the default install reports the workspace-mode profile"
+else
+    fail "the default install reports the workspace-mode profile" "$(grep -i 'features' "${RUN_OUT}" | tail -n1)"
+fi
+
+FEATURES_ALL_HOME="$(new_home features-all)"
+run "${ROOT}" bash "${INSTALLER}" --mode local --provider deepseek --key sk-test \
+    --home "${FEATURES_ALL_HOME}" --instance cjfeaturesall --port 18088 \
+    --features all --no-wait --no-systemd --no-pull
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && grep -q '^CODX_JUNIOR_ACTIVE_FEATURES=all$' "${FEATURES_ALL_HOME}/config/cjfeaturesall.env" 2>/dev/null; then
+    pass "--features all opts into the full product"
+else
+    fail "--features all opts into the full product" \
+        "$(grep CODX_JUNIOR_ACTIVE_FEATURES "${FEATURES_ALL_HOME}/config/cjfeaturesall.env" 2>/dev/null)"
+fi
+
+FEATURES_FULL_HOME="$(new_home features-full)"
+run "${ROOT}" bash "${INSTALLER}" --mode local --provider deepseek --key sk-test \
+    --home "${FEATURES_FULL_HOME}" --instance cjfeaturesfull --port 18089 \
+    --full-featured --no-wait --no-systemd --no-pull
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && grep -q '^CODX_JUNIOR_ACTIVE_FEATURES=all$' "${FEATURES_FULL_HOME}/config/cjfeaturesfull.env" 2>/dev/null; then
+    pass "--full-featured is the full-product alias"
+else
+    fail "--full-featured is the full-product alias" \
+        "$(grep CODX_JUNIOR_ACTIVE_FEATURES "${FEATURES_FULL_HOME}/config/cjfeaturesfull.env" 2>/dev/null)"
+fi
+
+run "${ROOT}" bash "${INSTALLER}" --mode local --provider deepseek --key sk-test \
+    --home "$(new_home features-bad)" --features core,not-a-feature --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 1 ]] && both_has "unknown feature" && both_has "not-a-feature"; then
+    pass "an unknown feature id fails the install"
+else
+    fail "an unknown feature id fails the install" "rc=${RUN_RC}"
+fi
+
+# An upgrade must preserve the chosen profile, not silently fall back to core.
+run "${ROOT}" bash "${INSTALLER}" --mode local --provider deepseek --key sk-test \
+    --home "${FEATURES_ALL_HOME}" --instance cjfeaturesall --port 18088 \
+    --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "features=all"; then
+    pass "a re-run preserves the installed feature profile"
+else
+    fail "a re-run preserves the installed feature profile" "rc=${RUN_RC} $(grep -i features "${RUN_OUT}" | tail -n1)"
+fi
+
 # Hidden codx-junior project flag.
 run "${ROOT}" bash "${INSTALLER}" --mode local --hidden --provider deepseek --key sk-test \
     --home "$(new_home hidden)" --dry-run

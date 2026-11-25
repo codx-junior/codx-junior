@@ -11,6 +11,7 @@ import { teamsModule } from './modules/teams'
 import { effortsModule } from './modules/efforts'
 import { actorsModule } from './modules/actors'
 import { companiesModule } from './modules/companies'
+import { featuresModule } from './modules/features'
 import { tasksModule } from './modules/tasks'
 import { mcpModule } from './modules/mcp'
 import { workspacesModule } from './modules/workspaces'
@@ -870,6 +871,18 @@ const initializeAPI = ({ project, user } = {}) => {
         API._companiesModule = companiesModule(API)
       }
       return API._companiesModule
+    },
+
+    /**
+     * Install-time feature profile: which surfaces this instance exposes
+     * (`core` hides the company shell, `all` is the full product). The store
+     * loads it before the first route resolves. See api/modules/features.js.
+     */
+    get features() {
+      if (!API._featuresModule) {
+        API._featuresModule = featuresModule(API)
+      }
+      return API._featuresModule
     },
 
     /**

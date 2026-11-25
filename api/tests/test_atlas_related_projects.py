@@ -92,3 +92,19 @@ def test_related_search_disabled_keeps_every_search_local(tmp_path, monkeypatch)
     related.clear_cache()
 
     assert related.related_projects(settings) == []
+
+
+def test_control_plane_fixture_is_not_a_related_project(tmp_path):
+    """A pytest project under ``.codx`` is runtime data, not a sibling to search."""
+    root = tmp_path / "demo"
+    fixture = root / ".codx" / "tmp" / "pytest-1" / "project"
+    root.mkdir(parents=True)
+    fixture.mkdir(parents=True)
+
+    settings = _Settings(
+        str(root),
+        related_projects=[_Settings(str(fixture), name="fixture")],
+    )
+    related.clear_cache()
+
+    assert related.related_projects(settings) == []

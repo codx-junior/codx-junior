@@ -502,15 +502,18 @@ describe('T5 — the Docker Hub image stays documented', () => {
     }
   })
 
-  it('the Docker Hub page workflow syncs that listing', () => {
+  it('the Docker Hub page workflow publishes that listing', () => {
     const workflow = readFileSync(
       join(REPO_ROOT, '.github', 'workflows', 'dockerhub-page.yml'),
       'utf8',
     )
-    expect(workflow).toContain('DOCKERHUB.md')
-    expect(workflow).toContain('scripts/dockerhub_description.sh')
+    expect(workflow).toContain('peter-evans/dockerhub-description@v5')
+    expect(workflow).toContain('readme-filepath: ./DOCKERHUB.md')
+    expect(workflow).toContain(releaseImage())
     expect(workflow).toContain('workflow_dispatch')
+  })
 
+  it('the manual fallback script targets the same repository', () => {
     const image = releaseImage()
     const [namespace, repository] = image.split('/')
     if (!namespace || !repository) throw new Error(`invalid image coordinate: ${image}`)

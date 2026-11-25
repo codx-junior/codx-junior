@@ -27,11 +27,23 @@ is not edited in the web UI. Its short description and full README come from
 [`DOCKERHUB.md`](https://github.com/codx-junior/codx-junior/blob/main/DOCKERHUB.md)
 in this repository. The dedicated
 [`dockerhub-page`](https://github.com/codx-junior/codx-junior/blob/main/.github/workflows/dockerhub-page.yml)
-workflow runs on every push to `main` (and on release tags) and PATCHes the
-Docker Hub API with that file. A change to the listing is therefore reviewed
-like any other documentation change and cannot drift from the image
-documentation. The image build stays in `release.yml`; the page can be updated
-without rebuilding anything.
+workflow runs on every push to `main` (and on release tags) and updates the
+Docker Hub API through the maintained
+[`peter-evans/dockerhub-description@v5`](https://github.com/peter-evans/dockerhub-description)
+action. A change to the listing is therefore reviewed like any other
+documentation change and cannot drift from the image documentation. The image
+build stays in `release.yml`; the page can be updated without rebuilding
+anything.
+
+::: warning The description token is not the image token
+Docker Hub accepts the repository-description `PATCH` only from a **personal
+access token with Read, Write and Delete scope**, owned by a user with **Admin**
+permission on `codxjuniorai/codx-junior`. A Read/Write token that can
+`docker push` gets `403 access denied: insufficient scope`, and an organization
+access token is rejected (`token issued from organization access token is not
+allowed`). Rotate `DOCKERHUB_TOKEN` if the `dockerhub-page` job fails while the
+`release` job can still push.
+:::
 
 To update it immediately (for example after editing `DOCKERHUB.md` without
 waiting for a push), run the `dockerhub-page` workflow manually from the
@@ -318,7 +330,11 @@ to `docker login --password-stdin` and never appear on the command line.
 | `DOCKERHUB_TOKEN` | GitHub repository secret | `release` and `dockerhub-page` workflows |
 | `DOCKERHUB_TOKEN` | environment or project secret vault (`Settings → Secrets`) | manual publish, description sync, AI tools |
 
-The token needs read/write access to the `codxjuniorai` organisation. Never
+`DOCKERHUB_TOKEN` must have **Read, Write and Delete** scope. The release
+workflow only needs Read/Write for `docker push`, but the same secret is used by
+`dockerhub-page` for the repository-description PATCH, which Docker Hub rejects
+for a Read/Write-only PAT. It must belong to a user with Admin permission on
+`codxjuniorai/codx-junior`; an organization access token is rejected. Never
 commit it. The AI tools redact it from every response and only report whether a
 value is present, missing or rejected.
 
@@ -380,6 +396,7 @@ Release checklist:
 | `/api/health` reports the wrong `ref` | A stale container or a different tag is running. Compare `ref`/`commit` with the tag you asked for; recreate the container. |
 | A DIND instance keeps an old inner image | `dind` pins nothing: the wrapper pulls `latest` for the inner install. Re-run `install.sh --update`; see [Getting started](/getting-started). |
 | `unauthorized: authentication required` | The token is missing, expired or read-only. Run `dockerhub_whoami`, rotate the token, and re-store the secret. |
+| `dockerhub-page` fails with `403` / `insufficient scope` | The PAT is Read/Write (fine for `docker push`, not for the description). Create a new PAT with **Read, Write and Delete**, owned by a user with Admin on the repository, and replace `DOCKERHUB_TOKEN`. An organization access token is also rejected. |
 | The Docker Hub page shows old copy | The `dockerhub-page` workflow failed or has not run since the edit. Check the Actions run, then run `bash scripts/dockerhub_description.sh` with a token. |
 
 ## Related

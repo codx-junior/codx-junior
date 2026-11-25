@@ -139,13 +139,25 @@ fi
 [[ -n "$DOCKERHUB_TOKEN" ]] || die "DOCKERHUB_TOKEN is required (or pass --dry-run)"
 
 # `--config -` reads the credentials from stdin, so the token is not in argv.
-printf 'user = "%s:%s"\n' "$DOCKERHUB_USER" "$DOCKERHUB_TOKEN" | \
-  curl -fsS --proto '=https' --config - \
-    -X PATCH \
-    -H 'Content-Type: application/json' \
-    --data-binary "@${payload}" \
-    "$target" > "$response" \
-  || die "Docker Hub rejected the update (check the token scope and repository access)"
+# Do not use -f: on 401/403 the response body names the missing scope, which is
+# the difference between "rotate the token" and "fix the repository".
+http_code="$(
+  printf 'user = "%s:%s"\n' "$DOCKERHUB_USER" "$DOCKERHUB_TOKEN" | \
+    curl -sS --proto '=https' --config - \
+      -X PATCH \
+      -H 'Content-Type: application/json' \
+      --data-binary "@${payload}" \
+      -o "$response" -w '%{http_code}' \
+      "$target"
+)" || die "curl could not reach Docker Hub"
+
+case "$http_code" in
+  2*) ;;
+  *)
+    [[ -s "$response" ]] && cat "$response" >&2
+    die "Docker Hub returned HTTP ${http_code}; the token needs Read/Write/Delete scope and Admin on the repository (an organization token is rejected)"
+    ;;
+esac
 
 python3 - "$response" <<'PY'
 import json

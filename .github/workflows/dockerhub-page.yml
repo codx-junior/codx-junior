@@ -7,13 +7,15 @@
 # push to main (or a release tag) refreshes the page from DOCKERHUB.md without
 # rebuilding the image.
 #
-# The image itself is published by release.yml. This workflow only PATCHes the
-# Docker Hub repository metadata (short description + full README) through the
-# same script an operator can run locally:
+# The sync uses peter-evans/dockerhub-description, which performs the same
+# Docker Hub API PATCH as scripts/dockerhub_description.sh. Docker Hub only
+# accepts that PATCH from a personal access token with read/write/delete scope,
+# owned by a user with Admin on the repository. A read/write token that can
+# push images is NOT sufficient, and an organization access token is rejected.
 #
-#   DOCKERHUB_TOKEN=... bash scripts/dockerhub_description.sh
+# The image itself is published by release.yml.
 #
-# Secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+# Secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN (read/write/delete PAT).
 # =============================================================================
 
 name: dockerhub-page
@@ -47,8 +49,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Publish the repository page
-        env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: bash scripts/dockerhub_description.sh --readme DOCKERHUB.md
+      - name: Publish DOCKERHUB.md to Docker Hub
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: codxjuniorai/codx-junior
+          short-description: Open-source multi-AI workspace to plan, code, test and ship software. Self-host with Docker.
+          readme-filepath: ./DOCKERHUB.md

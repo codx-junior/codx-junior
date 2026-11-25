@@ -165,7 +165,7 @@ install.sh                         # user-facing entry (curl-friendly)
 
 Properties:
 
-* **Idempotent:** re-running installs/upgrades; settings and projects are kept.
+* **Idempotent:** re-running installs/updates; settings and projects are kept.
 * **One settings file** per instance, mode 600, parsed as data (never sourced).
 * **One compose project per instance** (`--instance`), so containers, networks,
   volumes, routers and middleware names cannot collide.
@@ -393,7 +393,7 @@ Everything that Traefik sees must be instance-scoped:
     destroys the nested images (data under `/data` survives if it is a bind
     mount, which the templates use).
 17. **Image tags.** `:latest` is a rolling tag. Use a semver tag in production
-    and pin `--image`/`--ref`; `--upgrade` with `:latest` is not reproducible.
+    and pin `--image`/`--ref`; `--update` with `:latest` is not reproducible.
 18. **ARM.** The published image is x86 only today; on ARM the install falls
     back to a local build (slow) or fails. Publish multi-arch or detect and warn.
 
@@ -413,7 +413,7 @@ Everything that Traefik sees must be instance-scoped:
     LanceDB-only; the workspace and legacy deployment pages need the same pass
     when that code is removed.
 22. **Tests.** The legacy `demo/tests` scripts were removed with `demo/up.sh`.
-    **Done:** 54 checks in `codx-junior-installer/tests/test_install.sh` and a
+    **Done:** 58 checks in `codx-junior-installer/tests/test_install.sh` and a
     12-combination `docker compose config` matrix. The full image build itself
     still needs a CI/publish run (it is large).
 23. **The DevOps `traefik` tool still expects the old container name and a
@@ -473,7 +473,7 @@ Definition of done:
 * `--mode slave` behind a master → health through the master, no host port.
 * `--mode dind` → two instances on one host, distinct names/volumes, one master
   and one slave.
-* Re-running any of them is a no-op/upgrade, never data loss.
+* Re-running any of them is a no-op/update, never data loss.
 * `docker compose config` is valid for every mode and `shellcheck` is clean.
 
 ---
@@ -566,10 +566,10 @@ Workspaces is the area to remove with its API module.
 
 | File | Purpose |
 |---|---|
-| `codx-junior-installer/install.sh` | the unified installer: modes, settings, validation, systemd, health, upgrade, DIND |
+| `codx-junior-installer/install.sh` | the unified installer: modes, settings, validation, systemd, health, update/remove, DIND |
 | root `install.sh` | thin front door (checkout, download or git fallback) |
 | `cloud/bootstrap.sh` | compatibility shim; old cloud-init files keep working with plain-HTTP defaults |
-| `tests/test_install.sh` | 54 stub-docker checks for help, validation, dry-run, settings, wrapper and modes |
+| `tests/test_install.sh` | 58 stub-docker checks for help, validation, dry-run, settings, wrapper and modes |
 | `runtime/docker-compose.yaml` | the single app definition |
 | `runtime/docker-compose.local.yaml` | loopback publish |
 | `runtime/docker-compose.master.yaml` | Traefik master + ACME + app routers |

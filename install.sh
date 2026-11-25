@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# codx-junior — one-line installer / upgrader (thin front door)
+# codx-junior — one-line installer / updater (thin front door)
 #
 # This file only resolves the real installer for the requested branch and hands
 # the arguments over to it. That installer is the single place that knows the
@@ -23,7 +23,7 @@
 #   ./codx-junior-installer/install.sh --help
 #
 # Settings can also come from the environment or --env-file. Re-running is an
-# upgrade: projects and settings are kept.
+# update: projects and settings are kept.
 # =============================================================================
 set -euo pipefail
 
@@ -39,7 +39,7 @@ short_help() {
 codx-junior installer (front door)
 
 Usage: install.sh [options]          install or update
-       install.sh status|logs|down|upgrade|doctor|config
+       install.sh status|logs|down|update|remove|doctor|config
 
 Modes:
   --mode local     full machine dedicated to codx-junior (localhost by default)
@@ -65,6 +65,10 @@ Common settings:
   --hidden                   hide codx-junior + child projects from the selector
   --no-hidden                show them (default)
   --build | --build-dind     build the app / DIND image from this checkout
+  --image IMAGE              app image [codxjuniorai/codx-junior:latest]
+  --update                   update to the latest image (or --image)
+  --delete-files             remove: delete env/compose/installer files
+  --confirm-delete           remove: skip the confirmation
   --systemd | --no-systemd   register a systemd unit
   --dry-run                  print what would run; change nothing
   --non-interactive          never read stdin

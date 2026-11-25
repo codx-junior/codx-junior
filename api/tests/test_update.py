@@ -271,7 +271,7 @@ def test_support_reports_the_manual_command_without_the_settings_mount(folder, m
 
     assert decision.supported is False
     assert "bind mount" in decision.reason
-    assert "bin/codx-junior upgrade" in decision.manual_command
+    assert "bin/codx-junior update" in decision.manual_command
 
 
 def test_support_is_available_on_a_compose_host_installation(folder, docker):
@@ -314,7 +314,7 @@ def test_helper_script_runs_the_installer_cli_with_the_target_image():
     script = update.helper_script(installation, image="codxjuniorai/codx-junior:v9")
 
     assert f"if [ ! -f {HOME}/lib/install.sh ]" in script
-    assert f"bash {HOME}/bin/codx-junior upgrade --non-interactive --image codxjuniorai/codx-junior:v9" in script
+    assert f"bash {HOME}/bin/codx-junior update --non-interactive --image codxjuniorai/codx-junior:v9" in script
     assert f"{update.EXIT_MARKER}$rc" in script
     assert "exit 2" in script  # the home was not mounted
 

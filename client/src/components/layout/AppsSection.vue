@@ -1,9 +1,10 @@
 <script setup>
 import NavItem from './NavItem.vue'
+import ProjectDetailt from '../ProjectDetailt.vue'
 import ViewModeToggle from './ViewModeToggle.vue'
 import PinnedProjectsSwitcher from './PinnedProjectsSwitcher.vue';
 import { isMultiInstance } from '@/config/apps'
-import { isOpenInNewTabEvent, openProjectInNewTab, projectUrl } from '@/utils/projectLinks'
+import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
 import { SESSION_LABELS } from '@/utils/sessionLabels'
 </script>
 
@@ -11,6 +12,17 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
   <div class="px-2 py-3 shrink-0 border-b border-base-content/5">
     <div class="flex gap-2 pb-1 min-w-0">  
       
+      <!-- Project selector: a workspace-mode affordance only. It opens the
+           project picker and switches the ACTIVE project. -->
+      <ProjectDetailt
+        v-if="!isCollapsed && inWorkspaceMode"
+        class="flex-1 min-w-0"
+        @click.stop=""
+        @select="onProjectSelected"
+        @open="$emit('overlay-open')"
+        @close="$emit('overlay-close')"
+      />
+
       <!-- Pin / unpin the active project (quick switcher) -->
       <button
         v-if="!isCollapsed"
@@ -203,7 +215,9 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
 export default {
   props: {
     isCollapsed: { type: Boolean, default: false },
-    moreExpanded: { type: Boolean, default: false }
+    moreExpanded: { type: Boolean, default: false },
+    // Only /<companySlug>/workspace/<projectName>/… gets the project selector.
+    inWorkspaceMode: { type: Boolean, default: false }
   },
   emits: ['update:moreExpanded', 'close', 'overlay-open', 'overlay-close'],
   data() {
@@ -218,18 +232,13 @@ export default {
     }
   },
   methods: {
-    // Project selector → switch the ACTIVE PROJECT IN PLACE.
+    // Project selector → switch the ACTIVE PROJECT.
     //
-    // The switch is fully store-driven: `activeProjectChanged` reloads the
-    // project's settings, chats, models and boards while the shell (sidebar +
-    // desktop layout) stays mounted. It must never end in a URL/route change:
-    // navigating to "/<project_name>" leaves the desktop shell and reloads the
-    // document, which is exactly what we don't want when just picking another
-    // project.
-    //
-    // Ctrl/Cmd+click (or middle click) is the browser's "open in a new tab"
-    // gesture: the project then opens in ANOTHER tab and the current one keeps
-    // running untouched (see utils/projectLinks.js).
+    // The switch is store-driven: `activeProjectChanged` reloads the project's
+    // settings, chats, models and boards while the shell (sidebar + desktop
+    // layout) stays mounted. Ctrl/Cmd+click (or middle click) is the browser's
+    // "open in a new tab" gesture: the project then opens in ANOTHER tab and
+    // the current one keeps running untouched (see utils/projectLinks.js).
     async onProjectSelected(project, event) {
       if (!project?.project_id) {
         this.$ui.addNotification({ text: 'Invalid project', type: 'error' })
@@ -250,7 +259,25 @@ export default {
         return
       }
 
-      window.location.href = projectUrl(project) || window.location.origin
+      // Single mode: land on the new project's home BEFORE activating it.
+      // `activeProjectChanged` only swaps the project segment of the current
+      // URL, so switching while a chat / workspace / browser-session / file id
+      // is in the route would leave an id that belongs to the previous
+      // project. Desktop mode is the exception: the dockview watches the
+      // active project and restores that project's own layout, so the desktop
+      // stays mounted and keeps its panels.
+      const desktopMode = this.$storex.$router?.$navigation?.isDesktopMode
+      if (!desktopMode && this.$route?.name !== 'home') {
+        await this.$router.push({ name: 'home' }).catch(() => {})
+      }
+
+      try {
+        await this.$storex.projects.activeProjectChanged(project)
+        this.$emit('close')
+      } catch (error) {
+        console.error('[AppsSection] cannot switch project', error)
+        this.$ui.addNotification({ text: 'Could not switch project', type: 'error' })
+      }
     },
     // Single entry point for opening an app from this menu.
     // On desktop a multi-instance app (declared in config/apps.js) opens a NEW

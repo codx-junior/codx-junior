@@ -2,8 +2,8 @@
 Update the codx-junior installation from the running API.
 
 There is no separate updater: the supported way to update an instance is the
-installer's ``upgrade`` command (``<home>/bin/codx-junior-<instance> upgrade``,
-or ``install.sh --home … --instance … --env-file … upgrade``). It reloads the
+installer's ``update`` command (``<home>/bin/codx-junior-<instance> update``,
+or ``install.sh --home … --instance … --env-file … update``). It reloads the
 deployment settings, pulls the image and runs ``docker compose up -d``, which
 recreates **this** container. The API therefore cannot run it in-process.
 
@@ -17,7 +17,7 @@ How the update is orchestrated
    the CLI shipped in the image.
 3. Start a **helper container** from the target image (which does have the
    CLI), detached and with the installation home + the Docker socket bind
-   mounted. It runs the installer's ``upgrade``; the installer replaces this
+   mounted. It runs the installer's ``update``; the installer replaces this
    container while the helper keeps going.
 4. Both containers share the settings folder, so the helper writes the log and
    an exit marker there and the *new* API reports the result. The browser keeps
@@ -287,7 +287,7 @@ def local_endpoint() -> str:
     raise UpdateUnsupportedError(
         "The API uses a remote Docker daemon "
         f"({endpoint}). Run the installer on that host to update it: "
-        "`sudo <install-home>/bin/codx-junior upgrade`."
+        "`sudo <install-home>/bin/codx-junior update`."
     )
 
 
@@ -409,7 +409,7 @@ def installation_from_labels(self_container: SelfContainer) -> Installation:
     if not project or not working_dir.startswith("/"):
         raise UpdateUnsupportedError(
             "This instance was not started by codx-junior-installer (no compose "
-            "labels), so there is no installation for the installer to upgrade."
+            "labels), so there is no installation for the installer to update."
         )
     instance = _safe_instance(project)
     config_files = _split_config_files(labels.get(LABEL_CONFIG_FILES, ""))
@@ -470,8 +470,8 @@ def manual_command(installation: Optional[Installation] = None) -> str:
     """The host command that performs the same update by hand."""
     prefix = "" if os.geteuid() == 0 else "sudo "
     if installation is None:
-        return "sudo <install-home>/bin/codx-junior upgrade"
-    return f"{prefix}{shlex.quote(installation.cli)} upgrade"
+        return "sudo <install-home>/bin/codx-junior update"
+    return f"{prefix}{shlex.quote(installation.cli)} update"
 
 
 def support(installation: Installation, self_container: SelfContainer) -> Support:
@@ -480,7 +480,7 @@ def support(installation: Installation, self_container: SelfContainer) -> Suppor
         return Support(
             False,
             "This is a Docker-in-Docker instance. Restart the DIND wrapper on the "
-            "host (or re-run the installer's `upgrade`, which recreates it): its "
+            "host (or re-run the installer's `update`, which recreates it): its "
             "entrypoint pulls the new app image and recreates the inner stack.",
             f"docker restart {installation.instance}",
         )
@@ -732,7 +732,7 @@ def helper_script(
 
     The script validates that the installation home really was mounted (Docker
     silently creates missing bind sources, which would make the installer write
-    into an empty directory), runs the installer's ``upgrade`` and records the
+    into an empty directory), runs the installer's ``update`` and records the
     exit code in the shared log so the new API can report the result.
 
     The log path arrives in ``CODX_JUNIOR_LOG`` (the installer honours the same
@@ -740,7 +740,7 @@ def helper_script(
     """
     install = shlex.quote(installation.installer)
     cli = shlex.quote(installation.cli)
-    upgrade = f"bash {installation.cli} upgrade --non-interactive"
+    upgrade = f"bash {installation.cli} update --non-interactive"
     if image:
         upgrade += f" --image {image}"
     lines = [
@@ -771,7 +771,7 @@ def helper_script(
     ]
     if installation.env_file:
         fallback += ["--env-file", installation.env_file]
-    fallback += ["upgrade", "--non-interactive"]
+    fallback += ["update", "--non-interactive"]
     if image:
         fallback += ["--image", image]
     lines.append(

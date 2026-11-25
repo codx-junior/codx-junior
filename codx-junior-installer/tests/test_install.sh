@@ -255,16 +255,16 @@ run "${ROOT}" bash "${INSTALLER}" "${DIND_ARGS[@]}" --update \
     --image codxjuniorai/codx-junior:v9
 CHECKED=$((CHECKED + 1))
 if [[ ${RUN_RC} -eq 0 ]] && grep -q 'up -d --remove-orphans --force-recreate' "${STUB_LOG}"; then
-    pass "dind upgrade recreates the wrapper so the inner installer runs"
+    pass "dind update recreates the wrapper so the inner installer runs"
 else
-    fail "dind upgrade recreates the wrapper so the inner installer runs" \
+    fail "dind update recreates the wrapper so the inner installer runs" \
         "rc=${RUN_RC} $(grep -E 'compose .* up' "${STUB_LOG}" | tail -n1)"
 fi
 CHECKED=$((CHECKED + 1))
 if grep -q 'CODX_JUNIOR_IMAGE: "codxjuniorai/codx-junior:v9"' "${DIND_UP_HOME}/docker-compose.yaml" 2>/dev/null; then
-    pass "dind upgrade passes the new app image to the inner installer"
+    pass "dind update passes the new app image to the inner installer"
 else
-    fail "dind upgrade passes the new app image to the inner installer" \
+    fail "dind update passes the new app image to the inner installer" \
         "$(grep CODX_JUNIOR_IMAGE "${DIND_UP_HOME}/docker-compose.yaml" 2>/dev/null)"
 fi
 
@@ -419,13 +419,74 @@ fi
 
 # Upgrade without --image must move a pinned saved tag back to latest.
 run "${ROOT}" env CODX_JUNIOR_IMAGE=codxjuniorai/codx-junior:old \
-    bash "${INSTALLER}" --mode local --upgrade --dry-run \
+    bash "${INSTALLER}" --mode local --update --dry-run \
     --provider deepseek --key sk-test --home "$(new_home upgrade)"
 CHECKED=$((CHECKED + 1))
 if [[ ${RUN_RC} -eq 0 ]] && out_has "image=codxjuniorai/codx-junior:latest"; then
-    pass "--upgrade refreshes the app image unless --image is explicit"
+    pass "--update refreshes the app image unless --image is explicit"
 else
-    fail "--upgrade refreshes the app image unless --image is explicit" "rc=${RUN_RC}"
+    fail "--update refreshes the app image unless --image is explicit" "rc=${RUN_RC}"
+fi
+
+# `update --dry-run` must never touch Docker.
+: >"${STUB_LOG}"
+run "${ROOT}" env DOCKER_FAIL=1 bash "${INSTALLER}" --mode local --dry-run --no-pull \
+    --provider deepseek --key sk-test --home "$(new_home update-dry)" update
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 && ! -s "${STUB_LOG}" ]]; then
+    pass "update --dry-run does not call docker"
+else
+    fail "update --dry-run does not call docker" "rc=${RUN_RC}"
+fi
+
+# Remove an installation and its generated files.
+REMOVE_HOME="$(new_home remove-home)"
+mkdir -p "${REMOVE_HOME}"
+printf 'CODX_JUNIOR_MODE=local\nCODX_JUNIOR_INSTANCE=cjremove\n' >"${REMOVE_HOME}/.env"
+printf 'name: cjremove\n' >"${REMOVE_HOME}/docker-compose.yaml"
+printf 'CODX_JUNIOR_INSTANCE=cjremove\n' >"${REMOVE_HOME}/installation.env"
+: >"${STUB_LOG}"
+run "${ROOT}" env CODX_JUNIOR_INSTALLER_STATE="${REMOVE_HOME}/installation.env" \
+    bash "${INSTALLER}" --mode local --home "${REMOVE_HOME}" --instance cjremove \
+    --env-file "${REMOVE_HOME}/.env" remove --delete-files --confirm-delete
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && grep -qF 'down -v --remove-orphans' "${STUB_LOG}" \
+    && [[ ! -e "${REMOVE_HOME}/.env" && ! -e "${REMOVE_HOME}/docker-compose.yaml" ]]; then
+    pass "remove --delete-files removes resources and generated files"
+else
+    fail "remove --delete-files removes resources and generated files" "rc=${RUN_RC}"
+fi
+
+# Remove assistant supplies missing settings and defaults to keeping files.
+ASSIST_HOME="$(new_home remove-assistant)"
+run_input "${ASSIST_HOME}
+local
+cjassistant
+
+n" "${ROOT}" bash "${INSTALLER}" remove
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && err_has "Remove settings" \
+    && both_has "No files will be removed" && both_has "irreversible"; then
+    pass "remove assistant asks for missing settings and defaults to keeping files"
+else
+    fail "remove assistant asks for missing settings and defaults to keeping files" "rc=${RUN_RC}"
+fi
+
+# DIND removal also deletes the nested-storage volume.
+DIND_REMOVE_HOME="$(new_home dind-remove)"
+mkdir -p "${DIND_REMOVE_HOME}"
+printf 'CODX_JUNIOR_MODE=dind\nCODX_JUNIOR_INSTANCE=cjdindremove\nCODX_DIND_STORAGE=cjdindremove-dind\n' >"${DIND_REMOVE_HOME}/.env"
+printf 'name: cjdindremove\n' >"${DIND_REMOVE_HOME}/docker-compose.yaml"
+: >"${STUB_LOG}"
+run "${ROOT}" env CODX_JUNIOR_INSTALLER_STATE="${DIND_REMOVE_HOME}/installation.env" \
+    bash "${INSTALLER}" --mode dind --home "${DIND_REMOVE_HOME}" --instance cjdindremove \
+    --env-file "${DIND_REMOVE_HOME}/.env" remove --delete-files --confirm-delete
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && grep -qF 'volume rm cjdindremove-dind' "${STUB_LOG}" \
+    && [[ ! -e "${DIND_REMOVE_HOME}/docker-compose.yaml" ]]; then
+    pass "remove deletes the DIND volume and generated files"
+else
+    fail "remove deletes the DIND volume and generated files" "rc=${RUN_RC}"
 fi
 
 # --- 11. config command ------------------------------------------------------

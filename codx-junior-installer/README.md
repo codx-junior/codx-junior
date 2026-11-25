@@ -108,10 +108,10 @@ curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/instal
 
 Without `--domain` this serves plain HTTP on the published port. Add
 `--domain x.example.com --acme-email ops@example.com` for Traefik + ACME.
-Re-running is the upgrade path; projects and settings are kept.
+Re-running is the update path; projects and settings are kept.
 
 The web UI has the same operation: **Settings → Updates** (admin) pulls the
-image and runs `codx-junior upgrade` from a helper container, so nobody has to
+image and runs `codx-junior update` from a helper container, so nobody has to
 copy the installer to the host. The installer publishes
 `<home>/data/settings/installer.json` for that; instances created before it are
 discovered from their compose labels. See `api/docs/system-update.md`.
@@ -152,7 +152,13 @@ Images are published under **`codxjuniorai/codx-junior`**:
 | `vX.Y.Z` | pinned release |
 | `dind` | Docker-in-Docker wrapper (contains the installer and runtime files) |
 
-Publish with the repository script:
+Tags, architectures, provenance and the git flow that publishes each tag are
+documented in [docs/docker-hub.md](../docs/docker-hub.md). CI publishes `latest`
+on every push to `main` and `vX.Y.Z` on every release tag; do not push those
+image tags by hand.
+
+Publish with the repository script (the break-glass path, or for the `dind`
+wrapper):
 
 ```bash
 DOCKERHUB_TOKEN=... IMAGE_TAGS="latest" \
@@ -187,13 +193,13 @@ supports `--reload`, `--build`, `--logs`, `--down` and `--purge`.
 
 ## DIND
 
-Every DIND install/upgrade pulls the latest
+Every DIND install/update pulls the latest
 `codxjuniorai/codx-junior:dind` tag and fails instead of silently using a stale
 local image. Use `--no-pull` only when you intentionally run a local image, or
 `--build-dind` to build it. If the pulled digest changes, the wrapper is
 force-recreated.
 
-`--update` (or the `upgrade` command) **always** recreates the DIND wrapper,
+`--update` (or the `update` command) **always** recreates the DIND wrapper,
 even when the DIND digest did not change: the wrapper entrypoint is what pulls
 the inner app image and recreates the nested stack, and the app image is
 published independently of the DIND image. `--update --image TAG` also rewrites
@@ -234,10 +240,36 @@ inner installer never requires the host network.
 /opt/codx-junior/bin/codx-junior-compose logs -f
 /opt/codx-junior/bin/codx-junior-compose down
 
-sudo /opt/codx-junior/bin/codx-junior upgrade        # same, from the installed CLI
-sudo ./install.sh --upgrade
+sudo /opt/codx-junior/bin/codx-junior update         # latest image, recreate
+sudo ./install.sh --update
+sudo ./install.sh --update --image codxjuniorai/codx-junior:v1.2.3
 sudo ./install.sh status|logs|down|restart|doctor|config|url|env|version
 ```
+
+Remove an installation (the default keeps projects, data and images):
+
+```bash
+sudo ./install.sh remove                         # assistant + summary + confirmation
+sudo ./install.sh remove --delete-files          # also .env, compose, installation.env, lib/, bin/
+sudo ./install.sh remove --delete-files --confirm-delete   # automation
+sudo ./install.sh remove --delete-files --dry-run          # preview only
+```
+
+If settings are missing, the remove assistant asks for the target, mode and
+instance, using the current values as defaults. It then asks whether to keep the
+installation files; the default is **keep** (`y`). The summary lists every file
+and folder that will be deleted, or prints exactly:
+
+```text
+No files will be removed
+```
+
+For DIND, removal deletes the wrapper container and its `dind-storage` volume
+(nested containers, images and layers). Host projects/data are kept unless you
+delete them yourself. External Traefik networks are never removed. Removal is
+irreversible and always asks for confirmation unless `--confirm-delete` is set.
+
+`--update` is the only refresh command; `--upgrade` is not accepted.
 
 On systemd hosts the installer registers `codx-junior.service` (or
 `codx-junior-<instance>.service`), and installs a `codx-junior` CLI.

@@ -58,6 +58,14 @@ Notes:
 * Review the PR file by file, in different view modes, with an AI-generated report.
 * Open a PR review as a chat in `prview` mode to discuss it with the team and the AI.
 
+## Releases and the published image
+
+Merging to `main` publishes the rolling `codxjuniorai/codx-junior:latest`. A
+`vX.Y.Z` tag publishes the pinned release image and the GitHub release. Tag only
+from a green `main`, never move an existing release tag, and verify the image
+before announcing it. The full branch/tag flow, tags and provenance are in
+[Docker Hub image](/docker-hub).
+
 ## GitHub issues
 
 Paste the URL of a GitHub issue to read it inside codx-junior. The GitHub issues agent summarises the discussion, finds the related code, reasons about the problem and proposes sub-tasks to solve it.

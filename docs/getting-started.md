@@ -9,6 +9,11 @@ nginx + the compiled SPA). Knowledge is embedded LanceDB, so there is no vector
 database service. Optional model servers are external OpenAI-compatible
 endpoints, not services the installer starts.
 
+The release artifact is the Docker Hub image
+[`codxjuniorai/codx-junior`](https://hub.docker.com/r/codxjuniorai/codx-junior).
+Tags, architectures, provenance and the branch/tag flow that publishes it are
+documented in [Docker Hub image](/docker-hub).
+
 ::: tip One installer, four modes
 `local`, `server` (normally Traefik primary) and `dind`; add `--dev` for the development option (host: live checkout; DIND: DEBUG=1)
 (one isolated nested instance per container). The full rationale, module audit
@@ -66,8 +71,8 @@ Only the provider and its key are required. Useful extras:
 The installer installs Docker when it is missing, clones or updates the runtime
 assets, writes the settings and verifies the health endpoint. Exit code `0`
 means the check passed. `install.sh --help` lists everything. Running it again is
-the upgrade path: your projects and settings are kept. From the web UI,
-**Settings → Updates** (admin) runs the same upgrade from a helper container, so
+the update path: your projects and settings are kept. From the web UI,
+**Settings → Updates** (admin) runs the same update from a helper container, so
 nobody needs SSH access; see `api/docs/system-update.md`.
 
 ## Deployment modes
@@ -130,7 +135,7 @@ sudo ./install.sh --mode dind --traefik primary --domain acme.example.com \
   --acme-email ops@example.com --provider deepseek --key sk-xxxxxxxx
 ```
 
-Each install/upgrade pulls the latest `codxjuniorai/codx-junior:dind` image and
+Each install/update pulls the latest `codxjuniorai/codx-junior:dind` image and
 fails if the pull fails. Use `--no-pull` to use a local image intentionally.
 
 Each instance is one wrapper container with its own nested Docker daemon,
@@ -211,9 +216,13 @@ the file to reset the defaults.
 /opt/codx-junior/bin/codx-junior-compose logs -f
 /opt/codx-junior/bin/codx-junior-compose down     # projects/settings kept
 
-sudo /opt/codx-junior/bin/codx-junior upgrade       # source + image + recreate
-sudo ./install.sh --upgrade                        # same, from the checkout
+sudo /opt/codx-junior/bin/codx-junior update        # source + image + recreate
+sudo ./install.sh --update                         # same, from the checkout
 sudo ./install.sh status|logs|down|doctor|config
+
+sudo ./install.sh remove                           # summary + confirmation
+sudo ./install.sh remove --delete-files            # also generated env/compose files
+sudo ./install.sh remove --delete-files --confirm-delete  # automation
 ```
 
 On systemd hosts the installer registers `codx-junior.service` (or

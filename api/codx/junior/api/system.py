@@ -133,7 +133,7 @@ def start_update(
 
     The image is pulled first; when it did not change (and ``force`` is false)
     the answer's ``status`` is ``up_to_date`` and the container is left alone.
-    Otherwise a helper container runs ``<install-home>/bin/codx-junior upgrade``
+    Otherwise a helper container runs ``<install-home>/bin/codx-junior update``
     and this container is recreated by the installer.
 
     Requires the ``admin`` role.

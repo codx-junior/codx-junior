@@ -126,7 +126,7 @@ codx-junior unified installer
 
 Usage:
   ./install.sh [options] [install]      install or update (the default)
-  ./install.sh [options] status|logs|down|up|restart|upgrade|doctor|config|url|env|version
+  ./install.sh [options] status|logs|down|up|restart|update|remove|doctor|config|url|env|version
 
 Modes:
   --mode local              full machine dedicated to codx-junior (localhost by default)
@@ -192,8 +192,9 @@ Lifecycle:
   --no-pull                 do not pull images (air-gapped / local image)
   --no-docker-install       fail instead of installing Docker
   --open-firewall           ufw: allow ssh + the published ports
-  --update                  alias of --upgrade
-  --upgrade                 refresh source/image and recreate
+  --update                  refresh source/image and recreate
+  --delete-files            with remove: delete env/compose/installer files
+  --confirm-delete          with remove: skip the interactive confirmation
   --dry-run                 print what would run; change nothing
   --force                   continue when an old installation is detected
   --container               internal: running inside the DIND image
@@ -1008,6 +1009,9 @@ ADMIN_USER="${CODX_JUNIOR_ADMIN_USER:-}"
 ADMIN_PASSWORD="${CODX_JUNIOR_ADMIN_PASSWORD:-}"
 ADMIN_EMAIL="${CODX_JUNIOR_ADMIN_EMAIL:-}"
 HIDDEN="${CODX_JUNIOR_HIDDEN:-0}"
+DELETE_FILES=0
+DELETE_FILES_EXPLICIT=0
+CONFIRM_DELETE=0
 KNOWLEDGE_BACKEND="${CODX_JUNIOR_KNOWLEDGE_BACKEND:-lancedb}"
 
 DOMAINS=()
@@ -1083,6 +1087,8 @@ while [[ $# -gt 0 ]]; do
         --no-docker-install)    INSTALL_DOCKER=0; shift ;;
         --open-firewall)        OPEN_FIREWALL=1; shift ;;
         --update)               UPGRADE=1; shift ;;
+        --delete-files)         DELETE_FILES=1; DELETE_FILES_EXPLICIT=1; shift ;;
+        --confirm-delete)       CONFIRM_DELETE=1; shift ;;
         --hidden)               HIDDEN=1; shift ;;
         --no-hidden|--show)     HIDDEN=0; shift ;;
         --coworking)            COWORKING=1; shift ;;
@@ -1101,7 +1107,6 @@ while [[ $# -gt 0 ]]; do
         --no-wait)              NO_WAIT=1; shift ;;
         --skip-tls-wait)        SKIP_TLS_WAIT=1; shift ;;
         --no-pull)              NO_PULL=1; shift ;;
-        --upgrade)              UPGRADE=1; shift ;;
         --dry-run)              DRY_RUN=1; shift ;;
         --force)                FORCE=1; shift ;;
         --container)            CONTAINER=1; shift ;;
@@ -1113,7 +1118,7 @@ while [[ $# -gt 0 ]]; do
         --repo)                 need "$@"; REPO="$2"; shift 2 ;;
         -h|--help)              usage; exit 0 ;;
         -V|--version)           printf 'codx-junior installer %s\n' "${INSTALLER_VERSION}"; exit 0 ;;
-        install|upgrade|status|logs|down|doctor|config|url|env|version|up|restart)
+        install|update|remove|status|logs|down|doctor|config|url|env|version|up|restart)
                                 COMMAND="$1"; shift ;;
         "")                     shift ;;
         *)                      die "unknown option or command: $1 (see --help)" ;;
@@ -1154,7 +1159,7 @@ fi
 case "${MODE}" in local|server|slave|dind) ;; *) die "invalid --mode '${MODE}' (local|server|slave|dind)" ;; esac
 # DIND needs the nested Docker socket for coworking by design.
 [[ "${MODE}" == "dind" ]] && COWORKING=1
-if [[ "${MODE}" == "dind" && "${DIND_MODE}" != "server" ]]; then
+if [[ "${COMMAND}" != "remove" && "${MODE}" == "dind" && "${DIND_MODE}" != "server" ]]; then
     if [[ "${DIND_MODE_CLI}" == "1" ]]; then
         die "the DIND inner installation is always server; --dind-mode is no longer needed"
     fi
@@ -1184,7 +1189,7 @@ fi
 [[ "${WEB_PORT}" =~ ^[0-9]+$ ]] && ((WEB_PORT >= 1 && WEB_PORT <= 65535)) || die "invalid --port '${WEB_PORT}'"
 [[ "${REF}" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid --ref '${REF}'"
 
-if [[ "${COMMAND}" == "upgrade" ]]; then UPGRADE=1; fi
+if [[ "${COMMAND}" == "update" ]]; then UPGRADE=1; fi
 
 # No arguments on a terminal: run the guided setup. --interactive forces it,
 # --non-interactive (or --yes) always wins.
@@ -1195,7 +1200,7 @@ if [[ "${INTERACTIVE}" != "1" && "${NON_INTERACTIVE}" != "1" \
       && "${ORIGINAL_ARGC}" -eq 0 && "${WIZARD_TTY}" == "1" ]]; then
     INTERACTIVE=1
 fi
-if [[ "${INTERACTIVE}" == "1" ]]; then
+if [[ "${INTERACTIVE}" == "1" && "${COMMAND}" != "remove" ]]; then
     interactive_wizard
     EFFECTIVE_MODE="${MODE}"
     if [[ "${MODE}" == "dind" ]]; then
@@ -1222,6 +1227,7 @@ abs_dir() {
     printf '%s' "$p"
 }
 HOME_DIR="$(abs_dir "${HOME_DIR}")"
+[[ -n "${CODX_JUNIOR_INSTALLER_STATE:-}" ]] || STATE_FILE="${HOME_DIR}/installation.env"
 DATA_DIR="$(abs_dir "${DATA_DIR}")"
 PROJECTS="$(abs_dir "${PROJECTS}")"
 ENV_FILE="$(abs_dir "${ENV_FILE}")"
@@ -1270,7 +1276,7 @@ IMAGE="${IMAGE:-${DEFAULT_IMAGE}}"
 
 # An upgrade means "move to the current release" unless the caller explicitly
 # pinned an image. Settings from the previous install may still contain an old
-# tag/semver; keeping it silently turns --upgrade into a no-op.
+# tag/semver; keeping it silently turns --update into a no-op.
 if [[ "${UPGRADE}" == "1" && "${IMAGE_CLI}" == "0" ]] \
    && [[ "${DEV_MODE}" != "1" || "${MODE}" == "dind" ]]; then
     IMAGE="${DEFAULT_IMAGE}"
@@ -1299,13 +1305,13 @@ if [[ "${TRAEFIK_MODE}" == "none" && "${EFFECTIVE_MODE}" == "local" ]]; then
     PRIMARY_DOMAIN="localhost"
 fi
 
-if [[ "${TRAEFIK_MODE}" != "none" ]] && [[ "${#DOMAINS[@]}" -eq 0 ]]; then
+if [[ "${COMMAND}" != "remove" && "${TRAEFIK_MODE}" != "none" ]] && [[ "${#DOMAINS[@]}" -eq 0 ]]; then
     die "Traefik '${TRAEFIK_MODE}' needs --domain (or CODX_JUNIOR_DOMAIN)"
 fi
 if [[ "${TRAEFIK_MODE}" == "master" && "${NO_TLS}" == "1" ]]; then
     die "--traefik primary cannot be combined with --no-tls"
 fi
-if [[ "${TRAEFIK_MODE}" == "master" && -z "${ACME_EMAIL}" ]]; then
+if [[ "${COMMAND}" != "remove" && "${TRAEFIK_MODE}" == "master" && -z "${ACME_EMAIL}" ]]; then
     die "--traefik primary needs --acme-email for Let's Encrypt"
 fi
 if [[ "${MODE}" == "dind" && "${DIND_MODE}" == "server" && "${NO_TLS}" == "1" ]]; then
@@ -1397,7 +1403,7 @@ if [[ -z "${API_KEY}" && -n "${API_KEY_FILE}" ]]; then
     IFS= read -r API_KEY < "${API_KEY_FILE}" || true
     API_KEY="${API_KEY%%$'\r'}"
 fi
-if [[ "${NO_AI}" != "1" ]]; then
+if [[ "${COMMAND}" != "remove" && "${NO_AI}" != "1" ]]; then
     if [[ -z "${API_KEY}" ]]; then
         die "an AI provider key is required (--key/--key-file, or --no-ai to configure it later)"
     fi
@@ -1858,7 +1864,7 @@ exec bash $(printf '%q' "${installer}") --home $(printf '%q' "${HOME_DIR}") --in
 CLI
     chmod 755 "${local_bin}" 2>/dev/null || true
     if install -m 0755 "${local_bin}" "/usr/local/bin/${name}" 2>/dev/null; then
-        log "CLI: ${name} (status|logs|down|upgrade|doctor|config)"
+        log "CLI: ${name} (status|logs|down|update|remove|doctor|config)"
     else
         warn "could not install /usr/local/bin/${name}; use ${local_bin}"
     fi
@@ -2408,9 +2414,219 @@ run_install() {
     summary
 }
 
-run_upgrade() {
+run_remove() {
+    [[ "${BANNER_PRINTED}" == "1" ]] || print_banner
+
+    # The remove path must not need a complete install configuration. When no
+    # settings file is present, ask for the minimum needed to identify the
+    # installation and offer safe defaults.
+    if [[ ! -f "${ENV_FILE}" && "${CONFIRM_DELETE}" != "1" ]]; then
+        if [[ "${NON_INTERACTIVE}" == "1" ]] \
+           || [[ "${WIZARD_TTY}" != "1" && "${INTERACTIVE}" != "1" ]]; then
+            die "no settings file at ${ENV_FILE}; pass --home/--env-file or run interactively"
+        fi
+        section "Remove settings"
+        local target_default="${HOME_DIR:-${PWD}}"
+        if [[ -f "${target_default}/docker-compose.yaml" ]] \
+           && grep -q 'codxjuniorai/codx-junior:dind' "${target_default}/docker-compose.yaml" 2>/dev/null; then
+            MODE="dind"
+        fi
+        HOME_DIR="$(ask "Target folder" "${target_default}")"
+        HOME_DIR="$(abs_dir "${HOME_DIR}")"
+        MODE="$(ask_choice "Deployment mode" "local server dind" "${MODE:-local}")"
+        INSTANCE="$(ask "Instance name" "${INSTANCE:-$(basename "${HOME_DIR}")}")"
+        STATE_FILE="${HOME_DIR}/installation.env"
+        if [[ "${MODE}" == "dind" ]]; then
+            ENV_FILE="${HOME_DIR}/.env"
+        else
+            ENV_FILE="${HOME_DIR}/config/${INSTANCE}.env"
+        fi
+        DATA_DIR="${HOME_DIR}/data"
+        PROJECTS="${DATA_DIR}/projects"
+    fi
+    if [[ "${DELETE_FILES_EXPLICIT}" != "1" && "${CONFIRM_DELETE}" != "1" \
+          && "${DRY_RUN}" != "1" && "${NON_INTERACTIVE}" != "1" ]] \
+       && { [[ "${WIZARD_TTY}" == "1" || "${INTERACTIVE}" == "1" ]]; }; then
+        if [[ "$(ask_yesno "Keep installation files (env, compose, installation.env)?" 1)" == "1" ]]; then
+            DELETE_FILES=0
+        else
+            DELETE_FILES=1
+        fi
+    fi
+
+    local is_dind=0
+    [[ "${MODE}" == "dind" ]] && is_dind=1
+
+    local remove_files=()
+    local project_dir="" base_runtime="" compose_exists=0
+    if [[ "${is_dind}" == "1" ]]; then
+        if [[ -f "${HOME_DIR}/docker-compose.yaml" ]]; then
+            remove_files=(-f "${HOME_DIR}/docker-compose.yaml")
+            project_dir="${HOME_DIR}"
+            compose_exists=1
+        else
+            if [[ -f "${HOME_DIR}/lib/runtime/docker-compose.yaml" ]]; then
+                base_runtime="${HOME_DIR}/lib/runtime"
+            elif [[ -f "${SELF_DIR}/runtime/docker-compose.yaml" ]]; then
+                base_runtime="${SELF_DIR}/runtime"
+            fi
+            if [[ -n "${base_runtime}" ]]; then
+                local dind_dir="${SELF_DIR}/dind"
+                if [[ -f "${HOME_DIR}/lib/dind/docker-compose.yaml" ]]; then
+                    dind_dir="${HOME_DIR}/lib/dind"
+                fi
+                remove_files=(-f "${base_runtime}/docker-compose.yaml")
+                case "${TRAEFIK_MODE}" in
+                    master) remove_files+=(-f "${dind_dir}/docker-compose.master.yaml") ;;
+                    slave)  remove_files+=(-f "${dind_dir}/docker-compose.slave.yaml") ;;
+                esac
+                [[ "${SYSBOX}" == "1" ]] && remove_files+=(-f "${dind_dir}/docker-compose.sysbox.yaml")
+                project_dir="${base_runtime}"
+                compose_exists=1
+            fi
+        fi
+    else
+        if [[ -f "${HOME_DIR}/lib/runtime/docker-compose.yaml" ]]; then
+            base_runtime="${HOME_DIR}/lib/runtime"
+        elif [[ -f "${SELF_DIR}/runtime/docker-compose.yaml" ]]; then
+            base_runtime="${SELF_DIR}/runtime"
+        fi
+        if [[ -n "${base_runtime}" ]]; then
+            remove_files=(-f "${base_runtime}/docker-compose.yaml")
+            if [[ "${DEV_MODE}" == "1" ]]; then
+                remove_files+=(-f "${base_runtime}/docker-compose.dev.yaml")
+            fi
+            case "${TRAEFIK_MODE}" in
+                master) remove_files+=(-f "${base_runtime}/docker-compose.master.yaml") ;;
+                slave)  remove_files+=(-f "${base_runtime}/docker-compose.slave.yaml") ;;
+                *)      remove_files+=(-f "${base_runtime}/docker-compose.local.yaml") ;;
+            esac
+            project_dir="${base_runtime}"
+            compose_exists=1
+        fi
+    fi
+
+    local containers=("${INSTANCE}")
+    [[ "${is_dind}" == "0" ]] && containers+=("${INSTANCE}-traefik")
+    local networks=()
+    [[ "${is_dind}" == "0" ]] && networks=("${INSTANCE}-internal")
+    local volume="${CODX_DIND_STORAGE:-${INSTANCE}-dind}"
+    local files=() seen=" "
+    add_file() {
+        [[ -n "$1" && "${seen}" != *"|$1|"* ]] || return 0
+        seen="${seen}|$1|"
+        files+=("$1")
+    }
+    add_file "${ENV_FILE}"
+    add_file "${HOME_DIR}/docker-compose.yaml"
+    add_file "${HOME_DIR}/installation.env"
+    add_file "${HOME_DIR}/.env"
+    add_file "${STATE_FILE}"
+    add_file "${HOME_DIR}/lib"
+    add_file "${HOME_DIR}/bin"
+    add_file "${HOME_DIR}/config"
+    local cli_name="codx-junior-${INSTANCE}"
+    [[ "${INSTANCE}" == "codx-junior" ]] && cli_name="codx-junior"
+    local unit_name="codx-junior-${INSTANCE}.service"
+    [[ "${INSTANCE}" == "codx-junior" ]] && unit_name="codx-junior.service"
+    add_file "/usr/local/bin/${cli_name}"
+    add_file "/etc/systemd/system/${unit_name}"
+
+    printf '\n%sRemoval summary%s\n' "${C_CYAN}" "${C_RESET}"
+    printf '  instance   : %s\n' "${INSTANCE}"
+    printf '  mode       : %s\n' "${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
+    printf '  target     : %s\n' "${HOME_DIR}"
+    printf '  containers : %s\n' "${containers[*]}"
+    if [[ "${#networks[@]}" -gt 0 ]]; then
+        printf '  networks   : project/%s (external networks are kept)\n' "${networks[*]}"
+    else
+        printf '  networks   : nested networks (removed with the DIND volume)\n'
+    fi
+    if [[ "${is_dind}" == "1" ]]; then
+        printf '  volume     : %s (nested Docker layers/images/containers)\n' "${volume}"
+    fi
+    printf '  kept       : projects, host data, settings inside data/, images, external networks\n'
+
+    printf '\nFiles and folders to be removed:\n'
+    local f existing_files=0
+    if [[ "${DELETE_FILES}" != "1" ]]; then
+        printf 'No files will be removed\n'
+    else
+        for f in "${files[@]}"; do
+            [[ -n "${f}" && -e "${f}" ]] || continue
+            existing_files=1
+            if [[ -d "${f}" ]]; then
+                printf '  %s/ (folder)\n' "${f}"
+            else
+                printf '  %s\n' "${f}"
+            fi
+        done
+        [[ "${existing_files}" == "1" ]] || printf 'No files will be removed\n'
+    fi
+
+    printf '\n\033[1;31mWARNING: removing an installation is irreversible.\033[0m\n'
+
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "dry run: nothing was removed"
+        return 0
+    fi
+    if [[ "${CONFIRM_DELETE}" != "1" ]]; then
+        if [[ "${NON_INTERACTIVE}" == "1" ]] \
+           || [[ "${WIZARD_TTY}" != "1" && "${INTERACTIVE}" != "1" ]]; then
+            die "refusing to remove without confirmation; re-run with --confirm-delete"
+        fi
+        if [[ "$(ask_yesno "Remove ${INSTANCE} and its Docker resources?" 0)" != "1" ]]; then
+            log "cancelled"
+            return 0
+        fi
+    fi
+
+    if command -v docker >/dev/null 2>&1; then
+        if [[ "${compose_exists}" == "1" ]]; then
+            local args=(--project-directory "${project_dir}" --project-name "${INSTANCE}")
+            [[ -f "${ENV_FILE}" ]] && args+=(--env-file "${ENV_FILE}")
+            docker compose "${args[@]}" "${remove_files[@]}" down -v --remove-orphans \
+                || warn "docker compose down failed; falling back to direct removal"
+        fi
+        local c
+        for c in "${containers[@]}"; do docker rm -f "${c}" >/dev/null 2>&1 || true; done
+        docker network rm "${networks[@]}" >/dev/null 2>&1 || true
+        if [[ "${is_dind}" == "1" ]]; then
+            docker volume rm "${volume}" >/dev/null 2>&1 || true
+        fi
+    else
+        warn "docker is not available; only files can be removed"
+    fi
+
+    if [[ -f "/etc/systemd/system/${unit_name}" ]] && command -v systemctl >/dev/null 2>&1; then
+        systemctl disable --now "${unit_name}" >/dev/null 2>&1 || true
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+
+    if [[ "${DELETE_FILES}" == "1" ]]; then
+        for f in "${files[@]}"; do
+            [[ -n "${f}" && "${f}" != "/" ]] || continue
+            rm -rf -- "${f}" 2>/dev/null || warn "could not remove ${f}"
+        done
+        rmdir -- "${HOME_DIR}" 2>/dev/null || true
+        log "Removed installation files"
+    else
+        log "Docker resources removed; generated files were kept"
+    fi
+}
+
+run_update() {
     UPGRADE=1
     [[ "${BANNER_PRINTED}" == "1" ]] || print_banner
+    if [[ "${DRY_RUN}" == "1" ]]; then
+        log "dry run: would update ${INSTANCE} to ${IMAGE}"
+        if [[ "${MODE}" != "dind" ]]; then
+            select_compose_files
+            build_compose_env
+            run_config | sed 's/^/  /'
+        fi
+        return 0
+    fi
     if [[ "${MODE}" == "dind" ]]; then
         ensure_docker
         save_installer_state
@@ -2562,7 +2778,8 @@ run_doctor() {
 
 case "${COMMAND}" in
     install) run_install ;;
-    upgrade) run_upgrade ;;
+    update)  run_update ;;
+    remove)  run_remove ;;
     status)  run_status ;;
     logs)    run_logs ;;
     down)    run_down ;;

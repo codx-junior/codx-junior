@@ -8,7 +8,7 @@ replaced.
 The same operation from the host is:
 
 ```bash
-sudo /opt/codx-junior/bin/codx-junior upgrade
+sudo /opt/codx-junior/bin/codx-junior update
 ```
 
 ---
@@ -60,7 +60,7 @@ browser ──GET /api/system/update─────┘  (poll through the restar
   bind-mounted at the same paths. It runs:
 
   ```bash
-  bash <home>/bin/codx-junior upgrade --non-interactive [--image <target>]
+  bash <home>/bin/codx-junior update --non-interactive [--image <target>]
   ```
 
   The script first checks that `<home>/lib/install.sh` exists: Docker silently
@@ -120,7 +120,7 @@ Both routes require the `admin` role.
 {
   "supported": true,
   "reason": "",
-  "manual_command": "/opt/codx-junior/bin/codx-junior upgrade",
+  "manual_command": "/opt/codx-junior/bin/codx-junior update",
   "current": {
     "version": "1.4.0", "ref": "v1.4.0", "commit": "abc1234def56",
     "image": "codxjuniorai/codx-junior:latest",

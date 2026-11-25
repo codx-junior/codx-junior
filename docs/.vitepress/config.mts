@@ -25,6 +25,7 @@ export default defineConfig({
       { text: 'Guide', link: '/guide/introduction' },
       { text: 'Features', link: '/features/' },
       { text: 'Getting started', link: '/getting-started' },
+      { text: 'Docker Hub', link: '/docker-hub' },
       { text: 'Configuration', link: '/configuration' },
       { text: 'Demo', link: '/demo' },
       { text: 'Team', link: '/team' }
@@ -91,6 +92,7 @@ export default defineConfig({
           text: 'Getting started',
           items: [
             { text: 'Self-host with Docker', link: '/getting-started' },
+            { text: 'Docker Hub image', link: '/docker-hub' },
             { text: 'Initial setup', link: '/initial-setup' },
             { text: 'Configuration', link: '/configuration' },
             { text: 'Self-hosted or managed', link: '/managed' }

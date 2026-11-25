@@ -63,6 +63,7 @@ import WindowsMenu from '../main-menu/WindowsMenu.vue'
         <AppsSection
           :is-collapsed="isCollapsed"
           :more-expanded="moreExpanded"
+          :in-workspace-mode="isWorkspaceMode"
           @update:moreExpanded="moreExpanded = $event"
           @close="handleClose"
           @toggle-collapse="toggleCollapse"
@@ -186,6 +187,14 @@ export default {
     },
     currentWorkspaceId() {
       return this.$storex.$router.$navigation.getWorkspaceId()
+    },
+    // Workspace mode is a project-scoped URL:
+    // /<companySlug>/workspace/<projectName>/…
+    // The company shell carries a companySlug but no projectName, so it never
+    // matches. The project selector below is rendered only in this mode.
+    isWorkspaceMode() {
+      const params = this.$route?.params || {}
+      return Boolean(params.companySlug && params.projectName)
     },
     isDesktopMode() {
       return this.$storex.$router.$navigation.isDesktopMode

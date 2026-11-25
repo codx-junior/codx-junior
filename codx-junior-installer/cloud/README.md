@@ -200,7 +200,7 @@ Flags of the same name exist for everything (`--provider`, `--key`, `--port`,
 
 | Path | Contents |
 |---|---|
-| `/opt/codx-junior/src` | git checkout of this repository (upgrade with `codx-junior upgrade`) |
+| `/opt/codx-junior/src` | git checkout of this repository (update with `codx-junior update`) |
 | `/opt/codx-junior/lib` | installer/runtime assets used by the systemd unit and CLI |
 | `/opt/codx-junior/config/<instance>.env` (or the `--env-file` you passed) | the settings file (mode 600 — **it holds the API key**) |
 | `/opt/codx-junior/data/settings` | global settings, users, chats (bind mount) |
@@ -242,10 +242,10 @@ The installer also puts a small CLI on the machine:
 | `codx-junior restart` | restart the container |
 | `codx-junior up` | start / recreate (run it after editing `.env`) |
 | `codx-junior down` | stop and remove the container (volumes are kept) |
-| `codx-junior upgrade` | `git pull` + pull/build the image + recreate |
+| `codx-junior update` | `git pull` + pull/build the image + recreate |
 | `codx-junior env` | show the settings with the API key masked |
 
-**Upgrade:** `codx-junior upgrade`, or re-run `bootstrap.sh` (same effect,
+**Update:** `codx-junior update`, or re-run `bootstrap.sh` (same effect,
 idempotent; projects and settings are untouched).
 
 **Change the provider later:** edit `/etc/codx-junior/settings.env`, then

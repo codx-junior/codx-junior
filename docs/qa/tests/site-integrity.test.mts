@@ -434,3 +434,61 @@ describe('T4 — every route claimed in the feature pages is published in a rout
     expect(uncovered(claimsInSource('fixture', corrected), publishedRoutes())).toEqual([])
   })
 })
+
+// ---------------------------------------------------------------------------
+// T5 — the Docker Hub image stays documented
+// ---------------------------------------------------------------------------
+//
+// Install pulls the published image instead of compiling. An image tag that no
+// page documents (or a repository rename that leaves the docs describing the old
+// coordinates) is an install path nobody can debug. These assertions tie the page
+// to the release workflow, the installer defaults and the publish script, so a
+// rename has to touch the documentation in the same change.
+
+const REPO_ROOT = resolve(ROOT, '..')
+const DOCKER_HUB_PAGE = 'docker-hub.md'
+
+/** The image coordinate the release workflow publishes, e.g. `org/repo`. */
+function releaseImage(): string {
+  const workflow = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
+  const match = workflow.match(/^\s*IMAGE:\s*([^\s#]+)\s*$/m)
+  expect(match, 'release.yml no longer declares IMAGE').not.toBeNull()
+  if (match === null) throw new Error('release.yml no longer declares IMAGE')
+  return match[1]
+}
+
+describe('T5 — the Docker Hub image stays documented', () => {
+  it('release.yml declares a repository coordinate (canary: the parse works)', () => {
+    expect(releaseImage()).toMatch(/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/)
+  })
+
+  it('the Docker Hub page exists and is reachable from nav or sidebar', () => {
+    expect(existsSync(join(ROOT, DOCKER_HUB_PAGE))).toBe(true)
+    expect(declaredLinks()).toContain('/docker-hub')
+    expect(pageFileFor('/docker-hub')).toBe(DOCKER_HUB_PAGE)
+  })
+
+  it('the page names the exact repository published by CI', () => {
+    const page = readFileSync(join(ROOT, DOCKER_HUB_PAGE), 'utf8')
+    expect(page).toContain(releaseImage())
+  })
+
+  it('the installer and publish script default to the same repository', () => {
+    const image = releaseImage()
+    const [namespace, repository] = image.split('/')
+    if (!namespace || !repository) throw new Error(`invalid image coordinate: ${image}`)
+    const installer = readFileSync(join(REPO_ROOT, 'codx-junior-installer', 'install.sh'), 'utf8')
+    expect(installer).toContain(`DEFAULT_IMAGE="${image}:latest"`)
+
+    const publish = readFileSync(join(REPO_ROOT, 'scripts', 'dockerhub_publish.sh'), 'utf8')
+    expect(publish).toContain(`DOCKERHUB_NAMESPACE:-${namespace}`)
+    expect(publish).toContain(`IMAGE_NAME:-${repository}`)
+  })
+
+  it('the page documents the tags the install and release paths use', () => {
+    const page = readFileSync(join(ROOT, DOCKER_HUB_PAGE), 'utf8')
+    for (const tag of ['latest', 'vX.Y.Z', 'dind', 'dev']) {
+      expect(page, `tag ${tag} is no longer documented in docs/${DOCKER_HUB_PAGE}`).toContain(tag)
+    }
+  })
+})

@@ -23,6 +23,11 @@ shared channels, messenger) is 0.1; the AI team works today.
 
 ![Profiles](/images/NOV2025/codx-junior-profiles.png)
 
+![The shared team board with role chips](/images/0.0.1/team-board.png)
+
+*The shared board: each task carries its role (project, developer, QA, CISO,
+analyst), status, priority and project.*
+
 ## What a profile contains
 
 | Field | Description |

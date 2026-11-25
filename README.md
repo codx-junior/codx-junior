@@ -142,6 +142,11 @@ A single generalist assistant loses the thread between them. codx-junior keeps
 the slice on one board and gives each step a role with the right standards — then
 puts a human diff in front of the merge.
 
+![The shared team board with role chips](docs/public/images/0.0.1/team-board.png)
+
+*The shared board in 0.0.1: every task carries its role — project, developer, QA,
+CISO or analyst — plus status, priority and project.*
+
 ## What ships in 0.0.1
 
 | Area | What you get |

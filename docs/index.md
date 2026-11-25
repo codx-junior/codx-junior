@@ -43,12 +43,11 @@ features:
     details: "0.0.1 ships 17 features, not 49. The company OS, autonomous agents and browser desktops stay in the codebase behind the feature list until they are ready."
 ---
 
-<div class="mt-8">
-<img class="rounded-xl border border-slate-300" src="/images/0.0.1/workspace.png" alt="codx-junior project workspace with tasks" />
+![codx-junior project workspace with tasks](/images/0.0.1/workspace.png)
 
-<div class="mt-4">
-<img class="rounded-xl border border-slate-300" src="/images/0.0.1/git-review.png" alt="Review a change before committing" />
-</div>
+![Review a change before committing](/images/0.0.1/git-review.png)
+
+![The shared team board with roles](/images/0.0.1/team-board.png)
 
 <section class="mt-12 mx-auto max-w-4xl">
   <h2 class="text-2xl sm:text-3xl font-semibold text-center">Why this release exists</h2>
@@ -70,24 +69,6 @@ features:
     keeps it.
   </p>
 
-  <div class="mt-8 overflow-x-auto">
-    <table class="w-full text-left text-sm">
-      <thead>
-        <tr class="border-b border-slate-300">
-          <th class="py-2 pr-4">Profile</th>
-          <th class="py-2 pr-4">Owns</th>
-          <th class="py-2">Hands back</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>project / PM</strong></td><td class="py-2 pr-4">Scope, acceptance criteria, task breakdown</td><td class="py-2">A board card the team can work</td></tr>
-        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>software_developer</strong></td><td class="py-2 pr-4">Backend and frontend implementation</td><td class="py-2">A diff and the tests that prove it</td></tr>
-        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>qa / qa_automation</strong></td><td class="py-2 pr-4">Verification plan and regression suite</td><td class="py-2">A test run and remaining failures</td></tr>
-        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>ciso</strong></td><td class="py-2 pr-4">Secrets, dependencies and the security gate</td><td class="py-2">Findings and a pass/block verdict</td></tr>
-        <tr><td class="py-2 pr-4"><strong>human (you)</strong></td><td class="py-2 pr-4">Direction, trade-offs and the merge</td><td class="py-2">The final commit</td></tr>
-      </tbody>
-    </table>
-  </div>
 
   <div class="mt-8 grid grid-cols-2 sm:grid-cols-3 gap-3">
     <div class="rounded-xl border p-4 text-center">🔑 <strong>Self-hosted</strong></div>
@@ -108,6 +89,15 @@ features:
   </div>
 </section>
 
+
+| Profile | Owns | Hands back |
+| --- | --- | --- |
+| **project / PM** | Scope, acceptance criteria, task breakdown | A board card the team can work |
+| **software_developer** | Backend and frontend implementation | A diff and the tests that prove it |
+| **qa / qa_automation** | Verification plan and regression suite | A test run and remaining failures |
+| **ciso** | Secrets, dependencies and the security gate | Findings and a pass/block verdict |
+| **human (you)** | Direction, trade-offs and the merge | The final commit |
+
 <section class="pt-2">
   <div class="bg-gradient-to-br from-sky-800 via-sky-900 to-violet-400 p-6 sm:p-10 rounded-2xl w-full text-white flex items-center justify-between mx-auto my-10">
     <div class="flex flex-col gap-6">
@@ -119,7 +109,6 @@ features:
     </div>
   </div>
 </section>
-</div>
 
 <div class="mt-2 flex justify-between">
 <div>Your repo. Your model. Your machine. ❤️</div>

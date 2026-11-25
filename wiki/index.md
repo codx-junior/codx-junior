@@ -48,6 +48,8 @@ features:
 
 <img class="rounded-xl border mt-4" src="/images/0.0.1/git-review.png" alt="Review a change before committing" />
 
+<img class="rounded-xl border mt-4" src="/images/0.0.1/team-board.png" alt="The shared team board with roles" />
+
 <section class="mt-12 mx-auto max-w-4xl">
   <h2 class="text-2xl sm:text-3xl font-semibold text-center">Why 0.0.1</h2>
   <p class="mt-6 text-lg">

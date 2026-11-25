@@ -317,6 +317,10 @@ knowledge for the project.
 > carries the handoff and the human reviews the diff. The human multi-user team
 > (invitations, channels) is 0.1.
 
+![The shared team board with role chips](/images/0.0.1/team-board.png)
+
+*The shared board: each task carries its role, status, priority and project.*
+
 Profiles are reusable instructions that tell the AI how to behave. They encode your coding
 standards, your architecture and your preferences.
 

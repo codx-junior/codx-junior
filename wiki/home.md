@@ -57,6 +57,10 @@ model, keeps the slice on one board, and puts a human diff in front of the merge
 Fifteen profiles ship by default. The **human** multi-user team (invitations,
 shared channels, messenger) is 0.1; the AI team works today.
 
+![The shared team board with role chips](/images/0.0.1/team-board.png)
+
+*The shared board: each task carries its role, status, priority and project.*
+
 ## The 0.0.1 loop
 
 ```

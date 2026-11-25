@@ -32,6 +32,8 @@ platform you have to learn.
 
 ![The codx-junior project workspace](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/0.0.1/workspace.png)
 
+![The shared team board](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/0.0.1/team-board.png)
+
 ```bash
 docker pull codxjuniorai/codx-junior:latest
 ```

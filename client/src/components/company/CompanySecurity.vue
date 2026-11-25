@@ -5,7 +5,8 @@
  * CISO is project-scoped, but a company owns several projects: this panel gives
  * the company shell one cross-project view of their security posture. It reads
  * the same `/api/ciso/overview` data the CISO screen uses, aggregated by
- * `GET /api/companies/{id}/security`.
+ * `GET /api/companies/{id}/security` for **every project linked to the
+ * company** (the same list the Projects section shows).
  *
  * Actions stay explicit:
  *  - Open CISO → the full project view (findings, scans, rules, activity),
@@ -17,7 +18,10 @@ import { formatDate, formatAge, severityClass } from '@/components/ciso/format'
 
 const props = defineProps({
   companyId: { type: String, default: '' },
-  projectId: { type: String, default: '' }
+  // The company's linked project ids. The API already returns that list; the
+  // prop is the reactive reload signal when a project is linked/unlinked while
+  // the security section is open.
+  projectIds: { type: Array, default: () => [] }
 })
 
 const api = API.companies
@@ -51,14 +55,15 @@ function cisoUrl(row, extra = '') {
 }
 
 async function load() {
-  if (!props.companyId || !props.projectId) {
+  if (!props.companyId) {
     payload.value = null
     return
   }
   loading.value = true
   error.value = ''
   try {
-    payload.value = await api.security(props.companyId, { projectId: props.projectId })
+    // No project scope: the API returns every project linked to the company.
+    payload.value = await api.security(props.companyId)
   } catch (ex) {
     error.value = `Could not load company security: ${errorMessage(ex)}`
   } finally {
@@ -109,7 +114,10 @@ function schedulePoll(attempts = 5) {
   pollTimer = setTimeout(tick, 4000)
 }
 
-watch(() => [props.companyId, props.projectId], () => load())
+watch(
+  () => [props.companyId, (props.projectIds || []).join(',')],
+  () => load()
+)
 onMounted(load)
 onUnmounted(() => {
   if (pollTimer) clearTimeout(pollTimer)
@@ -121,11 +129,11 @@ onUnmounted(() => {
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
         <h2 class="flex items-center gap-2 text-lg font-black">
-          <i class="fa-solid fa-shield-halved text-primary"></i> Security
+          <i class="fa-solid fa-shield-halved text-primary-ink"></i> Security
         </h2>
         <p class="text-xs text-base-content/50">
-          CISO posture of the current project and its child projects. Sibling
-          projects linked to the company are intentionally ignored here.
+          CISO posture of every project linked to the company, in one view.
+          Projects that are not part of the company never appear here.
         </p>
       </div>
       <button class="btn btn-ghost btn-sm" :disabled="loading" @click="load">
@@ -142,28 +150,28 @@ onUnmounted(() => {
 
     <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wide text-base-content/40">Projects</div>
+        <div class="text-xs uppercase tracking-wide text-base-content/40">Projects</div>
         <div class="text-xl font-black tabular-nums">{{ totals.projects || 0 }}</div>
-        <div class="text-[10px] text-base-content/40">{{ totals.available || 0 }} readable</div>
+        <div class="text-xs text-base-content/40">{{ totals.available || 0 }} readable</div>
       </div>
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wide text-base-content/40">Critical</div>
-        <div class="text-xl font-black tabular-nums" :class="totals.critical ? 'text-error' : ''">
+        <div class="text-xs uppercase tracking-wide text-base-content/40">Critical</div>
+        <div class="text-xl font-black tabular-nums" :class="totals.critical ? 'text-error-ink' : ''">
           {{ totals.critical || 0 }}
         </div>
       </div>
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wide text-base-content/40">High</div>
-        <div class="text-xl font-black tabular-nums" :class="totals.high ? 'text-warning' : ''">
+        <div class="text-xs uppercase tracking-wide text-base-content/40">High</div>
+        <div class="text-xl font-black tabular-nums" :class="totals.high ? 'text-warning-ink' : ''">
           {{ totals.high || 0 }}
         </div>
       </div>
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wide text-base-content/40">Gates blocked</div>
-        <div class="text-xl font-black tabular-nums" :class="totals.gates_blocked ? 'text-error' : ''">
+        <div class="text-xs uppercase tracking-wide text-base-content/40">Gates blocked</div>
+        <div class="text-xl font-black tabular-nums" :class="totals.gates_blocked ? 'text-error-ink' : ''">
           {{ totals.gates_blocked || 0 }}
         </div>
-        <div class="text-[10px] text-base-content/40">last 7 days</div>
+        <div class="text-xs text-base-content/40">last 7 days</div>
       </div>
     </div>
 
@@ -173,8 +181,8 @@ onUnmounted(() => {
 
     <div v-else-if="!hasRows" class="rounded-2xl border border-dashed border-base-content/20 p-8 text-center">
       <i class="fa-solid fa-cubes text-3xl text-base-content/20 block mb-2"></i>
-      <p class="text-sm text-base-content/50">No current project security data.</p>
-      <p class="mt-1 text-xs text-base-content/40">Open a company project to see its CISO posture and its children.</p>
+      <p class="text-sm text-base-content/50">No project security data yet.</p>
+      <p class="mt-1 text-xs text-base-content/40">Link a project to the company and run its first CISO scan.</p>
     </div>
 
     <div v-else class="grid gap-3 md:grid-cols-2">
@@ -184,12 +192,12 @@ onUnmounted(() => {
         class="rounded-2xl border border-base-content/10 bg-base-100 p-4 flex flex-col gap-3"
       >
         <div class="flex items-start gap-2">
-          <div class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+          <div class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary-ink">
             <i class="fa-solid fa-cube"></i>
           </div>
           <div class="min-w-0 flex-1">
             <h3 class="truncate font-bold">{{ row.name || row.project_name }}</h3>
-            <p class="truncate font-mono text-[10px] text-base-content/40" :title="row.codx_path">
+            <p class="truncate font-mono text-xs text-base-content/40" :title="row.codx_path">
               {{ row.codx_path || 'not discovered' }}
             </p>
           </div>
@@ -199,7 +207,7 @@ onUnmounted(() => {
           <span v-else class="badge badge-sm badge-ghost">unavailable</span>
         </div>
 
-        <div v-if="row.available" class="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <div v-if="row.available" class="flex flex-wrap items-center gap-1.5 text-xs">
           <span class="badge badge-xs" :class="severityClass('critical')">Critical {{ row.critical }}</span>
           <span class="badge badge-xs" :class="severityClass('high')">High {{ row.high }}</span>
           <span class="badge badge-xs badge-ghost">Medium {{ row.medium }}</span>
@@ -208,7 +216,7 @@ onUnmounted(() => {
             policy {{ row.policy_enabled ? 'on' : 'off' }}
           </span>
         </div>
-        <div v-if="row.available" class="text-[11px] text-base-content/50">
+        <div v-if="row.available" class="text-xs text-base-content/50">
           <template v-if="row.scan_id">
             Last scan: {{ formatDate(row.scan_created_at) }}
             <span class="badge badge-xs badge-ghost ml-1">{{ row.scan_status }}</span>
@@ -217,7 +225,7 @@ onUnmounted(() => {
           <template v-else>No completed scan yet.</template>
           <span class="ml-1">· gates {{ row.gates_total }} ({{ row.gates_blocked }} blocked)</span>
         </div>
-        <div v-if="row.error" class="text-[11px] text-warning">{{ row.error }}</div>
+        <div v-if="row.error" class="text-xs text-warning-ink">{{ row.error }}</div>
 
         <div class="mt-auto flex flex-wrap items-center gap-1.5">
           <button class="btn btn-xs btn-primary" :disabled="!row.available" @click="openCiso(row)">
@@ -249,7 +257,7 @@ onUnmounted(() => {
       </article>
     </div>
 
-    <p class="text-[10px] text-base-content/40">
+    <p class="text-xs text-base-content/40">
       Data as of {{ formatAge(payload?.generated_at) }} · scans are deterministic and run on the project API.
     </p>
   </div>

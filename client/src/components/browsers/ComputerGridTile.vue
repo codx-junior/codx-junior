@@ -1,6 +1,7 @@
 <script>
 import BrowserViewer from './BrowserViewer.vue'
 import DesktopViewer from './DesktopViewer.vue'
+import { tilePreviewMode } from '@/utils/gridPreview'
 
 /**
  * One machine inside the multi-session wall (`ComputerGridView`).
@@ -18,6 +19,14 @@ import DesktopViewer from './DesktopViewer.vue'
  * connection plus its own polling. The wall therefore keeps a single
  * interactive machine and cheap previews for the rest; clicking a preview
  * promotes it (`activate`).
+ *
+ * The `iframe` preview follows the same rule for browser sessions: it is only
+ * used when this tile is the only viewer of that session. Thumbnails of a
+ * session that is already live on the stage (`previewOnly`, the filmstrip and
+ * the side rail) get a snapshot instead - a second Selkies client would resize
+ * the shared display to the thumbnail, and the stage's pointer would then be
+ * mapped against the wrong size (cursor off while moving, clicks still land).
+ * See `@/utils/gridPreview`.
  */
 export default {
   name: 'ComputerGridTile',
@@ -54,9 +63,6 @@ export default {
     isRunning() {
       return this.session?.status === 'running'
     },
-    live() {
-      return this.active && !this.previewOnly
-    },
     kindIcon() {
       return {
         linux: 'fa-brands fa-linux',
@@ -91,11 +97,22 @@ export default {
         return session.vnc_url
       }
     },
-    /** How the tile body is rendered: live viewer, live iframe or snapshot. */
+    /**
+     * How the tile body is rendered: live viewer, live iframe or snapshot.
+     *
+     * The decision lives in `@/utils/gridPreview` because a thumbnail
+     * (`previewOnly`) must never open a second live page for a session the
+     * stage already streams: two clients resize the same remote display and
+     * the pointer of one of them ends up mapped against the other's size.
+     */
     previewMode() {
-      if (this.live) return 'live'
-      if (this.isBrowser && this.isRunning && this.embedUrl) return 'iframe'
-      return 'snapshot'
+      return tilePreviewMode({
+        active: this.active,
+        previewOnly: this.previewOnly,
+        isBrowser: this.isBrowser,
+        running: this.isRunning,
+        embedUrl: this.embedUrl
+      })
     },
     usesSnapshot() {
       return this.previewMode === 'snapshot'

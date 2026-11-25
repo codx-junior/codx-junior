@@ -1,0 +1,41 @@
+# =============================================================================
+# codx-junior — DEVELOPMENT image
+#
+#   install.sh --mode dev
+#
+# Based on the published complete image (venv, TeX, Chromium, LanceDB), plus:
+#   * Node, npm and the client node_modules;
+#   * supervisord.dev.conf: Vite dev server + uvicorn --reload.
+#
+# The checkout is mounted at runtime. node_modules live outside the mount at
+# /home/codx-junior/node_modules, so Vite resolves them even though the repo is
+# bind-mounted over /home/codx-junior/codx-junior.
+#
+# Build context is the REPOSITORY ROOT:
+#   docker build -f codx-junior-installer/demo/Dockerfile.dev .
+# =============================================================================
+ARG NODE_VERSION=22
+ARG CODX_JUNIOR_BASE_IMAGE=codxjuniorai/codx-junior:latest
+
+FROM node:${NODE_VERSION}-bookworm-slim AS client-deps
+WORKDIR /build/client
+COPY client/package.json client/package-lock.json ./
+RUN npm ci --no-audit --no-fund --prefer-offline
+
+FROM ${CODX_JUNIOR_BASE_IMAGE} AS dev
+
+COPY --from=client-deps /usr/local/bin/node /usr/local/bin/node
+COPY --from=client-deps /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && node --version && npm --version
+
+COPY --from=client-deps /build/client/node_modules /home/codx-junior/node_modules
+COPY codx-junior-installer/demo/supervisord.dev.conf /etc/supervisord.conf
+
+ENV CODX_JUNIOR_DEV=1 \
+    DEBUG=1 \
+    CODX_JUNIOR_API_RELOAD=1 \
+    CODX_JUNIOR_SKIP_INSTALL=1
+
+EXPOSE 19981

@@ -145,11 +145,37 @@ def docker_binary() -> str:
         )
     found = shutil.which("docker")
     if not found:
+        # Minimal/custom images sometimes keep /usr/bin out of the API PATH.
+        for candidate in ("/usr/bin/docker", "/usr/local/bin/docker"):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                found = candidate
+                break
+    if not found:
         raise ShellUnavailableError(
             "The Docker CLI ('docker') was not found in PATH. Container shells "
-            "need the CLI because interactive exec streams are bidirectional."
+            "need the CLI because interactive exec streams are bidirectional. "
+            "Install the Docker CLI in the API environment (the released "
+            "codx-junior image ships it) or set CODX_JUNIOR_DOCKER_BIN to its "
+            "path."
         )
     return found
+
+
+def check_cli_available() -> None:
+    """
+    Fail fast when the Docker CLI cannot be resolved.
+
+    The shell ticket is issued by a plain HTTP request, while the session is
+    started later on the WebSocket. Checking here turns a missing CLI into a
+    ``503`` with an actionable message *before* the terminal opens, instead of
+    an upgrade followed by ``{"type":"error"}`` and close code ``1011`` (which
+    the client can only render as "connection lost").
+
+    Raises:
+        ShellUnavailableError: The CLI is missing or the configured path is not
+            executable.
+    """
+    docker_binary()
 
 
 # ── Errors ────────────────────────────────────────────────────────────────────

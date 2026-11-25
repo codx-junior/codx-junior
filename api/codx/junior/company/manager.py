@@ -54,6 +54,8 @@ from .models import (
     CompanyEvent,
     CompanyMember,
     CompanyProject,
+    CompanySpace,
+    CompanySpaceFolder,
     CompanyTeam,
     Mission,
     OrgUnit,
@@ -63,6 +65,18 @@ from .models import (
     now_iso,
     parse_iso,
     slugify,
+)
+from .spaces import (
+    cleanup_space_files,
+    create_folder as space_create_folder,
+    delete_entry as space_delete_entry,
+    ensure_space_folder,
+    list_path as space_list_path,
+    resolve_entry as space_resolve_entry,
+    save_upload as space_save_upload,
+    space_stats,
+    validate_mapped_folder,
+    write_text as space_write_text,
 )
 from .store import CompanyNotFound, CompanyStore, CompanyStoreError
 from .templates import apply_template
@@ -134,11 +148,25 @@ AUTONOMY_EDITABLE_FIELDS = (
 
 #: Name of the company created automatically on a fresh installation.
 #: Deployments can override it with ``CODX_JUNIOR_DEFAULT_COMPANY_NAME``.
-DEFAULT_COMPANY_NAME = "ACME"
+DEFAULT_COMPANY_NAME = "codx-junior"
 
 #: Slug of the default company. It is stable so a deep link can address it
 #: before the user has had any chance to rename it.
-DEFAULT_COMPANY_SLUG = "acme"
+DEFAULT_COMPANY_SLUG = "codx-junior"
+
+#: First line of the description of the auto-provisioned default company. It is
+#: how the wizard and the migration recognise a placeholder the owner has not
+#: configured yet (the renamed company keeps it until the wizard writes over it).
+AUTO_DEFAULT_DESCRIPTION = (
+    "Default company created automatically. It links every "
+    "codx-junior project and can be renamed or split into more "
+    "companies at any time."
+)
+
+#: Names the auto-provisioned default company used in earlier releases. An
+#: existing placeholder with one of these names is renamed to the current
+#: default; a company the owner named/customised is never touched.
+LEGACY_DEFAULT_COMPANY_NAMES = ("acme",)
 
 #: Environment variable that overrides the default company name.
 DEFAULT_COMPANY_NAME_ENV = "CODX_JUNIOR_DEFAULT_COMPANY_NAME"
@@ -1017,6 +1045,73 @@ class CompanyManager:
         except Exception as ex:  # pragma: no cover - auth may be disabled
             logger.debug("Company: default company enrollment unavailable: %s", ex)
 
+    def _is_auto_default(self, company: Company) -> bool:
+        """Tell whether a company is (or was) the auto-provisioned default."""
+        tags = {str(tag).strip().lower() for tag in (company.tags or [])}
+        description = str(company.description or "").strip()
+        return "default" in tags or description.startswith(AUTO_DEFAULT_DESCRIPTION)
+
+    def _migrate_default_company(self, company: Company) -> bool:
+        """
+        Bring an existing default company up to the current shape.
+
+        * Old defaults use auto-sync; the first-class flag is ``all_projects``.
+        * An untouched auto-provisioned default still named ``ACME`` (the old
+          release's placeholder) is renamed to the current default name.
+          A company the owner renamed or configured keeps its name.
+
+        Returns:
+            ``True`` when the company was changed and must be saved.
+        """
+        changed = False
+        if company.auto_sync_projects and not company.all_projects:
+            company.all_projects = True
+            changed = True
+        if (
+            self._is_auto_default(company)
+            and company.name.strip().lower() in LEGACY_DEFAULT_COMPANY_NAMES
+        ):
+            company.name = self._default_company_name()
+            company.slug = self._unique_slug(company.name, exclude_id=company.id)
+            changed = True
+        if changed:
+            company.updated_at = now_iso()
+        return changed
+
+    def _canonical_default(self, defaults: List[Company]) -> Company:
+        """Pick the default company to keep (the oldest one wins)."""
+        return min(
+            defaults,
+            key=lambda company: (company.created_at or "", company.id),
+        )
+
+    def _demote_duplicate_defaults(
+        self, defaults: List[Company], canonical: Company, actor: str
+    ) -> None:
+        """
+        Reconcile a store that ended up with more than one default company.
+
+        Only one company can be the installation default. Extra defaults are
+        demoted; the auto-provisioned ones (a bootstrap race) are archived so
+        the company switcher does not show duplicates.
+        """
+        for extra in defaults:
+            if extra.id == canonical.id:
+                continue
+            extra.is_default = False
+            if self._is_auto_default(extra):
+                extra.status = "archived"
+            extra.updated_at = now_iso()
+            saved = self.store.save(extra)
+            self._event(
+                saved,
+                "company.default",
+                f"Company '{saved.name}' demoted: '{canonical.name}' is the default",
+                actor=actor,
+                duplicate_of=canonical.id,
+                archived=saved.status == "archived",
+            )
+
     def ensure_default_company(
         self, actor: str = "system", name: str = ""
     ) -> Company:
@@ -1027,11 +1122,12 @@ class CompanyManager:
         create one before seeing anything, codx-junior provisions a default
         company that links **every discovered project**. Existing installations
         created before companies were the top-level entity are adopted: the
-        first stored company becomes the default and keeps its project list
+        oldest stored company becomes the default and keeps its project list
         (the user's existing configuration is never rewritten implicitly).
 
-        The operation is idempotent and safe to call from every request that
-        lists companies.
+        The whole read-create sequence runs under an installation-wide file
+        lock: two API workers that both see an empty store must never each
+        create their own default company.
 
         Args:
             actor: Username recorded in the journal.
@@ -1040,55 +1136,59 @@ class CompanyManager:
         Returns:
             The default company.
         """
-        ids = self._company_ids()
-        for company_id in ids:
-            try:
-                company = self.store.load(company_id)
-            except Exception as ex:
-                logger.warning("Company '%s' skipped during bootstrap: %s", company_id, ex)
-                continue
-            if company.is_default:
-                # Existing default companies created before ``all_projects``
-                # existed keep their behaviour: they saw every project through
-                # auto-sync, so promote that to the first-class flag.
-                if company.auto_sync_projects and not company.all_projects:
-                    company.all_projects = True
-                    company.updated_at = now_iso()
-                    company = self.store.save(company)
-                return self._sync_default_company_projects(company, actor=actor)
+        with self.store.installation_lock("default-company"):
+            return self._ensure_default_company_locked(actor=actor, name=name)
 
-        if ids:
+    def _ensure_default_company_locked(
+        self, actor: str = "system", name: str = ""
+    ) -> Company:
+        """Implementation of :meth:`ensure_default_company` (lock held)."""
+        companies: List[Company] = []
+        for company_id in self._company_ids():
+            try:
+                companies.append(self.store.load(company_id))
+            except Exception as ex:
+                logger.warning(
+                    "Company '%s' skipped during bootstrap: %s", company_id, ex
+                )
+
+        defaults = [company for company in companies if company.is_default]
+        if defaults:
+            company = self._canonical_default(defaults)
+            changed = self._migrate_default_company(company)
+            if changed:
+                company = self.store.save(company)
+            if len(defaults) > 1:
+                self._demote_duplicate_defaults(defaults, company, actor)
+            return self._sync_default_company_projects(company, actor=actor)
+
+        if companies:
             # Migration path: adopt the oldest stored company as the default so
             # the product keeps a single top-level company without destroying
             # data. It keeps its name and project list.
-            try:
-                adopted = self.store.load(ids[0])
-            except Exception:
-                adopted = None
-            if adopted is not None:
-                adopted.is_default = True
-                adopted.auto_sync_projects = False
-                adopted.updated_at = now_iso()
-                saved = self.store.save(adopted)
-                self._event(
-                    saved,
-                    "company.default",
-                    f"Company '{saved.name}' adopted as the default company",
-                    actor=actor,
-                    adopted=True,
-                )
-                return saved
+            adopted = min(
+                companies,
+                key=lambda company: (company.created_at or "", company.id),
+            )
+            adopted.is_default = True
+            adopted.auto_sync_projects = False
+            adopted.updated_at = now_iso()
+            saved = self.store.save(adopted)
+            self._event(
+                saved,
+                "company.default",
+                f"Company '{saved.name}' adopted as the default company",
+                actor=actor,
+                adopted=True,
+            )
+            return saved
 
         catalog = self._project_catalog()
         company_name = self._clean(name) or self._default_company_name()
         company = Company(
             name=company_name,
             slug=DEFAULT_COMPANY_SLUG,
-            description=(
-                "Default company created automatically. It links every "
-                "codx-junior project and can be renamed or split into more "
-                "companies at any time."
-            ),
+            description=AUTO_DEFAULT_DESCRIPTION,
             owner="" if (actor or "system") == "system" else actor,
             is_default=True,
             auto_sync_projects=True,
@@ -2108,6 +2208,489 @@ class CompanyManager:
             return saved
 
     # ------------------------------------------------------------------
+    # Coworking spaces
+    # ------------------------------------------------------------------
+
+    #: Fields a space update may touch. The id and bookkeeping stay internal.
+    SPACE_EDITABLE_FIELDS = (
+        "name",
+        "description",
+        "project_ids",
+        "folders",
+        "color",
+        "icon",
+    )
+
+    def _space_payload(
+        self,
+        company: Company,
+        space: CompanySpace,
+        catalog: Dict[str, Dict[str, Any]],
+        include_stats: bool = False,
+    ) -> Dict[str, Any]:
+        """Build the API representation of one space."""
+        projects = []
+        for project_id in space.project_ids:
+            project = catalog.get(project_id) or {}
+            root = str(project.get("project_path") or "")
+            projects.append(
+                {
+                    "project_id": project_id,
+                    "name": project.get("project_name") or project_id,
+                    "available": bool(root and os.path.isdir(root)),
+                }
+            )
+        payload = {
+            **space.model_dump(),
+            "project_count": len(space.project_ids),
+            "folder_count": len(space.folders),
+            "projects": projects,
+        }
+        if include_stats:
+            payload["stats"] = space_stats(
+                self.store.company_dir(company.id), space
+            )
+        return payload
+
+    def _space_catalog(self) -> Dict[str, Dict[str, Any]]:
+        """Return the project catalog keyed by project id."""
+        return {
+            project["project_id"]: project
+            for project in self._project_catalog()
+        }
+
+    def _validate_space_name(
+        self, company: Company, name: str, exclude_id: str = ""
+    ) -> str:
+        """Require a non-empty, unique space name."""
+        value = self._clean(name)
+        if not value:
+            raise CompanyValidationError("The space needs a name")
+        for space in company.spaces:
+            if space.id == exclude_id:
+                continue
+            if space.name.strip().lower() == value.lower():
+                raise CompanyValidationError(
+                    f"A space named '{value}' already exists in this company"
+                )
+        return value
+
+    def _validate_space_projects(
+        self, company: Company, project_ids: List[str]
+    ) -> List[str]:
+        """Keep only projects the company can see, rejecting unknown ids."""
+        wanted: List[str] = []
+        visible = set(self.visible_project_ids(company))
+        for project_id in project_ids or []:
+            value = self._clean(project_id)
+            if not value or value in wanted:
+                continue
+            if value not in visible:
+                raise CompanyValidationError(
+                    f"Project '{value}' is not linked to this company. "
+                    "Link it in Projects before mapping it into a space."
+                )
+            wanted.append(value)
+        return wanted
+
+    def _normalize_space_folders(
+        self, company_id: str, folders: Iterable[Any]
+    ) -> List[CompanySpaceFolder]:
+        """Validate the host folders mapped into a space."""
+        company_dir = self.store.company_dir(company_id)
+        result: List[CompanySpaceFolder] = []
+        seen_paths = set()
+        for entry in folders or []:
+            try:
+                if isinstance(entry, CompanySpaceFolder):
+                    folder = entry.model_copy(deep=True)
+                elif isinstance(entry, str):
+                    folder = CompanySpaceFolder(path=entry)
+                elif isinstance(entry, dict):
+                    folder = CompanySpaceFolder(**entry)
+                else:
+                    raise CompanyValidationError(
+                        "a mapped folder must be a path or an object with a path"
+                    )
+            except ValueError as ex:
+                raise CompanyValidationError(str(ex)) from ex
+            resolved = validate_mapped_folder(folder.path, company_dir)
+            if resolved in seen_paths:
+                raise CompanyValidationError(
+                    f"The folder '{folder.name}' is mapped twice"
+                )
+            seen_paths.add(resolved)
+            folder.path = resolved
+            if not folder.id:
+                folder.id = new_id("folder")
+            if not folder.name:
+                folder.name = os.path.basename(resolved.rstrip("/")) or "folder"
+            result.append(folder)
+        return result
+
+    def _default_space_projects(self, company: Company) -> List[str]:
+        """Projects a freshly created default space maps."""
+        direct = [project.project_id for project in company.projects]
+        if direct or not company.all_projects:
+            return direct
+        return list(self.visible_project_ids(company))
+
+    def _create_default_space(self, company: Company) -> Company:
+        """Create the first space of a company (idempotent, caller locks)."""
+        if company.spaces:
+            return company
+        project_ids = self._default_space_projects(company)
+        space = CompanySpace(
+            name="Company files",
+            description=(
+                "Shared files of the company. Projects linked to the company "
+                "are shown here as read-only virtual folders."
+            ),
+            project_ids=project_ids,
+        )
+        ensure_space_folder(self.store.company_dir(company.id), space)
+        company.spaces = [space]
+        company.updated_at = now_iso()
+        saved = self.store.save(company)
+        self._event(
+            saved,
+            "space.created",
+            f"Space '{space.name}' created",
+            actor="system",
+            space_id=space.id,
+            projects=project_ids,
+        )
+        return saved
+
+    def ensure_default_space(
+        self, company_id: str, actor: str = "system"
+    ) -> Company:
+        """Make sure the company has at least one coworking space."""
+        company = self.get_company(company_id)
+        if company.spaces:
+            return company
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            if not company.spaces:
+                company = self._create_default_space(company)
+            return company
+
+    def _resolve_space(
+        self, company_id: str, space_id: str = ""
+    ) -> Tuple[Company, CompanySpace]:
+        """Load a space (creating the default one when the company has none)."""
+        company = self.ensure_default_space(company_id)
+        space = (
+            company.space(space_id)
+            if space_id
+            else (company.spaces[0] if company.spaces else None)
+        )
+        if space is None:
+            raise CompanyNotFound(
+                f"Space '{space_id}' does not exist in this company"
+            )
+        return company, space
+
+    def list_spaces(
+        self, company_id: str, include_stats: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        List the coworking spaces of a company.
+
+        The first call of a company that predates spaces creates the default
+        "Company files" space, so every company can browse its own files.
+
+        Args:
+            company_id: Company id.
+            include_stats: Include file count/size of the company files.
+
+        Returns:
+            Space payloads ready for the file browser.
+        """
+        company = self.ensure_default_space(company_id)
+        catalog = self._space_catalog()
+        return [
+            self._space_payload(
+                company, space, catalog, include_stats=include_stats
+            )
+            for space in company.spaces
+        ]
+
+    def get_space(self, company_id: str, space_id: str) -> Dict[str, Any]:
+        """Return one space payload."""
+        company, space = self._resolve_space(company_id, space_id)
+        return self._space_payload(
+            company, space, self._space_catalog(), include_stats=True
+        )
+
+    def add_space(
+        self,
+        company_id: str,
+        payload: Any,
+        actor: str = "system",
+    ) -> Dict[str, Any]:
+        """
+        Create a coworking space owned by the company.
+
+        Args:
+            company_id: Company id.
+            payload: ``CompanySpace`` or a dictionary with its editable fields.
+            actor: Username recorded in the audit trail.
+
+        Returns:
+            The created space payload.
+        """
+        values = (
+            payload.model_dump() if isinstance(payload, CompanySpace) else dict(payload or {})
+        )
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            name = self._validate_space_name(company, values.get("name", ""))
+            project_ids = self._validate_space_projects(
+                company, values.get("project_ids") or []
+            )
+            folders = self._normalize_space_folders(
+                company_id, values.get("folders") or []
+            )
+            space = CompanySpace(
+                name=name,
+                description=self._clean(values.get("description")),
+                project_ids=project_ids,
+                folders=folders,
+                color=self._clean(values.get("color")) or "#6366f1",
+                icon=self._clean(values.get("icon"))
+                or "fa-solid fa-folder-tree",
+            )
+            ensure_space_folder(self.store.company_dir(company.id), space)
+            company.spaces.append(space)
+            company.updated_at = now_iso()
+            saved = self.store.save(company)
+            self._event(
+                saved,
+                "space.created",
+                f"Space '{space.name}' created",
+                actor=actor,
+                space_id=space.id,
+                projects=project_ids,
+            )
+            return self._space_payload(
+                saved,
+                saved.space(space.id) or space,
+                self._space_catalog(),
+                include_stats=True,
+            )
+
+    def update_space(
+        self,
+        company_id: str,
+        space_id: str,
+        payload: Any,
+        actor: str = "system",
+    ) -> Dict[str, Any]:
+        """
+        Update the name, mappings and presentation of a space.
+
+        Args:
+            company_id: Company id.
+            space_id: Space id.
+            payload: Dictionary (or ``CompanySpace``) with editable fields.
+            actor: Username recorded in the audit trail.
+
+        Returns:
+            The updated space payload.
+        """
+        values = (
+            payload.model_dump() if isinstance(payload, CompanySpace) else dict(payload or {})
+        )
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            space = company.space(space_id)
+            if space is None:
+                raise CompanyNotFound(
+                    f"Space '{space_id}' does not exist in this company"
+                )
+            changes = {
+                key: value
+                for key, value in values.items()
+                if key in self.SPACE_EDITABLE_FIELDS and value is not None
+            }
+            if "name" in changes:
+                changes["name"] = self._validate_space_name(
+                    company, changes["name"], exclude_id=space.id
+                )
+            if "project_ids" in changes:
+                changes["project_ids"] = self._validate_space_projects(
+                    company, changes["project_ids"] or []
+                )
+            if "folders" in changes:
+                changes["folders"] = self._normalize_space_folders(
+                    company_id, changes["folders"] or []
+                )
+            if "description" in changes:
+                changes["description"] = self._clean(changes["description"])
+            if "color" in changes:
+                changes["color"] = self._clean(changes["color"]) or "#6366f1"
+            if "icon" in changes:
+                changes["icon"] = (
+                    self._clean(changes["icon"]) or "fa-solid fa-folder-tree"
+                )
+            for key, value in changes.items():
+                setattr(space, key, value)
+            space.slug = slugify(space.name, "space")
+            space.updated_at = now_iso()
+            company.updated_at = now_iso()
+            saved = self.store.save(company)
+            self._event(
+                saved,
+                "space.updated",
+                f"Space '{space.name}' updated",
+                actor=actor,
+                space_id=space.id,
+                fields=sorted(changes),
+            )
+            return self._space_payload(
+                saved,
+                saved.space(space.id) or space,
+                self._space_catalog(),
+                include_stats=True,
+            )
+
+    def delete_space(
+        self, company_id: str, space_id: str, actor: str = "system"
+    ) -> Dict[str, Any]:
+        """
+        Delete a space and move its company files to the company trash.
+
+        Args:
+            company_id: Company id.
+            space_id: Space id.
+            actor: Username recorded in the audit trail.
+
+        Returns:
+            ``{deleted: True, space_id, name}``.
+        """
+        with self.store.lock(self._company_id(company_id)):
+            company = self.get_company(company_id)
+            space = company.space(space_id)
+            if space is None:
+                raise CompanyNotFound(
+                    f"Space '{space_id}' does not exist in this company"
+                )
+            company.spaces = [
+                item for item in company.spaces if item.id != space_id
+            ]
+            company.updated_at = now_iso()
+            saved = self.store.save(company)
+            cleanup_space_files(self.store.company_dir(company.id), space_id)
+            self._event(
+                saved,
+                "space.deleted",
+                f"Space '{space.name}' deleted",
+                actor=actor,
+                space_id=space_id,
+            )
+            return {"deleted": True, "space_id": space_id, "name": space.name}
+
+    # -- space file browser (company files + virtual project folders) ----
+
+    def space_listing(
+        self, company_id: str, space_id: str = "", path: str = ""
+    ) -> Dict[str, Any]:
+        """List one virtual folder of a space."""
+        company, space = self._resolve_space(company_id, space_id)
+        return space_list_path(
+            self.store.company_dir(company.id),
+            space,
+            path,
+            self._project_catalog(),
+        )
+
+    def space_entry(
+        self, company_id: str, space_id: str = "", path: str = ""
+    ) -> Dict[str, Any]:
+        """Resolve one file/folder of a space to its real host path."""
+        company, space = self._resolve_space(company_id, space_id)
+        return space_resolve_entry(
+            self.store.company_dir(company.id),
+            space,
+            path,
+            self._project_catalog(),
+        )
+
+    def space_create_folder(
+        self, company_id: str, space_id: str = "", path: str = "", name: str = ""
+    ) -> Dict[str, Any]:
+        """Create a folder inside the company files of a space."""
+        company, space = self._resolve_space(company_id, space_id)
+        result = space_create_folder(
+            self.store.company_dir(company.id), space, path, name
+        )
+        self._event(
+            company,
+            "space.folder_created",
+            f"Folder '{name}' created in space '{space.name}'",
+            space_id=space.id,
+            path=result["path"],
+        )
+        return result
+
+    def space_delete_entry(
+        self, company_id: str, space_id: str = "", path: str = ""
+    ) -> Dict[str, Any]:
+        """Delete a company file (or an empty folder) of a space."""
+        company, space = self._resolve_space(company_id, space_id)
+        result = space_delete_entry(
+            self.store.company_dir(company.id), space, path
+        )
+        self._event(
+            company,
+            "space.file_deleted",
+            f"Deleted '{result['path']}' from space '{space.name}'",
+            space_id=space.id,
+            path=result["path"],
+        )
+        return result
+
+    def space_write_text(
+        self,
+        company_id: str,
+        space_id: str = "",
+        path: str = "",
+        content: str = "",
+    ) -> Dict[str, Any]:
+        """Create or replace a text file in the company files of a space."""
+        company, space = self._resolve_space(company_id, space_id)
+        return space_write_text(
+            self.store.company_dir(company.id), space, path, content
+        )
+
+    def space_upload(
+        self,
+        company_id: str,
+        space_id: str = "",
+        path: str = "",
+        filename: str = "",
+        content: bytes = b"",
+    ) -> Dict[str, Any]:
+        """Store one uploaded file in the company files of a space."""
+        company, space = self._resolve_space(company_id, space_id)
+        result = space_save_upload(
+            self.store.company_dir(company.id),
+            space,
+            path,
+            filename,
+            content,
+        )
+        self._event(
+            company,
+            "space.file_uploaded",
+            f"Uploaded '{result['name']}' to space '{space.name}'",
+            space_id=space.id,
+            path=result["path"],
+        )
+        return result
+
+    # ------------------------------------------------------------------
     # Company chats
     # ------------------------------------------------------------------
 
@@ -2236,6 +2819,18 @@ class CompanyManager:
             if company.project(project_id) is None:
                 raise CompanyValidationError(
                     f"Project '{project_id}' is not linked to this company"
+                )
+            # A linked project can disappear from discovery (folder removed,
+            # moved, or the discovery scan did not reach it). Fail with an
+            # actionable conflict instead of letting the chat manager raise a
+            # technical "not available (not discovered)" 502: the owner picked
+            # this project from the selector and needs to know what to fix.
+            if self.project_settings(project_id) is None:
+                raise CompanyConflict(
+                    f"Project '{project_id}' is linked to this company but this "
+                    "workspace has not discovered it, so its chats cannot be "
+                    "stored. Check that the project folder still exists on this "
+                    "host, then refresh the project list and try again."
                 )
             team = company.team(team_id) if team_id else None
             if team_id and team is None:
@@ -3314,6 +3909,33 @@ class CompanyManager:
             )
         ]
 
+    def company_project_ids(self, company: Company) -> List[str]:
+        """
+        Return the projects the company defines as its own projects.
+
+        These are the direct links shown by the Projects section, or the whole
+        discovered catalogue when the company uses the ``all_projects``
+        wildcard. Inherited child projects are not separate company projects;
+        they are reached through the advanced workspace of their linked root.
+
+        Args:
+            company: Company document.
+
+        Returns:
+            Project ids in catalogue order (wildcard) or link order (selected).
+        """
+        if company.all_projects:
+            return [
+                project["project_id"]
+                for project in self._project_catalog()
+                if project.get("project_id")
+            ]
+        return [
+            project.project_id
+            for project in company.projects
+            if project.project_id
+        ]
+
     def root_project_ids(self, company: Company) -> List[str]:
         """
         Return the company's root projects (the ones the owner associates).
@@ -3553,6 +4175,7 @@ class CompanyManager:
         company = self.get_company(company_id)
         catalog = {project["project_id"]: project for project in self._project_catalog()}
         visible_project_ids = self.visible_project_ids(company)
+        company_project_ids = self.company_project_ids(company)
         root_project_ids = self.root_project_ids(company)
         budget = self.budget_state(company)
         budget_by_project = {
@@ -3636,7 +4259,7 @@ class CompanyManager:
             "company": company.model_dump(exclude={"spend"}),
             "counts": {
                 **company.counts(),
-                "projects": len(visible_project_ids),
+                "projects": len(company_project_ids),
                 "child_projects": len(child_projects),
             },
             "all_projects": company.all_projects,
@@ -3644,6 +4267,10 @@ class CompanyManager:
             "visible_project_ids": visible_project_ids,
             "teams": teams,
             "projects": projects,
+            "spaces": [
+                self._space_payload(company, space, catalog)
+                for space in company.spaces
+            ],
             "child_projects": child_projects,
             "missions": missions,
             "members": self.company_members(company),
@@ -3665,9 +4292,25 @@ class CompanyManager:
         It never starts a shift and never imports the AI stack.
         """
         company = self.get_company(company_id)
+        catalog = {
+            project["project_id"]: project
+            for project in self._project_catalog()
+            if project.get("project_id")
+        }
+        direct = {project.project_id: project for project in company.projects}
+        projects = []
+        for project_id in self.company_project_ids(company):
+            reference = catalog.get(project_id) or {}
+            projects.append(
+                direct.get(project_id)
+                or CompanyProject(
+                    project_id=project_id,
+                    name=reference.get("project_name") or project_id,
+                )
+            )
         actors: List[Dict[str, Any]] = []
         unavailable: List[str] = []
-        for project in company.projects:
+        for project in projects:
             settings = self._project_settings_provider(project.project_id)
             if settings is None:
                 unavailable.append(project.project_id)
@@ -3703,7 +4346,7 @@ class CompanyManager:
                         if (entry.get("config") or {}).get("enabled")
                     ]
                 ),
-                "projects": len(company.projects),
+                "projects": len(projects),
                 "unavailable_projects": len(unavailable),
             },
             "unavailable_projects": unavailable,

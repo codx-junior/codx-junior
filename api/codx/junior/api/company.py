@@ -13,7 +13,7 @@ GET    /api/companies                          list companies
 POST   /api/companies                          create (optional template)
 GET    /api/companies/references               projects / users / profiles pickers
 GET    /api/companies/onboarding               New-company wizard state
-POST   /api/companies/onboarding               advance / skip / reset the wizard
+POST   /api/companies/onboarding               advance / finish / reset the wizard
 GET    /api/companies/{company_id}             company document
 PUT    /api/companies/{company_id}             update company-level fields
 DELETE /api/companies/{company_id}             delete company
@@ -31,7 +31,12 @@ GET    /api/companies/{id}/members             human roster + company roles
 POST   /api/companies/{id}/members             add/onboard a person (company admin)
 PUT    /api/companies/{id}/members/{username}  change role/title (company admin)
 DELETE /api/companies/{id}/members/{username}  remove a person (company admin)
-POST   /api/companies/{id}/assistant           always-present company assistant
+POST   /api/companies/{id}/assistant/chat      real ChatView conversation (codx-junior profile)
+
+GET    /api/companies/{id}/tickets             company ticket queues (see company_tickets.py)
+POST   /api/companies/{id}/tickets             place a ticket (unattended by default)
+GET    /api/companies/{id}/tickets/{ticket}    ticket delivery evidence + conversation
+POST   /api/companies/{id}/tickets/{ticket}/review  accept / request changes
 
 POST   /api/companies/{id}/org-units           add org unit
 PUT    /api/companies/{id}/org-units/{unit}    update org unit
@@ -48,6 +53,18 @@ PUT    /api/companies/{id}/teams/{team}/lead
 POST   /api/companies/{id}/projects            link project
 PUT    /api/companies/{id}/projects            replace the project list
 DELETE /api/companies/{id}/projects/{project}  unlink project
+
+GET    /api/companies/{id}/spaces              coworking spaces (company files)
+POST   /api/companies/{id}/spaces              create a space
+GET    /api/companies/{id}/spaces/{space}      one space
+PUT    /api/companies/{id}/spaces/{space}      update mappings/presentation
+DELETE /api/companies/{id}/spaces/{space}      delete a space
+GET    /api/companies/{id}/spaces/{space}/files  virtual file browser
+GET    /api/companies/{id}/spaces/{space}/file   stream/preview one file
+POST   /api/companies/{id}/spaces/{space}/folders  create a company folder
+POST   /api/companies/{id}/spaces/{space}/upload   upload a company file
+PUT    /api/companies/{id}/spaces/{space}/file     write a text file
+DELETE /api/companies/{id}/spaces/{space}/file     delete a company file
 
 POST   /api/companies/{id}/missions            add mission
 PUT    /api/companies/{id}/missions/{mission}  update mission
@@ -82,13 +99,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
@@ -110,7 +128,7 @@ from codx.junior.security.user_management import (
     UserSecurityManager,
     get_authenticated_user,
 )
-from codx.junior.company.assistant import CompanyAssistant
+from codx.junior.company.assistant_chat import ensure_assistant_chat
 from codx.junior.company.onboarding import build_status, merge_state
 
 logger = logging.getLogger(__name__)
@@ -359,6 +377,55 @@ class DeleteRequest(BaseModel):
     force: bool = False
 
 
+class SpaceFolderRequest(BaseModel):
+    """A host folder mapped into a coworking space."""
+
+    id: str = ""
+    name: str = ""
+    path: str = Field(description="Absolute host path of the folder")
+    readonly: bool = True
+    description: str = ""
+
+
+class SpaceRequest(BaseModel):
+    """Create/update a coworking space owned by the company."""
+
+    name: str = ""
+    description: str = ""
+    project_ids: List[str] = Field(
+        default_factory=list,
+        description="Company projects exposed as read-only virtual folders",
+    )
+    folders: List[SpaceFolderRequest] = Field(default_factory=list)
+    color: str = "#6366f1"
+    icon: str = "fa-solid fa-folder-tree"
+
+
+class SpaceUpdateRequest(BaseModel):
+    """Partial update of a coworking space."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    project_ids: Optional[List[str]] = None
+    folders: Optional[List[SpaceFolderRequest]] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+
+
+class SpaceFolderCreateRequest(BaseModel):
+    """Create a folder inside the company files of a space."""
+
+    path: str = Field(default="", description="Parent folder ('' = space root)")
+    name: str = Field(description="New folder name")
+
+
+class SpaceFileWriteRequest(BaseModel):
+    """Create/replace a text file inside the company files of a space."""
+
+    path: str = Field(description="File path relative to the space root")
+    content: str = ""
+
+
 class CompanyMemberRequest(BaseModel):
     """
     Add (or onboard) a human member of a company.
@@ -386,38 +453,6 @@ class CompanyMemberUpdateRequest(BaseModel):
 
     role: Optional[str] = None
     title: Optional[str] = None
-
-
-class AssistantRequest(BaseModel):
-    """One turn of the always-present company assistant."""
-
-    message: str = ""
-    view: str = Field(
-        default="", description="Company view the manager is looking at"
-    )
-    history: List[Dict[str, Any]] = Field(
-        default_factory=list, description="Previous turns (role/content)"
-    )
-    state: Dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Conversation state returned by the previous turn. It is how the "
-            "assistant asks one question at a time instead of dumping a form."
-        ),
-    )
-    language: str = Field(
-        default="",
-        description=(
-            "Browser/request language (e.g. 'es-ES'). Used by the AI fallback "
-            "when the rule-based assistant does not understand the message."
-        ),
-    )
-    form_id: str = Field(
-        default="", description="Set when submitting a form rendered by the assistant"
-    )
-    values: Dict[str, Any] = Field(
-        default_factory=dict, description="Values submitted from the assistant form"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -630,8 +665,9 @@ def api_company_references(
 # Installation onboarding (the "New company" wizard)
 # ---------------------------------------------------------------------------
 # Declared before ``/companies/{company_id}`` so "onboarding" is never parsed as
-# a company id. The state is installation-wide: the wizard is offered once after
-# install, can be skipped step by step and re-run at any time.
+# a company id. The state is installation-wide and acts as the first-run gate:
+# a fresh installation must finish the wizard before the shell is usable; an
+# already-configured installation keeps working. It can be re-run at any time.
 
 
 @router.get("/companies/onboarding")
@@ -655,9 +691,44 @@ def api_save_company_onboarding(
     payload: OnboardingRequest,
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
-    """Advance/skip a wizard step, finish, skip the wizard or reset it."""
-    merge_state(payload.model_dump(), actor=_actor(user))
+    """
+    Advance a wizard step, finish the installation setup or reset the wizard.
+
+    Finishing is the only action that opens the first-run gate, so it is
+    validated: a company must exist and the configured company (when the client
+    names one) must be real. The wizard creates/updates the company *before*
+    sending the completion, so this never rejects a normal run.
+    """
     manager = _manager()
+    data = payload.model_dump()
+    if data.get("status") == "completed" and not data.get("reset"):
+        companies = _run(
+            lambda: manager.list_companies(
+                include_archived=False, ensure_default=False
+            )
+        )
+        if not companies:
+            raise HTTPException(
+                status_code=400,
+                detail="Create a company before finishing the setup.",
+            )
+        company_id = str(data.get("company_id") or "")
+        if company_id and not any(
+            str(company.get("id")) == company_id
+            or str(company.get("slug") or "") == company_id
+            for company in companies
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="The company being configured no longer exists.",
+            )
+        if not company_id:
+            default = next(
+                (company for company in companies if company.get("is_default")),
+                companies[0],
+            )
+            data["company_id"] = str(default.get("id") or "")
+    merge_state(data, actor=_actor(user))
     companies = _run(
         lambda: manager.list_companies(include_archived=False, ensure_default=False)
     )
@@ -946,11 +1017,13 @@ def api_company_security(
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
     """
-    CISO posture of the current project and its children.
+    CISO posture of the projects linked to a company.
 
-    The company shell is focused on the project the owner is working in. Linked
-    sibling projects are intentionally excluded; when no project is supplied
-    the endpoint keeps the legacy company-wide behaviour for API consumers.
+    Without ``project_id`` the endpoint returns one row per project the company
+    defines (its direct links), which is the company-shell contract. A
+    ``project_id`` narrows the view to that project and its child projects for
+    API consumers, but only when the project is part of the company; a project
+    from another company is never exposed.
     """
     manager = _manager()
     company = _run(lambda: manager.get_company(company_id))
@@ -959,7 +1032,16 @@ def api_company_security(
         for project in _run(manager.references)["projects"]
     }
     linked_by_id = {linked.project_id: linked for linked in company.projects}
+    visible_ids = {
+        str(value)
+        for value in _run(lambda: manager.visible_project_ids(company))
+    }
     if project_id:
+        if str(project_id) not in visible_ids:
+            raise HTTPException(
+                status_code=404,
+                detail="Project is not linked to this company",
+            )
         reference = catalog.get(project_id) or {}
         current = linked_by_id.get(project_id) or SimpleNamespace(
             project_id=project_id,
@@ -978,10 +1060,21 @@ def api_company_security(
             for child in children
         ]
     else:
-        scoped = list(company.projects)
+        # One row per project the company defines. In `all_projects` mode that
+        # is the whole catalogue even when the company has no materialized
+        # links, so the wildcard company is not reported as empty.
+        scoped = [
+            linked_by_id.get(project_key)
+            or SimpleNamespace(
+                project_id=project_key,
+                name=(catalog.get(project_key) or {}).get("project_name")
+                or project_key,
+            )
+            for project_key in _run(lambda: manager.company_project_ids(company))
+        ]
     rows = [_company_security_row(linked, catalog) for linked in scoped]
     for row in rows:
-        row["linked"] = row.get("project_id") in linked_by_id
+        row["linked"] = str(row.get("project_id") or "") in visible_ids
         row["parent_project_id"] = project_id if project_id and not row["linked"] else ""
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1014,11 +1107,11 @@ def api_company_security_scan(
         project["project_id"]: project
         for project in _run(manager.references)["projects"]
     }
-    linked = next(
-        (project for project in company.projects if project.project_id == payload.project_id),
-        None,
-    )
-    if linked is None:
+    visible_ids = {
+        str(value)
+        for value in _run(lambda: manager.visible_project_ids(company))
+    }
+    if str(payload.project_id) not in visible_ids:
         raise HTTPException(status_code=404, detail="Project is not linked to this company")
     reference = catalog.get(payload.project_id) or {}
     codx_path = str(reference.get("codx_path") or "")
@@ -1216,50 +1309,24 @@ def api_delete_company_member(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/companies/{company_id}/assistant")
-def api_company_assistant(
+@router.post("/companies/{company_id}/assistant/chat")
+def api_company_assistant_chat(
     company_id: str,
-    payload: AssistantRequest,
     user: Optional[CodxUser] = Depends(get_authenticated_user),
 ):
     """
-    One turn of the always-present company assistant.
+    Ensure the company's real assistant conversation exists.
 
-    The assistant is intentionally a **company-native** endpoint: it receives the
-    current view and the conversation history, resolves the company context and
-    either answers with the live data, executes a permitted action (team
-    management, add user, mission review) or returns a form schema the UI must
-    render inside the assistant window.
-
-    Settings dialogs are never opened by the main company screen; the assistant
-    either renders the form itself (returned as ``form``) or proposes the
-    concrete action to confirm.
+    The conversation is a normal ``Chat`` hosted by one of the company's
+    projects and uses the ``codx-junior`` profile. The client opens it with the
+    standard ``ChatView``; this endpoint only provisions/repairs the chat and
+    returns its locator.
     """
     manager = _manager()
     company = _run(lambda: manager.get_company(company_id))
-    role = _company_role(company, user)
-    # An unowned company is still being bootstrapped: the first authenticated
-    # user can finish configuring it (same rule as the write helpers).
-    if not (company.owner or ""):
-        role = COMPANY_ROLE_ADMIN
-    can_manage = role in (COMPANY_ROLE_ADMIN, COMPANY_ROLE_MANAGER)
-    can_admin = role == COMPANY_ROLE_ADMIN
-    assistant = CompanyAssistant(manager=manager)
+    _assert_can_read(company, user)
     return _run(
-        lambda: assistant.respond(
-            company=company,
-            message=payload.message,
-            view=payload.view,
-            actor=_actor(user),
-            can_manage=can_manage,
-            can_admin=can_admin,
-            history=payload.history,
-            state=payload.state,
-            form_id=payload.form_id,
-            values=payload.values,
-            user=user,
-            language=payload.language,
-        )
+        lambda: ensure_assistant_chat(manager, company, actor=_actor(user))
     )
 
 
@@ -1775,6 +1842,232 @@ def api_run_cycle(
     return _run(
         lambda: manager.cycle(company_id, actor=_actor(user), force=force)
     )
+
+
+# ---------------------------------------------------------------------------
+# Coworking spaces (company files + virtual project folders)
+# ---------------------------------------------------------------------------
+
+
+def _space_fail(ex: Exception) -> HTTPException:
+    """Map file-system errors of a space operation onto HTTP errors."""
+    if isinstance(ex, HTTPException):
+        return ex
+    if isinstance(ex, FileNotFoundError):
+        return HTTPException(status_code=404, detail=str(ex) or "Not found")
+    if isinstance(ex, FileExistsError):
+        return HTTPException(status_code=409, detail=str(ex) or "Already exists")
+    if isinstance(ex, PermissionError):
+        return HTTPException(status_code=403, detail=str(ex) or "Permission denied")
+    if isinstance(ex, ValueError):
+        return HTTPException(status_code=400, detail=str(ex))
+    logger.exception("Company space API error: %s", ex)
+    return HTTPException(status_code=500, detail=str(ex))
+
+
+def _space_read(company_id: str, user: Optional[CodxUser]) -> CompanyManager:
+    """Load the manager for a read operation, enforcing company membership."""
+    manager = _manager()
+    company = _run(lambda: manager.get_company(company_id))
+    _assert_can_read(company, user)
+    return manager
+
+
+@router.get("/companies/{company_id}/spaces")
+def api_list_company_spaces(
+    company_id: str,
+    include_stats: bool = Query(default=False),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    List the coworking spaces of a company.
+
+    A company that predates spaces gets its default "Company files" space on
+    the first call, so the file browser is never empty for a missing config.
+    """
+    manager = _space_read(company_id, user)
+    return _run(
+        lambda: manager.list_spaces(company_id, include_stats=include_stats)
+    )
+
+
+@router.post("/companies/{company_id}/spaces", status_code=201)
+def api_create_company_space(
+    company_id: str,
+    payload: SpaceRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Create a company-owned coworking space."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    return _run(
+        lambda: manager.add_space(
+            company_id, payload.model_dump(), actor=_actor(user)
+        )
+    )
+
+
+@router.get("/companies/{company_id}/spaces/{space_id}")
+def api_get_company_space(
+    company_id: str,
+    space_id: str,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Return one space with its mapped projects and folders."""
+    manager = _space_read(company_id, user)
+    return _run(lambda: manager.get_space(company_id, space_id))
+
+
+@router.put("/companies/{company_id}/spaces/{space_id}")
+def api_update_company_space(
+    company_id: str,
+    space_id: str,
+    payload: SpaceUpdateRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Update the name, mapped projects/folders or presentation of a space."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    return _run(
+        lambda: manager.update_space(
+            company_id,
+            space_id,
+            payload.model_dump(exclude_unset=True),
+            actor=_actor(user),
+        )
+    )
+
+
+@router.delete("/companies/{company_id}/spaces/{space_id}")
+def api_delete_company_space(
+    company_id: str,
+    space_id: str,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Delete a space (its company files go to the company trash)."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    return _run(
+        lambda: manager.delete_space(company_id, space_id, actor=_actor(user))
+    )
+
+
+@router.get("/companies/{company_id}/spaces/{space_id}/files")
+def api_company_space_files(
+    company_id: str,
+    space_id: str,
+    path: str = Query(default="", description="Virtual folder ('' = root)"),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    List one folder of the company file browser.
+
+    The root lists the company files plus the virtual ``projects`` and
+    ``folders`` roots for every mapped project/host folder.
+    """
+    manager = _space_read(company_id, user)
+    try:
+        return manager.space_listing(company_id, space_id, path)
+    except Exception as ex:
+        raise _space_fail(ex)
+
+
+@router.get("/companies/{company_id}/spaces/{space_id}/file")
+def api_company_space_file(
+    company_id: str,
+    space_id: str,
+    path: str = Query(description="Virtual file path"),
+    download: bool = Query(default=False),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """
+    Stream one file of a space (company files, project files or mapped folders).
+
+    Mapped projects/folders are read-only, but reading is always allowed for a
+    company member. ``download=true`` forces an attachment response.
+    """
+    manager = _space_read(company_id, user)
+    try:
+        entry = manager.space_entry(company_id, space_id, path)
+        if entry["is_dir"]:
+            raise HTTPException(status_code=400, detail="The path is a folder")
+        media_type = (
+            mimetypes.guess_type(entry["abs_path"])[0]
+            or "application/octet-stream"
+        )
+        filename = entry["name"] if download else None
+        return FileResponse(
+            entry["abs_path"],
+            media_type=media_type,
+            filename=filename,
+        )
+    except Exception as ex:
+        raise _space_fail(ex)
+
+
+@router.post("/companies/{company_id}/spaces/{space_id}/folders", status_code=201)
+def api_company_space_create_folder(
+    company_id: str,
+    space_id: str,
+    payload: SpaceFolderCreateRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Create a folder in the company files of a space."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    try:
+        return manager.space_create_folder(
+            company_id, space_id, payload.path, payload.name
+        )
+    except Exception as ex:
+        raise _space_fail(ex)
+
+
+@router.post("/companies/{company_id}/spaces/{space_id}/upload", status_code=201)
+async def api_company_space_upload(
+    company_id: str,
+    space_id: str,
+    file: UploadFile = File(...),
+    path: str = Form(default=""),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Upload one file into the company files of a space."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    content = await file.read()
+    try:
+        return manager.space_upload(
+            company_id, space_id, path, file.filename or "file", content
+        )
+    except Exception as ex:
+        raise _space_fail(ex)
+
+
+@router.put("/companies/{company_id}/spaces/{space_id}/file")
+def api_company_space_write_file(
+    company_id: str,
+    space_id: str,
+    payload: SpaceFileWriteRequest,
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Create or replace a text file in the company files of a space."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    try:
+        return manager.space_write_text(
+            company_id, space_id, payload.path, payload.content
+        )
+    except Exception as ex:
+        raise _space_fail(ex)
+
+
+@router.delete("/companies/{company_id}/spaces/{space_id}/file")
+def api_company_space_delete_entry(
+    company_id: str,
+    space_id: str,
+    path: str = Query(description="Virtual path to delete"),
+    user: Optional[CodxUser] = Depends(get_authenticated_user),
+):
+    """Delete a company file or an empty company folder from a space."""
+    manager, _ = _run(lambda: _get_editable(company_id, user))
+    try:
+        return manager.space_delete_entry(company_id, space_id, path)
+    except Exception as ex:
+        raise _space_fail(ex)
 
 
 # Made with ❤️ by codx-junior

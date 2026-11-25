@@ -6,7 +6,7 @@ import { memberAvatar } from './companyMeta'
  * People view of the company shell.
  *
  * Company admins can add users, but the form is NOT rendered here: it lives in
- * the always-present assistant window (see CompanyAssistant.vue). This panel
+ * the always-present assistant chat (see CompanyAssistant.vue). This panel
  * stays a simple, read-first roster with direct role/removal actions for admins.
  */
 const props = defineProps({
@@ -62,7 +62,7 @@ function remove(member) {
     <header class="flex items-start justify-between gap-2 flex-wrap">
       <div>
         <h2 class="text-lg font-black flex items-center gap-2">
-          <i class="fa-solid fa-user-group text-primary"></i> People
+          <i class="fa-solid fa-user-group text-primary-ink"></i> People
         </h2>
         <p class="text-xs text-base-content/50">
           Humans in {{ company.name }}. Team management — adding people to teams and choosing leads —
@@ -80,8 +80,8 @@ function remove(member) {
       </div>
     </header>
 
-    <p v-if="canAdmin" class="text-[11px] rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-base-content/60">
-      <i class="fa-solid fa-circle-info text-primary mr-1"></i>
+    <p v-if="canAdmin" class="text-xs rounded-xl border border-primary/20 bg-primary/5 px-3 py-2 text-base-content/60">
+      <i class="fa-solid fa-circle-info text-primary-ink mr-1"></i>
       The add-person form opens inside the assistant window. Company admins can create the account
       or enroll an existing codx-junior user.
     </p>
@@ -107,22 +107,22 @@ function remove(member) {
             <div class="flex items-center gap-1.5 flex-wrap">
               <h3 class="font-bold truncate">{{ member.username }}</h3>
               <span v-if="member.owner" class="badge badge-xs badge-warning gap-1">
-                <i class="fa-solid fa-crown text-[8px]"></i> owner
+                <i class="fa-solid fa-crown text-[10px]"></i> owner
               </span>
             </div>
-            <p class="text-[11px] text-base-content/50 truncate">
+            <p class="text-xs text-base-content/50 truncate">
               {{ member.title || member.email || 'codx-junior user' }}
             </p>
           </div>
           <span class="badge badge-sm gap-1" :class="roleMeta(member.company_role).badge">
-            <i :class="roleMeta(member.company_role).icon" class="text-[9px]"></i>
+            <i :class="roleMeta(member.company_role).icon" class="text-[11px]"></i>
             {{ roleMeta(member.company_role).label }}
           </span>
         </div>
 
         <div class="flex flex-wrap gap-1">
           <span v-for="team in teamsOf(member.username)" :key="team.id" class="badge badge-xs badge-outline truncate max-w-40">
-            <i class="fa-solid fa-people-group text-[8px] mr-1"></i>{{ team.name }}
+            <i class="fa-solid fa-people-group text-[10px] mr-1"></i>{{ team.name }}
           </span>
           <span v-if="!teamsOf(member.username).length" class="badge badge-xs badge-ghost">not in a team yet</span>
         </div>
@@ -135,7 +135,7 @@ function remove(member) {
             <option value="manager">manager</option>
             <option value="member">member</option>
           </select>
-          <button class="btn btn-ghost btn-xs text-error" :disabled="busy"
+          <button class="btn btn-ghost btn-xs text-error-ink" :disabled="busy"
                   :aria-label="`Remove ${member.username}`" @click="remove(member)">
             <i class="fa-solid fa-user-minus"></i>
           </button>
@@ -145,7 +145,7 @@ function remove(member) {
 
     <section class="rounded-2xl border border-base-content/10 bg-base-200/40 p-4">
       <h3 class="text-sm font-bold flex items-center gap-2">
-        <i class="fa-solid fa-people-group text-secondary"></i> Team management happens in the assistant
+        <i class="fa-solid fa-people-group text-secondary-ink"></i> Team management happens in the assistant
       </h3>
       <p class="text-xs text-base-content/60 mt-1">
         Managers don't fill team forms. Tell the assistant what you want — it shows the form,

@@ -48,6 +48,23 @@ const form = reactive({
 const projects = computed(() => props.snapshot?.projects || [])
 const teams = computed(() => props.snapshot?.teams || [])
 
+// A channel is hosted by a project; only discovered projects can store chats.
+// The snapshot marks the linked-but-undiscovered ones as `available: false`
+// (the folder was removed, moved, or the scan did not reach it). Keep them
+// visible in the selector so the owner sees WHY they cannot be used, but never
+// offer them as the default nor let them be submitted.
+const availableProjects = computed(() =>
+  projects.value.filter(project => project.available !== false)
+)
+
+const selectedProject = computed(() =>
+  projects.value.find(project => project.project_id === form.project_id) || null
+)
+
+const selectedProjectUnavailable = computed(
+  () => selectedProject.value?.available === false
+)
+
 const focusedTeam = computed(() =>
   props.teamId ? teams.value.find(team => team.id === props.teamId) || null : null
 )
@@ -151,7 +168,7 @@ function openCreate() {
     name: '',
     description: '',
     team_id: props.teamId || teams.value[0]?.id || '',
-    project_id: projects.value[0]?.project_id || ''
+    project_id: availableProjects.value[0]?.project_id || ''
   })
   formError.value = ''
   showCreate.value = true
@@ -160,6 +177,17 @@ function openCreate() {
 async function createChannel() {
   if (!form.name.trim()) {
     formError.value = 'Channel name is required'
+    return
+  }
+  if (!form.project_id) {
+    formError.value = 'Pick the project that will host the channel'
+    return
+  }
+  if (selectedProjectUnavailable.value) {
+    formError.value =
+      `Project "${selectedProject.value?.name || form.project_id}" is not ` +
+      'discovered by this workspace, so it cannot host a channel. Refresh the ' +
+      'project list or pick another project.'
     return
   }
   busy.value = true
@@ -234,12 +262,12 @@ watch(() => [props.teamId, props.companyId, props.chatId], async () => {
     <!-- Header -->
     <header class="shrink-0 border-b border-base-content/10 bg-base-100/90 backdrop-blur px-3 py-2">
       <div class="flex items-center gap-2">
-        <div class="w-8 h-8 rounded-lg grid place-items-center bg-primary/15 text-primary shrink-0">
+        <div class="w-8 h-8 rounded-lg grid place-items-center bg-primary/15 text-primary-ink shrink-0">
           <i class="fa-regular fa-comments"></i>
         </div>
         <div class="min-w-0 flex-1">
           <h2 class="text-sm font-bold truncate">{{ focusedTeam ? focusedTeam.name : t('chats.title') }}</h2>
-          <p class="text-[10px] text-base-content/45 truncate">
+          <p class="text-xs text-base-content/45 truncate">
             {{ visibleChats.length }} channel{{ visibleChats.length === 1 ? '' : 's' }} ·
             {{ focusedTeam ? t('chats.teamRoom') : t('chats.hosted') }}
           </p>
@@ -277,7 +305,7 @@ watch(() => [props.teamId, props.companyId, props.chatId], async () => {
           @new-group="openCreate"
           @toggle-collapse="sidebarCollapsed = !sidebarCollapsed"
         />
-        <p class="px-3 py-2 text-[10px] text-base-content/35 border-t border-base-content/5">
+        <p class="px-3 py-2 text-xs text-base-content/35 border-t border-base-content/5">
           A channel belongs to a team. Its humans and AI profiles are the roster.
         </p>
       </aside>
@@ -331,7 +359,7 @@ watch(() => [props.teamId, props.companyId, props.chatId], async () => {
             </button>
             <div class="min-w-0 flex-1">
               <div class="text-xs font-semibold truncate"># {{ activeChat.name }}</div>
-              <div class="text-[10px] text-base-content/40 truncate">
+              <div class="text-xs text-base-content/40 truncate">
                 {{ activeTeam?.name || 'No team' }}
                 <template v-if="activeProject"> · {{ activeProject.name }}</template>
               </div>
@@ -348,7 +376,7 @@ watch(() => [props.teamId, props.companyId, props.chatId], async () => {
             </button>
             <button
               v-if="canManage"
-              class="btn btn-ghost btn-xs btn-square text-error"
+              class="btn btn-ghost btn-xs btn-square text-error-ink"
               :disabled="busy"
               title="Delete channel"
               @click="removeChannel"
@@ -394,20 +422,31 @@ watch(() => [props.teamId, props.companyId, props.chatId], async () => {
             <span class="label-text text-xs">Hosted by project</span>
             <select v-model="form.project_id" class="select select-sm select-bordered">
               <option v-for="project in projects" :key="project.project_id" :value="project.project_id">
-                {{ project.name || project.project_id }}
+                {{ project.name || project.project_id }}{{ project.available === false ? ' (not discovered)' : '' }}
               </option>
             </select>
           </label>
         </div>
 
-        <p v-if="formError" class="text-error text-xs mt-3">{{ formError }}</p>
-        <p class="text-[10px] text-base-content/40 mt-3">
+        <p v-if="selectedProjectUnavailable" class="text-warning-ink text-xs mt-3">
+          This project is linked to the company but the workspace cannot find its
+          folder, so it cannot host a channel. Pick another project or refresh the
+          project list.
+        </p>
+        <p v-else-if="!projects.length" class="text-warning-ink text-xs mt-3">
+          Link a project to this company before creating a channel.
+        </p>
+
+        <p v-if="formError" class="text-error-ink text-xs mt-3">{{ formError }}</p>
+        <p class="text-xs text-base-content/40 mt-3">
           Messages live in the selected project, so mentions, attachments, unread badges and AI replies use the existing Messenger.
         </p>
 
         <div class="modal-action">
           <button class="btn btn-sm btn-ghost" @click="showCreate = false">Cancel</button>
-          <button class="btn btn-sm btn-primary" :disabled="busy" @click="createChannel">
+          <button class="btn btn-sm btn-primary"
+                  :disabled="busy || selectedProjectUnavailable || !form.project_id"
+                  @click="createChannel">
             Create channel
           </button>
         </div>

@@ -3,7 +3,7 @@
 > **Status:** implemented · **Code:** `api/codx/junior/ticketing/autonomy.py`,
 > `api/codx/junior/ticketing/worker.py`, `api/codx/junior/ticketing/prompts.py` ·
 > **API:** `/api/tickets/{id}/autonomy` · **Tool:** `ticket_autonomy` ·
-> **UI:** ticket chat header → robot button
+> **UI:** ticket chat header → robot button · company shell → [Tickets](/features/company-tickets)
 
 A **ticket** is a request one project places on another one: a bug fix, a feature or a
 change the requester cannot implement itself (see [Ticketing](#ticketing) below). An

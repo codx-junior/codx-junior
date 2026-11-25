@@ -20,7 +20,16 @@ export default defineConfig({
   server: {
     allowedHosts: true,
     host: '0.0.0.0',
-    watch: DEBUG ? { ignored: ["**/.codx/**"] } : null
+    watch: DEBUG ? { ignored: ["**/.codx/**"] } : null,
+    // Dev is served by Vite directly (no nginx). Keep the API and Socket.IO
+    // same-origin and proxy them to the uvicorn process in this container.
+    proxy: {
+      '/api': {
+        target: process.env.CODX_JUNIOR_DEV_API_URL || 'http://127.0.0.1:19980',
+        changeOrigin: true,
+        ws: true,
+      },
+    },
   },
   plugins: [
     tailwindcss(),

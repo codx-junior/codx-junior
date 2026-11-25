@@ -15,26 +15,26 @@
       class="dropdown-content bg-base-100 bg-base-200 text-base-content rounded-box top-px h-[30.5rem] max-h-[calc(100vh-8.6rem)] overflow-y-auto border border-base-content/5 shadow-2xl outline-1 outline-black/5">
       <ul class="menu w-56">
         <li class="menu-title text-xs">Theme</li> <!--[--> 
-        <li><button class="gap-3 px-2" data-set-theme="light" @click="setTheme('light')" data-act-class="[&amp;_svg]:visible">
-            <div data-theme="light" class="bg-base-100 grid shrink-0 grid-cols-2 gap-0.5 rounded-md p-1 shadow-sm">
+        <li><button class="gap-3 px-2" data-set-theme="codx-junior-dark" @click="setTheme('codx-junior-dark')" data-act-class="[&amp;_svg]:visible">
+            <div data-theme="codx-junior-dark" class="bg-base-100 grid shrink-0 grid-cols-2 gap-0.5 rounded-md p-1 shadow-sm">
               <div class="bg-base-content size-1 rounded-full"></div>
               <div class="bg-primary size-1 rounded-full"></div>
               <div class="bg-secondary size-1 rounded-full"></div>
               <div class="bg-accent size-1 rounded-full"></div>
             </div>
-            <div class="w-32 truncate">light</div> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+            <div class="w-32 truncate">codx-junior-dark</div> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
               viewBox="0 0 24 24" fill="currentColor" class="invisible h-3 w-3 shrink-0">
               <path d="M20.285 2l-11.285 11.567-5.286-5.011-3.714 3.716 9 8.728 15-15.285z"></path>
             </svg>
           </button></li>
-        <li><button class="gap-3 px-2" data-set-theme="dark" @click="setTheme('dark')" data-act-class="[&amp;_svg]:visible">
-            <div data-theme="dark" class="bg-base-100 grid shrink-0 grid-cols-2 gap-0.5 rounded-md p-1 shadow-sm">
+        <li><button class="gap-3 px-2" data-set-theme="codx-junior-light" @click="setTheme('codx-junior-light')" data-act-class="[&amp;_svg]:visible">
+            <div data-theme="codx-junior-light" class="bg-base-100 grid shrink-0 grid-cols-2 gap-0.5 rounded-md p-1 shadow-sm">
               <div class="bg-base-content size-1 rounded-full"></div>
               <div class="bg-primary size-1 rounded-full"></div>
               <div class="bg-secondary size-1 rounded-full"></div>
               <div class="bg-accent size-1 rounded-full"></div>
             </div>
-            <div class="w-32 truncate">dark</div> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
+            <div class="w-32 truncate">codx-junior-light</div> <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
               viewBox="0 0 24 24" fill="currentColor" class="invisible h-3 w-3 shrink-0">
               <path d="M20.285 2l-11.285 11.567-5.286-5.011-3.714 3.716 9 8.728 15-15.285z"></path>
             </svg>
@@ -467,6 +467,8 @@
   </div>
 </template>
 <script>
+import { normalizeTheme } from '@/utils/theme'
+
 export default {
   data () {
     return {
@@ -474,8 +476,9 @@ export default {
   },
   methods: {
     setTheme(theme) {
-      this.$ui.setTheme(theme)
-      this.$emit('change', theme)
+      const next = normalizeTheme(theme)
+      this.$ui.setTheme(next)
+      this.$emit('change', next)
     }
   }
 }

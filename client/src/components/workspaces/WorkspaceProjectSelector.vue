@@ -2,7 +2,7 @@
   <div class="space-y-3">
     <div v-if="!selected.includes('*')" class="space-y-2">
       <label class="label cursor-pointer">
-        <span class="label-text">Mount all projects</span>
+        <span class="label-text">Mount all company projects</span>
         <input
           type="checkbox"
           class="checkbox"
@@ -13,7 +13,7 @@
 
     <div v-if="!selected.includes('*')" class="space-y-2 max-h-48 overflow-y-auto">
       <div
-        v-for="proj in allProjects"
+        v-for="proj in availableProjects"
         :key="proj.project_id"
         class="form-control"
       >
@@ -31,7 +31,7 @@
 
     <div v-else class="alert alert-info">
       <i class="fa-solid fa-star"></i>
-      <span>All projects will be mounted</span>
+      <span>All company projects will be mounted</span>
     </div>
   </div>
 </template>
@@ -40,17 +40,34 @@
 export default {
   props: {
     selected: Array,
-    project: Object
+    project: Object,
+    // Projects offered by the caller (the company-scoped list). When omitted,
+    // the component resolves the active company scope itself so an old caller
+    // can never fall back to every project of the installation.
+    projects: { type: Array, default: null }
   },
   emits: ['update'],
   data() {
     return {
-      allProjects: []
+      fetchedProjects: []
+    }
+  },
+  computed: {
+    availableProjects() {
+      // Prefer the live company getter when a company is loaded: the owner can
+      // link a project while the dialog is open, and the selector must follow.
+      if (this.$storex.company?.loaded) {
+        return this.$storex.company.linkedProjects || []
+      }
+      if (Array.isArray(this.projects)) return this.projects
+      return this.fetchedProjects
     }
   },
   async mounted() {
+    if (Array.isArray(this.projects)) return
+    if (this.$storex.company?.loaded) return
     try {
-      this.allProjects = await this.project.$api.projects.list() || []
+      this.fetchedProjects = await this.project.$api.projects.list() || []
     } catch (error) {
       console.error('Failed to load projects', error)
     }

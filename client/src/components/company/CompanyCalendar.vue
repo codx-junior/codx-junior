@@ -1,14 +1,13 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { API } from '@/api/api'
-import { $storex } from '@/store'
 import { useCompanyI18n } from './i18n'
 
 /**
  * Compact company calendar for the overview.
  *
- * The calendar store is global; this widget only asks for the current project
- * (the active one, or the first linked project) and shows the next few events.
+ * The calendar API is project-scoped; this widget asks for **every project
+ * linked to the company** and shows the next few events across all of them.
  */
 const props = defineProps({
   snapshot: { type: Object, default: null }
@@ -21,12 +20,11 @@ const loading = ref(false)
 const error = ref('')
 const occurrences = ref([])
 
-const projects = computed(() => props.snapshot?.projects || [])
-const projectId = computed(() => {
-  const active = $storex.projects.activeProject?.project_id
-  const linked = projects.value.find(project => project.project_id === active && project.available)
-  return linked?.project_id || projects.value.find(project => project.available)?.project_id || ''
-})
+const projectIds = computed(() => [...new Set(
+  (props.snapshot?.projects || [])
+    .filter(project => project?.available && project?.project_id)
+    .map(project => String(project.project_id))
+)])
 
 const upcoming = computed(() => occurrences.value
   .filter(item => item?.start)
@@ -39,7 +37,7 @@ const localeCode = computed(() => ({
 }[locale.value] || 'en-GB'))
 
 async function load() {
-  if (!projectId.value) {
+  if (!projectIds.value.length) {
     occurrences.value = []
     return
   }
@@ -51,7 +49,7 @@ async function load() {
     const response = await API.calendar.events.query({
       from: from.toISOString(),
       to: to.toISOString(),
-      projects: [projectId.value]
+      projects: projectIds.value
     })
     const now = Date.now()
     occurrences.value = (response?.occurrences || [])
@@ -86,47 +84,47 @@ function openCalendar() {
   emit('open')
 }
 
-watch(projectId, load)
+watch(() => projectIds.value.join(','), load)
 onMounted(load)
 </script>
 
 <template>
-  <section class="cp-card cp-card-pad" aria-label="Calendar">
+  <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4" aria-label="Calendar">
     <header class="flex items-center justify-between gap-2">
       <div>
-        <h2 class="cp-title">{{ t('calendar.title') }}</h2>
-        <p class="mt-0.5 text-[8.5px] cp-muted">{{ t('calendar.upcoming') }}</p>
+        <h2 class="text-base font-bold tracking-tight">{{ t('calendar.title') }}</h2>
+        <p class="mt-0.5 text-[10px] text-base-content/60">{{ t('calendar.upcoming') }}</p>
       </div>
-      <button class="cp-chip !h-6 !text-[8.5px]" @click="openCalendar">
-        {{ t('calendar.open') }} <i class="fa-solid fa-arrow-right text-[7px]"></i>
+      <button class="btn btn-xs !h-6 !text-[10px]" @click="openCalendar">
+        {{ t('calendar.open') }} <i class="fa-solid fa-arrow-right text-[10px]"></i>
       </button>
     </header>
 
-    <div v-if="loading" class="mt-3 flex items-center gap-2 py-2 text-[9px] cp-muted">
+    <div v-if="loading" class="mt-3 flex items-center gap-2 py-2 text-[11px] text-base-content/60">
       <span class="loading loading-spinner loading-xs"></span>
     </div>
-    <div v-else-if="error" class="mt-2 rounded-lg bg-[var(--cp-red-soft)] px-2 py-1.5 text-[9px] text-[var(--cp-error-ink)]">
+    <div v-else-if="error" class="mt-2 rounded-lg bg-error/10 px-2 py-1.5 text-[11px] text-error-ink">
       {{ error }}
     </div>
-    <div v-else-if="!upcoming.length" class="mt-2 rounded-xl border border-dashed border-[var(--cp-border)] px-3 py-4 text-center">
-      <p class="text-[9.5px] cp-muted">{{ t('calendar.noEvents') }}</p>
+    <div v-else-if="!upcoming.length" class="mt-2 rounded-xl border border-dashed border-base-300 px-3 py-4 text-center">
+      <p class="text-[11px] text-base-content/60">{{ t('calendar.noEvents') }}</p>
     </div>
-    <div v-else class="mt-2 divide-y divide-[var(--cp-border)]">
+    <div v-else class="mt-2 divide-y divide-base-300">
       <button
         v-for="item in upcoming"
         :key="`${item.event_id || item.id}-${item.start}`"
         type="button"
-        class="flex w-full items-center gap-2 py-2 text-left transition hover:text-[var(--cp-accent-ink)]"
+        class="flex w-full items-center gap-2 py-2 text-left transition hover:text-accent-ink"
         @click="openCalendar"
       >
-        <span class="grid h-7 w-9 shrink-0 place-items-center rounded-lg bg-[var(--cp-lime-soft)] text-[8px] font-bold text-[var(--cp-accent-ink)]">
+        <span class="grid h-7 w-9 shrink-0 place-items-center rounded-lg bg-accent/10 text-[10px] font-bold text-accent-ink">
           {{ dayLabel(item.start) }}
         </span>
         <span class="min-w-0 flex-1">
-          <span class="block truncate text-[10px] font-bold">{{ item.title || 'Event' }}</span>
-          <span class="mt-0.5 block truncate text-[8px] cp-muted">{{ timeLabel(item) }}</span>
+          <span class="block truncate text-xs font-bold">{{ item.title || 'Event' }}</span>
+          <span class="mt-0.5 block truncate text-[10px] text-base-content/60">{{ timeLabel(item) }}</span>
         </span>
-        <i class="fa-solid fa-chevron-right text-[7px] cp-muted-soft"></i>
+        <i class="fa-solid fa-chevron-right text-[10px] text-base-content/40"></i>
       </button>
     </div>
   </section>

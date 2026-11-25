@@ -480,14 +480,14 @@ export const actions = actionTree(
       mutations.setLoadingMore(state, !isFirst)
 
       const { from_date, to_date } = dateRangeForFilter(state)
-      // Follow-up is a company view: only the company's ROOT projects are in
-      // scope. A child project is never selected here (by design), even when
-      // the company can see it elsewhere.
+      // Follow-up is a company view: every project the company defines is in
+      // scope (direct links, or the whole catalogue in `*` mode). Unrelated
+      // projects of another company are never included.
       const companyLoaded = Boolean($storex.company?.loaded)
-      const roots = ($storex.company?.rootProjectIds || []).filter(Boolean)
+      const companyProjects = ($storex.company?.linkedProjectIds || []).filter(Boolean)
       const activeProjectId = $storex.projects.activeProject?.project_id
       const projectIds = companyLoaded
-        ? roots
+        ? companyProjects
         : (activeProjectId ? [activeProjectId] : null)
       const searchRequest = new ChatSearchRequest({
         query: '',

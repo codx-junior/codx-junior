@@ -72,6 +72,7 @@ from codx.junior.ticketing.model import (
     TICKET_ACTION_PLACED,
     TICKET_ACTION_STATUS,
     TICKET_ACTION_UPDATED,
+    TICKET_AUTONOMY_OFF,
     TICKET_AUTONOMY_QUEUED,
     TICKET_BOARD,
     TICKET_BOARD_DESCRIPTION,
@@ -86,6 +87,7 @@ from codx.junior.ticketing.model import (
     TICKET_SOURCE_STATUSES,
     TICKET_STATUSES,
     TICKET_STATUS_ABANDONED,
+    TICKET_STATUS_ACCEPTED,
     TICKET_STATUS_OPEN,
     TICKET_TARGET_STATUSES,
     TICKET_TERMINAL_STATUSES,
@@ -842,6 +844,10 @@ class TicketService:
         autonomous: bool = False,
         autonomy_profile: Optional[str] = None,
         auto_accept: bool = False,
+        source_project_id: Optional[str] = None,
+        source_project_name: Optional[str] = None,
+        track_ledger: bool = True,
+        target_settings: Optional["CODXJuniorSettings"] = None,
     ) -> TicketRecord:
         """
         Place a ticket on another project and return its id.
@@ -872,6 +878,16 @@ class TicketService:
                 This is an internal/target-side flag: the source-facing
                 ``ticket_create`` tool and ``POST /api/tickets`` never expose it,
                 so a requester cannot bypass the target's consent.
+            source_project_id: Optional source override. The company workbench
+                uses it to record the company as the requester instead of
+                pretending another project asked.
+            source_project_name: Display name of the source override.
+            track_ledger: When False no requester ledger is written. A
+                company-placed ticket has no source project to refresh.
+            target_settings: Optional resolved target settings. It lets a
+                company place a ticket on its own project (the service is bound
+                to the target) without bypassing the normal target validation
+                for project-to-project requests.
 
         Returns:
             The created :class:`TicketRecord` (its ``ticket_id`` is the id to
@@ -890,13 +906,19 @@ class TicketService:
             title = title[:MAX_TICKET_NAME_CHARS]
 
         resolved_kind = normalize_kind(kind) or TICKET_DEFAULT_KIND
-        target_settings = self.resolve_target(target)
+        target_settings = target_settings or self.resolve_target(target)
         manager = self.manager_for(target_settings)
         self.ensure_ticket_board(manager)
 
-        source_project_id = _clean(getattr(self.settings, "project_id", "")) or None
+        source_project_id = (
+            _clean(source_project_id) or _clean(getattr(self.settings, "project_id", ""))
+        ) or None
         target_project_id = _clean(getattr(target_settings, "project_id", "")) or None
-        source_name = _clean(getattr(self.settings, "project_name", "")) or source_project_id
+        source_name = (
+            _clean(source_project_name)
+            or _clean(getattr(self.settings, "project_name", ""))
+            or source_project_id
+        )
         target_name = _clean(getattr(target_settings, "project_name", "")) or target_project_id
 
         chat_id = None
@@ -976,7 +998,10 @@ class TicketService:
 
         saved = manager.save_chat(chat=chat)
         record = TicketRecord.from_chat(saved, direction=TICKET_SIDE_SOURCE)
-        self.upsert_ledger(record)
+        # A company-placed ticket has no source project ledger to refresh: the
+        # company workbench reads the ticket from the target board directly.
+        if track_ledger:
+            self.upsert_ledger(record)
 
         logger.info(
             "ticketing: ticket '%s' placed on '%s' by '%s' (kind=%s)",
@@ -1155,6 +1180,141 @@ class TicketService:
             self.upsert_ledger(record)
         else:
             self._refresh_ledger_of_source(saved)
+        return record
+
+    # ------------------------------------------------------------------
+    # Human review of a delivery
+    # ------------------------------------------------------------------
+
+    def review(
+        self,
+        ticket_id: str,
+        decision: str,
+        note: Optional[str] = None,
+        reviewed_by: Optional[str] = None,
+        queue: bool = True,
+    ) -> TicketRecord:
+        """
+        Accept a delivery or send it back for another autonomous run.
+
+        A validated autonomous run closes the ticket (``done``), but the target
+        still needs a human decision on the delivered work. ``accept`` records
+        that decision without changing the closed status; ``changes`` reopens the
+        ticket (``accepted``), clears the previous review and queues a new run so
+        the same ticket keeps its conversation, branch and evidence.
+
+        Args:
+            ticket_id: Ticket id (== chat id).
+            decision: ``accept`` or ``changes``.
+            note: Reviewer comment; it becomes a message in the ticket chat.
+            reviewed_by: Username of the reviewer (defaults to the service user).
+            queue: On ``changes``, enable/queue the ticket for the worker.
+
+        Returns:
+            The updated :class:`TicketRecord`.
+
+        Raises:
+            TicketError: When the ticket is missing, the caller is not the
+                target project, or the decision is invalid for the status.
+        """
+        wanted = _clean(decision).lower()
+        if wanted in ("approve", "approved", "accepted", "ok"):
+            wanted = "accept"
+        elif wanted in ("reject", "rejected", "reopen", "send_back", "changes"):
+            wanted = "changes"
+        if wanted not in ("accept", "changes"):
+            raise TicketError(
+                "decision must be 'accept' or 'changes'"
+            )
+
+        chat, manager, _target = self._resolve_ticket_chat(ticket_id)
+        if chat is None or manager is None:
+            raise TicketError(f"ticket '{_clean(ticket_id)}' not found")
+        side = self._assert_may_access(chat, manager)
+        if side != TICKET_SIDE_TARGET:
+            raise TicketError(
+                "only the target project can review a delivery; the requester "
+                "can comment on the ticket"
+            )
+        self._sync_status_from_column(chat=chat, manager=manager)
+
+        ticket = chat.ticket
+        previous = ticket.status
+        autonomy = ticket.autonomy or TicketAutonomy()
+        reviewer = _clean(reviewed_by) or _clean(self.user) or None
+        text = _clean(note)
+
+        if wanted == "accept":
+            if previous != "done":
+                raise TicketError(
+                    f"ticket '{ticket.id}' is {previous}; a delivery can only be "
+                    "accepted after the run closes it as done"
+                )
+            autonomy.mark_reviewed(reviewed_by=reviewer, note=text)
+            message = text or "Delivery reviewed and accepted."
+            ticket.append_event(
+                action=TICKET_ACTION_UPDATED,
+                project_id=_clean(getattr(self.settings, "project_id", "")) or None,
+                project_name=_clean(getattr(self.settings, "project_name", "")) or None,
+                user=reviewer,
+                note=f"delivery accepted: {message[:240]}",
+                status=previous,
+            )
+        else:
+            if previous == TICKET_STATUS_ABANDONED:
+                raise TicketError(
+                    f"ticket '{ticket.id}' is abandoned; there is nothing to review"
+                )
+            ticket.status = TICKET_STATUS_ACCEPTED
+            chat.column = column_for_status(TICKET_STATUS_ACCEPTED)
+            chat.status = "doing"
+            autonomy.clear_review()
+            if queue:
+                autonomy.enabled = True
+                autonomy.mark_queued()
+            else:
+                autonomy.enabled = False
+                autonomy.state = TICKET_AUTONOMY_OFF
+                autonomy.updated_at = now_iso()
+            message = text or "Changes requested: keep the ticket open and address the review."
+            ticket.append_event(
+                action=TICKET_ACTION_STATUS,
+                project_id=_clean(getattr(self.settings, "project_id", "")) or None,
+                project_name=_clean(getattr(self.settings, "project_name", "")) or None,
+                user=reviewer,
+                note=f"changes requested: {message[:240]}",
+                from_status=previous,
+                status=TICKET_STATUS_ACCEPTED,
+            )
+        ticket.autonomy = autonomy
+
+        chat.messages.append(
+            Message(
+                doc_id=str(uuid.uuid4()),
+                role="user",
+                content=message,
+                user=reviewer,
+                project_id=chat.project_id,
+                created_at=now_iso(),
+                updated_at=now_iso(),
+                done=True,
+            )
+        )
+        ticket.append_event(
+            action=TICKET_ACTION_COMMENTED,
+            project_id=_clean(getattr(self.settings, "project_id", "")) or None,
+            project_name=_clean(getattr(self.settings, "project_name", "")) or None,
+            user=reviewer,
+            note=message[:280],
+            status=ticket.status,
+        )
+
+        saved = manager.save_chat(chat=chat) or chat
+        self._refresh_ledger_of_source(saved)
+        record = TicketRecord.from_chat(saved, direction=TICKET_SIDE_TARGET)
+        logger.info(
+            "ticketing: ticket '%s' review=%s by '%s'", ticket.id, wanted, reviewer
+        )
         return record
 
     def abandon(

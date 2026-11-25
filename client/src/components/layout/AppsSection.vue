@@ -1,6 +1,5 @@
 <script setup>
 import NavItem from './NavItem.vue'
-import ProjectDetailt from '../ProjectDetailt.vue'
 import ViewModeToggle from './ViewModeToggle.vue'
 import PinnedProjectsSwitcher from './PinnedProjectsSwitcher.vue';
 import { isMultiInstance } from '@/config/apps'
@@ -12,17 +11,6 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
   <div class="px-2 py-3 shrink-0 border-b border-base-content/5">
     <div class="flex gap-2 pb-1 min-w-0">  
       
-      <!-- Project selector -->
-      <ProjectDetailt 
-        v-if="!isCollapsed"
-        class="flex-1 min-w-0"
-        @click.stop=""
-        :options="{ folders: true, showIcon: true }"
-        @select="onProjectSelected"
-        @open="$emit('overlay-open')"
-        @close="$emit('overlay-close')"
-      />
-
       <!-- Pin / unpin the active project (quick switcher) -->
       <button
         v-if="!isCollapsed"

@@ -1,8 +1,10 @@
 <script setup>
-import { computed, onMounted, watch, watchEffect } from 'vue'
+import { computed, onMounted, ref, watch, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { $storex } from '@/store'
+import { API } from '@/api/api'
 import Login from './components/user/Login.vue'
+import CompanyWizard from './components/company/CompanyWizard.vue'
 import Toast from './components/Toast.vue'
 import DesktopSidebar from './components/layout/DesktopSidebar.vue'
 import NewProject from './components/project/NewProject.vue'
@@ -28,6 +30,75 @@ function onAssistantChatCreated(chat) {
 
 const uiReady = computed(() => $storex.ui.uiReady)
 const isLogin = computed(() => !$storex.users.user)
+
+// ── First-run gate ─────────────────────────────────────────────────────────
+// A fresh installation has no company basics yet. Until the owner finishes the
+// company wizard the product must not be usable: every route (including a deep
+// link opened directly) is replaced by the blocking setup screen. The state is
+// server-side (`setup_required`), so a reload cannot bypass it and a configured
+// upgrade or a re-run from the company menu is never locked.
+const onboardingChecked = ref(false)
+const setupRequired = ref(false)
+const setupError = ref('')
+let setupCheck = null
+
+/**
+ * Read the installation setup state.
+ *
+ * @param {Boolean} force Re-read even when a check is already in flight.
+ * @returns {Promise<void>}
+ */
+function checkSetup(force = false) {
+  if (isLogin.value) return Promise.resolve()
+  if (setupCheck && !force) return setupCheck
+  // Fail closed: while the state is being read (including a retry after an
+  // error) the shell stays hidden instead of flashing the product.
+  setupError.value = ''
+  onboardingChecked.value = false
+  setupRequired.value = false
+  setupCheck = (async () => {
+    try {
+      const status = await API.companies.onboarding()
+      setupRequired.value = Boolean(
+        status?.setup_required ?? status?.needs_setup
+      )
+    } catch (error) {
+      // Fail closed: an unknown setup state cannot silently unlock the app.
+      setupRequired.value = false
+      setupError.value = error?.message || 'Cannot read the installation setup state.'
+    } finally {
+      onboardingChecked.value = true
+      setupCheck = null
+    }
+  })()
+  return setupCheck
+}
+
+/** The wizard finished: unlock the shell and land on the company workspace. */
+async function onSetupDone() {
+  setupRequired.value = false
+  setupError.value = ''
+  onboardingChecked.value = true
+  await $storex.company.loadCompanies().catch(() => {})
+  // The company the owner just configured is the active one, even when the
+  // fresh-install default placeholder still exists next to it.
+  const company = $storex.company.activeCompany || $storex.company.defaultCompany
+  await router.replace(
+    company?.slug
+      ? { name: 'company-home', params: { companySlug: company.slug } }
+      : '/'
+  ).catch(() => {})
+}
+
+watch(isLogin, value => {
+  if (value) {
+    onboardingChecked.value = false
+    setupRequired.value = false
+    setupError.value = ''
+    return
+  }
+  checkSetup()
+}, { immediate: true })
 const isMobile = computed(() => $storex.ui.isMobile)
 // The company is the root of the product. The router resolves / and legacy
 // URLs; this watcher covers the login transition (before the company store was
@@ -71,11 +142,15 @@ function openAccountSettings() {
 // root, so mirror the active theme there — otherwise every overlay renders in
 // the default light theme.
 watchEffect(() => {
-  const theme = $storex.ui.theme || 'dark'
+  const theme = $storex.ui.theme || 'codx-junior-dark'
   document.documentElement.setAttribute('data-theme', theme)
-  document.documentElement.style.colorScheme = theme === 'dark' ? 'dark' : 'light'
+  // Resolve the scheme from the registered daisyUI theme instead of guessing
+  // from the theme name: custom themes (codx-junior-dark) are dark too.
+  const scheme = getComputedStyle(document.documentElement).colorScheme || ''
+  const dark = scheme.includes('dark')
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
   document.querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', theme === 'dark' ? '#1f2937' : '#f3f4f6')
+    ?.setAttribute('content', dark ? '#1f2937' : '#f3f4f6')
 })
 
 onMounted(() => {
@@ -92,6 +167,28 @@ onMounted(() => {
     :data-theme="$ui.theme"
   >
     <Login v-if="isLogin" />
+
+    <!-- First-run gate: no product shell before the company basics exist. -->
+    <div v-else-if="!onboardingChecked" class="grid h-full w-full place-items-center bg-base-100" aria-busy="true">
+      <p class="flex items-center gap-2 text-sm text-base-content/60">
+        <span class="loading loading-spinner loading-sm"></span>Checking the installation…
+      </p>
+    </div>
+
+    <div v-else-if="setupError" class="grid h-full w-full place-items-center bg-base-100 p-4" role="alert">
+      <div class="rounded-box w-full max-w-[420px] border border-base-300 bg-base-100 p-5 text-center">
+        <i class="fa-solid fa-triangle-exclamation text-lg text-warning-ink"></i>
+        <h1 class="mt-2 text-base font-extrabold">Cannot read the setup state</h1>
+        <p class="mt-1 text-xs text-base-content/60">{{ setupError }}</p>
+        <button class="btn btn-primary btn-sm mt-4" @click="checkSetup(true)">Retry</button>
+      </div>
+    </div>
+
+    <template v-else-if="setupRequired">
+      <div class="h-full w-full bg-base-100">
+        <CompanyWizard :open="true" mandatory @done="onSetupDone" />
+      </div>
+    </template>
 
     <template v-else>
       <!-- Phones and tablets (<= 1024px): one purpose-built app shell. The

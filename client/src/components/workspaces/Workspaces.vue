@@ -86,7 +86,13 @@ export default {
     workspaces() {
       return this.settings.workspaces
     },
+    // A company only exposes the projects it links. Workspaces are created
+    // from the company shell, so their project picker must never offer a
+    // project that belongs to another company.
     availableProjects() {
+      if (this.$storex.company?.loaded) {
+        return this.$storex.company.linkedProjects || []
+      }
       return this.$projects.allProjects
     }
   },

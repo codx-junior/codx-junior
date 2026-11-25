@@ -2156,6 +2156,73 @@ def _untracked_patch(
     return "\n".join(body)
 
 
+def _filter_resolves_under_root(
+    settings: CODXJuniorSettings, path_filter: str
+) -> bool:
+    """Return True when a diff path filter can resolve inside the project root.
+
+    ``git diff -- <path>`` never errors on a path it cannot match: it prints
+    nothing, and the caller cannot tell "wrong root" from "nothing changed".
+    The change gate uses this check to fail loudly instead of reporting a
+    vacuous clean result.
+
+    Args:
+        settings: Project settings.
+        path_filter: Literal path, pathspec or glob used as a diff filter.
+
+    Returns:
+        bool: False when the filter provably falls outside the project root.
+    """
+    raw = str(path_filter or "").strip()
+    if not raw:
+        return True
+
+    root = _project_root(settings)
+    if os.path.isabs(raw):
+        target = os.path.abspath(raw)
+        return target == root or target.startswith(root + os.sep)
+
+    normalized = os.path.normpath(raw)
+    if normalized.startswith(".."):
+        # Escapes the project root: git matches nothing and stays silent.
+        return False
+    if os.path.exists(os.path.join(root, normalized)):
+        return True
+    if any(char in raw for char in "*?["):
+        # A glob cannot be verified cheaply; assume the caller meant it.
+        return True
+
+    ok, tracked, _ = _run_git(settings, ["ls-files", "-z", "--", normalized])
+    return bool(ok and tracked.strip("\0").strip())
+
+
+def _filter_escapes_root(
+    settings: CODXJuniorSettings, path_filter: str
+) -> bool:
+    """Return True when a diff path filter provably points outside the root.
+
+    Unlike :func:`_filter_resolves_under_root` this needs no filesystem or git
+    lookup: an absolute path outside the root, or one that normalises to
+    ``..``, can never match. ``git diff`` fails hard on those, so they are
+    rejected before the subprocess runs instead of surfacing as a git error.
+
+    Args:
+        settings: Project settings.
+        path_filter: Literal path, pathspec or glob used as a diff filter.
+
+    Returns:
+        bool: True when the filter can only point outside the project root.
+    """
+    raw = str(path_filter or "").strip()
+    if not raw:
+        return False
+    root = _project_root(settings)
+    if os.path.isabs(raw):
+        target = os.path.abspath(raw)
+        return target != root and not target.startswith(root + os.sep)
+    return os.path.normpath(raw).startswith("..")
+
+
 def project_changes(
     base: str = "HEAD",
     scope: str = "all",
@@ -2187,6 +2254,11 @@ def project_changes(
         base: Commit, branch or tag to compare against. Defaults to ``HEAD``.
         scope: One of ``all``, ``staged``, ``unstaged`` or ``untracked``.
         paths: Optional path or list of paths to restrict the result.
+            Paths are relative to the project root (``settings.abs_project_path``,
+            usually the ``api/`` folder of the platform checkout). Use ``../``
+            to address a file stored above that root. A filter that does not
+            resolve under the root is rejected instead of returning an empty
+            diff.
         include_patch: Include per-file patches (default: True).
         context_lines: Context lines in each patch (0-10, default: 3).
         max_files: Maximum files listed and patched (1-200, default: 20).
@@ -2258,6 +2330,27 @@ def project_changes(
                 "cannot be inspected."
             ),
             llm_response=f"project_changes: not a git repository: {err}",
+        )
+
+    # A filter that escapes the root makes `git diff` fail (or, worse, match
+    # nothing and read as clean). Reject it before any diff runs.
+    escaped = [
+        item for item in path_filters if _filter_escapes_root(settings, item)
+    ]
+    if escaped:
+        root = _project_root(settings)
+        listed = ", ".join(f"`{item}`" for item in escaped)
+        return ToolResponse(
+            user_response=(
+                f"⚠️ Path filter(s) {listed} do not resolve under the "
+                f"project root `{root}`, so this is **not** a clean result. "
+                "Paths are relative to the project root; use `../` to reach "
+                "a path stored above it."
+            ),
+            llm_response=(
+                "project_changes: path filters outside the project root "
+                f"{escaped} (root {root})"
+            ),
         )
 
     if scope != "untracked":
@@ -2346,10 +2439,37 @@ def project_changes(
 
     summary_lines: List[str] = [title, ""]
     if not entries:
-        summary_lines.append("- No changes found.")
+        if path_filters:
+            unresolved = [
+                item
+                for item in path_filters
+                if not _filter_resolves_under_root(settings, item)
+            ]
+            if unresolved:
+                root = _project_root(settings)
+                listed = ", ".join(f"`{item}`" for item in unresolved)
+                message = (
+                    f"⚠️ Path filter(s) {listed} do not resolve under the "
+                    f"project root `{root}`, so this is **not** a clean "
+                    "result: the filter matched nothing to diff. Paths are "
+                    "relative to the project root."
+                )
+                return ToolResponse(
+                    user_response=message,
+                    llm_response=(
+                        "project_changes: unresolved path filters "
+                        f"{unresolved} (root {root})"
+                    ),
+                )
+
+        applied = "".join(f" `{item}`" for item in path_filters)
+        summary_lines.append(f"- No changes found{(' for' + applied) if applied else ''}.")
         llm_response = "\n".join(summary_lines)
         return ToolResponse(
-            user_response="No changes found.",
+            user_response=(
+                f"No changes found{(' for' + applied) if applied else ''}"
+                f" (root `{_project_root(settings)}`, scope `{scope}`)."
+            ),
             llm_response=llm_response,
         )
 

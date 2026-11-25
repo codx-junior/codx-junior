@@ -37,13 +37,16 @@ Made with ❤️ by codx-junior
 
 import asyncio
 import base64
+import contextlib
 import importlib
 import logging
 import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -1415,6 +1418,458 @@ class Browser:
         except Exception as e:
             logger.exception("Fill failed for selector: %s", selector)
             raise RuntimeError(f"Fill on {selector} failed: {e}")
+
+    def _write_container_file(self, name: str, payload: bytes) -> Optional[str]:
+        """
+        Write one upload payload inside the browser container.
+
+        Last-resort transport: when the CDP client cannot materialize a file
+        from client-side bytes (some remote-browser setups), the browser gets a
+        real path instead. The browser container only needs to read it.
+        """
+        container = getattr(self.session, "container_name", None)
+        if not container or not payload:
+            return None
+        import shlex
+        import uuid as _uuid
+
+        folder = f"/tmp/codx-uploads/{_uuid.uuid4().hex[:8]}"
+        target = f"{folder}/{name}"
+        script = f"mkdir -p {shlex.quote(folder)} && cat > {shlex.quote(target)}"
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "-i", container, "sh", "-c", script],
+                input=payload,
+                capture_output=True,
+                timeout=120,
+            )
+        except Exception as ex:
+            logger.debug("Could not write %s inside %s: %s", name, container, ex)
+            return None
+        if result.returncode != 0:
+            logger.debug(
+                "docker exec write of %s failed: %s",
+                name, (result.stderr or b"")[:300],
+            )
+            return None
+        return target
+
+    async def _set_files(self, target, payloads: List[Dict[str, Any]]) -> str:
+        """
+        Attach payloads through *target* (an ElementHandle or selector).
+
+        Tries the CDP file payload first (no container dependency). If the
+        browser cannot accept client-side bytes, the payloads are written inside
+        the container and the browser receives those paths instead.
+
+        Returns:
+            str: ``payload``, ``container-path`` or ``payload+container-path``.
+        """
+        async def _apply(files):
+            if hasattr(target, "set_input_files"):
+                await target.set_input_files(files)
+            else:
+                await self.page.set_input_files(target, files)
+
+        try:
+            await _apply(payloads)
+            return "payload"
+        except Exception as ex:
+            logger.info("CDP payload upload failed (%s); retrying with container paths", ex)
+            container_paths = []
+            for payload in payloads:
+                if not isinstance(payload, dict) or not payload.get("buffer"):
+                    raise
+                path = await asyncio.to_thread(
+                    self._write_container_file,
+                    str(payload.get("name") or "upload.bin"),
+                    payload["buffer"],
+                )
+                if not path:
+                    raise
+                container_paths.append(path)
+            await _apply(container_paths)
+            return "container-path"
+
+    async def upload_files(
+        self,
+        selector: Optional[str],
+        files: List[Dict[str, Any]],
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Attach files to a page, whatever shape its uploader has.
+
+        Real sites present the file input in several ways and the kiosk browser
+        image cannot be relied on for its native file dialog, so this walks the
+        whole ladder:
+
+        1. an ``<input type="file">`` (visible **or hidden**, which is what
+           React/Next widgets use when a button opens a modal) - the files are
+           set directly;
+        2. a button/area that opens a **file chooser** - the click is
+           intercepted and the bytes are delivered to the chooser;
+        3. a button that opens a **modal with its own (new) file input** - the
+           click is performed and the input that appears is filled;
+        4. no selector: the last ``<input type="file">`` on the page is used.
+
+        The payloads carry their ``buffer``: the bytes travel over CDP, so this
+        works with the remote container browser and never depends on the file
+        existing inside the container (that is what made the live-view file
+        dialog unusable).
+
+        Args:
+            selector: CSS selector of the input, the upload button/area, or
+                ``None`` to auto-detect the page's file input.
+            files: File payloads (``{"name", "mimeType", "buffer"}``).
+            timeout: Optional timeout in milliseconds.
+
+        Returns:
+            Dict[str, Any]: ``selector``, ``count``, ``names``, ``input``
+            (True when an input was filled directly) and ``strategy``.
+
+        Raises:
+            RuntimeError: If the browser is not connected, the element is
+                missing, or no input/chooser accepted the files.
+        """
+        if not self.page:
+            raise RuntimeError("Browser not connected")
+        payloads = [file for file in (files or []) if file]
+        if not payloads:
+            raise RuntimeError("upload_files needs at least one file payload")
+
+        names = [
+            str(file.get("name")) if isinstance(file, dict) else Path(str(file)).name
+            for file in payloads
+        ]
+        wait_ms = int(timeout) if timeout else BROWSER_TIMEOUT_MS
+        target = (selector or "").strip()
+        used_input = False
+        strategy = ""
+        handle = None
+
+        async def _file_inputs():
+            """Every file input on the page (hidden ones included)."""
+            return await self.page.query_selector_all('input[type="file"]')
+
+        async def _last_file_input():
+            """The last file input: a modal's input is added after the page's."""
+            inputs = await _file_inputs()
+            return inputs[-1] if inputs else None
+
+        async def _is_file_input(element) -> bool:
+            try:
+                return bool(await element.evaluate(
+                    "el => el.tagName === 'INPUT' && "
+                    "(el.getAttribute('type') || '').toLowerCase() === 'file'"
+                ))
+            except Exception:
+                return False
+
+        async def _wait_for_file_input(seconds: float):
+            """Wait (briefly) for a file input a dialog may add on click."""
+            deadline = time.monotonic() + max(0.2, seconds)
+            while time.monotonic() < deadline:
+                found = await _last_file_input()
+                if found is not None:
+                    return found
+                await asyncio.sleep(0.15)
+            return None
+
+        try:
+            if target:
+                handle = await self.page.query_selector(target)
+                if handle is None:
+                    # A page may rebuild its dialog; accept an input with that
+                    # exact id/class only if the selector itself matches one.
+                    raise RuntimeError(f"Element not found: {target}")
+                await self.highlight(target)
+
+            if handle is not None and await _is_file_input(handle):
+                strategy = await self._set_files(handle, payloads)
+                used_input = True
+                strategy = f"file-input+{strategy}" if strategy != "payload" else "file-input"
+            else:
+                click_target = target or None
+                if click_target:
+                    chooser = None
+                    with contextlib.suppress(Exception):
+                        async with self.page.expect_file_chooser(
+                            timeout=min(wait_ms, 2000)
+                        ) as chooser_info:
+                            await self.page.click(click_target, timeout=wait_ms)
+                        chooser = await chooser_info.value
+                    if chooser is not None:
+                        try:
+                            await chooser.set_files(payloads)
+                            strategy = "file-chooser"
+                        except Exception as ex:
+                            logger.info("File chooser payload failed (%s); retrying with paths", ex)
+                            container_paths = []
+                            for payload in payloads:
+                                path = await asyncio.to_thread(
+                                    self._write_container_file,
+                                    str(payload.get("name") or "upload.bin"),
+                                    payload.get("buffer") or b"",
+                                )
+                                if not path:
+                                    raise
+                                container_paths.append(path)
+                            await chooser.set_files(container_paths)
+                            strategy = "file-chooser+container-path"
+                    else:
+                        # The click opened a modal (or the page is slow): use the
+                        # input it created, or an existing one on the page.
+                        handle = await _wait_for_file_input(1.5)
+                        if handle is None:
+                            handle = await _last_file_input()
+                        if handle is None:
+                            raise RuntimeError(
+                                "no file chooser and no <input type=file> after clicking "
+                                f"{target}; take a snapshot and pass the input selector"
+                            )
+                        strategy = await self._set_files(handle, payloads)
+                        used_input = True
+                        strategy = f"modal-input+{strategy}" if strategy != "payload" else "modal-input"
+                else:
+                    handle = await _last_file_input()
+                    if handle is None:
+                        raise RuntimeError(
+                            "no <input type=file> on the page; pass the selector of the "
+                            "upload button (the file input may only exist after clicking it)"
+                        )
+                    strategy = await self._set_files(handle, payloads)
+                    used_input = True
+                    strategy = f"auto-input+{strategy}" if strategy != "payload" else "auto-input"
+
+            await self._sync_location()
+            self.session.mark_active()
+            logger.info("Uploaded %s file(s) to %s (%s)", len(payloads), target or "auto", strategy)
+        except Exception as e:
+            logger.exception("Upload failed for selector: %s", selector)
+            raise RuntimeError(
+                f"Upload to {target or 'auto'} failed: {e}. The browser image's native "
+                "file dialog is not used: pass the file input or the button selector, or "
+                "call upload once more after the dialog appears."
+            )
+
+        count: Optional[int] = None
+        if used_input and handle is not None:
+            try:
+                count = await handle.evaluate("el => (el.files ? el.files.length : null)")
+            except Exception:
+                count = None
+        if used_input and not count:
+            raise RuntimeError(
+                f"{target or 'the file input'} did not accept the file(s); the widget "
+                "may need a different input (open the modal first, then upload again)."
+            )
+        return {
+            "selector": target or None,
+            "count": count if count is not None else len(payloads),
+            "names": names,
+            "input": used_input,
+            "strategy": strategy,
+        }
+
+    async def export_state(self) -> Dict[str, Any]:
+        """
+        Export the portable login state of this browser.
+
+        Returns the cookies of the whole context and the localStorage of every
+        open http(s) page. The shape is what ``browser.store.normalize_state``
+        stores and what :meth:`import_state` applies to another session.
+
+        Returns:
+            Dict[str, Any]: ``{"cookies": [...], "origins": [{"origin", "localStorage"}]}``.
+        """
+        if not self.context:
+            raise RuntimeError("Browser not connected")
+        cookies = await self.context.cookies()
+        origins: Dict[str, Dict[str, str]] = {}
+        for page in list(self.context.pages):
+            try:
+                parsed = urllib.parse.urlparse(page.url or "")
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    continue
+                origin = f"{parsed.scheme}://{parsed.netloc}"
+                items = await page.evaluate(
+                    "() => Object.fromEntries(Object.entries(window.localStorage))"
+                )
+                origins.setdefault(origin, {}).update(items or {})
+            except Exception as ex:
+                logger.debug("export_state: skipped page %s: %s", getattr(page, "url", "?"), ex)
+        self.session.mark_active()
+        return {
+            "cookies": cookies,
+            "origins": [
+                {"origin": origin, "localStorage": items}
+                for origin, items in origins.items()
+            ],
+        }
+
+    async def import_state(self, state: Dict[str, Any]) -> Dict[str, int]:
+        """
+        Apply a stored state to this browser (cookies + localStorage).
+
+        Cookies go through the Playwright context (they apply to every tab);
+        localStorage is restored per origin through CDP ``DOMStorage`` so it
+        works for sites that are not open yet. The current page is reloaded when
+        it belongs to one of the restored origins, so it picks the login up.
+
+        Args:
+            state: A payload from :meth:`export_state` (or a stored one).
+
+        Returns:
+            Dict[str, int]: number of cookies and localStorage items restored.
+        """
+        if not self.context:
+            raise RuntimeError("Browser not connected")
+        cookies = [c for c in (state or {}).get("cookies") or [] if isinstance(c, dict)]
+        origins = [
+            entry for entry in (state or {}).get("origins") or []
+            if isinstance(entry, dict) and entry.get("origin")
+        ]
+        added = 0
+        for cookie in cookies:
+            # One malformed cookie (e.g. SameSite=None without Secure) must not
+            # abort the whole restore.
+            try:
+                await self.context.add_cookies([cookie])
+                added += 1
+            except Exception as ex:
+                logger.debug("import_state: skipped cookie %s: %s", cookie.get("name"), ex)
+        applied = 0
+        if origins and self.page:
+            cdp = await self.context.new_cdp_session(self.page)
+            try:
+                await cdp.send("DOMStorage.enable")
+                for entry in origins:
+                    storage_id = {
+                        "securityOrigin": str(entry["origin"]),
+                        "isLocalStorage": True,
+                    }
+                    for key, value in (entry.get("localStorage") or {}).items():
+                        await cdp.send(
+                            "DOMStorage.setDOMStorageItem",
+                            {
+                                "storageId": storage_id,
+                                "key": str(key),
+                                "value": str(value),
+                            },
+                        )
+                        applied += 1
+            except Exception as ex:
+                logger.warning("import_state: localStorage restore failed: %s", ex)
+            finally:
+                try:
+                    await cdp.detach()
+                except Exception:
+                    pass
+        if self.page and cookies:
+            current = urllib.parse.urlparse(self.page.url or "")
+            current_origin = (
+                f"{current.scheme}://{current.netloc}"
+                if current.scheme in ("http", "https") and current.netloc else ""
+            )
+            if current_origin and any(
+                str(entry["origin"]) == current_origin for entry in origins
+            ):
+                try:
+                    await self.page.reload(wait_until="domcontentloaded")
+                except Exception as ex:
+                    logger.debug("import_state: reload skipped: %s", ex)
+        self.session.mark_active()
+        return {"cookies": added, "localStorage": applied}
+
+    async def login(
+        self,
+        username: str,
+        password: str,
+        submit: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Fill a login form from a stored credential (values are never returned).
+
+        The password field is the visible ``input[type=password]`` (or the last
+        one, when the form is off-screen). The username field is the closest
+        text/email input before it in the same form. With ``submit`` the form is
+        submitted with Enter, which covers the usual login markup; pass
+        ``submit=False`` when the page needs a specific button.
+
+        Args:
+            username: Value of the account field (empty to leave it alone).
+            password: Value of the password field.
+            submit: Press Enter on the password field after filling.
+
+        Returns:
+            Dict[str, Any]: which fields were filled and whether Enter was pressed.
+        """
+        if not self.page:
+            raise RuntimeError("Browser not connected")
+        if not password:
+            raise RuntimeError("login needs a password")
+        passwords = self.page.locator('input[type="password"]')
+        total = await passwords.count()
+        target = None
+        for index in range(total):
+            candidate = passwords.nth(index)
+            try:
+                if await candidate.is_visible():
+                    target = candidate
+                    break
+            except Exception:
+                continue
+        if target is None and total:
+            target = passwords.nth(total - 1)
+        if target is None:
+            raise RuntimeError(
+                "no password field on the page; navigate to the login page first "
+                "(the credential's URL is a good start)"
+            )
+
+        filled = 0
+        if username:
+            handle = await target.element_handle()
+            if handle is not None:
+                user_handle = await handle.evaluate_handle(
+                    """(password) => {
+                        const form = password.closest('form') || document;
+                        const candidates = [...form.querySelectorAll('input')].filter((input) => {
+                            const type = (input.type || 'text').toLowerCase();
+                            return ['text', 'email', 'tel', ''].includes(type)
+                                && input.offsetParent !== null
+                                && !input.disabled && !input.readOnly;
+                        });
+                        const index = candidates.indexOf(password);
+                        const before = index > 0 ? candidates.slice(0, index) : candidates;
+                        const preferred = before.find((input) =>
+                            /user|email|login|account|phone|identifier/i.test(
+                                [input.name, input.id, input.autocomplete, input.placeholder, input.getAttribute('aria-label') || ''].join(' ')
+                            )
+                        ) || before[before.length - 1];
+                        return preferred || null;
+                    }"""
+                )
+                element = user_handle.as_element() if user_handle else None
+                if element is not None:
+                    try:
+                        await element.fill(str(username))
+                        filled += 1
+                    except Exception as ex:
+                        logger.debug("login: username fill failed: %s", ex)
+
+        await target.fill(str(password))
+        filled += 1
+        submitted = False
+        if submit:
+            try:
+                await target.press("Enter")
+                submitted = True
+            except Exception as ex:
+                logger.debug("login: Enter failed: %s", ex)
+        self.session.mark_active()
+        return {"fields": filled, "submitted": submitted}
 
     async def press(self, selector: str, key: str) -> None:
         """Press a keyboard key on an element (``Enter``, ``Tab``, ...)."""

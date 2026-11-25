@@ -93,6 +93,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The Infrastructure panel shells out to the Docker CLI (interactive
+      # `docker exec`, `docker compose` stacks, `docker build`). A missing CLI
+      # is not a degraded mode: it breaks all three, and the container shell
+      # only shows "connection lost". Assert the artifact, not the Dockerfile.
+      - name: Assert the image ships the Docker CLI
+        run: |
+          set -eu
+          image="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | head -n1)"
+          docker run --rm --entrypoint sh "${image}" -ec \
+            'docker --version && docker compose version && docker buildx version'
+
       # A tag that publishes an image which does not answer, or answers with
       # another ref, is worse than no tag at all: the pipeline would accept it.
       - name: Smoke test the published image

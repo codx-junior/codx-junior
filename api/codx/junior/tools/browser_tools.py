@@ -16,8 +16,10 @@ Tools
 - ``start_session``      – create & start (or resume) a browser session.
 - ``browse_action``      – navigate / click / fill / execute JS / read text /
                            back / forward / refresh / wait / press / select /
-                           hover / scroll / links / tabs (list, open, switch,
-                           close).
+                           hover / scroll / upload / links / tabs (list, open,
+                           switch, close).
+- ``browser_agent``      – hand a whole multi-step goal to the browser-use
+                           agent (its own model loop) on the same browser.
 - ``get_screenshot``     – capture a PNG screenshot of the current page.
 - ``get_source_code``    – return the current page HTML (prefer ``snapshot``).
 - ``browser_activity``   – recent user/AI actions on the session (co-browsing
@@ -60,7 +62,7 @@ logger = logging.getLogger(__name__)
 #: new URL, refs and text in the same ToolResponse as the action.
 PAGE_BRIEF_ACTIONS = {
     "navigate", "click", "execute", "back", "forward", "refresh",
-    "press", "select", "batch", "new_tab", "switch_tab", "close_tab",
+    "press", "select", "upload", "batch", "new_tab", "switch_tab", "close_tab",
 }
 
 #: Settings metadata applied to every browser tool in the ``TOOLS`` registry.
@@ -70,6 +72,12 @@ BROWSER_TOOL_SETTINGS: Dict[str, Any] = {
     "async": True,
     "is_async": True,
     "project_settings": True,
+    # ``browser_agent`` needs the asking user: the LLM gateway checks their
+    # wallet and attributes the delegated agent's token usage to them.
+    "inject_user": True,
+    # ... and the model this chat turn resolved (chat model > profile model >
+    # project default), so the browser agent speaks with the same brain.
+    "inject_llm_model": True,
     "dual_response": True,
     "scope": "chat",
     # Browser state changes between calls: never serve a cached result.
@@ -108,6 +116,43 @@ def _resolve_session(manager, session_id: Optional[str] = None, chat_id: Optiona
     if not session and chat_id:
         session = manager.get_session_for_chat(chat_id)
     return session
+
+
+def _browser_store(settings):
+    """Open the project's browser login store (raises ValueError if unusable)."""
+    from codx.junior.browser.store import BrowserStore, StoreError
+    try:
+        return BrowserStore(settings)
+    except StoreError as ex:
+        raise ValueError(ex.render()) from ex
+
+
+def _store_error(ex) -> ValueError:
+    from codx.junior.browser.store import StoreError
+    return ValueError(ex.detail or ex.code) if isinstance(ex, StoreError) else ValueError(str(ex))
+
+
+def _cdp_only_note(session) -> Optional[str]:
+    """
+    Return why the AI cannot drive a browser session, or None when it can.
+
+    Browser sessions are driven over CDP.  Chromium-family images expose it;
+    Firefox-family images do not, so those sessions are live-view only and the
+    AI must hand the page to the human instead of retrying an action that can
+    never work.
+    """
+    if str(getattr(session, "kind", "") or "").lower() != "browser":
+        return None
+    if str(getattr(session, "control", "") or "").lower() == "cdp":
+        return None
+    engine = getattr(session, "engine", "") or "this browser"
+    return (
+        f"This browser session is live-view only: its image runs {engine}, which has no "
+        "Chrome DevTools Protocol, so the AI cannot drive it. Use a Chromium-based image "
+        "(Chromium, Chrome, Ungoogled Chromium, Brave, Edge, Opera, Vivaldi) for AI "
+        "browsing; Safari requires a macOS VM session; Firefox/LibreWolf/Zen/Mullvad are "
+        "available for manual testing in the live view."
+    )
 
 
 def _shared_folder_lines(session) -> List[str]:
@@ -151,7 +196,10 @@ def _sharing_note(session) -> str:
     if session.downloads_path:
         note += (
             f"Downloads are saved inside the project at '{session.downloads_path}' "
-            f"(browser path '{session.downloads_mount}')."
+            f"(browser path '{session.downloads_mount}'). Attach a local file with "
+            "browse_action(action='upload', selector=<file input or upload button>, "
+            "files=['<file name>']): a bare name is looked up in the Downloads folder, "
+            "and the bytes are streamed to the browser."
         )
     return note.strip()
 
@@ -285,21 +333,42 @@ async def start_session(
             downloads_folder,
         )
         _persist_to_chat(settings, session, chat_id)
-        # The runtime owns the recorder/watcher; warm it in the background so
-        # the first human click is captured even before the AI acts.
-        try:
-            asyncio.create_task(manager.warm_runtime(session))
-        except RuntimeError:
-            pass
+        cdp_note = _cdp_only_note(session)
+        image_note = ""
+        if not cdp_note:
+            # The runtime owns the recorder/watcher; warm it now (short wait) so
+            # the first human click is captured AND the model gets the initial
+            # browser image in this same result instead of spending a turn on
+            # action='state'. A slow container falls back to background warming.
+            try:
+                await asyncio.wait_for(manager.warm_runtime(session), timeout=2.5)
+            except Exception:
+                try:
+                    asyncio.create_task(manager.warm_runtime(session))
+                except RuntimeError:
+                    pass
+            try:
+                runtime = await manager.get_runtime(session)
+                image = runtime.image()
+                if image.get("tabs"):
+                    image_note = "\nInitial browser image (no need to snapshot first):\n" + _format_image(
+                        image, text_chars=1200
+                    )
+            except Exception as ex:
+                logger.debug("start_session: initial browser image unavailable: %s", ex)
 
         recipe_note = _known_recipe_note(settings, initial_url or session.current_url)
         llm = (
             f"Browser session '{session.name}' started. session_id: {session.id}. "
             f"Live view (same browser the user sees): {session.vnc_url}. "
             "Use browse_action/get_screenshot/get_source_code/browser_activity "
-            "with this session_id. Call finish_session when done. "
+            "with this session_id. For a long multi-step flow (upload files, fill a "
+            "whole form, book a slot) prefer browser_agent(task=...). "
+            "Call finish_session when done. "
             f"{_sharing_note(session)}"
             + (f"\n{recipe_note}" if recipe_note else "")
+            + (f"\n{cdp_note}" if cdp_note else "")
+            + image_note
         )
         return ToolResponse(
             user_response=(
@@ -317,6 +386,32 @@ async def start_session(
         )
 
 
+def _format_image(image: Dict[str, Any], text_chars: int = 2000) -> str:
+    """Render the background browser image (tabs + active text) as compact text."""
+    tabs = (image or {}).get("tabs") or []
+    active = next((tab for tab in tabs if tab.get("active")), None)
+    lines = []
+    for tab in tabs:
+        marker = " *active*" if tab.get("active") else ""
+        lines.append(
+            f"- [{tab.get('index')}] {tab.get('title') or '(untitled)'} — "
+            f"{tab.get('url')}{marker}"
+        )
+    age = (image or {}).get("age_ms")
+    data = (
+        f"browser image: {len(tabs)} tab(s), updated {age if age is not None else '?'} ms ago"
+        + ("\n" + "\n".join(lines) if lines else " (no tabs yet)")
+    )
+    if active and active.get("text"):
+        data += f"\n\nactive tab text:\n{str(active['text'])[:text_chars]}"
+    data += (
+        f"\n\nscreenshots cached: {sum(1 for tab in tabs if tab.get('screenshot'))}"
+        f" · reconnects: {(image or {}).get('reconnects')}"
+        f" · connected for {(image or {}).get('connected_for_s')} s"
+    )
+    return data
+
+
 async def browse_action(
     action: str,
     url: str = None,
@@ -330,10 +425,12 @@ async def browse_action(
     y: int = 0,
     ref: str = None,
     text: str = None,
+    files: List[str] = None,
     steps: List[Dict[str, Any]] = None,
     variables: Dict[str, Any] = None,
     session_id: str = None,
     chat_id: str = None,
+    user: Any = None,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -349,11 +446,13 @@ async def browse_action(
         action: One of ``navigate``, ``click``, ``fill``, ``execute``,
             ``text``, ``links``, ``snapshot``, ``back``, ``forward``,
             ``refresh``, ``wait``, ``press``, ``select``, ``hover``,
-            ``scroll``, ``tabs``, ``new_tab``, ``switch_tab``, ``close_tab``,
-            ``batch``.
+            ``scroll``, ``upload``, ``tabs``, ``new_tab``, ``switch_tab``,
+            ``close_tab``, ``batch``, ``save_session``, ``restore_session``,
+            ``list_sessions``, ``login``, ``state``.
         url: Target URL (navigate/new_tab) or URL fragment to wait for.
         selector: CSS selector (element actions).
-        value: Text to fill or option to select.
+        value: Text to fill or option to select; the name/id for
+            ``save_session``, ``restore_session``, ``list_sessions`` and ``login``.
         script: JavaScript to run (for ``execute``; use ``return ...``).
             Top-level ``await`` is supported.
         key: Keyboard key for ``press``.
@@ -366,6 +465,11 @@ async def browse_action(
         y: Vertical scroll offset.
         ref: Element ref returned by ``snapshot`` (preferred over CSS).
         text: Visible text to click/wait for.
+        files: Files for ``upload``: names inside the session's Downloads
+            folder (``photo.jpg``), paths relative to a shared folder, browser
+            paths (``/downloads/photo.jpg``) or host absolute paths.  The bytes
+            are streamed to the file input, so the file does not need to exist
+            inside the container.
         steps: Action list for ``batch``.
         variables: ``{{name}}`` values for ``batch``.
         session_id: Session to act on (returned by ``start_session``).
@@ -398,6 +502,16 @@ async def browse_action(
                 llm_response="The browser session was deleted or cannot be resolved.",
             )
 
+    cdp_note = _cdp_only_note(session)
+    if cdp_note:
+        return ToolResponse(
+            user_response=f"ℹ️ {cdp_note}",
+            llm_response=(
+                f"{cdp_note}\nDo not retry page actions on this session: tell the user and "
+                "either continue in the live view yourself or start a CDP-enabled session."
+            ),
+        )
+
     action = (action or "").lower().strip()
     params = {
         key_name: value
@@ -405,6 +519,10 @@ async def browse_action(
             "url": url, "selector": selector, "value": value, "script": script,
             "key": key, "timeout": timeout, "index": index, "x": x, "y": y,
             "ref": ref, "text": text,
+            "files": (
+                [str(files)] if isinstance(files, (str, bytes))
+                else [str(item) for item in files] if files else None
+            ),
         }.items()
         if value is not None
     }
@@ -445,6 +563,99 @@ async def browse_action(
             else:
                 raise ValueError("fill needs ref or selector")
 
+        elif action == "upload":
+            from codx.junior.browser import uploads as browser_uploads
+
+            # No selector is valid: the runtime picks the page's file input (or
+            # the input a click opens). Pass one when the page has several.
+            target = selector or (f'[data-codx-ref="{str(ref).replace(chr(34), "")}"]' if ref else None)
+            try:
+                resolved, payloads = browser_uploads.prepare_upload(
+                    session, files or [], value=value
+                )
+            except browser_uploads.UploadError as ex:
+                raise ValueError(str(ex)) from ex
+            receipt = await runtime.run("upload_files", target, payloads)
+            where = target or "the page's file input"
+            data = (
+                f"uploaded {receipt.get('count', len(payloads))} file(s) to {where} "
+                f"(via {receipt.get('strategy') or 'input'}): "
+                + ", ".join(item.describe() for item in resolved)
+                + "\nThe page should now receive the file(s); verify the preview/attachment "
+                "before submitting."
+            )
+
+        elif action in ("save_session", "save_site_session"):
+            name = str(value or "").strip()
+            if not name:
+                raise ValueError("save_session needs value=<name for the saved site session>")
+            state = await runtime.run("export_state")
+            store = _browser_store(settings)
+            try:
+                meta = store.save_session(name, state, getattr(user, "username", None))
+            except Exception as ex:
+                raise _store_error(ex) from ex
+            data = (
+                f"saved site session '{meta['name']}': {meta['cookie_count']} cookie(s), "
+                f"{meta['origin_count']} origin(s). Apply it to any browser of this project "
+                "with action='restore_session' value='" + meta["name"] + "'. "
+                "The cookie values never leave the store."
+            )
+
+        elif action in ("restore_session", "apply_session"):
+            name = str(value or "").strip()
+            if not name:
+                raise ValueError("restore_session needs value=<saved session name or id>")
+            store = _browser_store(settings)
+            try:
+                meta, state = store.session_state(name, getattr(user, "username", None))
+            except Exception as ex:
+                raise _store_error(ex) from ex
+            receipt = await runtime.run("import_state", state)
+            data = (
+                f"restored site session '{meta['name']}': {receipt.get('cookies', 0)} cookie(s) "
+                f"and {receipt.get('localStorage', 0)} localStorage item(s). "
+                "The page was reloaded when it belonged to a restored origin; "
+                "otherwise open the site and it will be logged in."
+            )
+
+        elif action in ("list_sessions", "site_sessions"):
+            store = _browser_store(settings)
+            entries = store.sessions()
+            if not entries:
+                data = "no saved site sessions yet (action='save_session' value=<name>)"
+            else:
+                lines = []
+                for entry in entries:
+                    origins = ", ".join(entry.get("origins") or []) or "no origins"
+                    lines.append(
+                        f"- {entry.get('name')} ({entry.get('cookie_count', 0)} cookies; "
+                        f"{origins}; updated {entry.get('updated_at') or '?'})"
+                    )
+                data = "saved site sessions:\n" + "\n".join(lines)
+
+        elif action == "login":
+            name = str(value or "").strip()
+            if not name:
+                raise ValueError("login needs value=<credential name or id>")
+            store = _browser_store(settings)
+            try:
+                meta, password = store.credential(name, getattr(user, "username", None))
+            except Exception as ex:
+                raise _store_error(ex) from ex
+            if url:
+                await runtime.run("navigate", url)
+            receipt = await runtime.run(
+                "login", meta.get("username") or "", password, True
+            )
+            data = (
+                f"filled the login form of '{meta['name']}' "
+                f"({receipt.get('fields', 0)} field(s)"
+                + (", submitted with Enter" if receipt.get("submitted") else "")
+                + "). The password was never returned to the model. "
+                "Check the page: if the site needs a specific button, click it."
+            )
+
         elif action == "execute":
             if not script:
                 raise ValueError("script is required for execute")
@@ -453,13 +664,18 @@ async def browse_action(
             data = f"script result: {serialized[:4000]}"
 
         elif action in ("text", "read"):
-            page_text = (await runtime.run("get_text", read_only=True) or "").strip()
+            page_text = (await runtime.text() or "").strip()
             data = f"page text:\n{page_text[:MAX_TEXT_CHARS]}"
 
         elif action == "links":
             links = await runtime.run("get_links", read_only=True)
             lines = [f"- {link.get('text') or '(no text)'} → {link.get('href')}" for link in links[:200]]
             data = f"links ({len(links)}):\n" + "\n".join(lines)
+
+        elif action in ("state", "browser_state"):
+            # No CDP call: the runtime keeps this image refreshed in the
+            # background (tabs, active text, viewport screenshot).
+            data = _format_image(runtime.image())
 
         elif action in ("snapshot", "page"):
             # Prefer the prefetched snapshot: it was captured right after the
@@ -562,11 +778,14 @@ async def browse_action(
             raise ValueError(
                 "unknown action '%s' (use navigate|click|fill|execute|text|links|"
                 "snapshot|back|forward|refresh|wait|press|select|hover|scroll|"
-                "tabs|new_tab|switch_tab|close_tab|batch)" % action
+                "upload|save_session|restore_session|list_sessions|login|tabs|new_tab|"
+                "switch_tab|close_tab|batch)" % action
             )
 
         session = getattr(runtime, "session", None) or session
         session.mark_active()
+        elapsed_ms = round((time.monotonic() - started_at) * 1000)
+        data = f"{data}\n- took {elapsed_ms} ms"
         # The action already changed the page: return a compact page summary
         # in the same result instead of making the model ask for a snapshot.
         if action in PAGE_BRIEF_ACTIONS:
@@ -658,6 +877,238 @@ async def browse_action(
         )
 
 
+async def browser_agent(
+    task: str,
+    max_steps: int = None,
+    timeout: int = None,
+    llm_model: str = None,
+    session_id: str = None,
+    chat_id: str = None,
+    user: Any = None,
+    **kwargs,
+) -> ToolResponse:
+    """
+    Hand a whole multi-step goal to the browser-use agent.
+
+    ``browse_action`` is one action per call: right for a click, a fill or a
+    quick read.  A real site flow ("upload this picture to LinkedIn and publish
+    the post", "fill the whole application form", "find and book the earliest
+    slot") costs dozens of calls and a lot of context that way.
+
+    This tool delegates the goal to `browser-use`, which runs its own agent loop
+    (its model writes Python cells against raw CDP in a persistent REPL) on the
+    *same* browser the human sees in the live view.  It uploads files from the
+    session's Downloads/shared folders and returns one final answer, plus the
+    steps, token usage, cost and downloads.  SmolAgent keeps the conversation
+    with the human; the browsing sub-conversation belongs to browser-use.
+
+    Args:
+        task: The goal, in natural language. Include the specific values (post
+            text, file name, form data) - the agent has no access to this chat.
+        max_steps: Maximum model requests for the run (default 30, max 200).
+        timeout: Seconds for the agent loop (default 300, max 900).
+        llm_model: Injected: the model this chat turn resolved (chat model >
+            profile model > project default). The browser agent always uses the
+            chat's model; the gateway prices it with that model's rates.
+        session_id: Session to drive (default: the chat's session).
+        chat_id: Injected chat id (activity attribution).
+        user: Injected user (wallet check and analytics attribution).
+
+    Returns:
+        ToolResponse: Final answer + run summary, or why the run could not start.
+    """
+    from codx.junior.browser import use_agent
+
+    settings = _settings_from(kwargs)
+    manager = _manager(settings)
+    session = _resolve_session(manager, session_id=session_id, chat_id=chat_id)
+    if not session:
+        return ToolResponse(
+            user_response="❌ No browser session found. Call `start_session` first.",
+            llm_response=(
+                "No browser session is available. Call start_session first, then "
+                "browser_agent with the same session_id."
+            ),
+        )
+    if session.status != "running":
+        try:
+            session = await manager.restart_session(session.id)
+        except Exception as ex:
+            return ToolResponse(
+                user_response=f"❌ Browser session could not be started: {ex}",
+                llm_response=(
+                    f"Session {session.id} is not running (status: {session.status}) and "
+                    f"restart failed: {ex}. Fix the session before using browser_agent."
+                ),
+            )
+
+    cdp_note = _cdp_only_note(session)
+    if cdp_note:
+        return ToolResponse(
+            user_response=f"ℹ️ {cdp_note}",
+            llm_response=(
+                f"{cdp_note}\nDo not delegate a browsing task to this session; tell the "
+                "user and use a Chromium-based image for AI browsing."
+            ),
+        )
+
+    mode = use_agent.agent_mode()
+    if mode == "native":
+        return ToolResponse(
+            user_response=(
+                "ℹ️ The browser-use agent is disabled (CODX_BROWSER_AGENT=native). "
+                "The shared browser still works through `browse_action`."
+            ),
+            llm_response=(
+                "browser-use is disabled in this deployment (CODX_BROWSER_AGENT=native). "
+                "Use browse_action(action='snapshot'/'batch'/'upload') to drive the page."
+            ),
+        )
+    if not use_agent.browser_use_available():
+        return ToolResponse(
+            user_response=(
+                "❌ The browser-use agent is not installed.\n\n"
+                f"Install it with `{use_agent.BROWSER_USE_INSTALL}` and restart the API. "
+                "Meanwhile `browse_action` drives the same browser, including "
+                "`action='upload'` for file inputs."
+            ),
+            llm_response=(
+                "browser-use is not installed, so browser_agent cannot run. "
+                f"Install it with {use_agent.BROWSER_USE_INSTALL} and restart the API. "
+                "Until then use browse_action(action='snapshot' then click/fill/upload); "
+                "it is the same browser and the same session."
+            ),
+        )
+
+    started_at = time.monotonic()
+    runtime = None
+    try:
+        runtime = await manager.get_runtime(session)
+    except Exception as ex:
+        logger.warning("browser_agent: runtime unavailable: %s", ex)
+        runtime = None
+
+    runner = use_agent.BrowserUseRunner(
+        settings=settings,
+        session=session,
+        manager=manager,
+        chat_id=chat_id,
+        user=user,
+    )
+    try:
+        result = await runner.run(
+            task,
+            max_steps=max_steps,
+            timeout=timeout,
+            model=llm_model,
+            runtime=runtime,
+        )
+    except use_agent.BrowserUsePaused as ex:
+        return ToolResponse(
+            user_response=(
+                f"⏸ browser-use paused: {ex}\n\n"
+                f"[Open the live browser]({session.vnc_url or ''}) to continue."
+            ),
+            llm_response=(
+                f"browser-use stopped because the human took the live view of session "
+                f"{session.id}: {ex}\n"
+                "Do not retry immediately. Call browse_action(action='wait') to park one "
+                "call until they pause, or browser_activity(actor='user') to see what they "
+                "did, then continue from the current page when control comes back."
+            ),
+            cost=float(getattr(ex, "cost_cxj", 0.0) or 0.0),
+        )
+    except use_agent.BrowserUseError as ex:
+        return ToolResponse(
+            user_response=f"❌ browser-use could not complete the task: {ex}",
+            llm_response=(
+                f"browser-use failed for session {session.id}: {ex}\n"
+                "Inspect the live view / browser_activity, fix the page state (or the "
+                "missing file name), then retry browser_agent or continue step by step "
+                "with browse_action."
+            ),
+            cost=float(getattr(ex, "cost_cxj", 0.0) or 0.0),
+        )
+    except Exception as ex:  # pragma: no cover - unexpected browser-use failure
+        logger.exception("browser_agent failed")
+        return ToolResponse(
+            user_response=f"❌ browser_agent failed: {ex}",
+            llm_response=f"browser_agent crashed for session {session.id}: {ex}",
+        )
+    finally:
+        # The agent may have left the browser on another page/tab: resync the
+        # session so the UI and the next tool call start from what is on screen.
+        if runtime is not None:
+            try:
+                state = await runtime.state()
+                session.current_url = state.get("current_url") or session.current_url
+                session.current_title = state.get("current_title") or session.current_title
+            except Exception as ex:
+                logger.debug("Could not refresh session state after browser_agent: %s", ex)
+
+    # The tool timeout may have been the real end of the run; still show what
+    # the browser did so the next turn can continue from a known state.
+    try:
+        brief = await runtime.page_brief() if runtime is not None else {}
+    except Exception:
+        brief = {}
+
+    summary = result.summary_line()
+    if result.gateway:
+        accounting = (
+            f"cost: {result.cost_cxj:.6f} cxj (accounted in this chat through the "
+            "codx-junior LLM gateway)"
+        )
+    else:
+        accounting = (
+            "cost: not accounted - the LLM gateway is disabled "
+            f"({use_agent.llm_gateway.ENV_ENABLED}=off), so these model calls went "
+            "straight to the provider"
+        )
+    answer = (result.final_result or "").strip() or "(the agent returned no final answer)"
+    downloads = "\n".join(f"- {path}" for path in result.downloads[:20])
+    data = (
+        f"{answer}\n\n"
+        f"browser-use: {summary}\n"
+        f"{accounting}\n"
+        f"task: {result.task[:400]}\n"
+        f"model: {result.model or '(project default)'}\n"
+        f"workspace: {result.workspace}"
+        + (f"\ndownloads:\n{downloads}" if downloads else "")
+    )
+    if brief:
+        data += "\npage: " + json.dumps(brief, ensure_ascii=False, default=str)[:3500]
+    if result.success is False:
+        data += (
+            "\nThe agent reported it did NOT finish the goal. Inspect the page, then "
+            "retry with a more specific task or finish with browse_action."
+        )
+
+    logs: List[str] = [
+        f"{datetime.utcnow().isoformat(timespec='milliseconds')}Z INFO "
+        f"browser-use run: {summary} "
+        f"({(time.monotonic() - started_at):.1f}s, status={result.status or 'done'})"
+    ]
+
+    return ToolResponse(
+        user_response=(
+            f"✅ browser-use finished on session {session.id[:8]}.\n\n{data}\n\n"
+            f"URL: {session.current_url or '(blank)'}\nTitle: {session.current_title or '(blank)'}"
+        ),
+        cost=result.cost_cxj,
+        llm_response=(
+            f"browser-use completed the task on session {session.id}. {summary}\n"
+            f"{data}\n"
+            f"Current URL: {session.current_url or '(blank)'}; title: {session.current_title or '(blank)'}. "
+            "The run is in browser_activity. Continue from this state with browse_action "
+            "if anything is still missing; do not repeat the whole flow. If the agent says "
+            "it needs the human (login, MFA, captcha, payment), call "
+            "browser_control(action='handoff', reason=...) with its exact ask and stop."
+        ),
+        logs=logs,
+    )
+
+
 def _format_wait(result: Dict[str, Any]) -> str:
     """Render a co-driving wait result (change + activity) compactly."""
     if not isinstance(result, dict):
@@ -731,7 +1182,7 @@ def _format_batch(result: Dict[str, Any]) -> str:
 async def get_screenshot(
     session_id: str = None,
     chat_id: str = None,
-    full_page: bool = True,
+    full_page: bool = False,
     **kwargs,
 ) -> ToolResponse:
     """
@@ -740,7 +1191,8 @@ async def get_screenshot(
     Args:
         session_id: Session to capture (or ``chat_id`` to resolve it).
         chat_id: Alternative to ``session_id``.
-        full_page: Capture the whole scrollable page (default) or the viewport.
+        full_page: Capture the whole scrollable page (slow, huge payload) or
+            the viewport (default; served from the background image when fresh).
         **kwargs: Injected ``settings``.
 
     Returns:
@@ -1197,7 +1649,20 @@ BROWSE_ACTION_TOOL_JSON = {
             "Actions: navigate (url), click/fill (ref or selector or text), execute (script), "
             "text, links, snapshot, back, forward, refresh, wait (text/selector/url, or "
             "no target to wait for the human/page to change), "
-            "press, select, hover, scroll, tabs, new_tab, switch_tab, close_tab, batch."
+            "press, select, hover, scroll, upload (files), tabs, new_tab, switch_tab, "
+            "close_tab, batch. Use action='upload' to attach files from the session's "
+            "Downloads/shared folders to a file input or an upload button: it streams "
+            "the bytes, so it works for a remote browser and needs no container path. "
+            "Hidden inputs are not in a snapshot: target them with selector="
+            "'input[type=file]' (inside the dialog if one is open). "
+            "action='state' returns the background browser image (every tab with URL/title, "
+            "the active tab's text summary and screenshot availability) with no CDP wait: use "
+            "it to decide what to do, and snapshot only when you need clickable refs. "
+            "Login stores: action='save_session' value=<name> captures the cookies and "
+            "localStorage of this browser; action='restore_session' value=<name> applies a "
+            "saved one to this browser (any Chromium-family image of the project); "
+            "action='list_sessions' lists them; action='login' value=<credential name> "
+            "fills a login form with a stored credential without returning the password."
         ),
         "parameters": {
             "type": "object",
@@ -1207,8 +1672,9 @@ BROWSE_ACTION_TOOL_JSON = {
                     "enum": [
                         "navigate", "click", "fill", "execute", "text", "links",
                         "snapshot", "back", "forward", "refresh", "wait", "press",
-                        "select", "hover", "scroll", "tabs", "new_tab",
-                        "switch_tab", "close_tab", "batch",
+                        "select", "hover", "scroll", "upload", "tabs", "new_tab",
+                        "switch_tab", "close_tab", "batch", "save_session",
+                        "restore_session", "list_sessions", "login", "state",
                     ],
                     "description": "Action to perform on the page or on its tabs.",
                 },
@@ -1232,7 +1698,13 @@ BROWSE_ACTION_TOOL_JSON = {
                     "type": "string",
                     "description": "Visible text to click or wait for.",
                 },
-                "value": {"type": "string", "description": "Text to fill or option to select."},
+                "value": {
+                    "type": "string",
+                    "description": (
+                        "Text to fill, option to select, (single file) the upload file, "
+                        "or the name/id for save_session, restore_session and login."
+                    ),
+                },
                 "script": {
                     "type": "string",
                     "description": (
@@ -1255,6 +1727,16 @@ BROWSE_ACTION_TOOL_JSON = {
                 },
                 "x": {"type": "integer", "description": "Horizontal scroll offset."},
                 "y": {"type": "integer", "description": "Vertical scroll offset."},
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "upload: files to attach. Names inside the session's Downloads folder "
+                        "(e.g. 'photo.jpg'), paths relative to a shared folder, browser paths "
+                        "(e.g. '/downloads/photo.jpg') or host absolute paths. The bytes are "
+                        "streamed to the browser."
+                    ),
+                },
                 "steps": {
                     "type": "array",
                     "items": {"type": "object"},
@@ -1410,6 +1892,49 @@ BROWSER_CONTROL_TOOL_JSON = {
                 "session_id": {"type": "string", "description": "Session id (optional)."},
             },
             "required": ["action"],
+        },
+    },
+}
+
+
+BROWSER_AGENT_TOOL_JSON = {
+    "type": "function",
+    "function": {
+        "name": "browser_agent",
+        "description": (
+            "Delegate a whole multi-step browsing goal to the browser-use agent, which "
+            "runs its own model loop on the SAME browser the human sees (same page, "
+            "cookies and live view). Use it for long flows instead of many browse_action "
+            "calls: uploading a local file (e.g. a picture from the session's Downloads "
+            "folder) and submitting a post, filling a long form, booking a slot. It "
+            "returns one final answer plus steps/tokens/cost. Do not use it for a single "
+            "click/fill/read - browse_action is cheaper there. The agent does not see "
+            "this chat: put every value it needs (text, file name, choices) in `task`."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": (
+                        "The complete goal in natural language, with the concrete values "
+                        "(post text, file name inside Downloads, form data, URL)."
+                    ),
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "description": "Maximum model requests for the run (default 30, max 200).",
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Seconds for the agent loop (default 300, max 900).",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session to drive (default: the chat's session).",
+                },
+            },
+            "required": ["task"],
         },
     },
 }

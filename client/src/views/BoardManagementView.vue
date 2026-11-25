@@ -108,7 +108,11 @@ async function load() {
     boards.value = result?.boards || []
     teams.value = result?.teams || []
     if (!selectedProjects.value.length) selectedProjects.value = defaultProjectIds()
-    await loadProfilesForBoards()
+    // The table is rendered as soon as the boards arrive. The profile/user
+    // directories only feed the editor's selectors, so they load in the
+    // background instead of blocking the screen (that request fan-out was the
+    // reason this view felt slow).
+    loadProfilesForBoards().catch(() => {})
   } catch (ex) {
     error.value = ex?.response?.data?.detail || ex?.message || 'Could not load the boards'
   } finally {

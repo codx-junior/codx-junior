@@ -225,6 +225,56 @@ class DockerClient:
             return {}
         return response.json()
 
+    def post_stream_lines(
+        self,
+        path: str,
+        params: Optional[Dict[str, str]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        POST and iterate a newline-delimited JSON stream.
+
+        ``/images/create`` (image pull) answers with a stream that ends when the
+        operation finishes and reports registry/auth failures **inside** the
+        200 response, so the caller must inspect every object. Streamed instead
+        of buffered: the progress of a multi-gigabyte pull is exactly what a
+        long request timeout is meant to cover, and the body can be large.
+
+        Raises:
+            DockerUnavailable: The daemon cannot be reached.
+            DockerAPIError: The daemon answered with a non-2xx status.
+        """
+        try:
+            request = self._client.build_request(
+                "POST", path, params=params, json=json_body
+            )
+            response = self._client.send(request, stream=True)
+        except (httpx.ConnectError, httpx.ConnectTimeout, FileNotFoundError,
+                PermissionError, OSError) as ex:
+            raise DockerUnavailable(
+                f"Cannot reach the Docker daemon at {self.endpoint}: {ex}"
+            ) from ex
+        except httpx.HTTPError as ex:
+            raise DockerUnavailable(
+                f"Docker request failed (POST {path}): {ex}"
+            ) from ex
+        try:
+            if response.status_code >= 400:
+                response.read()
+                raise DockerAPIError(
+                    response.status_code, self._error_message(response), path
+                )
+            for line in response.iter_lines():
+                line = (line or "").strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except ValueError:
+                    logger.debug("Skipping non-JSON docker stream line: %s", line[:120])
+        finally:
+            response.close()
+
     def delete(
         self, path: str, params: Optional[Dict[str, str]] = None
     ) -> Any:

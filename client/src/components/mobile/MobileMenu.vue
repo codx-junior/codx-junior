@@ -25,7 +25,17 @@ const coinBalance = computed(() => {
   return balance == null ? null : Number(balance).toFixed(2)
 })
 
-const allProjects = computed(() => $storex.projects.allProjects || [])
+// The mobile menu is part of the company shell: only the projects the company
+// links are navigable, never every project discovered by the installation.
+// Resolve the linked ids against the project store so icons and metadata stay
+// the same as in the desktop switcher.
+const allProjects = computed(() => {
+  if (!$storex.company?.loaded) return $storex.projects.allProjects || []
+  const linked = new Set(($storex.company.linkedProjectIds || []).map(String))
+  return ($storex.projects.allProjects || []).filter(project =>
+    linked.has(String(project.project_id))
+  )
+})
 const pinnedIds = computed(() => new Set($storex.ui.pinnedProjects || []))
 const projects = computed(() => {
   const activeId = activeProjectId.value

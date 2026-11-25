@@ -22,6 +22,7 @@ import TicketAutonomyControl from '../tickets/TicketAutonomyControl.vue'
              go back to. The control stays in the DOM (shared component) and is
              just hidden. -->
         <button
+          v-if="!hideBack"
           class="btn btn-ghost btn-sm btn-circle shrink-0"
           :class="{ hidden: isChannel }"
           @click="$emit('back')"
@@ -196,6 +197,7 @@ import TicketAutonomyControl from '../tickets/TicketAutonomyControl.vue'
         <!-- Actions -->
         <div class="flex items-center gap-1.5 flex-wrap">
           <button
+            v-if="!hideSidebar"
             class="btn btn-sm btn-ghost gap-1.5"
             :class="{ hidden: isChannel }"
             @click.stop="$emit('show-sidebar')"
@@ -466,7 +468,13 @@ export default {
     // board, project context, status, cost, tags or chat mode. Those controls
     // are kept in the DOM and only hidden, so the same component keeps working
     // for task chats everywhere else. Defaults to false: no host changes needed.
-    channelMode: { type: Boolean, default: false }
+    channelMode: { type: Boolean, default: false },
+    // The host owns the conversation list (company assistant drawer): hide the
+    // hierarchy entry point instead of opening an invisible sidebar.
+    hideSidebar: { type: Boolean, default: false },
+    // The host owns navigation (assistant drawer): the back control would leave
+    // the conversation instead of returning to a list this component renders.
+    hideBack: { type: Boolean, default: false }
   },
   emits: [
     'update-name',

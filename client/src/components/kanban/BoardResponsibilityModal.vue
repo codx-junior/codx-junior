@@ -13,7 +13,6 @@ const emit = defineEmits(['close', 'save'])
 const flow = ref('agile')
 const kind = ref('profile')
 const name = ref('')
-const propagate = ref(false)
 const error = ref('')
 
 const flowMeta = computed(() =>
@@ -49,7 +48,6 @@ watch(
     flow.value = board.flow || 'agile'
     kind.value = board.own_responsible_kind || (board.lead_kind === 'user' ? 'user' : 'profile')
     name.value = board.own_responsible_name || ''
-    propagate.value = false
     error.value = ''
   },
   { immediate: true }
@@ -62,7 +60,9 @@ function submit() {
     flow: flow.value,
     responsibleKind: kind.value,
     responsibleName: chosen,
-    propagateChildren: !!propagate.value
+    // Inheritance is the rule: a child board without its own responsible is
+    // already managed by this one, so there is nothing to write explicitly.
+    propagateChildren: false
   })
 }
 </script>
@@ -116,29 +116,33 @@ function submit() {
           </div>
           <div>
             <label class="mb-1 block text-xs font-bold uppercase tracking-wide text-base-content/50">Leader / responsible</label>
-            <input
+            <!-- The responsible is picked from the real catalogue: a profile
+                 must exist to manage a board. Empty = inherit. -->
+            <select
               v-model="name"
-              list="board-responsible-options"
-              class="input input-sm input-bordered w-full"
-              :placeholder="board?.own_responsible_name ? 'Clear to inherit from the parent board' : 'Leave empty to inherit'"
-            />
+              class="select select-sm select-bordered w-full"
+              :aria-label="kind === 'user' ? 'Responsible user' : 'Responsible profile'"
+            >
+              <option value="">— inherit from the parent board —</option>
+              <option v-for="option in options" :key="`${option.kind}:${option.value}`" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
             <p class="mt-1 text-[11px] text-base-content/50">
               Current effective: <span class="font-semibold">{{ board?.responsible_name || 'none' }}</span>
               <span class="opacity-60"> ({{ board?.responsible_source || 'none' }})</span>
             </p>
-            <datalist id="board-responsible-options">
-              <option v-for="option in options" :key="`${option.kind}:${option.value}`" :value="option.value" />
-            </datalist>
           </div>
         </div>
 
-        <label class="flex cursor-pointer items-start gap-2 rounded-lg border border-base-content/10 p-2 hover:bg-base-content/5">
-          <input v-model="propagate" type="checkbox" class="checkbox checkbox-xs checkbox-primary mt-0.5" />
-          <span class="text-xs">
-            <span class="block font-semibold">Assign to child boards without a responsible</span>
-            <span class="block text-[11px] text-base-content/50">Inheritance already applies; this writes the value explicitly on those boards.</span>
-          </span>
-        </label>
+        <div class="flex items-start gap-2 rounded-lg border border-base-content/10 bg-base-content/5 p-2">
+          <i class="fa-solid fa-circle-info mt-0.5 text-xs text-info"></i>
+          <p class="text-[11px] leading-relaxed text-base-content/60">
+            <span class="block font-semibold text-base-content/80">Child boards follow automatically</span>
+            The same profile manages every child board that has no responsible of its own. It is the default
+            behaviour, not an option: give a child its own responsible to run that board separately.
+          </p>
+        </div>
 
         <p v-if="error" class="rounded-lg bg-error/10 p-2 text-xs text-error">{{ error }}</p>
       </div>

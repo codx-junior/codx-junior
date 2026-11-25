@@ -5,8 +5,9 @@
 # One entry point for every supported deployment:
 #
 #   local    a laptop / CI box: loopback port, no domain, no proxy
-#   server   a public server: Traefik master on :80/:443 with ACME TLS
-#   slave    a server behind an existing master proxy: Traefik slave on :80,
+#   server   a public server: Traefik primary on :80/:443 with ACME TLS
+#   slave    legacy alias: a server behind an existing primary (prefer --traefik slave)
+#   --dev    development option: DEBUG=1; host also gets Vite HMR + reload
 #            trusted X-Forwarded-* headers, no ACME, no published port
 #   dind     a Docker-in-Docker instance: one isolated nested stack per
 #            container, for running several customers on one host
@@ -23,7 +24,7 @@
 #   sudo ./install.sh --mode slave --domain team.example.com \
 #        --proxy-network traefik --provider openai --key sk-...
 #
-#   sudo ./install.sh --mode dind --domain acme.example.com \
+#   sudo ./install.sh --mode dind --traefik primary --domain acme.example.com \
 #        --acme-email ops@example.com --provider deepseek --key sk-...
 #
 # Run twice to upgrade: settings and projects are kept, the image is refreshed.
@@ -55,6 +56,7 @@ DEFAULT_REF="main"
 DEFAULT_PORT="19981"
 DEFAULT_IMAGE="codxjuniorai/codx-junior:latest"
 DEFAULT_DIND_IMAGE="codxjuniorai/codx-junior:dind"
+DEFAULT_DEV_IMAGE="codxjuniorai/codx-junior:dev"
 DEFAULT_TRAEFIK_IMAGE="traefik:v3.3"
 DEFAULT_PROXY_NETWORK="codx-proxy"
 DEFAULT_TRUSTED_PROXIES="172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32"
@@ -63,9 +65,60 @@ DEFAULT_ACME_EMAIL=""
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIGINAL_ARGC=$#
 
+# Installer state: the last wizard/CLI selections, used as defaults when the
+# installation is restarted. It is separate from the instance settings file:
+# it exists even if the install never reached write_settings().
+# Override with CODX_JUNIOR_INSTALLER_STATE.
+STATE_FILE="${CODX_JUNIOR_INSTALLER_STATE:-${PWD}/installation.env}"
+declare -A INSTALLER_STATE=()
+if [[ -f "${STATE_FILE}" ]]; then
+    while IFS='=' read -r key value; do
+        value="${value%$'\r'}"
+        value="${value%\"}"; value="${value#\"}"
+        value="${value%\'}"; value="${value#\'}"
+        value="${value//\$\$/\$}"
+        INSTALLER_STATE["${key}"]="${value}"
+    done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "${STATE_FILE}") || true
+fi
+
+C_RESET=$'\033[0m'
+C_CYAN=$'\033[1;36m'
+C_BOLD=$'\033[1m'
+C_DIM=$'\033[2m'
+BANNER_PRINTED=0
 log()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+print_banner() {
+    [[ "${BANNER_PRINTED}" == "1" || "${CONTAINER}" == "1" ]] && return 0
+    BANNER_PRINTED=1
+    printf '%s' "${C_CYAN}" >&4
+    cat >&4 <<'BANNER'
+╔═══════════════════════════════════════════╗
+║                                           ║
+║    ██████╗ ██████╗ ██████╗ ██╗  ██╗       ║
+║   ██╔════╝██╔═══██╗██╔══██╗╚██╗██╔╝       ║
+║   ██║     ██║   ██║██║  ██║ ╚███╔╝        ║
+║   ██║     ██║   ██║██║  ██║ ██╔██╗        ║
+║   ╚██████╗╚██████╔╝██████╔╝██╔╝ ██╗       ║
+║    ╚═════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═╝       ║
+║                                           ║
+║    j u n i o r     codx-junior installer  ║
+║    AI engineering workspace · v1.0.0      ║
+║                                           ║
+╚═══════════════════════════════════════════╝
+BANNER
+    printf '%s\n' "${C_RESET}" >&4
+}
+
+section() {
+    printf '\n%s── %s ──%s\n' "${C_CYAN}" "$*" "${C_RESET}" >&4
+}
+
+row() {
+    printf '  %-10s: %s\n' "$1" "$2"
+}
 
 usage() {
     cat <<'USAGE'
@@ -76,13 +129,15 @@ Usage:
   ./install.sh [options] status|logs|down|up|restart|upgrade|doctor|config|url|env|version
 
 Modes:
-  --mode local              laptop/CI: 127.0.0.1:<port>, no TLS, no proxy
-  --mode server             public server: Traefik master :80/:443 + ACME
-  --mode slave              behind a master proxy: Traefik slave :80 only
-  --mode dind               Docker-in-Docker instance (one per customer)
-  --dind-mode MODE          inner app mode for dind: local|server|slave [local]
-  --traefik MODE            Traefik setup: none|master|slave (always asked in
-                            the wizard; derived from the mode otherwise)
+  --mode local              full machine dedicated to codx-junior (localhost by default)
+  --mode server             public server: domain + Traefik primary :80/:443 + ACME
+  --mode dind               isolate codx-junior in a Docker-in-Docker container
+  --mode slave              legacy alias: behind an existing primary (use --traefik slave)
+  --dind-mode MODE          legacy; the DIND inner installation is always server
+  --dev                     development option: DEBUG=1 (host adds live checkout + Vite)
+  --no-dev                  disable the development option
+  --traefik MODE            Traefik setup: none|primary|slave (master is a
+                            legacy alias for primary; the wizard asks for it)
   Default: server as root, local otherwise.
 
 Settings:
@@ -108,18 +163,20 @@ Proxy / TLS:
   --domain DOMAIN           public domain; repeat or comma-separate
   --acme-email EMAIL        Let's Encrypt account (server mode)
   --acme-ca staging|prod    ACME directory (staging avoids rate limits)
-  --proxy-network NAME      Docker network shared with a master [codx-proxy]
+  --proxy-network NAME      Docker network shared with the primary [codx-proxy]
   --create-network          create the slave proxy network when missing
-  --trusted-proxy CIDR      master CIDR allowed to set X-Forwarded-*; repeat
+  --trusted-proxy CIDR      primary CIDR allowed to set X-Forwarded-*; repeat
   --forwarded-insecure      trust X-Forwarded-* from any peer (slave only)
-  --master-cert-resolver N  cert resolver name on the master    [letsencrypt]
-  --master-entrypoint NAME  master HTTPS entrypoint            [websecure]
+  --master-cert-resolver N  cert resolver name on the primary   [letsencrypt]
+  --master-entrypoint NAME  primary HTTPS entrypoint           [websecure]
   --no-tls                  server mode: do not start Traefik (HTTP only)
   --tls none                alias of --no-tls (a proxy terminates TLS)
 
 Features:
   --coworking               mount /var/run/docker.sock (browser/desktops)
   --no-coworking            keep the socket out (default)
+  --hidden                  hide codx-junior + child projects from the selector
+  --no-hidden               show them (default)
   --allow-privileged        allow --coworking on a non-isolated host
   --build                   build the application image from this checkout
   --build-dind              build the DIND image from this checkout
@@ -169,11 +226,13 @@ fi
 ask() {
     local label="$1" default="${2:-}" answer=""
     if [[ "${WIZARD_TTY}" == "1" ]]; then
+        printf '\n' >/dev/tty
         printf '%s' "${label}" >/dev/tty
         [[ -n "${default}" ]] && printf ' [%s]' "${default}" >/dev/tty
         printf ': ' >/dev/tty
         IFS= read -r answer </dev/tty || answer=""
     else
+        printf '\n' >&4
         printf '%s' "${label}" >&4
         [[ -n "${default}" ]] && printf ' [%s]' "${default}" >&4
         printf ': ' >&4
@@ -186,10 +245,12 @@ ask() {
 ask_secret() {
     local label="$1" answer=""
     if [[ "${WIZARD_TTY}" == "1" ]]; then
+        printf '\n' >/dev/tty
         printf '%s: ' "${label}" >/dev/tty
         IFS= read -r -s answer </dev/tty || answer=""
         printf '\n' >/dev/tty
     else
+        printf '\n' >&4
         printf '%s: ' "${label}" >&4
         IFS= read -r -s answer || answer=""
         printf '\n' >&4
@@ -221,62 +282,351 @@ ask_yesno() {
     done
 }
 
-interactive_wizard() {
-    printf '\n' >&4
-    log "Interactive setup — press Enter to accept the value in [brackets]"
+write_dind_instance_files() {
+    local domain="${1:-}"
+    local prompt="${2:-0}"
+    local app_image="${IMAGE:-codxjuniorai/codx-junior:latest}"
+    local dind_image="${DIND_IMAGE:-codxjuniorai/codx-junior:dind}"
+    local storage="${CODX_DIND_STORAGE:-${INSTANCE}-dind}"
+    local compose="${HOME_DIR}/docker-compose.yaml"
+    local envfile="${ENV_FILE}"
+    local env_ref="./.env"
+    local rule="Host(\`${domain:-localhost}\`)"
+    local debug="${CODX_JUNIOR_DEBUG:-$([[ "${DEV_MODE}" == "1" ]] && echo 1 || echo 0)}"
+    local overwrite=0 write_env=0 write_compose=0 write_state=0
 
+    if [[ "${envfile}" != "${HOME_DIR}/.env" ]]; then
+        env_ref="${envfile}"
+    fi
+
+    mkdir -p "${HOME_DIR}" "${DATA_DIR}" "${PROJECTS}" "$(dirname "${envfile}")"
+
+    if [[ -f "${envfile}" || -f "${compose}" || -f "${STATE_FILE}" ]]; then
+        if [[ "${FORCE}" == "1" ]]; then
+            overwrite=1
+        elif [[ "${prompt}" == "1" ]]; then
+            log "DIND instance files already exist:"
+            log "  ${compose}"
+            log "  ${envfile}"
+            log "  ${STATE_FILE}"
+            if [[ "$(ask_yesno "Overwrite them with the current selections?" 0)" == "1" ]]; then
+                overwrite=1
+            fi
+        fi
+    fi
+
+    if [[ "${overwrite}" == "1" ]]; then
+        write_env=1
+        write_compose=1
+        write_state=1
+        rm -f "${envfile}" "${compose}" "${STATE_FILE}"
+    else
+        [[ -f "${envfile}" ]] || write_env=1
+        [[ -f "${compose}" ]] || write_compose=1
+        [[ -f "${STATE_FILE}" ]] || write_state=1
+        if [[ "${write_env}" == "0" && "${write_compose}" == "0" && "${write_state}" == "0" ]]; then
+            log "Keeping existing DIND instance files"
+            return 0
+        fi
+    fi
+
+    if [[ "${write_env}" == "1" ]]; then
+        {
+            printf '# codx-junior DIND instance settings\n'
+            printf '# Edit before continuing. Unknown keys are preserved.\n'
+        } > "${envfile}"
+        chmod 600 "${envfile}" 2>/dev/null || true
+        _dind_env() {
+            local v="${2//\$/\$\$}"
+            printf '%s=%s\n' "$1" "${v}" >> "${envfile}"
+        }
+        _dind_env CODX_JUNIOR_MODE dind
+        _dind_env CODX_DIND_MODE server
+        _dind_env CODX_JUNIOR_DEV "${DEV_MODE}"
+        _dind_env CODX_JUNIOR_DEBUG "${debug}"
+        _dind_env CODX_JUNIOR_DOMAIN "${domain}"
+        _dind_env CODX_JUNIOR_TRAEFIK "${TRAEFIK_MODE}"
+        _dind_env CODX_JUNIOR_INSTANCE "${INSTANCE}"
+        _dind_env CODX_JUNIOR_HOME "${HOME_DIR}"
+        _dind_env CODX_DATA_DIR "${DATA_DIR}"
+        _dind_env CODX_JUNIOR_PROJECTS_PATH "${PROJECTS}"
+        _dind_env CODX_JUNIOR_ENV_FILE "${envfile}"
+        _dind_env CODX_JUNIOR_WEB_PORT "${WEB_PORT}"
+        _dind_env CODX_BIND_ADDRESS "${BIND_ADDRESS}"
+        _dind_env CODX_NO_TLS 0
+        _dind_env CODX_PROXY_NETWORK "${PROXY_NETWORK}"
+        _dind_env CODX_TRUSTED_PROXIES "${TRUSTED_PROXIES}"
+        _dind_env CODX_FORWARDED_INSECURE "${FORWARDED_INSECURE}"
+        _dind_env CODX_MASTER_CERT_RESOLVER "${MASTER_CERT_RESOLVER}"
+        _dind_env CODX_MASTER_ENTRYPOINT "${MASTER_ENTRYPOINT}"
+        _dind_env CODX_ACME_EMAIL "${ACME_EMAIL}"
+        _dind_env CODX_ACME_CA "${ACME_CA}"
+        _dind_env CODX_CERT_RESOLVER "${CERT_RESOLVER}"
+        _dind_env CODX_JUNIOR_AI_PROVIDER "${PROVIDER}"
+        _dind_env CODX_JUNIOR_AI_API_KEY "${API_KEY}"
+        _dind_env CODX_JUNIOR_AI_API_KEY_FILE "${API_KEY_FILE}"
+        _dind_env CODX_JUNIOR_AI_API_URL "${API_URL}"
+        _dind_env CODX_JUNIOR_AI_MODEL "${MODEL}"
+        _dind_env CODX_JUNIOR_NO_AI "${NO_AI}"
+        _dind_env CODX_JUNIOR_COWORKING 1
+        _dind_env CODX_JUNIOR_HIDDEN "${HIDDEN}"
+        _dind_env CODX_DIND_SYSBOX "${SYSBOX}"
+        _dind_env CODX_JUNIOR_KNOWLEDGE_BACKEND "${KNOWLEDGE_BACKEND}"
+        _dind_env CODX_JUNIOR_IMAGE "${app_image}"
+        _dind_env CODX_DIND_IMAGE "${dind_image}"
+        _dind_env CODX_DIND_STORAGE "${storage}"
+        unset -f _dind_env
+        log "Created ${envfile}"
+    else
+        log "Keeping existing ${envfile}"
+    fi
+
+    if [[ "${write_state}" == "1" ]]; then
+        if [[ "${STATE_FILE}" != "${envfile}" ]]; then
+            cp "${envfile}" "${STATE_FILE}"
+            chmod 600 "${STATE_FILE}" 2>/dev/null || true
+        fi
+        if ! grep -q '^CODX_JUNIOR_INSTALLER_STATE_VERSION=' "${STATE_FILE}" 2>/dev/null; then
+            printf 'CODX_JUNIOR_INSTALLER_STATE_VERSION=1\n' >> "${STATE_FILE}"
+        fi
+        log "Created ${STATE_FILE}"
+    else
+        log "Keeping existing ${STATE_FILE}"
+    fi
+
+    if [[ "${write_compose}" == "0" ]]; then
+        log "Keeping existing ${compose}"
+        return 0
+    fi
+
+    {
+        cat <<EOF
+# =============================================================================
+# codx-junior DIND instance — editable compose
+#
+# Generated before the install confirmation. Add folder mappings under
+# services.dind.volumes, then continue the installer.
+#
+# Prefer mappings under /data/projects/<name> so the inner app sees them as
+# projects. A path under /data that is not mounted into the inner container is
+# only visible to the DIND wrapper.
+# =============================================================================
+name: ${INSTANCE}
+
+services:
+  dind:
+    image: ${dind_image}
+    container_name: ${INSTANCE}
+EOF
+        if [[ "${SYSBOX}" == "1" ]]; then
+            cat <<EOF
+    privileged: false
+    runtime: sysbox-runc
+EOF
+        else
+            cat <<EOF
+    privileged: true
+EOF
+        fi
+        cat <<EOF
+    restart: unless-stopped
+    stop_grace_period: 45s
+    env_file:
+      - "${env_ref}"
+    environment:
+      CODX_MODE: "server"
+      CODX_TRAEFIK_MODE: "${TRAEFIK_MODE}"
+      CODX_JUNIOR_DOMAIN: "${domain:-localhost}"
+      CODX_JUNIOR_WEB_PORT: "${WEB_PORT}"
+      CODX_JUNIOR_IMAGE: "${app_image}"
+      CODX_JUNIOR_PROJECTS_PATH: /data/projects
+      CODX_DATA_DIR: /data
+      CODX_PROXY_NETWORK: codx-proxy
+      CODX_TRUSTED_PROXIES: "${TRUSTED_PROXIES}"
+      CODX_ACME_EMAIL: "${ACME_EMAIL}"
+      CODX_ACME_CA: "${ACME_CA}"
+      CODX_CERT_RESOLVER: "${CERT_RESOLVER}"
+      CODX_JUNIOR_KNOWLEDGE_BACKEND: "${KNOWLEDGE_BACKEND}"
+      CODX_JUNIOR_COWORKING: "1"
+      CODX_JUNIOR_DEBUG: "${debug}"
+      CODX_JUNIOR_DEV: "0"
+      CODX_HEALTH_PORT: "80"
+      DOCKER_TLS_CERTDIR: ""
+      TINI_SUBREAPER: "1"
+    volumes:
+      - "${DATA_DIR}:/data"
+      - "${PROJECTS}:/data/projects"
+      - "dind-storage:/var/lib/docker"
+      # Add host project folders here, for example:
+      # - "/srv/other-project:/data/projects/other-project"
+EOF
+        if [[ "${TRAEFIK_MODE}" == "master" ]]; then
+            cat <<EOF
+    ports:
+      - "80:80"
+      - "443:443"
+EOF
+        else
+            cat <<EOF
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${PROXY_NETWORK}"
+      - "traefik.http.routers.${INSTANCE}-edge.rule=${rule}"
+      - "traefik.http.routers.${INSTANCE}-edge.entrypoints=${MASTER_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.${INSTANCE}-edge.tls=true"
+      - "traefik.http.routers.${INSTANCE}-edge.tls.certresolver=${MASTER_CERT_RESOLVER:-letsencrypt}"
+      - "traefik.http.routers.${INSTANCE}-edge.service=${INSTANCE}-edge"
+      - "traefik.http.services.${INSTANCE}-edge.loadbalancer.server.port=80"
+EOF
+        fi
+        cat <<EOF
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null -H \"Host: \$\$CODX_JUNIOR_DOMAIN\" http://127.0.0.1:\$\$CODX_HEALTH_PORT/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 900s
+
+volumes:
+  dind-storage:
+    name: ${storage}
+EOF
+        if [[ "${TRAEFIK_MODE}" != "master" ]]; then
+            cat <<EOF
+
+networks:
+  proxy:
+    name: ${PROXY_NETWORK}
+    external: true
+EOF
+        fi
+    } > "${compose}"
+    chmod 600 "${compose}" 2>/dev/null || true
+    log "Created ${compose}"
+    log "Edit ${compose} now if you need extra folder mappings, then continue."
+}
+
+interactive_wizard() {
+    print_banner
+    section "Interactive setup"
+    printf '  Press Enter to accept the value in [brackets].\n' >&4
+
+    local original_mode="${MODE:-}"
+    local original_instance="${INSTANCE:-}"
+    local original_home="${HOME_DIR:-}"
+    local mode_changed=0 instance_changed=0
     local mode_default="${MODE:-}"
-    case "${mode_default}" in local|server|slave|dind) ;; *)
-        if [[ "${EUID}" -eq 0 ]]; then mode_default="server"; else mode_default="local"; fi ;;
+
+    local target_default="${PWD}"
+    if [[ "${HOME_DIR_EXPLICIT}" == "1" && -n "${HOME_DIR}" ]]; then
+        target_default="${HOME_DIR}"
+    fi
+    local target=""
+    target="$(ask "Target folder (install files, .env, data/projects)" "${target_default}")"
+    [[ "${target}" = /* ]] || target="${PWD}/${target}"
+    HOME_DIR="${target}"
+    HOME_DIR_EXPLICIT=1
+    if [[ -z "${CODX_JUNIOR_INSTALLER_STATE:-}" ]]; then
+        STATE_FILE="${HOME_DIR}/installation.env"
+    fi
+    if [[ "${DATA_DIR_EXPLICIT}" != "1" ]]; then
+        DATA_DIR="${HOME_DIR}/data"
+    fi
+    case "${mode_default}" in
+        local|server|dind) ;;
+        dev) mode_default="local" ;;
+        slave) mode_default="server" ;;
+        *) if [[ "${EUID}" -eq 0 ]]; then mode_default="server"; else mode_default="local"; fi ;;
     esac
-    MODE="$(ask_choice "Deployment mode" "local server slave dind" "${mode_default}")"
+    section "Deployment"
+    cat >&4 <<'MODES'
+  local    Full machine dedicated to codx-junior; localhost by default.
+  server   Public server; domain + Traefik primary for HTTPS.
+  dind     Isolate codx-junior in a Docker-in-Docker container.
+MODES
+    MODE="$(ask_choice "Deployment mode" "local server dind" "${mode_default}")"
     MODE_CLI=1
 
     if [[ "${MODE}" == "dind" ]]; then
-        DIND_MODE="$(ask_choice "DIND inner mode" "local server slave" "${DIND_MODE:-local}")"
+        DIND_MODE="server"
     fi
     local effective="${MODE}"
     if [[ "${MODE}" == "dind" ]]; then
         effective="${DIND_MODE}"
     fi
 
-    # Always ask. The default is derived from the mode/inner mode, but the
-    # user can combine them, e.g. dind + local + slave.
-    resolve_traefik_mode
-    while true; do
-        TRAEFIK_MODE="$(ask_choice "Traefik setup" "none master slave" "${TRAEFIK_MODE:-none}")"
-        if [[ "${MODE}" == "dind" && "${DIND_MODE}" != "local" && "${TRAEFIK_MODE}" == "none" ]]; then
-            warn "dind/${DIND_MODE} needs a Traefik setup; choose master or slave"
-            continue
-        fi
-        if [[ "${MODE}" == "slave" && "${TRAEFIK_MODE}" == "none" ]]; then
-            warn "--mode slave needs a Traefik setup; choose master or slave"
-            continue
-        fi
-        break
-    done
+    # `dev` is an option for host installs, not a deployment mode.
+    section "Development option"
+    if [[ "${MODE}" == "dind" ]]; then
+        cat >&4 <<'DINDDEVMODE'
+  DEBUG=1 for the inner scripts. The inner image is packaged, so there is no
+  live checkout mount or Vite HMR inside DIND.
+DINDDEVMODE
+        DEV_MODE="$(ask_yesno "Run in development mode (DEBUG=1 inside DIND)" "${DEV_MODE:-0}")"
+    else
+        cat >&4 <<'DEVMODE'
+  DEBUG=1 plus the live checkout, uvicorn --reload and Vite HMR.
+DEVMODE
+        DEV_MODE="$(ask_yesno "Run in development mode" "${DEV_MODE:-0}")"
+    fi
 
+    # The domain decides whether Traefik is needed at all. A blank domain is
+    # localhost/plain HTTP; a domain must be resolved by a primary or a slave.
+    resolve_traefik_mode
     local domain_default="${DOMAINS[0]:-}"
     if [[ "${domain_default}" == "localhost" ]]; then
         domain_default=""
     fi
-    local domain=""
-    if [[ "${TRAEFIK_MODE}" == "none" ]]; then
-        NO_TLS=1
-        if [[ "${effective}" == "local" ]]; then
-            domain="localhost"
+    section "Domain and Traefik"
+    cat >&4 <<'DOMAIN'
+  A domain enables DNS and Traefik. Leave it blank for localhost and plain HTTP
+  on the published port.
+DOMAIN
+    local domain="" required_domain=0
+    if [[ "${MODE}" == "server" || "${MODE}" == "dind" ]]; then
+        required_domain=1
+    fi
+    while true; do
+        if [[ "${required_domain}" == "1" ]]; then
+            domain="$(ask "Domain name (required for ${MODE}$([[ "${MODE}" == "dind" ]] && echo "/${DIND_MODE}"))" "${domain_default}")"
         else
-            domain="$(ask "Domain (optional; blank = serve on the web port)" "${domain_default}")"
+            domain="$(ask "Domain name (optional)" "${domain_default}")"
         fi
+        if [[ -z "${domain}" && "${required_domain}" == "0" ]]; then
+            break
+        fi
+        if [[ -n "${domain}" && "${domain}" =~ ^[A-Za-z0-9.-]+$ ]]; then
+            break
+        fi
+        if [[ "${required_domain}" == "1" ]]; then
+            warn "a valid domain is required for ${MODE}$([[ "${MODE}" == "dind" ]] && echo "/${DIND_MODE}")"
+        else
+            warn "enter a valid domain, or leave it blank for localhost"
+        fi
+    done
+
+    if [[ -z "${domain}" ]]; then
+        TRAEFIK_MODE="none"
+        NO_TLS=1
+        log "No domain: Traefik disabled; using localhost / plain HTTP"
     else
-        NO_TLS=0
+        cat >&4 <<'TRAEFIK'
+  primary  Resolve DNS and terminate TLS for this domain (ACME).
+  slave    Sit behind an existing primary; receive X-Forwarded-* headers.
+TRAEFIK
+        local tr_default="primary"
+        [[ "${TRAEFIK_MODE}" == "slave" ]] && tr_default="slave"
         while true; do
-            domain="$(ask "Domain" "${domain_default}")"
-            if [[ -n "${domain}" && "${domain}" =~ ^[A-Za-z0-9.-]+$ ]]; then
-                break
-            fi
-            warn "a valid domain is required for Traefik '${TRAEFIK_MODE}'"
+            local tr_choice=""
+            tr_choice="$(ask_choice "Traefik mode" "primary slave" "${tr_default}")"
+            case "${tr_choice}" in
+                primary) TRAEFIK_MODE="master"; break ;;
+                slave)   TRAEFIK_MODE="slave";  break ;;
+            esac
         done
+        NO_TLS=0
     fi
 
     if [[ "${TRAEFIK_MODE}" == "master" ]]; then
@@ -287,16 +637,17 @@ interactive_wizard() {
                 ACME_EMAIL="${acme}"
                 break
             fi
-            warn "the master needs an ACME email"
+            warn "the primary needs an ACME email"
         done
     fi
 
     if [[ "${TRAEFIK_MODE}" == "slave" ]]; then
+        section "Traefik connection"
         local net_default="${PROXY_NETWORK:-traefik}"
         [[ "${net_default}" == "codx-proxy" ]] && net_default="traefik"
-        PROXY_NETWORK="$(ask "Master Traefik Docker network" "${net_default}")"
-        MASTER_CERT_RESOLVER="$(ask "Master certificate resolver" "${MASTER_CERT_RESOLVER:-letsencrypt}")"
-        MASTER_ENTRYPOINT="$(ask "Master HTTPS entrypoint" "${MASTER_ENTRYPOINT:-websecure}")"
+        PROXY_NETWORK="$(ask "Primary Traefik Docker network" "${net_default}")"
+        MASTER_CERT_RESOLVER="$(ask "Primary certificate resolver" "${MASTER_CERT_RESOLVER:-letsencrypt}")"
+        MASTER_ENTRYPOINT="$(ask "Primary HTTPS entrypoint" "${MASTER_ENTRYPOINT:-websecure}")"
     fi
 
     if [[ "${MODE}" == "dind" ]]; then
@@ -313,6 +664,7 @@ interactive_wizard() {
         fi
     fi
 
+    section "Instance and folders"
     local instance_default="${INSTANCE:-codx-junior}"
     if [[ -n "${domain}" && "${domain}" != "localhost" \
           && ( "${MODE}" == "dind" || "${MODE}" == "slave" || "${TRAEFIK_MODE}" == "slave" ) ]]; then
@@ -325,22 +677,23 @@ interactive_wizard() {
         fi
         warn "use lowercase letters, digits and '-' (max 32 chars)"
     done
-
-    local home_default="${HOME_DIR}"
-    if [[ "${HOME_DIR_EXPLICIT}" != "1" ]]; then
-        case "${MODE}" in
-            local) home_default="${HOME}/.codx-junior" ;;
-            dind)  home_default="/opt/codx-junior/instances/${INSTANCE}" ;;
-            *)     home_default="/opt/codx-junior" ;;
-        esac
+    [[ "${MODE}" != "${original_mode}" ]] && mode_changed=1
+    [[ "${INSTANCE}" != "${original_instance}" ]] && instance_changed=1
+    if [[ "${instance_changed}" == "1" ]]; then
+        CODX_DIND_STORAGE="${INSTANCE}-dind"
     fi
-    HOME_DIR="$(ask "Installation root" "${home_default}")"
-    if [[ -z "${CODX_DATA_DIR:-}" ]]; then
+
+    # The target folder was chosen first. Data and projects default under it;
+    # only explicit CLI/environment paths override them.
+    if [[ "${DATA_DIR_EXPLICIT}" != "1" ]]; then
         DATA_DIR="${HOME_DIR}/data"
     fi
 
     local projects_default="${PROJECTS}"
-    if [[ "${PROJECTS_CLI}" != "1" && -z "${CODX_JUNIOR_PROJECTS_PATH:-}" ]]; then
+    local projects_explicit=0
+    [[ "${PROJECTS_CLI}" == "1" ]] && projects_explicit=1
+    [[ -n "${CODX_JUNIOR_PROJECTS_PATH:-}" && "${PROJECTS_FROM_STATE:-0}" != "1" ]] && projects_explicit=1
+    if [[ "${projects_explicit}" != "1" ]]; then
         case "${MODE}" in
             dind) projects_default="${DATA_DIR}/projects" ;;
             *)    projects_default="${HOME_DIR}/projects" ;;
@@ -348,6 +701,13 @@ interactive_wizard() {
     fi
     PROJECTS="$(ask "Projects folder" "${projects_default}")"
     PROJECTS_CLI=1
+
+    section "Project selector"
+    cat >&4 <<'HIDDENHELP'
+  Hide codx-junior and its child projects from the project selector. Set this
+  if you only want your own application projects in the UI.
+HIDDENHELP
+    HIDDEN="$(ask_yesno "Hide codx-junior and child projects" "${HIDDEN:-0}")"
 
     while true; do
         WEB_PORT="$(ask "Host web port" "${WEB_PORT}")"
@@ -357,6 +717,7 @@ interactive_wizard() {
         warn "enter a port between 1 and 65535"
     done
 
+    section "AI provider"
     local provider_default="${PROVIDER:-deepseek}"
     case "${provider_default}" in
         openai|deepseek|gemini|openrouter|mistral|groq|custom|none) ;;
@@ -408,7 +769,11 @@ interactive_wizard() {
     if [[ "${TRAEFIK_MODE}" != "none" && -n "${domain}" ]]; then
         DOMAINS=("${domain}")
     fi
-    if [[ "${ENV_FILE_EXPLICIT}" != "1" ]]; then
+    if [[ "${MODE}" == "dind" ]]; then
+        # Never inherit another instance's .env. Only an explicit --env-file
+        # may override the target-local .env.
+        [[ -n "${PRESCAN_ENV:-}" ]] || ENV_FILE="${HOME_DIR}/.env"
+    elif [[ "${ENV_FILE_EXPLICIT}" != "1" ]]; then
         ENV_FILE="${HOME_DIR}/config/${INSTANCE}.env"
     fi
     if [[ "${NO_TLS}" == "1" ]]; then
@@ -416,23 +781,42 @@ interactive_wizard() {
     fi
 
     printf '\n' >&2
-    log "Configuration"
-    log "  mode      : ${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
-    log "  traefik   : ${TRAEFIK_MODE}"
-    log "  domain    : ${domain:-<none>}"
-    log "  instance  : ${INSTANCE}"
-    log "  home      : ${HOME_DIR}"
-    log "  projects  : ${PROJECTS}"
-    log "  port      : ${WEB_PORT}"
-    log "  provider  : ${PROVIDER}$([[ "${NO_AI}" == "1" ]] && echo " (configure in UI)" || true)"
-    log "  coworking : ${COWORKING}"
+    section "Configuration"
+    row "mode" "${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
+    row "dev" "$([[ "${DEV_MODE}" == "1" ]] && { [[ "${MODE}" == "dind" ]] && echo "enabled (DEBUG=1 inside DIND)" || echo "enabled (DEBUG=1, live checkout)"; } || echo "disabled")"
+    row "traefik" "$(traefik_label)"
+    row "domain" "${domain:-<none>}"
+    row "instance" "${INSTANCE}"
+    row "target" "${HOME_DIR}"
+    row "projects" "${PROJECTS}"
+    row "port" "${WEB_PORT}"
+    row "provider" "${PROVIDER}$([[ "${NO_AI}" == "1" ]] && echo " (configure in UI)" || true)"
+    row "state file" "${STATE_FILE}"
     if [[ "${MODE}" == "dind" ]]; then
-        log "  sysbox    : ${SYSBOX}"
+        row "compose" "${HOME_DIR}/docker-compose.yaml"
+        row "env file" "${ENV_FILE}"
+    fi
+    row "coworking" "${COWORKING}"
+    row "hidden" "${HIDDEN}"
+    if [[ "${MODE}" == "dind" ]]; then
+        row "sysbox" "${SYSBOX}"
     fi
     if [[ "${TRAEFIK_MODE}" == "slave" ]]; then
-        log "  proxy     : ${PROXY_NETWORK} (${MASTER_ENTRYPOINT}, resolver ${MASTER_CERT_RESOLVER})"
+        row "proxy" "${PROXY_NETWORK} (${MASTER_ENTRYPOINT}, resolver ${MASTER_CERT_RESOLVER})"
     fi
 
+    if [[ "${MODE}" == "dind" && "${DRY_RUN}" != "1" ]]; then
+        section "Instance files"
+        # Generate/refresh the editable files at the end, after the summary and
+        # before the final confirmation. Existing files prompt for overwrite.
+        [[ "${HOME_DIR}" = /* ]] || HOME_DIR="${PWD}/${HOME_DIR}"
+        [[ "${DATA_DIR}" = /* ]] || DATA_DIR="${PWD}/${DATA_DIR}"
+        [[ "${PROJECTS}" = /* ]] || PROJECTS="${PWD}/${PROJECTS}"
+        [[ "${ENV_FILE}" = /* ]] || ENV_FILE="${PWD}/${ENV_FILE}"
+        write_dind_instance_files "${domain}" 1
+    fi
+
+    section "Confirm"
     if [[ "$(ask_yesno "Proceed with this configuration?" 1)" != "1" ]]; then
         log "cancelled"
         exit 0
@@ -445,6 +829,7 @@ PRESCAN_DOMAIN=""
 PRESCAN_INSTANCE=""
 PRESCAN_HOME=""
 PRESCAN_ENV=""
+PRESCAN_DEV=0
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
     a="${args[$i]}"
@@ -460,8 +845,11 @@ for ((i = 0; i < ${#args[@]}; i++)); do
         --home=*)        PRESCAN_HOME="${a#*=}" ;;
         --env-file)      PRESCAN_ENV="$next"; i=$((i + 1)) ;;
         --env-file=*)    PRESCAN_ENV="${a#*=}" ;;
+        --dev)           PRESCAN_DEV=1 ;;
+        --no-dev)        PRESCAN_DEV=0 ;;
     esac
 done
+[[ "${PRESCAN_MODE}" == "dev" ]] && PRESCAN_DEV=1
 
 slugify() {
     local value="${1:-}"
@@ -470,19 +858,30 @@ slugify() {
     printf '%s' "${value:0:32}"
 }
 
-MODE_HINT="${PRESCAN_MODE:-${CODX_JUNIOR_MODE:-}}"
-if [[ -z "${MODE_HINT}" ]]; then
-    if [[ "${EUID}" -eq 0 ]]; then MODE_HINT="server"; else MODE_HINT="local"; fi
+MODE_HINT="${PRESCAN_MODE:-${CODX_JUNIOR_MODE:-${INSTALLER_STATE[CODX_JUNIOR_MODE]:-}}}"
+if [[ "${MODE_HINT}" == "dev" ]]; then
+    MODE_HINT="local"
+    PRESCAN_DEV=1
 fi
-DOMAIN_HINT="${PRESCAN_DOMAIN:-${CODX_JUNIOR_DOMAIN:-}}"
-INSTANCE_HINT="${PRESCAN_INSTANCE:-${CODX_JUNIOR_INSTANCE:-}}"
+DEV_HINT="${PRESCAN_DEV:-${CODX_JUNIOR_DEV:-${INSTALLER_STATE[CODX_JUNIOR_DEV]:-0}}}"
+if [[ -z "${MODE_HINT}" ]]; then
+    if [[ "${DEV_HINT}" == "1" ]]; then
+        MODE_HINT="local"
+    elif [[ "${EUID}" -eq 0 ]]; then
+        MODE_HINT="server"
+    else
+        MODE_HINT="local"
+    fi
+fi
+DOMAIN_HINT="${PRESCAN_DOMAIN:-${CODX_JUNIOR_DOMAIN:-${INSTALLER_STATE[CODX_JUNIOR_DOMAIN]:-}}}"
+INSTANCE_HINT="${PRESCAN_INSTANCE:-${CODX_JUNIOR_INSTANCE:-${INSTALLER_STATE[CODX_JUNIOR_INSTANCE]:-}}}"
 if [[ -z "${INSTANCE_HINT}" ]]; then
     case "${MODE_HINT}" in
         dind|slave) INSTANCE_HINT="$(slugify "${DOMAIN_HINT}")" ;;
     esac
     [[ -n "${INSTANCE_HINT}" ]] || INSTANCE_HINT="codx-junior"
 fi
-HOME_HINT="${PRESCAN_HOME:-${CODX_JUNIOR_HOME:-}}"
+HOME_HINT="${PRESCAN_HOME:-${CODX_JUNIOR_HOME:-${INSTALLER_STATE[CODX_JUNIOR_HOME]:-}}}"
 if [[ -z "${HOME_HINT}" ]]; then
     case "${MODE_HINT}" in
         local) HOME_HINT="${HOME}/.codx-junior" ;;
@@ -490,7 +889,7 @@ if [[ -z "${HOME_HINT}" ]]; then
         *)     HOME_HINT="/opt/codx-junior" ;;
     esac
 fi
-ENV_FILE="${PRESCAN_ENV:-${CODX_JUNIOR_ENV_FILE:-${HOME_HINT}/config/${INSTANCE_HINT}.env}}"
+ENV_FILE="${PRESCAN_ENV:-${CODX_JUNIOR_ENV_FILE:-${INSTALLER_STATE[CODX_JUNIOR_ENV_FILE]:-${HOME_HINT}/config/${INSTANCE_HINT}.env}}}"
 
 # --- settings file: parsed as data, never sourced ---------------------------
 if [[ -f "${ENV_FILE}" ]]; then
@@ -508,20 +907,51 @@ if [[ -f "${ENV_FILE}" ]]; then
     log "Loaded settings from ${ENV_FILE}"
 fi
 
+# The saved installer state is the fallback for anything the settings file and
+# the environment did not provide. CLI flags are parsed later and still win.
+HOME_FROM_STATE=0
+DATA_DIR_FROM_STATE=0
+PROJECTS_FROM_STATE=0
+ENV_FILE_FROM_STATE=0
+DIND_STORAGE_FROM_STATE=0
+STATE_INSTANCE="${INSTALLER_STATE[CODX_JUNIOR_INSTANCE]:-}"
+if (( ${#INSTALLER_STATE[@]} > 0 )); then
+    for _key in "${!INSTALLER_STATE[@]}"; do
+        if [[ -z "${!_key:-}" ]]; then
+            case "${_key}" in
+                CODX_JUNIOR_HOME)           HOME_FROM_STATE=1 ;;
+                CODX_DATA_DIR)              DATA_DIR_FROM_STATE=1 ;;
+                CODX_JUNIOR_PROJECTS_PATH)  PROJECTS_FROM_STATE=1 ;;
+                CODX_JUNIOR_ENV_FILE)       ENV_FILE_FROM_STATE=1 ;;
+                CODX_DIND_STORAGE)          DIND_STORAGE_FROM_STATE=1 ;;
+            esac
+            export "${_key}=${INSTALLER_STATE[$_key]}"
+        fi
+    done
+    unset _key
+fi
+
 # --- configuration (env file + environment; flags below override) -----------
 MODE="${CODX_JUNIOR_MODE:-${MODE_HINT}}"
-DIND_MODE="${CODX_DIND_MODE:-local}"
+DIND_MODE="${CODX_DIND_MODE:-server}"
+DIND_MODE_CLI=0
 INSTANCE="${CODX_JUNIOR_INSTANCE:-${INSTANCE_HINT}}"
 HOME_DIR="${CODX_JUNIOR_HOME:-${HOME_HINT}}"
 DATA_DIR="${CODX_DATA_DIR:-${HOME_DIR}/data}"
 PROJECTS="${CODX_JUNIOR_PROJECTS_PATH:-${HOME_DIR}/projects}"
 PROJECTS_CLI=0
 HOME_DIR_EXPLICIT=0
+DATA_DIR_EXPLICIT=0
 ENV_FILE_EXPLICIT=0
-if [[ -n "${CODX_JUNIOR_HOME:-}${PRESCAN_HOME:-}" ]]; then
+if [[ -n "${PRESCAN_HOME:-}" ]] \
+   || [[ -n "${CODX_JUNIOR_HOME:-}" && "${HOME_FROM_STATE:-0}" != "1" ]]; then
     HOME_DIR_EXPLICIT=1
 fi
-if [[ -n "${CODX_JUNIOR_ENV_FILE:-}${PRESCAN_ENV:-}" ]]; then
+if [[ -n "${CODX_DATA_DIR:-}" && "${DATA_DIR_FROM_STATE:-0}" != "1" ]]; then
+    DATA_DIR_EXPLICIT=1
+fi
+if [[ -n "${PRESCAN_ENV:-}" ]] \
+   || [[ -n "${CODX_JUNIOR_ENV_FILE:-}" && "${ENV_FILE_FROM_STATE:-0}" != "1" ]]; then
     ENV_FILE_EXPLICIT=1
 fi
 WEB_PORT="${CODX_JUNIOR_WEB_PORT:-${DEFAULT_PORT}}"
@@ -544,6 +974,9 @@ ACME_CA="${CODX_ACME_CA:-prod}"
 MASTER_CERT_RESOLVER="${CODX_MASTER_CERT_RESOLVER:-letsencrypt}"
 MASTER_ENTRYPOINT="${CODX_MASTER_ENTRYPOINT:-websecure}"
 TRAEFIK_MODE="${CODX_JUNIOR_TRAEFIK:-}"
+DEV_MODE="${CODX_JUNIOR_DEV:-0}"
+IMAGE_CLI=0
+CODX_SOURCE_DIR="${CODX_JUNIOR_SOURCE:-}"
 CERT_RESOLVER="${CODX_CERT_RESOLVER:-letsencrypt}"
 NO_TLS="${CODX_NO_TLS:-0}"
 MODE_CLI=0
@@ -592,8 +1025,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --mode|-m)              need "$@"; MODE="$2"; MODE_CLI=1; shift 2 ;;
         --mode=*)               MODE="${1#*=}"; MODE_CLI=1; shift ;;
-        --dind-mode)            need "$@"; DIND_MODE="$2"; shift 2 ;;
-        --dind-mode=*)          DIND_MODE="${1#*=}"; shift ;;
+        --dind-mode)            need "$@"; DIND_MODE="$2"; DIND_MODE_CLI=1; shift 2 ;;
+        --dind-mode=*)          DIND_MODE="${1#*=}"; DIND_MODE_CLI=1; shift ;;
         --traefik|--proxy)      need "$@"; TRAEFIK_MODE="$2"; shift 2 ;;
         --traefik=*|--proxy=*)  TRAEFIK_MODE="${1#*=}"; shift ;;
         --provider|--ai-provider|-p) need "$@"; PROVIDER="$2"; shift 2 ;;
@@ -615,7 +1048,7 @@ while [[ $# -gt 0 ]]; do
         --bind-address)         need "$@"; BIND_ADDRESS="$2"; BIND_ADDRESS_CLI=1; shift 2 ;;
         --projects)             need "$@"; PROJECTS="$2"; PROJECTS_CLI=1; shift 2 ;;
         --home)                 need "$@"; HOME_DIR="$2"; HOME_DIR_EXPLICIT=1; shift 2 ;;
-        --data-dir)             need "$@"; DATA_DIR="$2"; shift 2 ;;
+        --data-dir)             need "$@"; DATA_DIR="$2"; DATA_DIR_EXPLICIT=1; shift 2 ;;
         --instance)             need "$@"; INSTANCE="$2"; shift 2 ;;
         --env-file)             need "$@"; ENV_FILE="$2"; ENV_FILE_EXPLICIT=1; shift 2 ;;
         --domain|-d)            need "$@"
@@ -644,19 +1077,21 @@ while [[ $# -gt 0 ]]; do
         --tls)                  need "$@"
                                 case "${2:-}" in
                                     none) NO_TLS=1; NO_TLS_CLI=1 ;;
-                                    *) die "only '--tls none' is supported; use --mode slave behind a master" ;;
+                                    *) die "only '--tls none' is supported; use --traefik slave behind an existing primary" ;;
                                 esac
                                 shift 2 ;;
         --no-docker-install)    INSTALL_DOCKER=0; shift ;;
         --open-firewall)        OPEN_FIREWALL=1; shift ;;
         --update)               UPGRADE=1; shift ;;
+        --hidden)               HIDDEN=1; shift ;;
+        --no-hidden|--show)     HIDDEN=0; shift ;;
         --coworking)            COWORKING=1; shift ;;
         --no-coworking)         COWORKING=0; shift ;;
         --allow-privileged)     ALLOW_PRIVILEGED=1; shift ;;
         --build)                DO_BUILD=1; shift ;;
         --build-dind)           DO_BUILD_DIND=1; shift ;;
-        --image)                need "$@"; IMAGE="$2"; shift 2 ;;
-        --image=*)              IMAGE="${1#*=}"; shift ;;
+        --image)                need "$@"; IMAGE="$2"; IMAGE_CLI=1; shift 2 ;;
+        --image=*)              IMAGE="${1#*=}"; IMAGE_CLI=1; shift ;;
         --dind-image)           need "$@"; DIND_IMAGE="$2"; shift 2 ;;
         --dind-image=*)         DIND_IMAGE="${1#*=}"; shift ;;
         --sysbox)               SYSBOX=1; shift ;;
@@ -671,6 +1106,8 @@ while [[ $# -gt 0 ]]; do
         --force)                FORCE=1; shift ;;
         --container)            CONTAINER=1; shift ;;
         --interactive)          INTERACTIVE=1; shift ;;
+        --dev)                  DEV_MODE=1; shift ;;
+        --no-dev)               DEV_MODE=0; shift ;;
         --non-interactive|--yes|-y) NON_INTERACTIVE=1; shift ;;
         --ref|--branch|-b)      need "$@"; REF="$2"; shift 2 ;;
         --repo)                 need "$@"; REPO="$2"; shift 2 ;;
@@ -684,6 +1121,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 # --- Traefik setup ----------------------------------------------------------
+traefik_label() {
+    if [[ "${TRAEFIK_MODE}" == "master" ]]; then
+        printf 'primary'
+    else
+        printf '%s' "${TRAEFIK_MODE}"
+    fi
+}
 # MODE answers "where does the app run"; TRAEFIK_MODE answers "which proxy
 # wraps it". Keeping them separate is what makes dind + local + slave possible.
 resolve_traefik_mode() {
@@ -696,17 +1140,27 @@ resolve_traefik_mode() {
         slave)
             TRAEFIK_MODE="slave" ;;
         dind)
-            case "${DIND_MODE}" in
-                local)  TRAEFIK_MODE="none" ;;
-                server) TRAEFIK_MODE="master" ;;
-                slave)  TRAEFIK_MODE="slave" ;;
-            esac ;;
+            TRAEFIK_MODE="master" ;;
     esac
 }
 
 # --- defaults after parsing -------------------------------------------------
+[[ "${TRAEFIK_MODE}" == "primary" ]] && TRAEFIK_MODE="master"
+# `dev` is an option, not a deployment mode. Keep the old spelling working.
+if [[ "${MODE}" == "dev" ]]; then
+    MODE="local"
+    DEV_MODE=1
+fi
 case "${MODE}" in local|server|slave|dind) ;; *) die "invalid --mode '${MODE}' (local|server|slave|dind)" ;; esac
-case "${DIND_MODE}" in local|server|slave) ;; *) die "invalid --dind-mode '${DIND_MODE}' (local|server|slave)" ;; esac
+# DIND needs the nested Docker socket for coworking by design.
+[[ "${MODE}" == "dind" ]] && COWORKING=1
+if [[ "${MODE}" == "dind" && "${DIND_MODE}" != "server" ]]; then
+    if [[ "${DIND_MODE_CLI}" == "1" ]]; then
+        die "the DIND inner installation is always server; --dind-mode is no longer needed"
+    fi
+    warn "ignoring saved --dind-mode '${DIND_MODE}': the DIND inner installation is always server"
+    DIND_MODE="server"
+fi
 resolve_traefik_mode
 case "${TRAEFIK_MODE}" in none|master|slave) ;; *) die "invalid --traefik '${TRAEFIK_MODE}' (none|master|slave)" ;; esac
 EFFECTIVE_MODE="${MODE}"
@@ -720,6 +1174,13 @@ if [[ "${MODE}" == "server" && "${MODE_CLI}" == "0" && "${NO_TLS}" == "0" && "${
     warn "no --domain given: serving plain HTTP on port ${WEB_PORT} (use --domain for TLS)"
 fi
 [[ "${INSTANCE}" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || die "invalid --instance '${INSTANCE}' (lowercase letters, digits and '-')"
+# A default DIND storage volume is tied to the instance name. Do not reuse the
+# previous instance's nested Docker metadata after an instance rename.
+if [[ -n "${CODX_DIND_STORAGE:-}" && "${CODX_DIND_STORAGE}" == *-dind \
+      && "${CODX_DIND_STORAGE}" != "${INSTANCE}-dind" ]]; then
+    warn "using ${INSTANCE}-dind instead of the old nested storage volume ${CODX_DIND_STORAGE}"
+    CODX_DIND_STORAGE="${INSTANCE}-dind"
+fi
 [[ "${WEB_PORT}" =~ ^[0-9]+$ ]] && ((WEB_PORT >= 1 && WEB_PORT <= 65535)) || die "invalid --port '${WEB_PORT}'"
 [[ "${REF}" =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid --ref '${REF}'"
 
@@ -739,6 +1200,7 @@ if [[ "${INTERACTIVE}" == "1" ]]; then
     EFFECTIVE_MODE="${MODE}"
     if [[ "${MODE}" == "dind" ]]; then
         EFFECTIVE_MODE="${DIND_MODE}"
+        COWORKING=1
     fi
     resolve_traefik_mode
 fi
@@ -763,6 +1225,9 @@ HOME_DIR="$(abs_dir "${HOME_DIR}")"
 DATA_DIR="$(abs_dir "${DATA_DIR}")"
 PROJECTS="$(abs_dir "${PROJECTS}")"
 ENV_FILE="$(abs_dir "${ENV_FILE}")"
+if [[ "${MODE}" == "dind" && -z "${PRESCAN_ENV:-}" ]]; then
+    ENV_FILE="${HOME_DIR}/.env"
+fi
 
 # The DIND wrapper mounts <data> at /data; projects must be inside it unless
 # the caller explicitly mounted another host path (the outer compose mounts
@@ -785,7 +1250,13 @@ case "${DATA_DIR}" in
 esac
 
 # `dind` keeps one root per instance; a host install has one root.
-if [[ -z "${CODX_JUNIOR_IMAGE:-}" && -z "${IMAGE}" ]]; then
+if [[ "${DEV_MODE}" == "1" && "${MODE}" != "dind" && "${IMAGE_CLI}" == "0" ]] \
+   && [[ -z "${IMAGE}" || "${IMAGE}" == *:latest || "${IMAGE}" == *:demo ]]; then
+    IMAGE="${DEFAULT_DEV_IMAGE}"
+elif [[ ( "${DEV_MODE}" != "1" || "${MODE}" == "dind" ) && "${IMAGE_CLI}" == "0" && "${IMAGE}" == *:dev ]]; then
+    IMAGE="${DEFAULT_IMAGE}"
+    warn "left dev mode: using ${DEFAULT_IMAGE} instead of the dev image"
+elif [[ -z "${CODX_JUNIOR_IMAGE:-}" && -z "${IMAGE}" ]]; then
     if [[ "${REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
         IMAGE="codxjuniorai/codx-junior:${REF}"
     else
@@ -796,6 +1267,14 @@ if [[ -z "${CODX_JUNIOR_IMAGE:-}" && -z "${IMAGE}" ]]; then
     fi
 fi
 IMAGE="${IMAGE:-${DEFAULT_IMAGE}}"
+
+# An upgrade means "move to the current release" unless the caller explicitly
+# pinned an image. Settings from the previous install may still contain an old
+# tag/semver; keeping it silently turns --upgrade into a no-op.
+if [[ "${UPGRADE}" == "1" && "${IMAGE_CLI}" == "0" ]] \
+   && [[ "${DEV_MODE}" != "1" || "${MODE}" == "dind" ]]; then
+    IMAGE="${DEFAULT_IMAGE}"
+fi
 
 # Domains: strip scheme/path, lower-case, de-duplicate.
 PRIMARY_DOMAIN=""
@@ -824,19 +1303,22 @@ if [[ "${TRAEFIK_MODE}" != "none" ]] && [[ "${#DOMAINS[@]}" -eq 0 ]]; then
     die "Traefik '${TRAEFIK_MODE}' needs --domain (or CODX_JUNIOR_DOMAIN)"
 fi
 if [[ "${TRAEFIK_MODE}" == "master" && "${NO_TLS}" == "1" ]]; then
-    die "--traefik master cannot be combined with --no-tls"
+    die "--traefik primary cannot be combined with --no-tls"
 fi
 if [[ "${TRAEFIK_MODE}" == "master" && -z "${ACME_EMAIL}" ]]; then
-    die "--traefik master needs --acme-email for Let's Encrypt"
+    die "--traefik primary needs --acme-email for Let's Encrypt"
 fi
 if [[ "${MODE}" == "dind" && "${DIND_MODE}" == "server" && "${NO_TLS}" == "1" ]]; then
-    die "dind/server needs TLS; use --dind-mode local for a plain-HTTP DIND instance"
+    die "dind needs TLS; use --traefik primary or --traefik slave with a domain"
 fi
-if [[ "${MODE}" == "dind" && "${TRAEFIK_MODE}" == "none" && "${DIND_MODE}" != "local" ]]; then
-    die "dind without Traefik needs --dind-mode local (no port would be published otherwise)"
+if [[ "${MODE}" == "dind" && "${TRAEFIK_MODE}" == "none" ]]; then
+    die "dind needs --traefik primary or --traefik slave"
 fi
 if [[ "${MODE}" == "slave" && "${TRAEFIK_MODE}" == "none" ]]; then
     die "--mode slave needs a Traefik setup (use --mode server --traefik none for plain HTTP)"
+fi
+if [[ "${DEV_MODE}" == "1" && "${CONTAINER}" == "1" ]]; then
+    die "development mode inside the DIND image is controlled by CODX_JUNIOR_DEBUG"
 fi
 if [[ "${TRAEFIK_MODE}" == "slave" ]]; then
     PROXY_EXTERNAL="${PROXY_EXTERNAL:-true}"
@@ -848,11 +1330,15 @@ fi
 if [[ "${CONTAINER}" == "1" && "${TRAEFIK_MODE}" == "slave" ]]; then
     PROXY_EXTERNAL="false"
 fi
-if [[ "${TRAEFIK_MODE}" == "none" && "${EFFECTIVE_MODE}" != "local" && "${BIND_ADDRESS_CLI}" == "0" && -z "${CODX_BIND_ADDRESS:-}" ]]; then
-    BIND_ADDRESS="0.0.0.0"
+if [[ "${BIND_ADDRESS_CLI}" == "0" && -z "${CODX_BIND_ADDRESS:-}" ]]; then
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        BIND_ADDRESS="127.0.0.1"
+    elif [[ "${TRAEFIK_MODE}" == "none" && "${EFFECTIVE_MODE}" != "local" ]]; then
+        BIND_ADDRESS="0.0.0.0"
+    fi
 fi
 if [[ -z "${SYSTEMD}" ]]; then
-    if [[ "${CONTAINER}" == "1" ]]; then
+    if [[ "${CONTAINER}" == "1" || ( "${DEV_MODE}" == "1" && "${MODE}" != "dind" ) ]]; then
         SYSTEMD=0
     elif [[ "${MODE}" == "dind" ]]; then
         # The wrapper container must come back after a host reboot even when
@@ -864,7 +1350,7 @@ if [[ -z "${SYSTEMD}" ]]; then
         SYSTEMD=1
     fi
 fi
-if [[ "${CONTAINER}" == "1" ]]; then
+if [[ "${CONTAINER}" == "1" || ( "${DEV_MODE}" == "1" && "${MODE}" != "dind" ) ]]; then
     CLI=0
 elif [[ "${MODE}" != "dind" && "${EFFECTIVE_MODE}" == "local" ]]; then
     CLI=0
@@ -890,7 +1376,7 @@ if [[ -n "${CODX_JUNIOR_PUBLIC_URL:-}" ]]; then
     PUBLIC_URL="${CODX_JUNIOR_PUBLIC_URL}"
 elif [[ "${TRAEFIK_MODE}" != "none" ]]; then
     PUBLIC_URL="https://${PRIMARY_DOMAIN}"
-elif [[ "${EFFECTIVE_MODE}" == "local" ]]; then
+elif [[ "${DEV_MODE}" == "1" || "${EFFECTIVE_MODE}" == "local" ]]; then
     PUBLIC_URL="http://localhost:${WEB_PORT}"
 elif [[ "${EFFECTIVE_MODE}" == "server" ]]; then
     if [[ "${PRIMARY_DOMAIN}" != "localhost" ]]; then
@@ -928,7 +1414,8 @@ fi
 
 # `--coworking` mounts a root-equivalent socket. Require an explicit opt-in
 # when the instance is not a nested daemon and not a single-user local install.
-if [[ "${COWORKING}" == "1" && "${CONTAINER}" != "1" && "${EFFECTIVE_MODE}" != "local" && "${ALLOW_PRIVILEGED}" != "1" ]]; then
+if [[ "${COWORKING}" == "1" && "${CONTAINER}" != "1" && "${MODE}" != "dind" \
+      && "${EFFECTIVE_MODE}" != "local" && "${ALLOW_PRIVILEGED}" != "1" ]]; then
     warn "--coworking mounts /var/run/docker.sock (root on this host)."
     warn "Re-run with --allow-privileged to confirm, or use --mode dind for isolation."
     die "refusing to mount the Docker socket without --allow-privileged"
@@ -977,12 +1464,16 @@ resolve_runtime() {
     if [[ -f "${SELF_DIR}/runtime/docker-compose.yaml" ]]; then
         source_dir="${SELF_DIR}"
         CODX_BUILD_CONTEXT="$(cd "${SELF_DIR}/.." && pwd)"
+        if [[ -z "${CODX_SOURCE_DIR}" ]]; then
+            CODX_SOURCE_DIR="${CODX_BUILD_CONTEXT}"
+        fi
     else
         SRC_DIR="${HOME_DIR}/src"
         if [[ "${DRY_RUN}" == "1" ]]; then
             RUNTIME_DIR="${SRC_DIR}/codx-junior-installer/runtime"
             INSTALLER_DIR="${SRC_DIR}/codx-junior-installer"
             CODX_BUILD_CONTEXT="${SRC_DIR}"
+            [[ -z "${CODX_SOURCE_DIR}" ]] && CODX_SOURCE_DIR="${SRC_DIR}"
             warn "dry run: would download ${REPO} @ ${REF} to ${SRC_DIR}"
             return 0
         fi
@@ -1005,10 +1496,18 @@ resolve_runtime() {
         fi
         source_dir="${SRC_DIR}/codx-junior-installer"
         CODX_BUILD_CONTEXT="${SRC_DIR}"
+        if [[ -z "${CODX_SOURCE_DIR}" ]]; then
+            CODX_SOURCE_DIR="${SRC_DIR}"
+        fi
     fi
 
     [[ -f "${source_dir}/runtime/docker-compose.yaml" ]] \
         || die "unexpected repository layout: ${source_dir}/runtime/docker-compose.yaml is missing"
+    if [[ "${DEV_MODE}" == "1" && "${MODE}" != "dind" ]]; then
+        [[ -n "${CODX_SOURCE_DIR}" && -f "${CODX_SOURCE_DIR}/client/package.json" \
+           && -f "${CODX_SOURCE_DIR}/api/pyproject.toml" ]] \
+            || die "development mode needs a full checkout (run from the repository; '${CODX_SOURCE_DIR:-<none>}' is not one)"
+    fi
     if [[ "${DRY_RUN}" == "1" ]]; then
         RUNTIME_DIR="${source_dir}/runtime"
         INSTALLER_DIR="${source_dir}"
@@ -1023,6 +1522,9 @@ resolve_runtime() {
 
 select_compose_files() {
     COMPOSE_FILES=(-f "${RUNTIME_DIR}/docker-compose.yaml")
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dev.yaml")
+    fi
     case "${TRAEFIK_MODE}" in
         none)
             [[ "${CONTAINER}" == "1" ]] \
@@ -1030,12 +1532,18 @@ select_compose_files() {
         master)
             COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.master.yaml") ;;
         slave)
-            COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.slave.yaml") ;;
+            COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.slave.yaml")
+            # Host slave: the edge labels are for the external primary. Inside
+            # DIND the wrapper carries them, so the nested Traefik stays clean.
+            if [[ "${CONTAINER}" != "1" ]]; then
+                COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.slave-edge.yaml")
+            fi ;;
     esac
     # Local access alongside a proxy: `local` + `slave` is the "dind local
     # slave" case. It publishes the app on 127.0.0.1 and still joins the master
     # network with a slave Traefik.
-    if [[ "${CONTAINER}" != "1" && "${EFFECTIVE_MODE}" == "local" && "${TRAEFIK_MODE}" != "none" ]]; then
+    if [[ "${CONTAINER}" != "1" && "${TRAEFIK_MODE}" != "none" ]] \
+       && [[ "${EFFECTIVE_MODE}" == "local" || "${DEV_MODE}" == "1" ]]; then
         COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.local.yaml")
     fi
     if [[ "${COWORKING}" == "1" ]]; then
@@ -1051,7 +1559,7 @@ select_compose_files() {
             COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.dind-local.yaml")
         fi
     fi
-    if [[ "${DO_BUILD}" == "1" && "${CONTAINER}" != "1" ]]; then
+    if [[ "${DO_BUILD}" == "1" && "${CONTAINER}" != "1" && "${DEV_MODE}" != "1" ]]; then
         COMPOSE_FILES+=(-f "${RUNTIME_DIR}/docker-compose.build.yaml")
     fi
 }
@@ -1065,6 +1573,9 @@ build_compose_env() {
         "CODX_INSTANCE=${INSTANCE}"
         "CODX_JUNIOR_PROJECTS_PATH=${PROJECTS}"
         "CODX_JUNIOR_IMAGE=${IMAGE}"
+        "CODX_SOURCE_DIR=${CODX_SOURCE_DIR}"
+        "CODX_JUNIOR_DEV=${DEV_MODE}"
+        "CODX_JUNIOR_DEBUG=${CODX_JUNIOR_DEBUG:-$([[ "${DEV_MODE}" == "1" ]] && echo 1 || echo 0)}"
         "CODX_JUNIOR_DOMAIN=${PRIMARY_DOMAIN}"
         "CODX_JUNIOR_WEB_PORT=${WEB_PORT}"
         "CODX_BIND_ADDRESS=${BIND_ADDRESS}"
@@ -1142,6 +1653,60 @@ drop_env_var() {
     chmod 600 "${file}" 2>/dev/null || true
 }
 
+# Save the resolved selections before any slow work (Docker install, image build,
+# pull). A failed/aborted install therefore still offers the same answers next
+# time. This is deliberately separate from the instance settings file.
+save_installer_state() {
+    [[ "${DRY_RUN}" == "1" || "${CONTAINER}" == "1" ]] && return 0
+    local domains_csv=""
+    if (( ${#DOMAINS[@]} > 0 )); then
+        domains_csv="$(IFS=,; printf '%s' "${DOMAINS[*]}")"
+    fi
+    if ! mkdir -p "$(dirname "${STATE_FILE}")" 2>/dev/null || ! : >> "${STATE_FILE}" 2>/dev/null; then
+        warn "could not save installer selections to ${STATE_FILE}"
+        return 0
+    fi
+    chmod 600 "${STATE_FILE}" 2>/dev/null || true
+
+    set_env_var CODX_JUNIOR_INSTALLER_STATE_VERSION 1 "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_MODE "${MODE}" "${STATE_FILE}"
+    set_env_var CODX_DIND_MODE "${DIND_MODE}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_DEV "${DEV_MODE}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_DOMAIN "${domains_csv}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_TRAEFIK "${TRAEFIK_MODE}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_INSTANCE "${INSTANCE}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_HOME "${HOME_DIR}" "${STATE_FILE}"
+    set_env_var CODX_DATA_DIR "${DATA_DIR}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_PROJECTS_PATH "${PROJECTS}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_ENV_FILE "${ENV_FILE}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_WEB_PORT "${WEB_PORT}" "${STATE_FILE}"
+    set_env_var CODX_BIND_ADDRESS "${BIND_ADDRESS}" "${STATE_FILE}"
+    set_env_var CODX_NO_TLS "${NO_TLS}" "${STATE_FILE}"
+    set_env_var CODX_PROXY_NETWORK "${PROXY_NETWORK}" "${STATE_FILE}"
+    set_env_var CODX_MASTER_CERT_RESOLVER "${MASTER_CERT_RESOLVER}" "${STATE_FILE}"
+    set_env_var CODX_MASTER_ENTRYPOINT "${MASTER_ENTRYPOINT}" "${STATE_FILE}"
+    set_env_var CODX_ACME_EMAIL "${ACME_EMAIL}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_AI_PROVIDER "${PROVIDER}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_AI_API_KEY "${API_KEY}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_AI_API_KEY_FILE "${API_KEY_FILE}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_AI_API_URL "${API_URL}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_AI_MODEL "${MODEL}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_NO_AI "${NO_AI}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_COWORKING "${COWORKING}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_HIDDEN "${HIDDEN}" "${STATE_FILE}"
+    set_env_var CODX_ALLOW_PRIVILEGED "${ALLOW_PRIVILEGED}" "${STATE_FILE}"
+    set_env_var CODX_DIND_SYSBOX "${SYSBOX}" "${STATE_FILE}"
+    set_env_var CODX_DIND_STORAGE "${CODX_DIND_STORAGE:-${INSTANCE}-dind}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_KNOWLEDGE_BACKEND "${KNOWLEDGE_BACKEND}" "${STATE_FILE}"
+    set_env_var CODX_JUNIOR_IMAGE "${IMAGE}" "${STATE_FILE}"
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        set_env_var CODX_JUNIOR_SOURCE "${CODX_SOURCE_DIR}" "${STATE_FILE}"
+    else
+        drop_env_var CODX_JUNIOR_SOURCE "${STATE_FILE}"
+    fi
+    log "Installer selections saved to ${STATE_FILE}"
+}
+
 write_settings() {
     mkdir -p "$(dirname "${ENV_FILE}")" "${DATA_DIR}" "${PROJECTS}" \
              "${DATA_DIR}/settings" "${DATA_DIR}/analytics"
@@ -1152,6 +1717,12 @@ write_settings() {
     set_env_var CODX_DATA_DIR "${DATA_DIR}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_MODE "${MODE}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_TRAEFIK "${TRAEFIK_MODE}" "${ENV_FILE}"
+    set_env_var CODX_JUNIOR_DEV "${DEV_MODE}" "${ENV_FILE}"
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        set_env_var CODX_JUNIOR_SOURCE "${CODX_SOURCE_DIR}" "${ENV_FILE}"
+    else
+        drop_env_var CODX_JUNIOR_SOURCE "${ENV_FILE}"
+    fi
     set_env_var CODX_JUNIOR_INSTANCE "${INSTANCE}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_DOMAIN "${PRIMARY_DOMAIN}" "${ENV_FILE}"
     set_env_var CODX_JUNIOR_PUBLIC_URL "${PUBLIC_URL}" "${ENV_FILE}"
@@ -1205,7 +1776,49 @@ write_settings() {
     if ! chmod 600 "${ENV_FILE}" 2>/dev/null; then
         warn "could not restrict ${ENV_FILE} to the service user (the filesystem ignores chmod)"
     fi
+    write_update_descriptor
 }
+
+# --- self-update descriptor ------------------------------------------------
+# The API only sees <data>/settings, never the installation home, so the facts
+# an in-app update needs are published here. `GET/POST /api/system/update`
+# reads it and runs `<cli> upgrade` from a helper container. Installations that
+# predate this file are recovered from the compose labels instead.
+_json_escape() {
+    local value="${1:-}"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    printf '%s' "${value}"
+}
+
+write_update_descriptor() {
+    local settings_dir="${DATA_DIR}/settings"
+    local cli="${HOME_DIR}/bin/codx-junior-${INSTANCE}"
+    [[ "${INSTANCE}" == "codx-junior" ]] && cli="${HOME_DIR}/bin/codx-junior"
+    local installer="${INSTALLER_DIR:-${HOME_DIR}/lib}/install.sh"
+    mkdir -p "${settings_dir}" 2>/dev/null || return 0
+    local tmp="${settings_dir}/.installer.json.$$"
+    {
+        printf '{\n'
+        printf '  "source": "codx-junior-installer",\n'
+        printf '  "installer_version": "%s",\n' "$(_json_escape "${INSTALLER_VERSION}")"
+        printf '  "home": "%s",\n' "$(_json_escape "${HOME_DIR}")"
+        printf '  "instance": "%s",\n' "$(_json_escape "${INSTANCE}")"
+        printf '  "mode": "%s",\n' "$(_json_escape "${MODE}")"
+        printf '  "container": %s,\n' "$([[ "${CONTAINER}" == "1" ]] && echo true || echo false)"
+        printf '  "image": "%s",\n' "$(_json_escape "${IMAGE}")"
+        printf '  "env_file": "%s",\n' "$(_json_escape "${ENV_FILE}")"
+        printf '  "data_dir": "%s",\n' "$(_json_escape "${DATA_DIR}")"
+        printf '  "cli": "%s",\n' "$(_json_escape "${cli}")"
+        printf '  "installer": "%s",\n' "$(_json_escape "${installer}")"
+        printf '  "updated_at": "%s"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '}\n'
+    } > "${tmp}" 2>/dev/null || { rm -f "${tmp}"; return 0; }
+    # It carries host paths only (no secrets), but keep it private anyway.
+    chmod 600 "${tmp}" 2>/dev/null || true
+    mv "${tmp}" "${settings_dir}/installer.json" 2>/dev/null || rm -f "${tmp}"
+}
+
 
 write_compose_wrapper() {
     local bin_dir="${HOME_DIR}/bin"
@@ -1382,7 +1995,7 @@ wait_health() {
     fi
     log "Container health: ${status}"
 
-    if [[ "${EFFECTIVE_MODE}" == "local" ]]; then
+    if [[ ( "${DEV_MODE}" == "1" && "${MODE}" != "dind" ) || "${EFFECTIVE_MODE}" == "local" ]]; then
         curl -fsS --max-time 5 "http://127.0.0.1:${WEB_PORT}/api/health" >/dev/null 2>&1 \
             || warn "the UI port did not answer /api/health yet (it may still be starting)"
     elif [[ "${TRAEFIK_MODE}" == "master" && "${NO_TLS}" == "0" && "${SKIP_TLS_WAIT}" != "1" ]]; then
@@ -1415,6 +2028,9 @@ apply_bootstrap() {
 # --- network / port checks --------------------------------------------------
 ensure_proxy_network() {
     [[ "${TRAEFIK_MODE}" == "slave" ]] || return 0
+    # Inside DIND the slave network is a nested Compose network that Docker
+    # creates. Only a host install joins an external, pre-existing network.
+    [[ "${PROXY_EXTERNAL}" == "true" ]] || return 0
     if docker network inspect "${PROXY_NETWORK}" >/dev/null 2>&1; then
         return 0
     fi
@@ -1467,24 +2083,68 @@ resolve_dind_dir() {
     die "DIND templates not found under ${INSTALLER_DIR}/dind"
 }
 
+# Keep the generated DIND wrapper's app image in sync with the installer
+# selection. The wrapper passes CODX_JUNIOR_IMAGE to the inner installer as a
+# literal, so `--update --image TAG` would otherwise keep pulling the old tag.
+# Only that one line is rewritten: operators may have added volume mappings to
+# the generated compose file.
+sync_dind_wrapper_image() {
+    local compose="$1" image="$2"
+    [[ -f "${compose}" && -n "${image}" ]] || return 0
+    [[ "${image}" =~ ^[A-Za-z0-9][A-Za-z0-9._/:@-]*$ ]] || {
+        warn "ignoring an invalid image reference: ${image}"
+        return 0
+    }
+    local current=""
+    current="$(awk '
+        /^[[:space:]]*CODX_JUNIOR_IMAGE:/ {
+            line = $0
+            sub(/^[[:space:]]*CODX_JUNIOR_IMAGE:[[:space:]]*/, "", line)
+            gsub(/^"|"[[:space:]]*$/, "", line)
+            print line
+            exit
+        }' "${compose}")"
+    [[ -n "${current}" && "${current}" != "${image}" ]] || return 0
+    local tmp="${compose}.tmp.$$"
+    if ! awk -v image="${image}" '
+        BEGIN { replaced = 0 }
+        /^[[:space:]]*CODX_JUNIOR_IMAGE:[[:space:]]*/ && !replaced {
+            match($0, /^[[:space:]]*/)
+            print substr($0, 1, RLENGTH) "CODX_JUNIOR_IMAGE: \"" image "\""
+            replaced = 1
+            next
+        }
+        { print }' "${compose}" > "${tmp}"; then
+        rm -f "${tmp}"
+        warn "could not update the app image in ${compose}"
+        return 0
+    fi
+    mv "${tmp}" "${compose}" 2>/dev/null || { rm -f "${tmp}"; return 0; }
+    log "Updated the DIND wrapper image: ${current} -> ${image}"
+}
+
 install_dind() {
     if [[ -z "${RUNTIME_DIR}" ]]; then
         resolve_runtime
     fi
-    resolve_dind_dir
-    local dind_dir="${DIND_DIR}"
 
-    DIND_COMPOSE=( -f "${dind_dir}/docker-compose.yaml" )
-    case "${TRAEFIK_MODE}" in
-        master) DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.master.yaml" ) ;;
-        slave)  DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.slave.yaml" ) ;;
-    esac
-    # Local access is independent of the proxy: this is what composes
-    # dind + local + slave.
-    if [[ "${DIND_MODE}" == "local" ]]; then
-        DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.local.yaml" )
+    local dind_dir=""
+    if [[ "${DRY_RUN}" != "1" && ! -f "${HOME_DIR}/docker-compose.yaml" ]]; then
+        write_dind_instance_files "${DOMAINS[0]:-}"
     fi
-    [[ "${SYSBOX}" == "1" ]] && DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.sysbox.yaml" )
+    if [[ -f "${HOME_DIR}/docker-compose.yaml" ]]; then
+        DIND_COMPOSE=( -f "${HOME_DIR}/docker-compose.yaml" )
+        dind_dir="${HOME_DIR}"
+    else
+        resolve_dind_dir
+        dind_dir="${DIND_DIR}"
+        DIND_COMPOSE=( -f "${dind_dir}/docker-compose.yaml" )
+        case "${TRAEFIK_MODE}" in
+            master) DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.master.yaml" ) ;;
+            slave)  DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.slave.yaml" ) ;;
+        esac
+        [[ "${SYSBOX}" == "1" ]] && DIND_COMPOSE+=( -f "${dind_dir}/docker-compose.sysbox.yaml" )
+    fi
 
     if [[ "${SYSBOX}" == "1" && "${DRY_RUN}" != "1" ]]; then
         docker info --format '{{json .Runtimes}}' 2>/dev/null | grep -q '"sysbox-runc"' \
@@ -1495,17 +2155,45 @@ install_dind() {
     fi
     ensure_proxy_network
 
+    DIND_RECREATE=0
+    local image_before="" image_after=""
+    image_before="$(docker image inspect --format '{{.Id}}' "${DIND_IMAGE}" 2>/dev/null || true)"
+
     if [[ "${DO_BUILD_DIND}" == "1" ]]; then
         [[ -f "${INSTALLER_DIR}/dind/Dockerfile" ]] \
             || die "--build-dind needs ${INSTALLER_DIR}/dind/Dockerfile (run from a checkout)"
         log "Building ${DIND_IMAGE} (context: ${INSTALLER_DIR})"
         docker build -t "${DIND_IMAGE}" -f "${INSTALLER_DIR}/dind/Dockerfile" "${INSTALLER_DIR}"
+        DIND_RECREATE=1
     elif [[ "${NO_PULL}" != "1" && "${DRY_RUN}" != "1" ]]; then
-        log "Pulling ${DIND_IMAGE}"
-        docker pull "${DIND_IMAGE}" >/dev/null 2>&1 \
-            || warn "could not pull ${DIND_IMAGE}: use --build-dind until it is published"
+        log "Pulling latest ${DIND_IMAGE}"
+        docker pull "${DIND_IMAGE}" \
+            || die "could not pull ${DIND_IMAGE}; use --no-pull to use the local image or --build-dind to build it"
+        image_after="$(docker image inspect --format '{{.Id}}' "${DIND_IMAGE}" 2>/dev/null || true)"
+        if [[ -n "${image_after}" && "${image_after}" != "${image_before}" ]]; then
+            DIND_RECREATE=1
+            log "DIND image updated; the wrapper will be recreated"
+        fi
     fi
 
+    # `--update` must re-run the inner installer. The wrapper is the only
+    # component that starts the nested daemon and runs `/opt/codx-junior/
+    # install.sh` (its entrypoint), and the entrypoint only runs on container
+    # start. Keying the recreate off the DIND image digest alone turned an
+    # upgrade into a no-op whenever only the *app* image was republished —
+    # which is the common case, because the app and the DIND image are
+    # published separately.
+    if [[ "${UPGRADE}" == "1" ]]; then
+        if [[ "${DRY_RUN}" == "1" ]]; then
+            warn "dry run: would recreate the DIND wrapper so the inner installer runs"
+        else
+            sync_dind_wrapper_image "${HOME_DIR}/docker-compose.yaml" "${IMAGE}"
+            DIND_RECREATE=1
+            log "Upgrade: recreating the DIND wrapper so the inner installer pulls ${IMAGE}"
+        fi
+    fi
+
+    [[ "${DRY_RUN}" != "1" ]] && DIND_RECREATE=1
     DIND_STORAGE="${CODX_DIND_STORAGE:-${INSTANCE}-dind}"
     COMPOSE_FILES=("${DIND_COMPOSE[@]}")
     RUNTIME_DIR="${dind_dir}"
@@ -1527,9 +2215,16 @@ install_dind() {
     write_compose_wrapper
 
     log "Starting DIND instance ${INSTANCE} (app=${DIND_MODE}, traefik=${TRAEFIK_MODE})"
-    compose up -d --remove-orphans
+    if [[ "${DIND_RECREATE}" == "1" ]]; then
+        compose up -d --remove-orphans --force-recreate
+    else
+        compose up -d --remove-orphans
+    fi
 
     wait_health
+    if [[ "${MODE}" == "dind" ]]; then
+        log "Inner installer log: docker logs ${INSTANCE} (it also writes /var/log/inner-install.log inside the wrapper)"
+    fi
     install_systemd
     install_cli
     open_firewall
@@ -1569,7 +2264,8 @@ summary() {
  codx-junior is running
 
    mode     : ${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)
-   traefik  : ${TRAEFIK_MODE}
+   dev      : $([[ "${DEV_MODE}" == "1" ]] && { [[ "${MODE}" == "dind" ]] && echo "enabled (DEBUG=1 inside DIND)" || echo "enabled (DEBUG=1, live checkout)"; } || echo "disabled")
+   traefik  : $(traefik_label)
    URL      : ${PUBLIC_URL}
    projects : ${PROJECTS}
    settings : ${settings} (mode 600)
@@ -1598,12 +2294,15 @@ run_config() {
     cat <<CONFIG
 mode=${MODE}
 dind_mode=${DIND_MODE}
-traefik_mode=${TRAEFIK_MODE}
+traefik_mode=$(traefik_label)
+dev_mode=${DEV_MODE}
+source=${CODX_SOURCE_DIR}
 instance=${INSTANCE}
 home=${HOME_DIR}
 data=${DATA_DIR}
 projects=${PROJECTS}
 env_file=${ENV_FILE}
+state_file=${STATE_FILE}
 image=${IMAGE}
 ref=${REF}
 repo=${REPO}
@@ -1616,6 +2315,7 @@ proxy_external=${PROXY_EXTERNAL}
 trusted_proxies=${TRUSTED_PROXIES}
 acme_email=${ACME_EMAIL}
 coworking=${COWORKING}
+hidden=${HIDDEN}
 systemd=${SYSTEMD}
 dind_image=${DIND_IMAGE}
 sysbox=${SYSBOX}
@@ -1623,24 +2323,28 @@ CONFIG
 }
 
 run_install() {
+    [[ "${BANNER_PRINTED}" == "1" ]] || print_banner
     log "codx-junior installer ${INSTALLER_VERSION}"
     log "  mode      : ${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
+    log "  dev       : ${DEV_MODE}"
     log "  instance  : ${INSTANCE}"
     log "  home      : ${HOME_DIR}"
     log "  projects  : ${PROJECTS}"
     log "  image     : ${IMAGE}"
     log "  domain    : ${DOMAINS[*]:-<none>}"
-    log "  traefik   : $([[ "${TRAEFIK_MODE}" == "master" ]] && echo "master (${CERT_RESOLVER})" || { [[ "${TRAEFIK_MODE}" == "slave" ]] && echo "slave on ${PROXY_NETWORK}" || echo "none"; })"
+    log "  traefik   : $([[ "${TRAEFIK_MODE}" == "master" ]] && echo "primary (${CERT_RESOLVER})" || { [[ "${TRAEFIK_MODE}" == "slave" ]] && echo "slave on ${PROXY_NETWORK}" || echo "none"; })"
     log "  coworking : ${COWORKING}"
 
     if [[ "${DRY_RUN}" != "1" ]]; then
         ensure_docker
     fi
     if [[ "${MODE}" == "dind" ]]; then
+        save_installer_state
         install_dind
         return 0
     fi
     resolve_runtime
+    save_installer_state
     select_compose_files
     build_compose_env
 
@@ -1677,7 +2381,14 @@ run_install() {
     write_compose_wrapper
     select_compose_files
 
-    if [[ "${DO_BUILD}" == "1" && "${CONTAINER}" != "1" ]]; then
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        if [[ "${DO_BUILD}" == "1" ]] || ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+            log "Building ${IMAGE} (dev target; first build can take several minutes)"
+            compose build
+        else
+            log "Using the existing ${IMAGE} (source is mounted; use --build after dependency changes)"
+        fi
+    elif [[ "${DO_BUILD}" == "1" && "${CONTAINER}" != "1" ]]; then
         log "Building ${IMAGE} (first build: several minutes)"
         compose build
     elif [[ "${NO_PULL}" != "1" && "${MODE}" != "dind" ]]; then
@@ -1699,18 +2410,24 @@ run_install() {
 
 run_upgrade() {
     UPGRADE=1
+    [[ "${BANNER_PRINTED}" == "1" ]] || print_banner
     if [[ "${MODE}" == "dind" ]]; then
         ensure_docker
+        save_installer_state
         resolve_runtime
         install_dind
         return 0
     fi
     resolve_runtime
+    save_installer_state
     select_compose_files
     build_compose_env
     write_settings
     write_compose_wrapper
-    if [[ "${DO_BUILD}" == "1" ]]; then
+    if [[ "${DEV_MODE}" == "1" ]]; then
+        log "Rebuilding the dev image (dependencies / Dockerfile)"
+        compose build
+    elif [[ "${DO_BUILD}" == "1" ]]; then
         compose build
     elif [[ "${NO_PULL}" != "1" ]]; then
         compose pull --quiet codx-junior || warn "image pull failed; keeping the local image"
@@ -1722,18 +2439,20 @@ run_upgrade() {
 }
 
 select_dind_files() {
-    resolve_dind_dir
-    DIND_COMPOSE=( -f "${DIND_DIR}/docker-compose.yaml" )
-    case "${TRAEFIK_MODE}" in
-        master) DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.master.yaml" ) ;;
-        slave)  DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.slave.yaml" ) ;;
-    esac
-    if [[ "${DIND_MODE}" == "local" ]]; then
-        DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.local.yaml" )
+    if [[ -f "${HOME_DIR}/docker-compose.yaml" ]]; then
+        DIND_COMPOSE=( -f "${HOME_DIR}/docker-compose.yaml" )
+        RUNTIME_DIR="${HOME_DIR}"
+    else
+        resolve_dind_dir
+        DIND_COMPOSE=( -f "${DIND_DIR}/docker-compose.yaml" )
+        case "${TRAEFIK_MODE}" in
+            master) DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.master.yaml" ) ;;
+            slave)  DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.slave.yaml" ) ;;
+        esac
+        [[ "${SYSBOX}" == "1" ]] && DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.sysbox.yaml" )
+        RUNTIME_DIR="${DIND_DIR}"
     fi
-    [[ "${SYSBOX}" == "1" ]] && DIND_COMPOSE+=( -f "${DIND_DIR}/docker-compose.sysbox.yaml" )
     COMPOSE_FILES=("${DIND_COMPOSE[@]}")
-    RUNTIME_DIR="${DIND_DIR}"
     DIND_STORAGE="${CODX_DIND_STORAGE:-${INSTANCE}-dind}"
     build_compose_env
     COMPOSE_ENV+=("CODX_DIND_STORAGE=${DIND_STORAGE}")
@@ -1749,7 +2468,8 @@ run_status() {
     fi
     printf 'instance : %s\n' "${INSTANCE}"
     printf 'mode     : %s\n' "${MODE}$([[ "${MODE}" == "dind" ]] && echo " (${DIND_MODE})" || true)"
-    printf 'traefik  : %s\n' "${TRAEFIK_MODE}"
+    printf 'dev      : %s\n' "${DEV_MODE}"
+    printf 'traefik  : %s\n' "$(traefik_label)"
     printf 'url      : %s\n' "${PUBLIC_URL}"
     printf 'settings : %s\n' "${ENV_FILE}"
     printf 'health   : %s\n' "$(container_health "${INSTANCE}")"

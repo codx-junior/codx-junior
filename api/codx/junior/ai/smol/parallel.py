@@ -71,6 +71,7 @@ EXCLUSIVE_TOOL_NAMES = frozenset({
     "autonomy_management",
     "team_management",
     "company_management",
+    "company_ticket",
     # ── Profile / knowledge / tutorial mutations ─────────────────────────────
     "profile_learning",
     "profile_management",

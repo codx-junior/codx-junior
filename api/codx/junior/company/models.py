@@ -67,6 +67,7 @@ Made with ❤️ by codx-junior
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 
@@ -122,6 +123,8 @@ ID_PREFIXES = {
     "spend": "spd",
     "deal": "deal",
     "metric": "metric",
+    "space": "spc",
+    "folder": "fld",
 }
 
 
@@ -800,6 +803,149 @@ class CompanyProject(BaseModel):
             return max(0.0, float(value or 0.0))
         except (TypeError, ValueError):
             return 0.0
+
+
+class CompanySpaceFolder(BaseModel):
+    """
+    A host folder mapped into a company space.
+
+    Mapping never copies files: the space browser resolves the path on every
+    request, so the folder always shows its current disk state. ``readonly``
+    defaults to ``True``: a shared space can read any mapped folder, but only
+    the company's own files are writable through the browser.
+
+    Attributes:
+        id: Stable folder id used in the virtual browser path.
+        name: Display name (defaults to the folder name).
+        path: Absolute host path of the mapped folder.
+        readonly: When true the browser refuses writes through this mapping.
+        description: Why the folder is part of the space.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    id: str = Field(default_factory=lambda: new_id("folder"), description="Folder id")
+    name: str = Field(default="", description="Display name")
+    path: str = Field(default="", description="Absolute host path of the folder")
+    readonly: bool = Field(
+        default=True,
+        description="Mapped folders are read-only unless the owner says otherwise",
+    )
+    description: str = Field(default="", description="Why the folder is mapped")
+
+    @field_validator("name", "path", "description", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> str:
+        """Trim free-form strings."""
+        return _clean(value)
+
+    @field_validator("readonly", mode="before")
+    @classmethod
+    def _readonly(cls, value: Any) -> bool:
+        """Missing/falsey stays false; anything unclear is treated as safe."""
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() not in ("0", "false", "no", "off")
+        return bool(value)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "CompanySpaceFolder":
+        """Require an absolute path and derive a readable name."""
+        if not self.path:
+            raise ValueError("a mapped folder needs a path")
+        if not os.path.isabs(self.path):
+            raise ValueError("a mapped folder path must be absolute")
+        if not self.name:
+            self.name = os.path.basename(self.path.rstrip("/")) or "folder"
+        return self
+
+
+class CompanySpace(BaseModel):
+    """
+    A coworking space owned by the company.
+
+    A space is the shared workspace of the company: its own files live in the
+    company folder (never inside a project), and the browser adds a virtual
+    folder for every mapped project and host folder. That is what lets the
+    company file browser show *company files* next to the files of the projects
+    the company runs, without copying anything.
+
+    Attributes:
+        id: Stable space id.
+        name: Display name.
+        slug: URL/file friendly name.
+        description: What the space is for.
+        project_ids: Company projects exposed as virtual folders.
+        folders: Host folders mapped into the space.
+        color / icon: UI presentation.
+        created_at / updated_at: Bookkeeping.
+    """
+
+    model_config = {"validate_assignment": True}
+
+    id: str = Field(default_factory=lambda: new_id("space"), description="Space id")
+    name: str = Field(default="", description="Space name")
+    slug: str = Field(default="", description="URL friendly name")
+    description: str = Field(default="", description="What the space is for")
+    project_ids: List[str] = Field(
+        default_factory=list,
+        description="Company projects shown as virtual folders",
+    )
+    folders: List[CompanySpaceFolder] = Field(
+        default_factory=list, description="Host folders mapped into the space"
+    )
+    color: str = Field(default="#6366f1", description="UI accent colour")
+    icon: str = Field(default="fa-solid fa-folder-tree", description="UI icon")
+    created_at: str = Field(default_factory=now_iso, description="Creation timestamp")
+    updated_at: str = Field(default_factory=now_iso, description="Last update timestamp")
+    version: int = Field(default=1, description="Document version")
+
+    @field_validator("name", "slug", "description", "color", "icon", mode="before")
+    @classmethod
+    def _strip(cls, value: Any) -> str:
+        """Trim free-form strings."""
+        return _clean(value)
+
+    @field_validator("project_ids", mode="before")
+    @classmethod
+    def _projects(cls, value: Any) -> List[str]:
+        """Normalize the mapped project ids."""
+        if value is None:
+            return []
+        if isinstance(value, str):
+            value = [value]
+        return _unique(value)
+
+    @field_validator("folders", mode="before")
+    @classmethod
+    def _folders(cls, value: Any) -> Any:
+        """Accept dictionaries and models alike (Pydantic handles the rest)."""
+        return value or []
+
+    @model_validator(mode="after")
+    def _validate(self) -> "CompanySpace":
+        """Require a name and keep ids/slugs coherent."""
+        if not self.name:
+            raise ValueError("space name is required")
+        if len(self.name) > MAX_NAME_LENGTH:
+            raise ValueError(f"space name is longer than {MAX_NAME_LENGTH} characters")
+        if not self.slug:
+            self.slug = slugify(self.name, "space")
+        folder_ids = [folder.id for folder in self.folders]
+        if len(folder_ids) != len(set(folder_ids)):
+            raise ValueError("space folders must have unique ids")
+        return self
+
+    def folder(self, folder_id: str) -> Optional[CompanySpaceFolder]:
+        """Find a mapped folder by id."""
+        return next(
+            (folder for folder in self.folders if folder.id == folder_id), None
+        )
+
+    def has_project(self, project_id: str) -> bool:
+        """Tell whether a project is mapped into this space."""
+        return (project_id or "") in self.project_ids
 
 
 class AutonomyPolicy(BaseModel):
@@ -1574,6 +1720,13 @@ class Company(BaseModel):
     org_units: List[OrgUnit] = Field(default_factory=list)
     teams: List[CompanyTeam] = Field(default_factory=list)
     projects: List[CompanyProject] = Field(default_factory=list)
+    spaces: List[CompanySpace] = Field(
+        default_factory=list,
+        description=(
+            "Coworking spaces owned by the company: company files plus virtual "
+            "folders for the mapped projects and host folders"
+        ),
+    )
     missions: List[Mission] = Field(default_factory=list)
     chats: List[CompanyChat] = Field(
         default_factory=list,
@@ -1675,6 +1828,21 @@ class Company(BaseModel):
             None,
         )
 
+    def space(self, space_id: str) -> Optional[CompanySpace]:
+        """Find a coworking space by id."""
+        return next(
+            (space for space in self.spaces if space.id == space_id),
+            None,
+        )
+
+    def space_by_name(self, name: str) -> Optional[CompanySpace]:
+        """Find a coworking space by case-insensitive name."""
+        wanted = (name or "").strip().lower()
+        return next(
+            (space for space in self.spaces if space.name.lower() == wanted),
+            None,
+        )
+
     def get_mission(self, mission_id: str) -> Optional[Mission]:
         """
         Find a mission by id.
@@ -1734,6 +1902,7 @@ class Company(BaseModel):
         """
         counts: Dict[str, int] = {
             "projects": len(self.projects),
+            "spaces": len(self.spaces),
             "teams": len(self.teams),
             "org_units": len(self.org_units),
             "humans": self.human_count,

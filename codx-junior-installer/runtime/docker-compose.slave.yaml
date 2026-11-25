@@ -32,6 +32,10 @@ services:
       # must see only the slave container, never the app's labels.
       - internal
     labels:
+      # Local-only marker for the slave provider constraint below. The edge
+      # labels (websecure/myresolver) belong to the outer primary and must not
+      # be processed by this slave's Docker provider.
+      - codx.local=true
       # Router inside the slave: master -> slave:80 -> app:19981. No
       # traefik.docker.network override: the only network shared with this
       # Traefik is `internal`.
@@ -53,7 +57,11 @@ services:
       - --entrypoints.web.forwardedheaders.insecure=${CODX_FORWARDED_INSECURE:-false}
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
-      - --providers.docker.network=${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+      # The app is only on the internal network; using the proxy network here
+      # makes Traefik warn and fall back. Constrain discovery to the app so the
+      # edge labels on this Traefik itself are ignored by its own provider.
+      - --providers.docker.network=${CODX_INSTANCE:-codx-junior}-internal
+      - "--providers.docker.constraints=Label(`codx.local`,`true`)"
       - --providers.http.endpoint=http://codx-junior:19980/api/traefik/config
       - --providers.http.pollinterval=10s
       - --providers.http.polltimeout=5s
@@ -61,23 +69,17 @@ services:
       - --log.level=INFO
       - --accesslog=true
     # No `ports:`: only the master network reaches this container.
+    volumes:
+      # The slave discovers the app through the Docker provider, exactly like
+      # a normal Traefik. Inside DIND this is the nested Docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:
       - internal
       - proxy
-    labels:
-      # Consumed by the MASTER Traefik through its Docker provider. If the
-      # master is not Docker-aware these labels are inert and it must be
-      # configured with the same Host -> <container>:80 route by hand.
-      - traefik.enable=true
-      - traefik.docker.network=${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
-      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
-      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.entrypoints=${CODX_MASTER_ENTRYPOINT:-websecure}
-      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls=true
-      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls.certresolver=${CODX_MASTER_CERT_RESOLVER:-letsencrypt}
-      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.service=${CODX_INSTANCE:-codx-junior}-edge
-      - traefik.http.services.${CODX_INSTANCE:-codx-junior}-edge.loadbalancer.server.port=80
 
 networks:
   proxy:
     name: ${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
-    external: true
+    # Host slave joins an existing external network. Inside DIND this is a
+    # nested network created by Compose (external=false).
+    external: ${CODX_PROXY_EXTERNAL:-true}

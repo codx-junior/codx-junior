@@ -119,6 +119,7 @@ import WorkspaceTemplateSelector from './WorkspaceTemplateSelector.vue'
             <WorkspaceProjectSelector
               :selected="form.project_ids"
               :project="project"
+              :projects="allProjects"
               @update="form.project_ids = $event"
             />
           </div>

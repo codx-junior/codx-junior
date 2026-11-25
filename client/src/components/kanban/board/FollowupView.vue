@@ -113,8 +113,13 @@
             <div
               v-for="task in needsAttention"
               :key="task.id"
-              class="flex items-center gap-3 p-3 rounded-lg bg-base-200 border border-base-100 transition-colors"
+              class="flex cursor-pointer items-center gap-3 p-3 rounded-lg bg-base-200 border border-base-100 transition-colors"
               :class="task.priority === 'high' ? 'hover:border-error/40' : 'hover:border-warning/40'"
+              role="button"
+              tabindex="0"
+              title="Open the task chat"
+              @click="$emit('open-task', task)"
+              @keydown.enter="$emit('open-task', task)"
             >
               <span class="badge badge-sm gap-1 border shrink-0" :class="priorityMeta(task.priority).badge">
                 <i :class="`${priorityMeta(task.priority).icon} text-[10px]`"></i>
@@ -209,6 +214,7 @@
 <script>
 import { API } from '@/api/api'
 import PlanningRangeFilter from './PlanningRangeFilter.vue'
+import { DEFAULT_TASK_RANGE, taskDateRange } from '@/utils/taskDateRange'
 
 // Distance (px) from the bottom that triggers loading the next page.
 const SCROLL_THRESHOLD = 120
@@ -217,16 +223,6 @@ const SCROLL_THRESHOLD = 120
 const PAGE_SIZE = 100
 
 const PRIORITY_WEIGHT = { high: 0, medium: 1, low: 2 }
-
-function today() {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function daysAgo(days) {
-  const date = new Date()
-  date.setDate(date.getDate() - days)
-  return date.toISOString().slice(0, 10)
-}
 
 function relativeTime(value) {
   if (!value) return ''
@@ -301,13 +297,21 @@ function byPriorityAndDue(a, b) {
 export default {
   name: 'FollowupView',
   components: { PlanningRangeFilter },
+  props: {
+    // Optional project scope. The company Activity view passes the projects the
+    // company actually runs, so the review never lists the boards of a project
+    // the session happens to have active but the company does not own.
+    scopedProjectIds: { type: Array, default: null }
+  },
+  emits: ['open-task'],
   data() {
     return {
       // Tasks of every page loaded so far for the current filters.
       tasks: [],
       // Local range filter (the view owns it so changing it triggers exactly
       // one `/api/tasks` request, not the planning store's dataset reload).
-      rangeFilter: 'month',
+      // The review opens on the rolling last 7 days.
+      rangeFilter: DEFAULT_TASK_RANGE,
       customFromDate: null,
       customToDate: null,
       // Server-side page/counters of the `/api/tasks` response.
@@ -332,6 +336,11 @@ export default {
     // The paged review is scoped exactly like the Tasks table: the active
     // project plus its children.
     projectIds() {
+      // An explicit scope always wins over the session's active project: the
+      // company reviews its own projects, not whatever page was open before.
+      if (this.scopedProjectIds && this.scopedProjectIds.length) {
+        return this.scopedProjectIds.map(String).filter(Boolean)
+      }
       const ids = []
       const active = this.$storex.projects.activeProject
       if (active?.project_id) ids.push(active.project_id)
@@ -351,20 +360,10 @@ export default {
       return `${count} projects`
     },
     dateRange() {
-      const now = today()
-      if (this.rangeFilter === 'today') {
-        return { from_date: now, to_date: now }
-      }
-      if (this.rangeFilter === 'week') {
-        return { from_date: daysAgo(7), to_date: now }
-      }
-      if (this.rangeFilter === 'custom') {
-        return {
-          from_date: this.customFromDate || daysAgo(30),
-          to_date: this.customToDate || now
-        }
-      }
-      return { from_date: daysAgo(30), to_date: now }
+      return taskDateRange(this.rangeFilter, {
+        from: this.customFromDate,
+        to: this.customToDate
+      })
     },
     filteredTasks() {
       return this.tasks.filter(task => {
@@ -456,10 +455,10 @@ export default {
   methods: {
     setRangeFilter(range) {
       const allowed = ['today', 'week', 'month', 'custom']
-      this.rangeFilter = allowed.includes(range) ? range : 'month'
+      this.rangeFilter = allowed.includes(range) ? range : DEFAULT_TASK_RANGE
       if (this.rangeFilter === 'custom') {
-        if (!this.customFromDate) this.customFromDate = daysAgo(30)
-        if (!this.customToDate) this.customToDate = today()
+        if (!this.customFromDate) this.customFromDate = taskDateRange('month').from_date
+        if (!this.customToDate) this.customToDate = taskDateRange('today').to_date
       }
     },
     setCustomFrom(value) {

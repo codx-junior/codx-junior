@@ -100,6 +100,43 @@ def test_build_exec_command_requires_container_id():
         shell.build_exec_command("   ", "/bin/sh", docker_bin="/usr/bin/docker")
 
 
+# ── Docker CLI resolution ────────────────────────────────────────────────────
+#
+# The released image must ship the CLI (containers, stacks and builds all shell
+# out to it). When it is missing the caller must get an actionable error, not a
+# bare "connection lost".
+
+
+def test_missing_docker_cli_error_names_the_fix(monkeypatch):
+    monkeypatch.delenv("CODX_JUNIOR_DOCKER_BIN", raising=False)
+    monkeypatch.setattr(shell.shutil, "which", lambda _name: None)
+
+    with pytest.raises(shell.ShellUnavailableError) as raised:
+        shell.check_cli_available()
+
+    detail = raised.value.detail
+    assert "Docker CLI ('docker') was not found in PATH" in detail
+    assert "CODX_JUNIOR_DOCKER_BIN" in detail
+
+
+def test_docker_binary_honours_configured_path(monkeypatch):
+    # ``sys.executable`` is, by definition, an existing executable file.
+    monkeypatch.setenv("CODX_JUNIOR_DOCKER_BIN", sys.executable)
+
+    assert shell.docker_binary() == sys.executable
+
+
+def test_docker_binary_rejects_configured_path_that_is_not_executable(
+    monkeypatch, tmp_path
+):
+    target = tmp_path / "docker"
+    target.write_text("not an executable\n")  # default mode is 0644
+    monkeypatch.setenv("CODX_JUNIOR_DOCKER_BIN", str(target))
+
+    with pytest.raises(shell.ShellUnavailableError):
+        shell.docker_binary()
+
+
 # ── Ticket store ──────────────────────────────────────────────────────────────
 
 ADMIN = SimpleNamespace(username="root", role="admin")
@@ -290,6 +327,10 @@ def router_app(monkeypatch):
         {"Id": "abc123", "State": {"Running": True, "Paused": False}}
     )
     monkeypatch.setattr(infra_api, "get_infra_manager", lambda: manager)
+    # These tests are about tickets and the WebSocket. Pretend the CLI exists so
+    # the suite does not depend on ``docker`` being installed on the test host;
+    # the missing-CLI path has its own test below.
+    monkeypatch.setattr(infra_api, "check_cli_available", lambda: None)
     monkeypatch.setattr(
         infra_api,
         "shell_tickets",
@@ -367,6 +408,28 @@ def test_ticket_endpoint_rejects_unlisted_shell(router_app):
         json={"shell": "/usr/bin/python", "host_id": "host-local"},
     )
     assert response.status_code == 400
+
+
+def test_ticket_endpoint_reports_missing_docker_cli(router_app, monkeypatch):
+    """A missing CLI must be a 503 on the POST, before any WebSocket is opened."""
+    monkeypatch.delenv("CODX_JUNIOR_DOCKER_BIN", raising=False)
+    monkeypatch.setattr(shell.shutil, "which", lambda _name: None)
+    # Restore the real check (the fixture stubs it) so this runs the production
+    # CLI resolution against the PATH above.
+    monkeypatch.setattr(
+        router_app.api, "check_cli_available", shell.check_cli_available
+    )
+
+    client = _client(router_app)
+    response = client.post(
+        "/api/infra/containers/abc123/shell",
+        json={"shell": "/bin/sh", "host_id": "host-local"},
+    )
+
+    assert response.status_code == 503, response.text
+    detail = response.json()["detail"]
+    assert "Docker CLI" in detail
+    assert "CODX_JUNIOR_DOCKER_BIN" in detail
 
 
 def test_websocket_rejects_invalid_ticket(router_app):

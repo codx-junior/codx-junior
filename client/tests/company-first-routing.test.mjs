@@ -22,8 +22,10 @@ test('the application root renders the company shell', () => {
   // "/" must be company-first even on a fresh install (no company yet): the
   // shell is what opens the onboarding wizard. The project welcome screen is
   // never the entry point.
-  const rootRoute = routerSource.slice(routerSource.indexOf("name: 'root'"))
-  const block = rootRoute.slice(0, rootRoute.indexOf('}'))
+  // The route block starts at its path declaration; the previous helper began
+  // after `name` and therefore never saw `path: '/'`.
+  const rootStart = routerSource.indexOf("path: '/'")
+  const block = routerSource.slice(rootStart, routerSource.indexOf('},', rootStart))
   assert.match(block, /path: '\/'/, 'the root route keeps the / path')
   assert.match(
     block,
@@ -48,7 +50,7 @@ test('project screens live under the company workspace prefix', () => {
 test('the company shell owns the work tasks and the workplaces', () => {
   // Tasks (work) and the workplaces (meet, coworking, calendar) used to be
   // project-level screens; they are company sections now.
-  for (const section of ['work', 'coworking', 'meet', 'calendar', 'projects']) {
+  for (const section of ['work', 'tickets', 'coworking', 'meet', 'calendar', 'projects']) {
     assert.match(
       routerSource,
       new RegExp(`'${section}'`),
@@ -70,27 +72,21 @@ test('the root route is treated as a full-screen company route', () => {
   )
 })
 
-test('the company shell offers a project selector', () => {
-  // A company runs several projects: the active one is chosen in the top bar
-  // and every company screen follows it.
+test('the company shell has no active-project selector', () => {
+  // A company aggregates every project it links. There is deliberately no
+  // top-bar project picker that would scope the whole company to one project
+  // (and used to offer inherited child projects as if they were company links).
+  assert.doesNotMatch(shellSource, /cp-project-select/)
+  assert.doesNotMatch(shellSource, /onSelectProject/)
+  assert.doesNotMatch(shellSource, /companyProjectOptions/)
   assert.match(
     shellSource,
-    /const companyProjectOptions = computed/,
-    'the shell lists the projects linked to the company'
+    /\$storex\.company\.linkedProjects/,
+    'company surfaces read the projects the company defines'
   )
   assert.match(
     shellSource,
-    /async function onSelectProject\(/,
-    'switching the project updates the active project in place'
-  )
-  assert.match(
-    shellSource,
-    /class="cp-project-select"/,
-    'the selector is rendered in the company top bar'
-  )
-  assert.match(
-    shellSource,
-    /\$storex\.company\.companyProjects/,
-    'the options come from the projects linked to the company'
+    /\$storex\.company\.linkedProjectIds/,
+    'company-wide actions use every linked project'
   )
 })

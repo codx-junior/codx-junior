@@ -145,6 +145,100 @@ export const browsersModule = (API) => ({
     return API.get(`/api/browsers/${sessionId}/source`)
   },
 
+  // ── Files: what the browser downloaded, and the upload bridge ──────────
+
+  /**
+   * Folders mapped into the session and files it downloaded.
+   *
+   * Used by the "send a file to the page" dialog: the browser image's native
+   * file dialog cannot browse the project (it does not deliver the selection on
+   * the kiosk image), so files are picked here and pushed by the backend.
+   */
+  async sharedFiles(sessionId, limit = 200) {
+    return API.get(`/api/browsers/${sessionId}/files?limit=${limit}`)
+  },
+
+  /**
+   * Store a file from this computer in the session's downloads folder.
+   *
+   * @param {string} sessionId
+   * @param {File|Blob} file
+   * @param {string} folder Optional sub-folder of the downloads folder.
+   */
+  uploadFile(sessionId, file, folder = '') {
+    const form = new FormData()
+    form.append('file', file, file.name || 'upload.bin')
+    if (folder) form.append('folder', folder)
+    return API.post(`/api/browsers/${sessionId}/files/upload`, form)
+  },
+
+  /**
+   * Push a session file into the page's uploader (bytes over CDP).
+   *
+   * @param {string} sessionId
+   * @param {{path: string, selector?: string|null}} payload `path` is a name in
+   *   the downloads folder, a path relative to a shared folder, a browser or a
+   *   host path; `selector` is the file input / upload button (omit to
+   *   auto-detect).
+   */
+  async sendFileToPage(sessionId, payload = {}) {
+    return API.post(`/api/browsers/${sessionId}/files/send-to-page`, {
+      path: payload.path,
+      selector: payload.selector || null
+    })
+  },
+
+  // ── Login store: saved site sessions + credentials ──────────────────────
+  //
+  // Project-scoped, so a session saved in Chromium can be applied to Brave (or
+  // after a container restart) and the sites open logged in.
+
+  async savedSessions() {
+    return API.get('/api/browser-store/sessions')
+  },
+
+  /** What the running browser would save right now (open sites, cookies). */
+  async previewSiteSession(sessionId) {
+    return API.get(`/api/browser-store/preview?session_id=${encodeURIComponent(sessionId)}`)
+  },
+
+  /** Capture cookies + localStorage of a running session under a name. */
+  async saveSiteSession(sessionId, name) {
+    return API.post('/api/browser-store/sessions', { session_id: sessionId, name })
+  },
+
+  /** Restore a saved session into a running session. */
+  async applySiteSession(storeId, sessionId) {
+    return API.post(`/api/browser-store/sessions/${encodeURIComponent(storeId)}/apply`, {
+      session_id: sessionId
+    })
+  },
+
+  async deleteSiteSession(storeId) {
+    return API.delete(`/api/browser-store/sessions/${encodeURIComponent(storeId)}`)
+  },
+
+  async credentials() {
+    return API.get('/api/browser-store/credentials')
+  },
+
+  async createCredential(payload) {
+    return API.post('/api/browser-store/credentials', payload)
+  },
+
+  async updateCredential(credentialId, payload) {
+    return API.put(`/api/browser-store/credentials/${encodeURIComponent(credentialId)}`, payload)
+  },
+
+  async deleteCredential(credentialId) {
+    return API.delete(`/api/browser-store/credentials/${encodeURIComponent(credentialId)}`)
+  },
+
+  /** Reveal a password for the copy button (human action, audited). */
+  async revealCredential(credentialId) {
+    return API.post(`/api/browser-store/credentials/${encodeURIComponent(credentialId)}/reveal`)
+  },
+
   // ── Recording + reusable recipes ───────────────────────────────────────
 
   async recording(sessionId) {

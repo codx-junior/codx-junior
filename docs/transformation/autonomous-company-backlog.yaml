@@ -1,0 +1,1142 @@
+# Autonomous company — actionable backlog
+# Companion to docs/transformation/autonomous-company-roadmap.md
+#
+# Conventions
+#   id          stable task id (AC-<phase><number>)
+#   area        api | client | both | platform | docs
+#   size        S <= 1 day | M 2-3 days | L 4-5 days | XL > 5 days (split first)
+#   priority    P0 blocks phase exit | P1 required for phase | P2 can slip one phase
+#   deps        task ids that must be done first
+#   acceptance  testable definition of done
+#
+# Definition of done (all tasks): code + tests + typed company event + audit entry
+# + API docs + client contract + i18n keys (no hardcoded English) + no phase-gate regression.
+
+version: 1
+generated: "2026-11-23"
+baseline: "7b52488"
+roadmap: "docs/transformation/autonomous-company-roadmap.md"
+total_tasks: 153
+total_effort_person_days: 162
+
+phases:
+  - id: P0
+    name: "Trustworthy core"
+    weeks: 2
+    effort_person_days: 14
+    exit: "20 consecutive clean shifts, zero stale agenda re-fires, deny-by-default budgets, kill switch proven, P0 regression suite green."
+    tasks:
+      - id: AC-001
+        title: "Resolve actor effort tiers for every bundled profile"
+        area: api
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Every bundled actor profile resolves a non-null effort tier; a shift without explicit effort uses the profile default; regression covers software_developer, qa and ProjectManager."
+        evidence: ".codx/profiles/*/*.profile, api/codx/junior/chat/chat_engine.py, api/codx/junior/smol/constants.py"
+      - id: AC-002
+        title: "Fix tags NameError and capture the failing stack"
+        area: api
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Shift and ticket card writes never raise NameError; a failed run records exception, stop reason and summary; a test reproduces the original stack."
+      - id: AC-003
+        title: "Agenda hygiene for stale wake_at items"
+        area: api
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Past-due agenda items are detected at shift start, settled or re-armed once; a stale card cannot re-fire every shift; a test covers 20 stale cards."
+      - id: AC-004
+        title: "Enforce profile tools under actor policy"
+        area: api
+        size: L
+        priority: P0
+        deps: []
+        acceptance: "actor.policy narrows the resolved toolset in code, not only in prompt text; a board_only policy denies file write and commit; tests assert deny."
+      - id: AC-005
+        title: "Configurable tool timeouts and faster discovery"
+        area: api
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "project_map, project_locate, project_trace and read_folder honor a per-tool timeout and return an actionable error; a shift cannot hang for 120 s per call."
+      - id: AC-006
+        title: "Preserve profiles and assignees in update_task"
+        area: api
+        size: S
+        priority: P0
+        deps: []
+        acceptance: "update_task without a profiles field keeps the current profiles; explicit empty clears only when requested; test covers both paths."
+      - id: AC-007
+        title: "Persist and surface failed-run stop reason"
+        area: both
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Run and shift failures persist stop reason and summary on mission.last_error and the card; the UI shows a badge and link; no empty assistant message is saved."
+      - id: AC-008
+        title: "Regression tests for dispatch, cycle and budget"
+        area: api
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Tests cover dispatch_mission (happy, approval, budget), cycle (slots, daily cap, candidate filter), budget_state (today, total, team, project) and the spend delta ledger."
+      - id: AC-009
+        title: "Normalize company timestamps to UTC"
+        area: platform
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Company journal, spend today, autonomy day ledger and ticket timestamps use UTC consistently; a test runs under a non-UTC TZ and passes."
+      - id: AC-010
+        title: "Company kill switch"
+        area: both
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "Pausing a company stops dispatch, actors, autopilot and rhythm within one tick; a UI control pauses and resumes; the transition is journaled and audited."
+      - id: AC-011
+        title: "Safe autonomous budget defaults"
+        area: api
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "An autonomous company cannot run without an explicit envelope; 0 means owner must set, not unlimited; dispatch and model calls deny before spending."
+      - id: AC-012
+        title: "Fix ticket retry path"
+        area: api
+        size: S
+        priority: P0
+        deps: []
+        acceptance: "Failed tickets set next_retry_at with backoff; the scanner retries; a test drives failure, retry and success and asserts the dead branch is gone."
+      - id: AC-013
+        title: "Runtime health endpoint and panel"
+        area: both
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "GET /companies/{id}/runtime exposes worker heartbeats, last cycle, error count and queue depth; the client shows red/amber/green with links to failures."
+      - id: AC-014
+        title: "Fix CISO and clean-tree gate before autonomy"
+        area: platform
+        size: M
+        priority: P0
+        deps: []
+        acceptance: "A dirty tree containing secrets fails the gate; the dirty tree (286 paths, 130 outside .codx) is triaged; autonomy refuses to start on a dirty tree unless explicitly allowed."
+
+  - id: P1
+    name: "Strategy and OKRs"
+    weeks: 4
+    effort_person_days: 24
+    exit: "Owner creates a 90-day goal with three key results, links two missions, records a check-in, sees attainment and at-risk; AI can propose a goal but cannot approve it."
+    tasks:
+      - id: AC-101
+        title: "Goal model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-104]
+        acceptance: "Goal carries id, company, cycle, title, description, owner, parent, status, priority, confidence, currency, budget ref, tags and timestamps; validation rejects cycles and empty titles."
+      - id: AC-102
+        title: "KeyResult model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-101]
+        acceptance: "Key result carries metric, baseline, target, current, unit, direction, confidence, source, cadence and last check-in; target must differ from baseline."
+      - id: AC-103
+        title: "StrategyCycle model"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-104]
+        acceptance: "Cycle supports annual, quarterly and monthly periods with start/end, theme, status and goals; overlapping active cycles are rejected."
+      - id: AC-104
+        title: "Company store v2 and additive migration"
+        area: api
+        size: L
+        priority: P0
+        deps: []
+        acceptance: "company.version becomes 2; new strategy store is created empty; v1 documents migrate idempotently; a dry-run reports every change and a real company migrates losslessly."
+      - id: AC-105
+        title: "GoalService CRUD with company events"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-101, AC-102, AC-103]
+        acceptance: "Create, update, archive and reorder emit typed events; permissions and validation are enforced in the service, not the route."
+      - id: AC-106
+        title: "Goal tree and progress rollup"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-105]
+        acceptance: "Tree returns company, team and individual goals; progress rolls up from key results and linked missions; one inconsistent parent is rejected."
+      - id: AC-107
+        title: "Key-result check-in model and API"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-102]
+        acceptance: "A check-in stores value, confidence, note, evidence and author; the key result current value and history update atomically."
+      - id: AC-108
+        title: "Metric time-series store"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-104]
+        acceptance: "Metric snapshots are appended with timestamp and source; the cockpit can chart a series instead of a single current value."
+      - id: AC-109
+        title: "Link BusinessMetric to KeyResult"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-102, AC-108]
+        acceptance: "A key result can reference a business metric; updating the metric records a check-in or surfaces it as pending; no duplicate truth."
+      - id: AC-110
+        title: "Goal health and status machine"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-106]
+        acceptance: "Statuses draft, active, at_risk, off_track, done and dropped have explicit transitions; health derives from progress, confidence and time; invalid transitions 409."
+      - id: AC-111
+        title: "Goal to mission decomposition"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-106]
+        acceptance: "A goal can create linked missions with budget and due date; mission progress feeds the goal; deleting a goal never orphans running missions silently."
+      - id: AC-112
+        title: "AI goal proposal service"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-105]
+        acceptance: "The planner proposes goals and key results from mission, metrics and gaps; proposals are drafts with rationale and evidence; no proposal is auto-approved."
+      - id: AC-113
+        title: "Goal permissions and approval"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-105]
+        acceptance: "Owner sets company goals and targets; managers set team goals inside the company goal; AI may propose but not approve; self-approval is impossible."
+      - id: AC-114
+        title: "Strategy API routes"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-107, AC-110, AC-111]
+        acceptance: "Routes for cycles, goals, key results, check-ins, tree and review exist with authorization, pagination and error contracts; OpenAPI is generated."
+      - id: AC-115
+        title: "Client Strategy section"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-114]
+        acceptance: "A Strategy tab appears in the company shell with cycles, goals and key results; empty state guides the owner; all strings are i18n keys."
+      - id: AC-116
+        title: "Client goal tree and health"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-115]
+        acceptance: "The tree renders company, team and individual goals with progress, confidence and health badges; navigation stays inside the company shell."
+      - id: AC-117
+        title: "Client goal and key-result editor with check-ins"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-115]
+        acceptance: "The owner creates and edits a goal and key results, records a check-in and sees history; validation errors are inline; saving is optimistic-safe."
+      - id: AC-118
+        title: "Client quarter review"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-115]
+        acceptance: "A quarter view shows goals, attainment, spend and at-risk items; it can be exported or printed as the board pack input."
+      - id: AC-119
+        title: "Wire home KPIs to goals"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-116]
+        acceptance: "Company home shows goal attainment and at-risk goals instead of free-text goals; every tile links to the goal."
+      - id: AC-120
+        title: "Onboarding wizard: goals, key results and envelope"
+        area: both
+        size: L
+        priority: P1
+        deps: [AC-114]
+        acceptance: "The wizard collects a 90-day goal, two key results and a period budget; it can be skipped and resumed; values land in the strategy and finance stores."
+      - id: AC-121
+        title: "Strategy tests"
+        area: both
+        size: M
+        priority: P0
+        deps: [AC-114, AC-115]
+        acceptance: "API tests cover model validation, transitions, rollup and permissions; client contracts cover the section, tree and editor; quality gate is green."
+      - id: AC-122
+        title: "Strategy documentation"
+        area: docs
+        size: S
+        priority: P1
+        deps: [AC-121]
+        acceptance: "A feature doc explains goals, key results, check-ins and rollup with API examples and screenshots."
+
+  - id: P2
+    name: "Capital, budget and P&L"
+    weeks: 5
+    effort_person_days: 29
+    exit: "Owner invests EUR 50k; capital is not revenue; envelopes exist per team and goal; a EUR 200 spend needs approval and EUR 2000 cannot pass without the owner; runway is computed from the ledger."
+    tasks:
+      - id: AC-201
+        title: "Split finance stores from company.json"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-104]
+        acceptance: "Accounts, ledger and budgets live in finance files; company.json keeps configuration only; migration is additive and dry-runnable."
+      - id: AC-202
+        title: "Account model"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-201]
+        acceptance: "Account has id, name, kind (bank, cash, reserve), currency, opening balance and computed balance; one base account per company."
+      - id: AC-203
+        title: "CapitalContribution model"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-202]
+        acceptance: "Contribution records investor, amount, currency, kind (equity, loan, grant), date, instrument and notes; it credits an account and is never recorded as revenue."
+      - id: AC-204
+        title: "LedgerEntry model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-202]
+        acceptance: "Entry records date, account, direction, amount, currency, category (revenue, cogs, opex, payroll, marketing, tools, ai_cost, tax, other), source ref, evidence and author; entries are append-only."
+      - id: AC-205
+        title: "BudgetAllocation model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-201]
+        acceptance: "Allocation binds a period, scope (company, org unit, team, goal), amount, currency, spent, committed and status; overlaps on the same scope and period are rejected."
+      - id: AC-206
+        title: "Financial period and close"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-204]
+        acceptance: "Periods open and close; a closed period is immutable; reopening requires owner authority and is audited."
+      - id: AC-207
+        title: "Currency and cxjcoin conversion policy"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-202]
+        acceptance: "One base currency per company; a configurable cxjcoin rate converts AI spend to base currency; rate changes are versioned and audited; no mixed-currency totals."
+      - id: AC-208
+        title: "FinanceService"
+        area: api
+        size: XL
+        priority: P0
+        deps: [AC-203, AC-204, AC-205, AC-207]
+        acceptance: "The service injects capital, records income and expense, reserves and settles budget, computes balances and emits events atomically."
+      - id: AC-209
+        title: "Capital injection API"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-208]
+        acceptance: "Owner-only route records a contribution, updates the account and the journal; idempotency key prevents double posting."
+      - id: AC-210
+        title: "Budget allocation API"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-208]
+        acceptance: "Owner sets envelopes; managers request changes; allocation never exceeds available cash unless the owner overrides with a recorded reason."
+      - id: AC-211
+        title: "Income and expense API"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-208]
+        acceptance: "Routes record revenue and expense with category, evidence and optional mission or team link; totals update the P&L and cash."
+      - id: AC-212
+        title: "AI spend rollup into the ledger"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-207, AC-208]
+        acceptance: "Completed runs post an ai_cost entry at the configured rate; duplicates are prevented by run id; spend appears in P&L and runway."
+      - id: AC-213
+        title: "Burn, runway and forecast"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-208]
+        acceptance: "Net burn, cash, runway months and a 6-month forecast are computed from the ledger; a missing history returns a clearly labelled estimate."
+      - id: AC-214
+        title: "P&L, cash flow and balance snapshot"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-208]
+        acceptance: "Period P&L groups revenue, COGS, opex and AI cost; cash flow shows movements; the balance sheet snapshot reconciles capital plus retained earnings."
+      - id: AC-215
+        title: "Budget guard with thresholds"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-208]
+        acceptance: "A hard cap stops the next spend; thresholds route to approval; force cannot bypass without owner authority; tests prove each boundary."
+      - id: AC-216
+        title: "Spend approval workflow"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-215]
+        acceptance: "A spend request has requester, amount, category, evidence, approver, decision and expiry; maker and checker cannot be the same actor."
+      - id: AC-217
+        title: "Finance events and audit"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-208]
+        acceptance: "Capital, budget, expense, approval and close emit typed events with actor, before and after; the audit stream records them."
+      - id: AC-218
+        title: "Finance API routes"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-209, AC-210, AC-211, AC-213, AC-214, AC-216]
+        acceptance: "Accounts, capital, ledger, budgets, P&L, runway and approvals are exposed with authorization, filters and pagination."
+      - id: AC-219
+        title: "Client Finance section"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-218]
+        acceptance: "A Finance tab replaces the standalone Business tab and shows cash, capital, burn, runway and P&L; empty states are actionable."
+      - id: AC-220
+        title: "Client capital and runway cockpit"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-219]
+        acceptance: "The owner records a capital contribution and sees cash, burn and runway update; amounts are formatted in the company currency."
+      - id: AC-221
+        title: "Client budget allocation editor"
+        area: client
+        size: L
+        priority: P1
+        deps: [AC-219]
+        acceptance: "The owner assigns envelopes per team and goal, sees committed versus spent, and cannot allocate more than available cash without an override."
+      - id: AC-222
+        title: "Client ledger and CSV export"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-219]
+        acceptance: "The ledger is filterable by date, category, team and mission; export produces a CSV that reconciles with the P&L."
+      - id: AC-223
+        title: "Client expense and approval forms"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-219]
+        acceptance: "A team member can request a spend with evidence; an approver can approve or deny with a note; the requester sees the outcome."
+      - id: AC-224
+        title: "Rewire the Business cockpit"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-219]
+        acceptance: "Pipeline and commercial metrics move into Finance as a commercial panel; no manual revenue or cost field remains."
+      - id: AC-225
+        title: "Reconciliation job and alerts"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-212]
+        acceptance: "A scheduled job compares AI spend with the run ledger and alerts on drift above a configurable tolerance."
+      - id: AC-226
+        title: "Finance tests"
+        area: both
+        size: L
+        priority: P0
+        deps: [AC-218, AC-219]
+        acceptance: "Tests cover capital, ledger invariants, budget boundaries, runway math, P&L reconciliation and approval segregation."
+      - id: AC-227
+        title: "Finance documentation"
+        area: docs
+        size: M
+        priority: P1
+        deps: [AC-226]
+        acceptance: "A finance doc explains the model, the cxjcoin conversion and the approval thresholds, with worked examples."
+
+  - id: P3
+    name: "Steering, board and decisions"
+    weeks: 4
+    effort_person_days: 24
+    exit: "A monthly steering meeting is auto-scheduled with a live board pack, records three decisions with options and rationale, and one resolution changes the budget and creates two missions."
+    tasks:
+      - id: AC-301
+        title: "Committee model"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-104]
+        acceptance: "Committee has id, name, kind (steering, board, advisory), cadence, chair, quorum and active flag; only one active steering committee per company."
+      - id: AC-302
+        title: "Committee membership and voting rights"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-301]
+        acceptance: "A member can be human or AI with a role, voting right and order; the owner is always the chair; removing the owner is rejected."
+      - id: AC-303
+        title: "Company-scoped meeting model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-301]
+        acceptance: "A company meeting holds committee, title, time, location, participants, agenda, minutes, status and linked project meet; it is not project-scoped."
+      - id: AC-304
+        title: "Agenda item model"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-303]
+        acceptance: "An agenda item has title, objective, presenter, duration, type (report, decision, review, risk), linked goal or mission and outcome."
+      - id: AC-305
+        title: "Decision model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-303]
+        acceptance: "A decision stores context, options, recommendation, rationale, decider, status, reversibility, effective date, review date and links to goal, budget or mission."
+      - id: AC-306
+        title: "Resolution model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-305]
+        acceptance: "A resolution binds a decision to concrete effects (budget change, goal change, mission creation) and records applied state and evidence."
+      - id: AC-307
+        title: "Decision log store"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-305]
+        acceptance: "Decisions append to an immutable log with sequence and hash chain; search answers why by goal, date, actor and text."
+      - id: AC-308
+        title: "GovernanceService"
+        area: api
+        size: XL
+        priority: P0
+        deps: [AC-302, AC-304, AC-306, AC-307]
+        acceptance: "The service schedules meetings, builds agendas, records decisions, applies resolutions atomically and emits events."
+      - id: AC-309
+        title: "Cadence scheduling hook"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-308]
+        acceptance: "The company clock creates the next steering, board or team review from cadence and working calendar; duplicates are impossible."
+      - id: AC-310
+        title: "Board pack generator"
+        area: api
+        size: XL
+        priority: P0
+        deps: [AC-111, AC-213]
+        acceptance: "A board pack assembles KPIs versus targets, P&L, runway, goal health, risks, prior resolutions and decisions needed, with sources and generation timestamp."
+      - id: AC-311
+        title: "Decision lifecycle API"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-308]
+        acceptance: "Propose, discuss, decide, apply, review and reverse are explicit; only the chair or owner can decide; AI can propose and vote but not decide."
+      - id: AC-312
+        title: "Apply resolutions to goals and budgets"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-310, AC-215, AC-111]
+        acceptance: "Applying a resolution changes the budget, goal or missions in one transaction, with before and after audit and rollback on failure."
+      - id: AC-313
+        title: "Quorum and voting (configurable)"
+        area: api
+        size: M
+        priority: P2
+        deps: [AC-311]
+        acceptance: "When enabled, a decision requires quorum; votes are recorded per member; the owner's final vote wins; disabled by default."
+      - id: AC-314
+        title: "Minutes sign-off and audit"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-308]
+        acceptance: "The chair signs off minutes; signed minutes are immutable and linked to decisions and actions; the audit records signer and time."
+      - id: AC-315
+        title: "Governance API routes"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-311, AC-312]
+        acceptance: "Committees, meetings, agenda, decisions, resolutions, board pack and calendar are exposed with authorization and pagination."
+      - id: AC-316
+        title: "Client Governance section"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-315]
+        acceptance: "A Governance tab shows the next meeting, open decisions and the committee; all strings are i18n keys."
+      - id: AC-317
+        title: "Client committee room and agenda builder"
+        area: client
+        size: XL
+        priority: P0
+        deps: [AC-316]
+        acceptance: "The owner builds an agenda from goals, finance and risks, reorders items and starts the meeting; a live meeting shows the current item."
+      - id: AC-318
+        title: "Client board pack reader"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-316]
+        acceptance: "The board pack renders sections with sources, charts and a printable view; stale data is labelled with its timestamp."
+      - id: AC-319
+        title: "Client decision inbox, detail and log"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-316]
+        acceptance: "The owner sees decisions needing action, opens a decision with options and recommendation, decides with a rationale, and browses the log."
+      - id: AC-320
+        title: "Owner inbox integration for decisions"
+        area: both
+        size: M
+        priority: P1
+        deps: [AC-319, AC-412]
+        acceptance: "Open decisions and meeting prep appear as inbox items with due dates and deep links; resolving one updates the committee view."
+      - id: AC-321
+        title: "Meeting and decision notifications"
+        area: platform
+        size: M
+        priority: P1
+        deps: [AC-309]
+        acceptance: "Invitations, reminders and decision requests are delivered in-app and by the configured channel; preferences are per user."
+      - id: AC-322
+        title: "Governance tests"
+        area: both
+        size: L
+        priority: P0
+        deps: [AC-315, AC-319]
+        acceptance: "Tests cover committee invariants, decision permissions, resolution application and rollback, board-pack completeness and minutes immutability."
+      - id: AC-323
+        title: "Governance documentation"
+        area: docs
+        size: M
+        priority: P1
+        deps: [AC-322]
+        acceptance: "A governance doc explains the three meetings, decision rights, resolution effects and the audit trail, with examples."
+
+  - id: P4
+    name: "Org, authority, escalation and inbox"
+    weeks: 5
+    effort_person_days: 30
+    exit: "A QA to IT to PM to owner escalation chain runs end to end; every hop has an owner and SLA; the owner answers in one inbox; no actor can approve its own request or exceed authority."
+    tasks:
+      - id: AC-401
+        title: "Team reporting lines"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-104]
+        acceptance: "A team has reports_to, manager, deputy, charter, interfaces and default SLA; cycles and self-reporting are rejected; the org chart renders from it."
+      - id: AC-402
+        title: "Authority envelope"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-104]
+        acceptance: "A team or member has spend limit, approval limit, can_hire, can_publish, can_deploy, can_contact_external and max_risk; defaults are least privilege."
+      - id: AC-403
+        title: "Org graph validation"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-401]
+        acceptance: "Single parent, no cycles, valid manager and deputy, and every team reachable from the company root; errors are actionable."
+      - id: AC-404
+        title: "OrgService and API"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-402, AC-403]
+        acceptance: "Org chart, team reporting, authority matrix and effective-authority resolution are exposed and audited."
+      - id: AC-405
+        title: "Team manager actor role"
+        area: api
+        size: XL
+        priority: P0
+        deps: [AC-404]
+        acceptance: "A manager actor watches the team inbox, answers within authority and SLA, delegates and escalates; it cannot approve its own request."
+      - id: AC-406
+        title: "Escalation model"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-401]
+        acceptance: "An escalation has type, severity, context packet, options, recommendation, owner, SLA, route, answer, status and links to mission or team."
+      - id: AC-407
+        title: "Escalation routing, SLA and timeout"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-406, AC-405]
+        acceptance: "Routing follows the reporting line; SLA timers escalate on timeout; the top is always the owner; every hop is recorded."
+      - id: AC-408
+        title: "Approval model and policy matrix"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-402]
+        acceptance: "Approvals cover action class, amount, risk and requester; the matrix resolves approver and quorum; maker-checker is enforced."
+      - id: AC-409
+        title: "PolicyEngine"
+        area: api
+        size: XL
+        priority: P0
+        deps: [AC-408, AC-215]
+        acceptance: "evaluate(action, actor, entity) returns allow, deny or needs_human with a reason and matched rule; it is pure, testable and versioned."
+      - id: AC-410
+        title: "Enforce policy in tools"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-409]
+        acceptance: "File write, commit, deploy, external send and spend tools call the policy engine; a deny returns a structured error to the model."
+      - id: AC-411
+        title: "Enforce policy in dispatch and workers"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-409]
+        acceptance: "Mission dispatch, actor shifts, ticket runs and autopilot cycles check authority and budget; force paths require owner authority."
+      - id: AC-412
+        title: "Attention inbox store"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-406, AC-408]
+        acceptance: "InboxItem persists kind, severity, title, summary, source, due, assignee, status and links; items survive restarts and are deduplicated."
+      - id: AC-413
+        title: "Inbox API and actions"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-412]
+        acceptance: "List, filter, approve, deny, answer, delegate, snooze and resolve are exposed with authorization and audit."
+      - id: AC-414
+        title: "Team inbox"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-413]
+        acceptance: "A manager sees the team queue, assigns and delegates; members see their own queue; no cross-team leakage."
+      - id: AC-415
+        title: "Takeover and handback"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-414]
+        acceptance: "A human can take over a running agent task, act, and hand back with a note; the agent resumes with the new context."
+      - id: AC-416
+        title: "SLA reminders"
+        area: platform
+        size: M
+        priority: P1
+        deps: [AC-407]
+        acceptance: "Reminders fire before and after SLA, escalate automatically, and never duplicate for the same item and channel."
+      - id: AC-417
+        title: "Separation of duties"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-408]
+        acceptance: "Requester, approver and executor cannot be the same actor for gated actions; overrides require owner authority and are audited."
+      - id: AC-418
+        title: "Authority-aware tool grants"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-409]
+        acceptance: "Granting a spend, deploy or external tool requires the corresponding authority; a profile cannot gain authority from a tool list."
+      - id: AC-419
+        title: "Org and inbox API routes"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-404, AC-413]
+        acceptance: "Org chart, reporting, authority, escalations, approvals and inbox are exposed with authorization and pagination."
+      - id: AC-420
+        title: "Client org chart"
+        area: client
+        size: XL
+        priority: P0
+        deps: [AC-419]
+        acceptance: "The org chart renders units, teams and reporting lines with headcount and authority; it is navigable and accessible."
+      - id: AC-421
+        title: "Client team editor with reporting and authority"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-420]
+        acceptance: "The owner edits a team's manager, deputy, reporting line, charter and authority with validation and a diff before save."
+      - id: AC-422
+        title: "Client authority matrix"
+        area: client
+        size: L
+        priority: P1
+        deps: [AC-420]
+        acceptance: "A matrix shows action classes versus roles, highlights gaps and over-grants, and is editable only by the owner."
+      - id: AC-423
+        title: "Client escalation center"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-419]
+        acceptance: "Escalations are grouped by team and severity with SLA state; the owner answers in place and sees the route history."
+      - id: AC-424
+        title: "Client approvals center"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-419]
+        acceptance: "Pending approvals show requester, amount, category and evidence; approve or deny requires a note; the maker cannot approve."
+      - id: AC-425
+        title: "Client owner inbox as home"
+        area: client
+        size: XL
+        priority: P0
+        deps: [AC-423, AC-424, AC-319]
+        acceptance: "Home becomes the attention inbox grouped by urgency with one-click actions; the dashboard remains as a secondary tab."
+      - id: AC-426
+        title: "Inbox notifications and deep links"
+        area: platform
+        size: M
+        priority: P1
+        deps: [AC-425]
+        acceptance: "New items notify the owner in-app and by the configured channel with a deep link that opens the item and its context."
+      - id: AC-427
+        title: "Authority and inbox tests"
+        area: both
+        size: L
+        priority: P0
+        deps: [AC-419, AC-425]
+        acceptance: "Tests prove deny, needs_human, maker-checker, escalation routing, timeout re-route, takeover and inbox idempotency."
+      - id: AC-428
+        title: "Authority and inbox documentation"
+        area: docs
+        size: M
+        priority: P1
+        deps: [AC-427]
+        acceptance: "A doc explains the authority model, policy matrix, escalation protocol and inbox action contract."
+
+  - id: P5
+    name: "Company clock and autonomous rhythm"
+    weeks: 4
+    effort_person_days: 23
+    exit: "Five consecutive days without opening a project; daily standup, weekly review, monthly business review and digest generated; owner handles fewer than 10 attention items per day, same day."
+    tasks:
+      - id: AC-501
+        title: "Company clock service"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-309]
+        acceptance: "A single scheduler emits cadence events per company, is idempotent, survives restarts and respects pause."
+      - id: AC-502
+        title: "Working calendar and timezone"
+        area: api
+        size: M
+        priority: P0
+        deps: [AC-501]
+        acceptance: "Timezone, working days, hours and holidays shape due dates and reminders; tests cover DST and a non-UTC company."
+      - id: AC-503
+        title: "Daily standup"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-501, AC-510]
+        acceptance: "Each team lead reports yesterday, today, blockers and spend; blockers become escalations; the digest aggregates."
+      - id: AC-504
+        title: "Weekly planning"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-501, AC-111]
+        acceptance: "The planner turns goal gaps into mission proposals with budgets and dependencies; the owner reviews in supervised mode."
+      - id: AC-505
+        title: "Monthly business review"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-501, AC-310]
+        acceptance: "A monthly review assembles finance, KPIs and goal health and creates the steering agenda."
+      - id: AC-506
+        title: "Quarterly planning"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-501, AC-105]
+        acceptance: "Quarter end proposes next-cycle goals and budget; the owner approves in the board meeting."
+      - id: AC-507
+        title: "Autonomous goal proposals"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-112, AC-505]
+        acceptance: "The company proposes goals from metric gaps, incidents and opportunities with evidence; proposals never self-approve."
+      - id: AC-508
+        title: "Autonomous mission planning"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-504, AC-111]
+        acceptance: "Approved goals decompose into missions with owner, budget, dependencies and acceptance; planning is idempotent."
+      - id: AC-509
+        title: "Mission dependencies and sequencing"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-101]
+        acceptance: "Missions support depends_on and parent; the dispatcher respects order; blocked dependencies surface in the inbox."
+      - id: AC-510
+        title: "Manager agents within authority"
+        area: api
+        size: XL
+        priority: P0
+        deps: [AC-405]
+        acceptance: "Managers answer escalations, assign work and approve inside authority; outside authority they escalate; every action is audited."
+      - id: AC-511
+        title: "Budget reallocation proposals"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-210, AC-409]
+        acceptance: "A manager proposes reallocation with evidence; inside the envelope it applies, above it needs the owner; the ledger records both."
+      - id: AC-512
+        title: "Outcome review and retrospective"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-503]
+        acceptance: "Completed missions produce an outcome review with evidence, cost and lessons; recurring failures create improvement missions."
+      - id: AC-513
+        title: "Company memory"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-512]
+        acceptance: "Decisions, lessons, playbooks and brand voice persist and are retrieved into planning and prompts with provenance."
+      - id: AC-514
+        title: "Digest and report generation"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-503, AC-505]
+        acceptance: "Daily, weekly and monthly digests are generated from live data with links, not prose guesses; generation is reproducible."
+      - id: AC-515
+        title: "Report delivery"
+        area: platform
+        size: M
+        priority: P1
+        deps: [AC-514]
+        acceptance: "Digests are delivered in-app and by the configured channel; preferences and quiet hours are respected."
+      - id: AC-516
+        title: "Earned autonomy"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-512, AC-517]
+        acceptance: "Promotion and demotion use measured outcomes, quality, cost and escalations; every change is proposed, approved and audited."
+      - id: AC-517
+        title: "Agent performance review"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-512]
+        acceptance: "Each AI employee has delivered goals, quality, cost, escalations and review notes; the review feeds autonomy and hiring."
+      - id: AC-518
+        title: "Exception-only mode"
+        area: api
+        size: M
+        priority: P1
+        deps: [AC-425, AC-514]
+        acceptance: "The owner can subscribe to exceptions only; routine reports are archived; the mode is visible and reversible."
+      - id: AC-519
+        title: "Client rhythm and calendar"
+        area: client
+        size: L
+        priority: P0
+        deps: [AC-501]
+        acceptance: "The owner sees the company cadence, next events and can run a cycle manually with a confirmation."
+      - id: AC-520
+        title: "Client autonomy controls"
+        area: client
+        size: L
+        priority: P1
+        deps: [AC-516]
+        acceptance: "Per team and action class, the owner sees the level, the evidence and changes it; the effect is explained before saving."
+      - id: AC-521
+        title: "Client reports library"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-514]
+        acceptance: "Digests, board packs and retrospectives are browsable, searchable and exportable."
+      - id: AC-522
+        title: "Client digest reader"
+        area: client
+        size: M
+        priority: P1
+        deps: [AC-514]
+        acceptance: "The digest reads as a brief with links to evidence and one-click actions."
+      - id: AC-523
+        title: "Simulation-clock tests"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-501]
+        acceptance: "A simulation clock proves a week of cadence, reminders and digests deterministically, including DST and pause/resume."
+      - id: AC-524
+        title: "Rhythm documentation"
+        area: docs
+        size: M
+        priority: P1
+        deps: [AC-523]
+        acceptance: "A doc explains the clock, each cadence, what the owner receives and how to pause or change it."
+
+  - id: P6
+    name: "Hardening, pilots and GA"
+    weeks: 3
+    effort_person_days: 18
+    exit: "Both pilots pass their acceptance script; zero unauthorized money actions; rollback under one hour; security sign-off; GA release."
+    tasks:
+      - id: AC-601
+        title: "Multi-company isolation"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-419]
+        acceptance: "Stores, audit, inbox, finance and memory are isolated per company; cross-company reads are denied and tested."
+      - id: AC-602
+        title: "Unified audit stream"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-217, AC-314]
+        acceptance: "Company journal, harness, finance and governance events merge into one stream with sequence and hash chain; query by actor, entity and date."
+      - id: AC-603
+        title: "Scale indexes and pagination"
+        area: api
+        size: L
+        priority: P1
+        deps: [AC-602]
+        acceptance: "100 teams and 10k work items meet p95 snapshot latency under 500 ms; every list is paginated; no unbounded scan."
+      - id: AC-604
+        title: "Security review and pen-test"
+        area: platform
+        size: L
+        priority: P0
+        deps: [AC-601]
+        acceptance: "External review finds no critical or high issue; authorization matrix is tested; secrets and CISO gates are verified."
+      - id: AC-605
+        title: "Reliability and recovery"
+        area: platform
+        size: L
+        priority: P0
+        deps: [AC-008]
+        acceptance: "Worker supervision, idempotency keys, dead-letter queue and crash recovery are tested; no duplicate payment or dispatch."
+      - id: AC-606
+        title: "Global admission and cost circuit breaker"
+        area: api
+        size: L
+        priority: P0
+        deps: [AC-011]
+        acceptance: "Concurrent workers share installation capacity; per-company and per-day caps stop runaway spend; the breaker is audited and reversible."
+      - id: AC-607
+        title: "Migration and upgrade path"
+        area: platform
+        size: M
+        priority: P0
+        deps: [AC-104]
+        acceptance: "A real v1 company upgrades losslessly; dry-run, backup and rollback are documented and tested."
+      - id: AC-608
+        title: "Owner and admin documentation"
+        area: docs
+        size: L
+        priority: P1
+        deps: [AC-524]
+        acceptance: "An owner guide covers the first hour, the first week and the first quarter; an admin guide covers policy, budgets and recovery."
+      - id: AC-609
+        title: "API reference"
+        area: docs
+        size: M
+        priority: P1
+        deps: [AC-419]
+        acceptance: "All new routes are in the API reference with schemas, permissions and examples."
+      - id: AC-610
+        title: "Pilot A: internal IT/QA/PM/Management company"
+        area: platform
+        size: L
+        priority: P0
+        deps: [AC-425, AC-524]
+        acceptance: "Two weeks of operation; QA to IT to PM to owner escalation works; owner handles only exceptions; exit report signed."
+      - id: AC-611
+        title: "Pilot B: external non-IT company"
+        area: platform
+        size: L
+        priority: P0
+        deps: [AC-425, AC-524]
+        acceptance: "A travel or agency company runs two weeks with goals, capital and one steering meeting without engineering help; exit report signed."
+      - id: AC-612
+        title: "Rollback rehearsal"
+        area: platform
+        size: M
+        priority: P0
+        deps: [AC-607]
+        acceptance: "A failed release is rolled back under one hour with data intact; the runbook is tested by someone who did not write it."
+      - id: AC-613
+        title: "GA packaging and demo"
+        area: docs
+        size: M
+        priority: P1
+        deps: [AC-610, AC-611]
+        acceptance: "Release notes, demo script and sample company are ready; the demo runs end to end in under 15 minutes."
+      - id: AC-614
+        title: "Metrics review"
+        area: platform
+        size: M
+        priority: P1
+        deps: [AC-610, AC-611]
+        acceptance: "Every success metric is instrumented and has a baseline and a target; the review is published."
+      - id: AC-615
+        title: "GA release"
+        area: platform
+        size: M
+        priority: P0
+        deps: [AC-604, AC-606, AC-612]
+        acceptance: "Version tagged, changelog published, upgrade path verified, support runbook live."

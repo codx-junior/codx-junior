@@ -12,9 +12,47 @@ import ProfileCard from '../ProfileCard.vue'
     :single="single"
     :allow-deselect="allowDeselect"
     :empty-label="emptyLabel"
+    :compact="compact"
     @select="onProfileSelected"
     @update:selected-items="onProfilesSelected"
   >
+    <!-- Active profiles in the trigger: one avatar per profile, its name in a
+         tooltip, and a DaisyUI avatar group so several avatars overlap instead
+         of widening the header with names. -->
+    <template #selected="{ items }">
+      <div class="avatar-group -space-x-2 rtl:space-x-reverse" style="overflow: visible" role="group" aria-label="Selected profiles">
+        <!-- The tooltip wrapper is the avatar-group child: `.avatar-group .avatar`
+             clips its own overflow, so the tooltip must live one level above the
+             avatar or DaisyUI would clip it. -->
+        <div
+          v-for="profile in items.slice(0, maxActiveAvatars)"
+          :key="profile.name"
+          class="tooltip tooltip-bottom"
+          :data-tip="profile.name"
+          :aria-label="profile.name"
+        >
+          <div class="avatar">
+            <div class="w-6 rounded-full">
+              <img :src="avatarFor(profile)" :alt="profile.name" />
+            </div>
+          </div>
+        </div>
+        <div
+          v-if="items.length > maxActiveAvatars"
+          class="tooltip tooltip-bottom"
+          :data-tip="overflowProfilesTooltip(items)"
+        >
+          <div class="avatar placeholder">
+            <div class="w-6 rounded-full bg-neutral text-neutral-content">
+              <span class="text-[10px] font-semibold leading-none">
+                +{{ items.length - maxActiveAvatars }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </template>
+
     <!-- Custom profile card rendering in mini style -->
     <template #default="{ item, selected }">
       <div :class="selected ? 'ring-2 ring-primary rounded-lg' : 'rounded-lg'">
@@ -64,12 +102,24 @@ export default {
     emptyLabel: {
       type: String,
       default: ''
+    },
+    // Hide the "Profiles" label on the trigger: the avatars (and their
+    // tooltips) already identify the control in narrow headers.
+    compact: {
+      type: Boolean,
+      default: false
     }
   },
   emits: ['update:selected-profiles', 'profiles-changed', 'select'],
   data() {
     return {
       profiles: []
+    }
+  },
+  computed: {
+    // Avatars shown before the rest collapse into a +N counter.
+    maxActiveAvatars() {
+      return 4
     }
   },
   mounted() {
@@ -108,6 +158,15 @@ export default {
       this.$emit('select', profile?.name || null)
       this.$emit('update:selected-profiles', selected)
       this.$emit('profiles-changed', selected)
+    },
+    // Same fallback as <ProfileCard>: a stable robot avatar per profile name.
+    avatarFor(profile) {
+      return profile?.avatar ||
+        `https://gravatar.com/avatar/baa8db8ab2afb7ababc235269e762662?s=400&d=robohash&r=${encodeURIComponent(profile?.name || '')}`
+    },
+    // Tooltip of the "+N" avatar: the profiles that did not fit.
+    overflowProfilesTooltip(items) {
+      return items.slice(this.maxActiveAvatars).map(profile => profile.name).join(', ')
     }
   }
 }

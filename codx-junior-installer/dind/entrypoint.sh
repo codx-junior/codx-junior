@@ -14,7 +14,7 @@
 # =============================================================================
 set -uo pipefail
 
-MODE="${CODX_MODE:-local}"
+MODE="${CODX_MODE:-server}"
 DOMAIN="${CODX_JUNIOR_DOMAIN:-localhost}"
 
 log()  { printf '[dind] %s\n' "$*"; }
@@ -46,7 +46,7 @@ log "Nested daemon is ready"
 ARGS=(
     --container
     --mode "${MODE}"
-    --traefik "${CODX_TRAEFIK_MODE:-none}"
+    --traefik "${CODX_TRAEFIK_MODE:-master}"
     --home /data
     --data-dir /data
     --projects /data/projects
@@ -58,16 +58,26 @@ ARGS=(
 )
 [[ -n "${DOMAIN}" ]] && ARGS+=(--domain "${DOMAIN}")
 [[ -n "${CODX_ACME_EMAIL:-}" ]] && ARGS+=(--acme-email "${CODX_ACME_EMAIL}")
-[[ -n "${CODX_PROXY_NETWORK:-}" ]] && ARGS+=(--proxy-network "${CODX_PROXY_NETWORK}")
 [[ -n "${CODX_TRUSTED_PROXIES:-}" ]] && ARGS+=(--trusted-proxy "${CODX_TRUSTED_PROXIES}")
 [[ "${CODX_ACME_CA:-prod}" == "staging" ]] && ARGS+=(--acme-ca staging)
 [[ "${CODX_NO_PULL:-0}" == "1" ]] && ARGS+=(--no-pull)
 
+# The outer --dev flag is a DIND-level debug switch. The inner installer must
+# NOT enter its source-mount/Vite dev path; it only needs DEBUG=1 for the app.
+export CODX_JUNIOR_DEV=0
+export CODX_JUNIOR_DEBUG="${CODX_JUNIOR_DEBUG:-1}"
+
+INNER_LOG=/var/log/inner-install.log
 log "Installing the inner codx-junior (mode: ${MODE})"
-if ! /opt/codx-junior/install.sh "${ARGS[@]}"; then
+if ! /opt/codx-junior/install.sh "${ARGS[@]}" 2>&1 | tee "${INNER_LOG}"; then
     warn "the inner installation failed; the container stays up for inspection"
-    warn "  docker exec -it <container> docker ps -a"
-    warn "  docker exec -it <container> tail -n 100 /var/log/dockerd.log"
+    warn "  inner installer log: ${INNER_LOG}"
+    warn "  docker logs:"
+    tail -n 80 "${INNER_LOG}" || true
+    warn "  nested containers:"
+    docker ps -a || true
+    warn "  nested daemon log:"
+    tail -n 40 /var/log/dockerd.log || true
 fi
 
 log "Inner stack started. Open the wrapper logs for the nested daemon."

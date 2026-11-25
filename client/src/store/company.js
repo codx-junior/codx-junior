@@ -100,6 +100,44 @@ export const getters = getterTree(state, {
     return allProjects.filter(project => visible.has(String(project.project_id)))
   },
 
+  /**
+   * Projects *defined* by the company: the direct links shown in the Projects
+   * section (or the whole catalogue in `all_projects` mode). Child projects
+   * inherited from a linked root are accessible through the advanced workspace
+   * but are not separate company projects, so company-wide pickers never list
+   * them as if the owner had linked them.
+   *
+   * Falls back to the company summary while the snapshot is loading.
+   */
+  linkedProjects: (state, getters) => {
+    const snapshotProjects = state.snapshot?.projects
+    if (Array.isArray(snapshotProjects)) {
+      const seen = new Set()
+      return snapshotProjects
+        .filter(project => {
+          const id = String(project?.project_id || '')
+          if (!id || seen.has(id)) return false
+          seen.add(id)
+          return true
+        })
+        .map(project => ({
+          ...project,
+          project_id: String(project.project_id),
+          project_name: project.name || project.discovered_name || String(project.project_id)
+        }))
+    }
+    const allProjects = $storex.projects?.allProjects || []
+    const company = state.companies.find(item => item.id === state.activeId) ||
+      state.companies.find(item => item.is_default) ||
+      state.companies[0]
+    if (company?.all_projects) return allProjects
+    const linked = new Set((company?.project_ids || []).map(String))
+    return allProjects.filter(project => linked.has(String(project.project_id)))
+  },
+
+  linkedProjectIds: (state, getters) =>
+    (getters.linkedProjects || []).map(project => String(project.project_id)),
+
   hasProject: (state, getters) => (projectId) =>
     getters.visibleProjectIds.includes(String(projectId || ''))
 })

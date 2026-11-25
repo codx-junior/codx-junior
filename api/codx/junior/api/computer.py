@@ -290,6 +290,7 @@ async def list_image_catalog(
     visibility: Optional[str] = None,
     status: Optional[str] = None,
     source: Optional[str] = None,
+    kind: str = "linux",
     refresh: bool = False,
 ):
     """
@@ -312,10 +313,13 @@ async def list_image_catalog(
             provider=provider,
             query=q,
             category=None,
-            kind="linux",
+            kind=kind,
             refresh=refresh,
         ),
-        asyncio.to_thread(library.list),
+        # Saved computers and custom gallery images are desktops: they cannot
+        # be a browser session (no CDP browser inside), so a browser-kind feed
+        # only carries browser images.
+        asyncio.to_thread(library.list) if (kind or "").lower() != "browser" else asyncio.sleep(0, result=[]),
         asyncio.to_thread(
             gallery.list_visible,
             username=username,
@@ -324,7 +328,7 @@ async def list_image_catalog(
             q=q,
             visibility=visibility,
             tag=tag,
-        ),
+        ) if (kind or "").lower() != "browser" else asyncio.sleep(0, result=[]),
     )
     items = build_catalog(provider_images, saved_computers, custom_images)
     images = filter_catalog(

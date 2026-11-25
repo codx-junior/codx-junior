@@ -21,6 +21,7 @@
     "qa_review_changes",
     "start_session",
     "browse_action",
+    "browser_agent",
     "get_screenshot",
     "get_source_code",
     "browser_status",

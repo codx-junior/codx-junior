@@ -42,8 +42,10 @@ const WELCOME_APP = 'task-list'
 const COMPANY_SECTIONS = [
   'home',
   'work',
+  'tickets',
   'team',
   'projects',
+  'files',
   'business',
   'activity',
   'security',

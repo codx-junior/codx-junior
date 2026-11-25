@@ -15,7 +15,7 @@ Most settings are edited in the app (**Global settings** and **Project settings*
 | `CODX_ACME_EMAIL` | Email for Let's Encrypt certificates (server mode). |
 | `CODX_JUNIOR_KNOWLEDGE_BACKEND` | `lancedb` (default) or `none`. |
 | `CODX_JUNIOR_COWORKING` | `1` mounts the Docker socket for coworking/desktops. |
-| `CODX_JUNIOR_HIDDEN` | Hides codx-junior's own project from the projects list. |
+| `CODX_JUNIOR_HIDDEN` | Hides codx-junior and its child projects from the project selector (`--hidden`; `--no-hidden` restores). |
 
 ## API service
 

@@ -93,7 +93,7 @@ The new installer keeps those ideas but removes the Caddy path and the
 | **workspaces** | dev containers + default workspace template | replaced by coworking; installer does not need it | **drop from install/runtime**, code removal later |
 | **coworking / browser / computer** | sibling containers for Chromium, Linux desktops, Windows/macOS VMs | yes, the replacement for workspaces | **keep optional** via `/var/run/docker.sock`; VMs additionally need `/dev/kvm` |
 | **DIND** | nested Docker, one isolated instance per container | yes for multi-tenant hosting | **keep**, rebuilt on the single runtime compose |
-| **dev mode** | checkout mounted, image built locally | yes for development | **keep** as a separate path |
+| **development option (`--dev`)** | host: checkout mounted + Vite + DEBUG=1; DIND: DEBUG=1 | yes for development | **keep** |
 | **systemd registration** | boot + lifecycle | requested | **add** (templated per instance) |
 
 Evidence for the drops: `api/` has **no `litellm`, `localai` or `coolify`
@@ -177,16 +177,32 @@ Properties:
 
 ### 4.2 Mode matrix
 
-| | local | server (master) | server (slave) | dind |
+| | local | server | slave | dind |
 |---|---|---|---|---|
-| Who terminates TLS | nobody | this instance | the master | inner mode decides |
-| Ports published | 127.0.0.1:19981 | 80, 443 | none | local:19981 / master:80,443 / slave:none |
-| Traefik | no | master | slave | inner mode decides |
-| ACME | no | HTTP-01 | no | inner master only |
-| Docker network | internal | internal + `codx-proxy` | internal + external master network | nested |
+| App mode | local | server | server-like | server |
+| Traefik | `--traefik none` | `--traefik primary` | `--traefik slave` | independent `--traefik` |
+| Who terminates TLS | nobody | this instance | the primary | primary, or none |
+| Ports published | 127.0.0.1:19981 | 80, 443 | none | per proxy + local access |
+| ACME | no | HTTP-01 | no | primary only |
+| Docker network | internal | internal + `codx-proxy` | internal + external primary network | nested |
 | Docker socket | `--coworking` | `--coworking` | `--coworking` | always (nested socket) |
-| Domain required | no | yes | yes | inner server/slave |
+| Domain required | only if a proxy is chosen | yes for primary | yes | yes for primary/slave |
 | Systemd | off by default | on | on | on (outer container) |
+
+The app mode and the proxy mode are independent. The DIND inner installation is
+always `server`. With `--traefik slave` the outer DIND container joins the
+existing Traefik network; the nested Traefik runs as a normal slave in front of
+the inner server.
+
+The first wizard question is the target folder (default `$PWD`). Before the
+final confirmation it writes editable `<target>/docker-compose.yaml` and
+`<target>/.env`. The installer uses those files,
+so `services.dind.volumes` mappings can be added before the first run. If the
+files already exist, the wizard asks before overwriting them.
+
+Any mode can add `--dev`. On a host it mounts the checkout, runs Vite with HMR
+instead of nginx, and enables `uvicorn --reload`. On DIND the source is baked, so
+it only sets `DEBUG=1` for the inner scripts. `--dev` is not a deployment mode.
 
 ### 4.3 Use cases
 
@@ -235,8 +251,13 @@ by hand in its config; the labels are inert.
 **D. DIND**
 
 ```bash
-sudo ./install.sh --mode dind --dind-mode server --domain acme.example.com \
+sudo ./install.sh --mode dind --traefik primary --domain acme.example.com \
   --acme-email ops@example.com --provider deepseek --key sk-...
+
+# behind an existing primary: add the outer DIND container to its network
+sudo ./install.sh --mode dind --traefik slave \
+  --domain demo.example.com --proxy-network traefik \
+  --provider deepseek --key sk-...
 ```
 
 Outer wrapper: one `privileged` container (or `--sysbox` with `sysbox-runc`) with
@@ -392,7 +413,7 @@ Everything that Traefik sees must be instance-scoped:
     LanceDB-only; the workspace and legacy deployment pages need the same pass
     when that code is removed.
 22. **Tests.** The legacy `demo/tests` scripts were removed with `demo/up.sh`.
-    **Done:** 35 checks in `codx-junior-installer/tests/test_install.sh` and a
+    **Done:** 54 checks in `codx-junior-installer/tests/test_install.sh` and a
     12-combination `docker compose config` matrix. The full image build itself
     still needs a CI/publish run (it is large).
 23. **The DevOps `traefik` tool still expects the old container name and a
@@ -548,7 +569,7 @@ Workspaces is the area to remove with its API module.
 | `codx-junior-installer/install.sh` | the unified installer: modes, settings, validation, systemd, health, upgrade, DIND |
 | root `install.sh` | thin front door (checkout, download or git fallback) |
 | `cloud/bootstrap.sh` | compatibility shim; old cloud-init files keep working with plain-HTTP defaults |
-| `tests/test_install.sh` | 32 stub-docker checks for help, validation, dry-run, settings, wrapper and modes |
+| `tests/test_install.sh` | 54 stub-docker checks for help, validation, dry-run, settings, wrapper and modes |
 | `runtime/docker-compose.yaml` | the single app definition |
 | `runtime/docker-compose.local.yaml` | loopback publish |
 | `runtime/docker-compose.master.yaml` | Traefik master + ACME + app routers |

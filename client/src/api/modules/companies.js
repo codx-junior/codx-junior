@@ -47,7 +47,7 @@ export const companiesModule = (API) => ({
   // ── Companies ────────────────────────────────────────────────────────────
 
   /** List every company (summary payload). */
-  list({ includeArchived = true } = {}) {
+  list({ includeArchived = false } = {}) {
     return API.get(`${BASE}${toQuery({ include_archived: includeArchived })}`)
   },
 
@@ -58,15 +58,17 @@ export const companiesModule = (API) => ({
 
   /**
    * Installation onboarding (the "New company" wizard): stored state, the
-   * step catalog, the companies that can be configured and `needs_setup`.
+   * step catalog, the companies that can be configured and the first-run gate
+   * (`setup_required`, also exposed as `needs_setup`).
    */
   onboarding() {
     return API.get(`${BASE}/onboarding`)
   },
 
   /**
-   * Advance, skip or finish the wizard, or `{ reset: true }` to run it again.
-   * Settings collected in the wizard (`default_model`…) are merged server side.
+   * Advance a step or finish the wizard (the only action that opens the
+   * first-run gate), or `{ reset: true }` to run it again. Settings collected in
+   * the wizard (`default_model`…) are merged server side.
    */
   saveOnboarding(payload = {}) {
     return API.post(`${BASE}/onboarding`, payload)
@@ -136,6 +138,102 @@ export const companiesModule = (API) => ({
   snapshot(companyId, { journalLimit = 30 } = {}) {
     return API.get(
       `${BASE}/${encodeURIComponent(companyId)}/snapshot${toQuery({ journal_limit: journalLimit })}`
+    )
+  },
+
+  // ── Coworking spaces (company files + virtual project folders) ───────────
+
+  /**
+   * List the company-owned coworking spaces.
+   *
+   * A company that predates spaces gets its default "Company files" space on
+   * the first call, so the file browser is never empty for a missing config.
+   */
+  spaces(companyId, { includeStats = false } = {}) {
+    return API.get(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces${toQuery({ include_stats: includeStats })}`
+    )
+  },
+
+  /** One space with its mapped projects and folders. */
+  space(companyId, spaceId) {
+    return API.get(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}`
+    )
+  },
+
+  /** Create a company-owned coworking space. */
+  createSpace(companyId, payload) {
+    return API.post(`${BASE}/${encodeURIComponent(companyId)}/spaces`, payload)
+  },
+
+  /** Update the name, mappings or presentation of a space. */
+  updateSpace(companyId, spaceId, payload) {
+    return API.put(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}`,
+      payload
+    )
+  },
+
+  /** Delete a space (its company files are moved to the company trash). */
+  deleteSpace(companyId, spaceId) {
+    return API.delete(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}`
+    )
+  },
+
+  /**
+   * List one folder of the space browser.
+   *
+   * The root shows the company files plus the virtual `projects` and `folders`
+   * roots; below a project id every folder is the project's real files
+   * (read-only), and below a mapped folder id it is the host folder.
+   */
+  spaceFiles(companyId, spaceId, path = '') {
+    return API.get(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}/files${toQuery({ path })}`
+    )
+  },
+
+  /** Direct URL of one file of a space (inline preview or attachment). */
+  spaceFileUrl(companyId, spaceId, path, { download = false } = {}) {
+    return API.connection.prepareUrl(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}/file` +
+      toQuery({ path, download: download ? 'true' : '' })
+    )
+  },
+
+  /** Create a folder in the company files of a space. */
+  createSpaceFolder(companyId, spaceId, path, name) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}/folders`,
+      { path, name }
+    )
+  },
+
+  /** Upload one file into the company files of a space. */
+  uploadSpaceFile(companyId, spaceId, path, file) {
+    const form = new FormData()
+    form.append('file', file, file.name || 'file')
+    form.append('path', path || '')
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}/upload`,
+      form
+    )
+  },
+
+  /** Create or replace a text file in the company files of a space. */
+  writeSpaceFile(companyId, spaceId, path, content) {
+    return API.put(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}/file`,
+      { path, content }
+    )
+  },
+
+  /** Delete a company file or an empty company folder from a space. */
+  deleteSpaceEntry(companyId, spaceId, path) {
+    return API.delete(
+      `${BASE}/${encodeURIComponent(companyId)}/spaces/${encodeURIComponent(spaceId)}/file${toQuery({ path })}`
     )
   },
 
@@ -385,12 +483,83 @@ export const companiesModule = (API) => ({
     )
   },
 
-  // ── Always-present company assistant ─────────────────────────────────────
-  // The UI renders every settings/team form INSIDE the assistant window; this
-  // endpoint answers a turn or executes a submitted form.
-  assistant(companyId, payload) {
+  // ── Company assistant chat ───────────────────────────────────────────────
+  // The shell opens a real ChatView on this chat; the endpoint provisions it
+  // once and returns its locator (chat id + hosting project).
+  assistantChat(companyId) {
     return API.post(
-      `${BASE}/${encodeURIComponent(companyId)}/assistant`,
+      `${BASE}/${encodeURIComponent(companyId)}/assistant/chat`,
+      {}
+    )
+  },
+
+  // ── Company ticket workbench ─────────────────────────────────────────────
+  // Tickets are project-owned chats; the company layer lists the queue of every
+  // linked project, places a request on one project and reviews the delivery of
+  // the unattended run. See codx/junior/api/company_tickets.py.
+  tickets(companyId, params = {}) {
+    return API.get(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets${toQuery(params)}`
+    )
+  },
+
+  ticketSummary(companyId) {
+    return API.get(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/summary`
+    )
+  },
+
+  ticket(companyId, ticketId) {
+    return API.get(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}`
+    )
+  },
+
+  createTicket(companyId, payload) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets`,
+      payload
+    )
+  },
+
+  commentTicket(companyId, ticketId, comment) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}/comment`,
+      { comment }
+    )
+  },
+
+  configureTicket(companyId, ticketId, payload) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}/configure`,
+      payload
+    )
+  },
+
+  queueTicket(companyId, ticketId) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}/queue`,
+      {}
+    )
+  },
+
+  runTicket(companyId, ticketId) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}/run`,
+      {}
+    )
+  },
+
+  cancelTicket(companyId, ticketId) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}/cancel`,
+      {}
+    )
+  },
+
+  reviewTicket(companyId, ticketId, payload) {
+    return API.post(
+      `${BASE}/${encodeURIComponent(companyId)}/tickets/${encodeURIComponent(ticketId)}/review`,
       payload
     )
   }

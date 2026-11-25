@@ -4,11 +4,12 @@
 # One isolated codx-junior per container. The image runs its own dockerd and the
 # same runtime compose inside it; the host only sees this wrapper container.
 #
-# The host installer selects one overlay:
-#   docker-compose.local.yaml    publish 127.0.0.1:<port>
-#   docker-compose.master.yaml   publish :80/:443 (standalone edge)
-#   docker-compose.slave.yaml    join the master network, no published port
+# The host installer selects one Traefik overlay:
+#   docker-compose.master.yaml   publish :80/:443 (nested primary edge)
+#   docker-compose.slave.yaml    join the existing Traefik network, no host port
 #   docker-compose.sysbox.yaml   runtime sysbox-runc instead of privileged
+#
+# The inner installer always runs --mode server.
 #
 # Everything persistent lives under ${CODX_DATA_DIR} on the host:
 #   projects/  settings/  analytics/  traefik/  docker/ (nested image layers)
@@ -29,25 +30,35 @@ services:
       - ${CODX_ENV_FILE:?CODX_ENV_FILE must point to the settings file}
     environment:
       # Passed to the inner installer, which starts the nested stack.
-      CODX_MODE: ${CODX_MODE:-local}
-      CODX_TRAEFIK_MODE: ${CODX_TRAEFIK_MODE:-none}
+      CODX_MODE: ${CODX_MODE:-server}
+      CODX_TRAEFIK_MODE: ${CODX_TRAEFIK_MODE:-master}
       CODX_JUNIOR_DOMAIN: ${CODX_JUNIOR_DOMAIN:-localhost}
       CODX_JUNIOR_WEB_PORT: ${CODX_JUNIOR_WEB_PORT:-19981}
       CODX_JUNIOR_IMAGE: ${CODX_JUNIOR_IMAGE:-codxjuniorai/codx-junior:latest}
+      # DIND development option: DEBUG=1 for the inner scripts/app.
+      DEBUG: ${CODX_JUNIOR_DEBUG:-0}
+      CODX_JUNIOR_DEBUG: ${CODX_JUNIOR_DEBUG:-0}
+      # Outer dev is DEBUG-only; never enter the inner source-mount dev path.
+      CODX_JUNIOR_DEV: "0"
       # Host folders are remapped under /data; the inner API must never see a
       # host path.
       CODX_JUNIOR_PROJECTS_PATH: /data/projects
       CODX_DATA_DIR: /data
-      CODX_PROXY_NETWORK: ${CODX_PROXY_NETWORK:-codx-proxy}
+      # Fixed nested network. The host network name is only used by the outer
+      # slave overlay to attach this container to the existing Traefik network.
+      CODX_PROXY_NETWORK: codx-proxy
       CODX_TRUSTED_PROXIES: ${CODX_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16,127.0.0.1/32}
       CODX_ACME_EMAIL: ${CODX_ACME_EMAIL:-}
       CODX_ACME_CA: ${CODX_ACME_CA:-prod}
       CODX_CERT_RESOLVER: ${CODX_CERT_RESOLVER:-letsencrypt}
       CODX_JUNIOR_KNOWLEDGE_BACKEND: ${CODX_JUNIOR_KNOWLEDGE_BACKEND:-lancedb}
       CODX_JUNIOR_COWORKING: "1"
-      CODX_HEALTH_PORT: ${CODX_HEALTH_PORT:-19981}
+      CODX_HEALTH_PORT: ${CODX_HEALTH_PORT:-80}
       # `/data` is on the host, so nested Docker layers survive `down`.
       DOCKER_TLS_CERTDIR: ""
+      # The wrapper starts nested dockerd in the background; tell its injected
+      # tini/docker-init to act as a subreaper (silences the Tini warning).
+      TINI_SUBREAPER: "1"
     volumes:
       - ${CODX_DATA_DIR:?CODX_DATA_DIR is required}:/data
       # Projects may live outside the data root; mount them explicitly so the

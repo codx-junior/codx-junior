@@ -136,7 +136,7 @@ function remove(unit) {
     <header class="flex items-center justify-between gap-2">
       <div>
         <h2 class="text-lg font-black flex items-center gap-2">
-          <i class="fa-solid fa-sitemap text-primary"></i> Organization
+          <i class="fa-solid fa-sitemap text-primary-ink"></i> Organization
         </h2>
         <p class="text-xs text-base-content/50">
           Departments and functions. Each unit can own teams, a lead and a set of responsibilities.
@@ -159,7 +159,7 @@ function remove(unit) {
       >
         <div :style="{ marginLeft: `${unit.depth * 22}px` }" class="flex items-center gap-2 min-w-0 flex-1">
           <div class="w-7 h-7 rounded-lg grid place-items-center bg-base-200 text-base-content/60 shrink-0">
-            <i :class="unit.icon || orgKindMeta(unit.kind).icon" class="text-[11px]"></i>
+            <i :class="unit.icon || orgKindMeta(unit.kind).icon" class="text-xs"></i>
           </div>
           <div class="min-w-0">
             <div class="flex items-center gap-1.5 flex-wrap">
@@ -167,8 +167,8 @@ function remove(unit) {
               <span class="badge badge-xs" :class="orgKindMeta(unit.kind).badge">{{ orgKindMeta(unit.kind).label }}</span>
               <span v-if="unit.teamCount" class="badge badge-xs badge-ghost">{{ unit.teamCount }} team(s)</span>
             </div>
-            <div class="text-[11px] text-base-content/50 truncate">
-              <span v-if="unit.lead_name"><i class="fa-solid fa-crown text-[9px] mr-1"></i>{{ unit.lead_name }}</span>
+            <div class="text-xs text-base-content/50 truncate">
+              <span v-if="unit.lead_name"><i class="fa-solid fa-crown text-[11px] mr-1"></i>{{ unit.lead_name }}</span>
               <span v-else class="italic opacity-60">no lead</span>
               <span v-if="unit.description"> · {{ unit.description }}</span>
             </div>
@@ -185,7 +185,7 @@ function remove(unit) {
           <button class="btn btn-ghost btn-xs btn-square" title="Edit" @click="openEdit(unit)">
             <i class="fa-solid fa-pen"></i>
           </button>
-          <button class="btn btn-ghost btn-xs btn-square text-error" title="Delete" @click="remove(unit)">
+          <button class="btn btn-ghost btn-xs btn-square text-error-ink" title="Delete" @click="remove(unit)">
             <i class="fa-solid fa-trash"></i>
           </button>
         </div>
@@ -260,7 +260,7 @@ function remove(unit) {
           </label>
         </div>
 
-        <p v-if="formError" class="text-error text-xs mt-3">{{ formError }}</p>
+        <p v-if="formError" class="text-error-ink text-xs mt-3">{{ formError }}</p>
 
         <div class="modal-action">
           <button class="btn btn-sm btn-ghost" @click="close">Cancel</button>

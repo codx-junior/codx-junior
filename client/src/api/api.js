@@ -26,6 +26,7 @@ import { traefikModule } from './modules/traefik'
 import { dshModule } from './modules/dsh'
 import { harnessModule } from './modules/harness'
 import { cisoModule } from './modules/ciso'
+import { updateModule } from './modules/update'
 import { RequestCache, hashBody } from './requestCache'
 import { requestQueues } from './requestQueue'
 
@@ -1134,6 +1135,13 @@ const initializeAPI = ({ project, user } = {}) => {
         API._infraModule = infraModule(API)
       }
       return API._infraModule
+    },
+
+    get update() {
+      if (!API._updateModule) {
+        API._updateModule = updateModule(API)
+      }
+      return API._updateModule
     },
 
     screen: {

@@ -357,43 +357,6 @@ def test_reasoning_effort_is_not_sent_to_non_deepseek(agent):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# EFFORT-STOP NOTICE
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def test_loop_limit_notice_explains_how_to_raise_effort(agent):
-    notice = agent._build_loop_limit_notice(
-        "Maximum tool rounds (80) exceeded.",
-        default_policy(),
-        max_iterations=80,
-    )
-    assert "Turn paused by the effort budget" in notice
-    assert "Maximum tool rounds (80) exceeded." in notice
-    assert "80 model rounds" in notice
-    assert "@codx-junior-max" in notice
-
-
-def test_loop_limit_notice_for_agile_tier(agent):
-    notice = agent._build_loop_limit_notice(
-        "Maximum tool rounds (10) exceeded.",
-        agile_policy(),
-    )
-    assert "continuations" in notice
-    assert "@codx-junior-max" in notice
-    assert "effort.max_iterations" in notice
-
-
-def test_loop_limit_notice_for_max_tier(agent):
-    notice = agent._build_loop_limit_notice(
-        "Maximum tool rounds (24) exceeded.",
-        max_policy(),
-    )
-    assert "continuations" in notice
-    assert "Split the task" in notice
-    assert "effort.max_iterations" in notice
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # LOOP LIMITS COME FROM THE EFFORT POLICY
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -462,10 +425,5 @@ def test_loop_limit_notice_for_max_tier(agent):
     assert "continuations" in notice
     assert "Split the task" in notice
     assert "effort.max_iterations" in notice
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# LOOP LIMIT PRECEDENCE
-# ──────────────────────────────────────────────────────────────────────────────
 
 

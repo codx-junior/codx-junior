@@ -107,6 +107,27 @@
           <li>
             <button
               class="flex items-center gap-2"
+              :disabled="!isRunning"
+              title="Push a file from the session folders into the page's uploader"
+              @click="closeOverflow(); showSendFile = true"
+            >
+              <i class="fa-solid fa-paperclip"></i>
+              <span>Send a file to the page</span>
+            </button>
+          </li>
+          <li>
+            <button
+              class="flex items-center gap-2"
+              title="Reuse logins across browsers: saved site sessions and passwords"
+              @click="closeOverflow(); showLoginStore = true"
+            >
+              <i class="fa-solid fa-key"></i>
+              <span>Sessions &amp; passwords</span>
+            </button>
+          </li>
+          <li>
+            <button
+              class="flex items-center gap-2"
               :disabled="!isRunning || screenshotLoading"
               @click="closeOverflow(); takeScreenshot()"
             >
@@ -343,6 +364,24 @@
       </button>
     </div>
 
+    <!-- Login store: cookies/localStorage and credentials shared by every
+         session of the project, so switching browser keeps the login. -->
+    <BrowserStoreModal
+      v-if="showLoginStore"
+      :session-id="activeSessionId || ''"
+      :running="isRunning"
+      @close="showLoginStore = false"
+    />
+
+    <!-- Upload bridge: the kiosk image's native file dialog does not deliver
+         the selection, so files are pushed into the page from here. -->
+    <SendFileToPage
+      v-if="showSendFile && activeSessionId && isRunning"
+      :key="`send-file-${activeSessionId}`"
+      :session-id="activeSessionId"
+      @close="showSendFile = false"
+    />
+
     <!-- Screenshot modal -->
     <div v-if="showScreenshot" class="modal modal-open" @click.self="showScreenshot = false">
       <div class="modal-box max-w-5xl w-11/12">
@@ -360,6 +399,8 @@
 
 <script>
 import BrowserAnnotationBoard from './BrowserAnnotationBoard.vue'
+import BrowserStoreModal from './BrowserStoreModal.vue'
+import SendFileToPage from './SendFileToPage.vue'
 import SessionControlBar from './SessionControlBar.vue'
 import { getParticipantId } from '@/utils/collabIdentity'
 import {
@@ -383,7 +424,7 @@ import {
  */
 export default {
   name: 'BrowserViewer',
-  components: { BrowserAnnotationBoard, SessionControlBar },
+  components: { BrowserAnnotationBoard, BrowserStoreModal, SendFileToPage, SessionControlBar },
   emits: ['ask-ai', 'send-annotations', 'share-session', 'control-change'],
   props: {
     sessionId: { type: String, default: null },
@@ -401,6 +442,8 @@ export default {
       loadingFrame: true,
       annotating: false,
       annotationCount: 0,
+      showSendFile: false,
+      showLoginStore: false,
       navigating: false,
       screenshotLoading: false,
       screenshot: null,
@@ -536,7 +579,11 @@ export default {
     activeSessionId: {
       immediate: true,
       handler(value, previous) {
-        if (value !== previous) this.closeAnnotation()
+        if (value !== previous) {
+          this.closeAnnotation()
+          this.showSendFile = false
+          this.showLoginStore = false
+        }
         this.restoreAddress()
         this.refreshSessionData()
       }
@@ -550,6 +597,7 @@ export default {
         this.iframeKey += 1
       } else {
         this.closeAnnotation()
+        this.showSendFile = false
         this.annotationCount = 0
       }
     },

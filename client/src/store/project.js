@@ -634,7 +634,7 @@ export const actions = actionTree(
         }
         const segments = pathname.split('/').filter(Boolean)
         const sections = new Set([
-          'home', 'work', 'team', 'projects', 'business', 'activity',
+          'home', 'work', 'team', 'projects', 'files', 'business', 'activity',
           'security', 'settings', 'meet', 'coworking', 'calendar',
           'auth', 'company', 'solopreneur'
         ])

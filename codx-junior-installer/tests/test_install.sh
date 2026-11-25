@@ -40,10 +40,24 @@ run() {
     local dir="$1"
     shift
     set +e
-    ( cd "${dir}" && env -u CODX_JUNIOR_DOMAIN "$@" ) >"${RUN_OUT}" 2>"${RUN_ERR}"
+    rm -f "${TMP}/installer-state.env"
+    ( cd "${dir}" && env -u CODX_JUNIOR_DOMAIN \
+        CODX_JUNIOR_INSTALLER_STATE="${TMP}/installer-state.env" "$@" ) >"${RUN_OUT}" 2>"${RUN_ERR}"
     RUN_RC=$?
     set -e
 }
+run_input() {
+    local input="$1" dir="$2"
+    shift 2
+    set +e
+    rm -f "${TMP}/installer-state.env"
+    ( cd "${dir}" && printf '%s\n' "${input}" | \
+        env -u CODX_JUNIOR_DOMAIN CODX_JUNIOR_INSTALLER_STATE="${TMP}/installer-state.env" \
+            CODX_JUNIOR_INTERACTIVE=1 "$@" ) >"${RUN_OUT}" 2>"${RUN_ERR}"
+    RUN_RC=$?
+    set -e
+}
+
 out_has() { grep -qF -- "$1" "${RUN_OUT}"; }
 err_has() { grep -qF -- "$1" "${RUN_ERR}"; }
 both_has() { grep -qF -- "$1" "${RUN_OUT}" "${RUN_ERR}"; }
@@ -158,6 +172,18 @@ if err_has "is missing and must be created" || out_has "is missing and must be c
 else
     fail "slave dry run warns about the missing master network"
 fi
+CHECKED=$((CHECKED + 1))
+if grep -q '/var/run/docker.sock:/var/run/docker.sock:ro' "${HERE}/../runtime/docker-compose.slave.yaml" 2>/dev/null; then
+    pass "slave Traefik mounts the Docker socket for provider discovery"
+else
+    fail "slave Traefik mounts the Docker socket for provider discovery"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "docker-compose.slave-edge.yaml"; then
+    pass "host slave adds the external-primary edge labels"
+else
+    fail "host slave adds the external-primary edge labels"
+fi
 
 # --- 7. dind dry run ---------------------------------------------------------
 run "${ROOT}" bash "${INSTALLER}" --mode dind --dind-mode server --domain acme.example.com \
@@ -171,6 +197,76 @@ else
 fi
 CHECKED=$((CHECKED + 1))
 if out_has "dind/docker-compose.yaml"; then pass "dind dry run uses the DIND wrapper compose"; else fail "dind dry run uses the DIND wrapper compose"; fi
+
+# DIND inner installation is always server; the old local/slave choices fail.
+run "${ROOT}" bash "${INSTALLER}" --mode dind --dind-mode local --domain x.example.com \
+    --provider deepseek --key sk-test --home "$(new_home dind-bad)" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -ne 0 ]] && both_has "DIND inner installation is always server"; then
+    pass "dind rejects non-server inner modes"
+else
+    fail "dind rejects non-server inner modes" "rc=${RUN_RC}"
+fi
+
+# Inside DIND the host Traefik network name must not be required by the inner
+# installer; its nested slave network is Compose-managed.
+run "${ROOT}" bash "${INSTALLER}" --container --mode server --traefik slave \
+    --domain demo.codx-junior.ai --proxy-network docker_default \
+    --provider deepseek --key sk-test --home "$(new_home inner)" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "proxy_external=false" \
+    && ! both_has "does not exist"; then
+    pass "dind inner slave does not require the host Traefik network"
+else
+    fail "dind inner slave does not require the host Traefik network" "rc=${RUN_RC}"
+fi
+CHECKED=$((CHECKED + 1))
+if ! out_has "docker-compose.slave-edge.yaml"; then
+    pass "dind inner slave does not load the outer edge labels"
+else
+    fail "dind inner slave does not load the outer edge labels"
+fi
+
+# DIND development option: DEBUG=1 inside, release image, no host dev overlay.
+run "${ROOT}" bash "${INSTALLER}" --mode dind --dev --traefik slave \
+    --domain demo.codx-junior.ai --proxy-network docker_default \
+    --provider deepseek --key sk-test --home "$(new_home dind-dev)" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "dev_mode=1" \
+    && out_has "image=codxjuniorai/codx-junior:latest" \
+    && ! out_has "docker-compose.dev.yaml"; then
+    pass "dind development option enables DEBUG without a host dev overlay"
+else
+    fail "dind development option enables DEBUG without a host dev overlay" "rc=${RUN_RC}"
+fi
+
+# --- 7b. dind --update must recreate the wrapper ----------------------------
+# Only the wrapper entrypoint runs the inner installer (it pulls the app image
+# and recreates the nested stack). A DIND image that did not change must not
+# turn `--update` into a no-op: the wrapper has to be recreated explicitly.
+DIND_UP_HOME="$(new_home dind-upgrade)"
+DIND_ARGS=(--mode dind --traefik master --domain dind.example.com
+           --acme-email ops@example.com --provider deepseek --key sk-test
+           --home "${DIND_UP_HOME}" --instance cjdinupdate
+           --no-wait --no-systemd --no-pull)
+run "${ROOT}" bash "${INSTALLER}" "${DIND_ARGS[@]}"
+: >"${STUB_LOG}"
+run "${ROOT}" bash "${INSTALLER}" "${DIND_ARGS[@]}" --update \
+    --image codxjuniorai/codx-junior:v9
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && grep -q 'up -d --remove-orphans --force-recreate' "${STUB_LOG}"; then
+    pass "dind upgrade recreates the wrapper so the inner installer runs"
+else
+    fail "dind upgrade recreates the wrapper so the inner installer runs" \
+        "rc=${RUN_RC} $(grep -E 'compose .* up' "${STUB_LOG}" | tail -n1)"
+fi
+CHECKED=$((CHECKED + 1))
+if grep -q 'CODX_JUNIOR_IMAGE: "codxjuniorai/codx-junior:v9"' "${DIND_UP_HOME}/docker-compose.yaml" 2>/dev/null; then
+    pass "dind upgrade passes the new app image to the inner installer"
+else
+    fail "dind upgrade passes the new app image to the inner installer" \
+        "$(grep CODX_JUNIOR_IMAGE "${DIND_UP_HOME}/docker-compose.yaml" 2>/dev/null)"
+fi
 
 # --- 8. real (stubbed) local install writes the settings + wrapper ----------
 HOME_DIR="$(new_home installed)"
@@ -220,7 +316,119 @@ else
     fail "install starts the stack with compose up" "$(tail -n3 "${STUB_LOG}")"
 fi
 
-# --- 9. config command -------------------------------------------------------
+# The API cannot see the installation home (only <data>/settings is mounted),
+# so the installer publishes the facts an in-app update needs. Without this
+# file the settings page can only show the manual upgrade command.
+CHECKED=$((CHECKED + 1))
+DESCRIPTOR="${HOME_DIR}/data/settings/installer.json"
+if [[ -f "${DESCRIPTOR}" ]] \
+   && grep -q "\"home\": \"${HOME_DIR}\"" "${DESCRIPTOR}" \
+   && grep -q '"instance": "cjinstalled"' "${DESCRIPTOR}" \
+   && grep -q '"container": false' "${DESCRIPTOR}" \
+   && grep -q '\"cli\": \"'"${HOME_DIR}"'/bin/codx-junior-cjinstalled\"' "${DESCRIPTOR}"; then
+    pass "update descriptor names the installation (in-app updates)"
+else
+    fail "update descriptor names the installation (in-app updates)" "$(head -n3 "${DESCRIPTOR}" 2>/dev/null)"
+fi
+CHECKED=$((CHECKED + 1))
+if grep -q '^CODX_JUNIOR_MODE=local$' "${TMP}/installer-state.env" 2>/dev/null \
+    && grep -q '^CODX_JUNIOR_INSTANCE=cjinstalled$' "${TMP}/installer-state.env" 2>/dev/null; then
+    pass "installer selections are saved for the next run"
+else
+    fail "installer selections are saved for the next run"
+fi
+
+# --- 9. saved selections become defaults ------------------------------------
+REUSE_STATE="${TMP}/state-reuse.env"
+cat > "${REUSE_STATE}" <<EOF
+CODX_JUNIOR_MODE=local
+CODX_JUNIOR_DEV=1
+CODX_JUNIOR_INSTANCE=state-reuse
+CODX_JUNIOR_HOME=${TMP}/state-home
+CODX_JUNIOR_PROJECTS_PATH=${TMP}/state-projects
+CODX_JUNIOR_WEB_PORT=19995
+CODX_JUNIOR_AI_PROVIDER=deepseek
+CODX_JUNIOR_AI_API_KEY=sk-state
+EOF
+run "${ROOT}" env CODX_JUNIOR_INSTALLER_STATE="${REUSE_STATE}" bash "${INSTALLER}" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "dev_mode=1" && out_has "instance=state-reuse"; then
+    pass "saved selections are reused as defaults"
+else
+    fail "saved selections are reused as defaults" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "web_port=19995" && out_has "state_file=${REUSE_STATE}"; then
+    pass "saved port and state path are reported"
+else
+    fail "saved port and state path are reported"
+fi
+
+# --- 10. changing the instance resets instance-derived paths -----------------
+MIX_STATE="${TMP}/mix-state.env"
+cat > "${MIX_STATE}" <<EOF
+CODX_JUNIOR_MODE=dind
+CODX_JUNIOR_INSTANCE=demo-codx-junior-ai
+CODX_JUNIOR_HOME=${TMP}/instances/demo-codx-junior-ai
+CODX_DATA_DIR=${TMP}/instances/demo-codx-junior-ai/data
+CODX_JUNIOR_PROJECTS_PATH=${TMP}/instances/demo-codx-junior-ai/data/projects
+CODX_JUNIOR_DOMAIN=demo.codx-junior.ai
+CODX_JUNIOR_TRAEFIK=slave
+CODX_PROXY_NETWORK=docker_default
+CODX_MASTER_CERT_RESOLVER=myresolver
+CODX_MASTER_ENTRYPOINT=websecure
+CODX_JUNIOR_AI_PROVIDER=deepseek
+CODX_JUNIOR_AI_API_KEY=sk-state
+EOF
+run_input "${TMP}/target-mix
+
+n
+dev.codx-junior.ai
+
+
+
+
+n
+
+
+
+
+
+
+
+y" "${ROOT}" env CODX_JUNIOR_INSTALLER_STATE="${MIX_STATE}" \
+    bash "${INSTALLER}" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] \
+    && out_has "home=${TMP}/target-mix" \
+    && out_has "projects=${TMP}/target-mix/data/projects"; then
+    pass "changing the instance recomputes home and projects"
+else
+    fail "changing the instance recomputes home and projects" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
+fi
+
+# Hidden codx-junior project flag.
+run "${ROOT}" bash "${INSTALLER}" --mode local --hidden --provider deepseek --key sk-test \
+    --home "$(new_home hidden)" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "hidden=1"; then
+    pass "--hidden marks the codx-junior project as hidden"
+else
+    fail "--hidden marks the codx-junior project as hidden" "rc=${RUN_RC}"
+fi
+
+# Upgrade without --image must move a pinned saved tag back to latest.
+run "${ROOT}" env CODX_JUNIOR_IMAGE=codxjuniorai/codx-junior:old \
+    bash "${INSTALLER}" --mode local --upgrade --dry-run \
+    --provider deepseek --key sk-test --home "$(new_home upgrade)"
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "image=codxjuniorai/codx-junior:latest"; then
+    pass "--upgrade refreshes the app image unless --image is explicit"
+else
+    fail "--upgrade refreshes the app image unless --image is explicit" "rc=${RUN_RC}"
+fi
+
+# --- 11. config command ------------------------------------------------------
 # The command form is `config` (not a flag).
 run "${ROOT}" bash "${INSTALLER}" --mode local --provider deepseek --key sk-test \
     --home "$(new_home cfg)" --instance cjcfg config
@@ -232,17 +440,9 @@ else
 fi
 
 # --- 10. interactive wizard (no args / --interactive) -----------------------
-run_input() {
-    local input="$1" dir="$2"
-    shift 2
-    set +e
-    ( cd "${dir}" && printf '%s\n' "${input}" | \
-        env -u CODX_JUNIOR_DOMAIN CODX_JUNIOR_INTERACTIVE=1 "$@" ) >"${RUN_OUT}" 2>"${RUN_ERR}"
-    RUN_RC=$?
-    set -e
-}
-
-run_input "local
+run_input "${TMP}/target-local
+local
+n
 
 
 
@@ -260,16 +460,17 @@ else
     fail "interactive local wizard uses defaults and accepts answers" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
 fi
 CHECKED=$((CHECKED + 1))
-if err_has "Deployment mode (local|server|slave|dind)"; then
+if err_has "Deployment mode (local|server|dind)"; then
     pass "wizard prints the mode prompt with its default"
 else
     fail "wizard prints the mode prompt with its default"
 fi
 
-run_input "dind
-slave
-slave
+run_input "${TMP}/target-dind
+dind
+n
 demo.codx-junior.ai
+slave
 traefik
 letsencrypt
 websecure
@@ -283,7 +484,7 @@ sk-test
 
 y" "${ROOT}" bash "${INSTALLER}" --dry-run
 CHECKED=$((CHECKED + 1))
-if [[ ${RUN_RC} -eq 0 ]] && out_has "mode      : dind (slave)" && out_has "sysbox    : 1"; then
+if [[ ${RUN_RC} -eq 0 ]] && out_has "mode      : dind (server)" && out_has "sysbox    : 1"; then
     pass "interactive DIND slave wizard configures proxy and Sysbox"
 else
     fail "interactive DIND slave wizard configures proxy and Sysbox" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
@@ -295,11 +496,12 @@ else
     fail "interactive DIND slave wizard keeps the public domain"
 fi
 
-# --- 11. dind + local + slave ------------------------------------------------
-run_input "dind
-local
-slave
+# --- 11. dind slave joins the external Traefik network ----------------------
+run_input "${TMP}/target-dind2
+dind
+n
 demo.codx-junior.ai
+slave
 traefik
 letsencrypt
 websecure
@@ -313,25 +515,69 @@ sk-test
 
 y" "${ROOT}" bash "${INSTALLER}" --dry-run
 CHECKED=$((CHECKED + 1))
-if [[ ${RUN_RC} -eq 0 ]] && out_has "traefik_mode=slave" && out_has "dind_mode=local"; then
-    pass "dind local slave combines local access with the slave proxy"
+if [[ ${RUN_RC} -eq 0 ]] && out_has "traefik_mode=slave" && out_has "dind_mode=server"; then
+    pass "dind slave keeps the inner installation in server mode"
 else
-    fail "dind local slave combines local access with the slave proxy" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
+    fail "dind slave keeps the inner installation in server mode" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
 fi
 CHECKED=$((CHECKED + 1))
-if out_has "docker-compose.slave.yaml" && out_has "docker-compose.local.yaml"; then
-    pass "dind local slave includes both proxy and local-publish overlays"
+if out_has "docker-compose.slave.yaml" && ! out_has "docker-compose.local.yaml"; then
+    pass "dind slave joins the Traefik network without a local publish overlay"
 else
-    fail "dind local slave includes both proxy and local-publish overlays"
+    fail "dind slave joins the Traefik network without a local publish overlay"
 fi
 CHECKED=$((CHECKED + 1))
 if out_has "domains=demo.codx-junior.ai" && out_has "public_url=https://demo.codx-junior.ai"; then
-    pass "dind local slave keeps the public domain"
+    pass "dind slave keeps the public domain"
 else
-    fail "dind local slave keeps the public domain"
+    fail "dind slave keeps the public domain"
 fi
 
-# --- 12. the root front door delegates ---------------------------------------
+# --- 12. dev option -----------------------------------------------------------
+run_input "${TMP}/target-dev
+local
+y
+
+
+
+
+
+deepseek
+sk-test
+
+n
+y" "${ROOT}" bash "${INSTALLER}" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "mode=local" && out_has "dev_mode=1"; then
+    pass "interactive dev option selects the live checkout"
+else
+    fail "interactive dev option selects the live checkout" "rc=${RUN_RC} $(head -n1 "${RUN_ERR}")"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "image=codxjuniorai/codx-junior:dev" && out_has "docker-compose.dev.yaml"; then
+    pass "dev option uses the dev image and overlay"
+else
+    fail "dev option uses the dev image and overlay"
+fi
+
+run "${ROOT}" bash "${INSTALLER}" --mode local --dev --traefik slave \
+    --domain dev.codx-junior.ai --proxy-network traefik \
+    --provider deepseek --key sk-test --home "${ROOT}/tmp/dev-slave" --dry-run
+CHECKED=$((CHECKED + 1))
+if [[ ${RUN_RC} -eq 0 ]] && out_has "docker-compose.dev.yaml" \
+    && out_has "docker-compose.slave.yaml" && out_has "docker-compose.local.yaml"; then
+    pass "dev option composes with slave Traefik and local access"
+else
+    fail "dev option composes with slave Traefik and local access" "rc=${RUN_RC}"
+fi
+CHECKED=$((CHECKED + 1))
+if out_has "public_url=https://dev.codx-junior.ai" && out_has "source=${ROOT}"; then
+    pass "dev option keeps the public domain and checkout source path"
+else
+    fail "dev option keeps the public domain and checkout source path"
+fi
+
+# --- 13. the root front door delegates ---------------------------------------
 run "${ROOT}" bash "${ROOT}/install.sh" --version
 CHECKED=$((CHECKED + 1))
 if [[ ${RUN_RC} -eq 0 ]] && out_has "codx-junior install.sh 2.0.0"; then

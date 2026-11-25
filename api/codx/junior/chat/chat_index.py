@@ -49,6 +49,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
+from codx.junior.chat.chat_fingerprint import message_fingerprint
+
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
@@ -183,6 +185,7 @@ CREATE TABLE IF NOT EXISTS messages (
   updated_at   TEXT,
   preview      TEXT,
   content_hash TEXT,
+  sanitized_hash TEXT,
   hide         INTEGER NOT NULL DEFAULT 0,
   unsent       INTEGER NOT NULL DEFAULT 0,
   done         INTEGER NOT NULL DEFAULT 1,
@@ -426,6 +429,15 @@ class ChatIndexStore:
             self._drop_all(conn)
             version = 0
         conn.executescript(SCHEMA)
+        # Incremental migration: ``sanitized_hash`` is the manifest that lets a
+        # restarted process reuse the messages already sanitised on disk. Old
+        # databases get the column as NULL, which simply means "sanitise it
+        # again on the next write" (never wrong, just slower once).
+        message_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(messages)")
+        }
+        if "sanitized_hash" not in message_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN sanitized_hash TEXT")
         self._ensure_fts(conn)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.execute(
@@ -648,12 +660,35 @@ class ChatIndexStore:
     # ------------------------------------------------------------------
     # Upsert / delete
     # ------------------------------------------------------------------
-    def upsert_chat(self, document: Dict[str, Any], path: str) -> None:
-        """Write one chat (metadata + message rows + search entries)."""
+    def upsert_chat(
+        self,
+        document: Dict[str, Any],
+        path: str,
+        changed_messages: Optional[Iterable[str]] = None,
+        trusted: bool = False,
+    ) -> None:
+        """Write one chat (metadata + message rows + search entries).
+
+        :param document: Sanitised chat document exactly as written to disk.
+        :param path: Canonical chat file path.
+        :param changed_messages: ``doc_id`` values whose message row changed.
+            When given, unchanged rows (same ``doc_id`` and ``seq``) are left
+            untouched, so a streamed update costs O(changed) instead of
+            re-upserting the whole conversation. ``None`` means "re-sync every
+            message" (cold start / file changed under us / rebuild).
+        :param trusted: True only when the document comes from
+            :meth:`ChatManager.store_chat` (every string sanitised by this
+            process). Only then the per-message sanitisation fingerprint is
+            recorded, which lets a restarted process skip re-sanitising an
+            unchanged message. A document read from disk/rebuild must pass
+            False: it may have been edited outside the platform.
+        """
         if not document or not str(document.get("id") or "").strip():
             return
         with self._transaction() as conn:
-            self._upsert_document(conn, document, path)
+            self._upsert_document(
+                conn, document, path, changed_messages, trusted=trusted
+            )
 
     def delete_chat(self, chat_id: str) -> None:
         """Remove a chat and its derived rows (per-user state is kept)."""
@@ -686,7 +721,12 @@ class ChatIndexStore:
     # Projection
     # ------------------------------------------------------------------
     def _upsert_document(
-        self, conn: sqlite3.Connection, document: Dict[str, Any], path: str
+        self,
+        conn: sqlite3.Connection,
+        document: Dict[str, Any],
+        path: str,
+        changed_messages: Optional[Iterable[str]] = None,
+        trusted: bool = False,
     ) -> None:
         """Insert/replace one chat and its messages/search rows."""
         chat_id = str(document.get("id"))
@@ -796,7 +836,7 @@ class ChatIndexStore:
             [values.get(name) for name in columns],
         )
 
-        self._sync_messages(conn, chat_id, messages)
+        self._sync_messages(conn, chat_id, messages, changed_messages, trusted)
         self._sync_legacy_reads(conn, chat_id, messages)
         self._sync_participants(conn, chat_id, users, assignees, profiles, messages)
         self._sync_chat_search(
@@ -812,6 +852,7 @@ class ChatIndexStore:
             },
         )
 
+
     @staticmethod
     def _cover_image(messages: Sequence[Dict[str, Any]]) -> Optional[str]:
         """First image of the conversation, for task cards."""
@@ -826,25 +867,61 @@ class ChatIndexStore:
         return None
 
     def _sync_messages(
-        self, conn: sqlite3.Connection, chat_id: str, messages: Sequence[Dict[str, Any]]
+        self,
+        conn: sqlite3.Connection,
+        chat_id: str,
+        messages: Sequence[Dict[str, Any]],
+        changed_messages: Optional[Iterable[str]] = None,
+        trusted: bool = False,
     ) -> None:
-        """Upsert message rows and their search entries; remove deleted rows."""
+        """Upsert message rows and their search entries; remove deleted rows.
+
+        When *changed_messages* is provided, rows whose ``doc_id`` is NOT in it
+        and whose ``seq`` did not move are skipped entirely (no UPDATE, no FTS
+        insert, no content hashing). A streamed update then costs O(changed)
+        instead of re-writing every message of the conversation.
+
+        :param conn: Connection of the current transaction.
+        :param chat_id: Chat whose messages are being synced.
+        :param messages: Messages of the sanitised document, in order.
+        :param changed_messages: ``doc_id`` values that changed; ``None`` to
+            re-sync every row.
+        """
+        changed: Optional[set] = None
+        existing_seq: Dict[str, int] = {}
+        if changed_messages is not None:
+            changed = {str(doc_id) for doc_id in changed_messages}
+            existing_seq = {
+                str(row[0]): int(row[1])
+                for row in conn.execute(
+                    "SELECT doc_id, seq FROM messages WHERE chat_id=?", (chat_id,)
+                )
+            }
         incoming: List[str] = []
         for seq, message in enumerate(messages):
             doc_id = str(message.get("doc_id") or f"seq-{seq}")
             incoming.append(doc_id)
+            if (
+                changed is not None
+                and doc_id not in changed
+                and existing_seq.get(doc_id) == seq
+            ):
+                # Unchanged row: nothing to upsert, nothing to re-index.
+                continue
             content = str(message.get("content") or "")
             think = str(message.get("think") or "")
             content_hash = _text_hash(content + "\x00" + think)
             conn.execute(
                 "INSERT INTO messages(chat_id, doc_id, seq, role, user, profiles, "
-                "created_at, updated_at, preview, content_hash, hide, unsent, done, "
-                "error, cost) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "created_at, updated_at, preview, content_hash, sanitized_hash, "
+                "hide, unsent, done, error, cost) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(chat_id, doc_id) DO UPDATE SET "
                 "seq=excluded.seq, role=excluded.role, user=excluded.user, "
                 "profiles=excluded.profiles, created_at=excluded.created_at, "
                 "updated_at=excluded.updated_at, preview=excluded.preview, "
-                "content_hash=excluded.content_hash, hide=excluded.hide, "
+                "content_hash=excluded.content_hash, "
+                "sanitized_hash=excluded.sanitized_hash, hide=excluded.hide, "
                 "unsent=excluded.unsent, done=excluded.done, error=excluded.error, "
                 "cost=excluded.cost",
                 (
@@ -858,6 +935,7 @@ class ChatIndexStore:
                     _iso(message.get("updated_at")),
                     _preview(content),
                     content_hash,
+                    message_fingerprint(message) if trusted else None,
                     1 if message.get("hide") else 0,
                     1 if message.get("unsent") else 0,
                     1 if message.get("done", True) else 0,
@@ -1271,6 +1349,30 @@ class ChatIndexStore:
         """Return ``path -> "mtime_ns:size"`` for every indexed chat."""
         rows = self.connection().execute("SELECT path, sig FROM chats").fetchall()
         return {row[0]: row[1] for row in rows if row[1]}
+
+    def message_hashes(self, chat_id: str) -> Dict[str, str]:
+        """Return ``{doc_id: sanitized_hash}`` for a chat's messages.
+
+        Only rows written by :meth:`ChatManager.store_chat` carry a fingerprint
+        (``trusted=True``); anything else is absent from the map. The write path
+        uses it to recognise messages that are ALREADY sanitised on disk, so a
+        restarted process does not have to re-scan the whole conversation before
+        its first save.
+
+        :param chat_id: Chat whose message fingerprints to read.
+        :return: Mapping of ``doc_id`` to the sanitised fingerprint.
+        """
+        if not chat_id:
+            return {}
+        try:
+            rows = self.connection().execute(
+                "SELECT doc_id, sanitized_hash FROM messages "
+                "WHERE chat_id=? AND sanitized_hash IS NOT NULL",
+                (str(chat_id),),
+            )
+            return {str(row[0]): str(row[1]) for row in rows}
+        except sqlite3.Error:  # pragma: no cover - defensive
+            return {}
 
     # ------------------------------------------------------------------
     # Read: search

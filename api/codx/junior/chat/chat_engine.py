@@ -1123,6 +1123,40 @@ class ChatEngine:
                 "and keep all other content as it is."
             )
 
+        # Company assistant chats (provisioned by
+        # codx.junior.company.assistant_chat) get the live company catalog and a
+        # role-aware tool gate. The profile is `codx-junior` and grants `*`, but
+        # a read-only company member must not be able to write through the chat.
+        try:
+            meta = getattr(chat, "meta_data", None) or {}
+            company_id = str(meta.get("company_id") or "") if isinstance(meta, dict) else ""
+            if company_id:
+                from codx.junior.company.assistant_chat import (
+                    company_assistant_context,
+                    company_assistant_tool_allowlist,
+                )
+
+                context = company_assistant_context(company_id, self.user)
+                if context:
+                    chat_profiles_system_content = concat_content([
+                        chat_profiles_system_content,
+                        context,
+                    ])
+                allowed = company_assistant_tool_allowlist(company_id, self.user)
+                if allowed is not None:
+                    if "*" in chat_tools:
+                        from codx.junior.tools import expand_tool_allowlist
+
+                        chat_tools = sorted(expand_tool_allowlist(chat_tools))
+                    chat_tools = [tool for tool in chat_tools if tool in allowed]
+                    logger.info(
+                        "Company assistant: read-only tool set (%d tools) for %s",
+                        len(chat_tools),
+                        getattr(self.user, "username", "anonymous"),
+                    )
+        except Exception as ex:
+            logger.warning("Company assistant context/tool gate failed: %s", ex)
+
         return {
             "chat_profiles_system_content": chat_profiles_system_content,
             "chat_profile_names": chat_profile_names,

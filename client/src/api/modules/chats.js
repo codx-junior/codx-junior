@@ -70,16 +70,24 @@ export const chatsModule = (API) => ({
     return API.post('/api/chats/message', { chat_id: chatId, message })
   },
 
-  async updateMessage(chatId, message) {
-    return API.put('/api/chats/message', { chat_id: chatId, message })
+  async updateMessage(chatId, message, { compact = false } = {}) {
+    const suffix = compact ? '?compact=1' : ''
+    return API.put(`/api/chats/message${suffix}`, { chat_id: chatId, message })
+  },
+
+  // Batch counterpart: ONE request (and one chat write) for several messages.
+  async updateMessages(chatId, messages, { compact = false } = {}) {
+    const suffix = compact ? '?compact=1' : ''
+    return API.put(`/api/chats/messages${suffix}`, { chat_id: chatId, messages })
   },
 
   async removeMessage(chatId, messageDocId) {
     return API.delete(`/api/chats/message?chat_id=${chatId}&message_doc_id=${messageDocId}`)
   },
 
-  async updateMetadata(chatId, metadata) {
-    return API.post('/api/chats/metadata', { chat_id: chatId, metadata })
+  async updateMetadata(chatId, metadata, { compact = false } = {}) {
+    const suffix = compact ? '?compact=1' : ''
+    return API.post(`/api/chats/metadata${suffix}`, { chat_id: chatId, metadata })
   },
 
   // ── Recurrence ("every friday at noon") ────────────────────────────────
@@ -130,8 +138,9 @@ export const chatsModule = (API) => ({
     return API.put(`/api/chats?chat_only=0`, chat)
   },
 
-  saveChatInfo(chat) {
-    return API.put(`/api/chats?chat_only=1`, chat)
+  saveChatInfo(chat, { compact = false } = {}) {
+    const flag = compact ? '&compact=1' : ''
+    return API.put(`/api/chats?chat_only=1${flag}`, chat)
   },
 
   delete(chat) {

@@ -62,7 +62,8 @@ deleted; a new simplified **Settings** section at `/<slug>/settings` replaces
 the current company settings section.
 
 **Decisions already taken:** no `/company` prefix; slug-only company segment;
-per-link `include_children` inheritance; Follow-up roots only; ACME only on
+per-link `include_children` inheritance; Follow-up scoped to the company’s
+linked projects; ACME only on
 fresh installs; settings as a company shell section. The remaining questions
 are in §9.
 
@@ -460,33 +461,28 @@ that is where you actually open a project.
 
 ### 3.7 Global views (Follow-up and Tasks)
 
-The **Follow-up** view is the one explicitly named. It should be company-scoped
-end to end, and **roots only** (decided):
+The **Follow-up** view is the one explicitly named. It must be company-scoped
+end to end and aggregate **every project the company defines**:
 
 - `store/planning.js` remains the data source of the Planning view; the
-  Follow-up review already sends `project_ids` to `/api/tasks`, so company
-  scoping becomes “send the active company’s **root project ids** instead of the
-  active project + children”. Recommended: a backend `company_id` parameter
-  with a `roots_only` scope (or simply
-  `project_ids = company.rootProjectIds`), so the server never falls back to
-  “every project the user can access”.
+  Follow-up review sends `project_ids` to `/api/tasks`, so company scoping
+  becomes “send `company.linkedProjectIds` instead of the active project +
+  children”. The list is the direct company links (the Projects section), or
+  the whole catalogue when the company uses the `*` wildcard. The server never
+  falls back to “every project the user can access”.
 - Changing company resets the planning store (`loadToken`, tasks, filters), so
   no tasks from the previous company leak in.
 - The view shows the company name in its header (“Follow-up · ACME”) and the
-  board filter only contains boards of the company’s root projects.
-- **Child projects never appear in Follow-up**, even when the company sees
-  them. This is the strict root roll-up; child-project work stays in the
-  advanced board/task views and in the company’s project views. This is a
-  deliberate trade-off: a task that exists only on a child project will not be
-  in the global Follow-up.
-- **Tasks** (`GlobalTasksView`): project filter options = company roots,
-  “All projects” → “All company projects”, default scope = all company roots
-  (not just the active project), and the stale `defaultProjectIds` comment/code
-  is fixed. Whether the table also shows child-project tasks is a remaining
-  decision (§9, Q1): either roots only (consistent with Follow-up) or roots by
-  default with an explicit “include child projects” control.
-- Board management / Calendar: align later (same getter), not part of the first
-  cut unless you want it.
+  board filter only contains boards of the company’s projects.
+- **No unrelated project appears in Follow-up.** A project from another
+  company is never selectable. Child projects are included only when they are
+  part of the company definition: inherited under a linked root, manually
+  linked, or part of an `all_projects` wildcard.
+- **Tasks** (`GlobalTasksView`): project filter options and the default scope
+  are `company.linkedProjectIds`; “All projects” means “All company projects”.
+  The stale `defaultProjectIds` comment/code is kept in sync with this.
+- Board management / Calendar: align with the same getter; Calendar exposes
+  only the company’s projects.
 
 ### 3.8 Simplified settings (business setup)
 
@@ -602,7 +598,7 @@ and every company section name) are rejected at creation and on edit.
 | GET | `/api/companies/{id}/snapshot` | require membership; add `slug`, `all_projects`, `visible_project_ids`, `root_project_ids`, per-project `include_children` / `inherited` / `visible`, and children grouped by parent |
 | POST | `/api/companies/{id}/projects` | accept `include_children` |
 | PUT | `/api/companies/{id}/projects` | accept `links: [{project_id, include_children}]`; keep `project_ids` for compatibility |
-| GET | `/api/tasks` | optional `company_id` + `roots_only` (Follow-up uses roots only) |
+| GET | `/api/tasks` | optional `company_id` + company project scope (Follow-up uses `linkedProjectIds`) |
 | POST | `/api/chats/search` | optional `company_id` + `roots_only` for Follow-up / planning |
 | GET | `/api/companies/references` | filter projects to the caller’s accessible set; include parent/root info |
 
@@ -651,7 +647,7 @@ client does not have to re-implement hierarchy rules in three places.
 | Company projects | `components/company/CompanyProjectsPanel.vue` | all/selected mode; include-children checkbox; manual child picker; child counts; inherited badges |
 | New settings | `components/company/CompanySettings.vue` (replace/extend) | Company / AI / People / Projects / Advanced; checklist; advanced link; hosted at `/<slug>/settings` |
 | Project pickers | `components/ProjectDetailt.vue`, `ProjectList.vue`, `ProjectTreeSelect.vue`, `chat/ChatSelector.vue`, `ProjectOverview.vue`, `layout/PinnedProjectsSwitcher.vue` | source from `company.companyProjects`; roots first, inherited children nested; “Add to company” gate |
-| Global views | `store/planning.js`, `views/GlobalTasksView.vue`, `components/kanban/board/FollowupView.vue` | send company scope; reset on switch; root selector; header company label |
+| Global views | `store/planning.js`, `views/GlobalTasksView.vue`, `components/kanban/board/FollowupView.vue` | send company scope; reset on switch; company project selector; header company label |
 | Menus | `components/main-menu/*`, `layout/AppsSection.vue`, `mobile/*` | “Company”, “Advanced view”, “Back to company”, “Advanced settings”; remove workspace-mode switches and solopreneur |
 | Config | `config/apps.js`, `config/appComponentsMap.js`, `config/mobile.js` | remove solopreneur/company panel; add advanced/settings routes |
 | Cleanup | solopreneur files, `CompanySimpleHome.vue`, comments, i18n | delete unused code and keys |
@@ -678,7 +674,7 @@ rewrite.
 | `all_projects` vs materialized links double source of truth | Medium | One derived `visible_project_ids()`; snapshot exposes it; migration keeps links for display |
 | Settings view duplicates the technical page | Medium | Clear naming (“Settings” vs “Advanced settings”); reuse blocks; one AI editor |
 | Removing `workspace_mode` surprises users who chose work mode | Low | Keep field deprecated; company is always the landing (decided) |
-| Company shell depends on an active project in places (task creation, team generation) | Medium | Pass company-selected project explicitly; no implicit active project in company actions |
+| Company shell depends on an active project in places (task creation, team generation) | Medium | Pass a company-linked project explicitly; no implicit active project in company actions |
 | Performance: loading all company snapshots for the switcher | Low | `GET /api/companies` summary only; snapshot loaded for the active company |
 
 ---
@@ -722,8 +718,8 @@ Confirm §9. Freeze the route shape and the visibility model.
   agree on the visible set.
 
 ### Phase 3 — global views and settings
-- Follow-up company scope, **roots only**; Tasks table company-root filter;
-  reset on switch.
+- Follow-up company scope (`company.linkedProjectIds`); Tasks table company
+  project filter; reset on switch.
 - New simplified Settings view (Company/AI/People/Projects/Advanced) at
   `/<slug>/settings`.
 - Rename the technical page to “Advanced settings”; link from the new view.
@@ -750,8 +746,8 @@ Confirm §9. Freeze the route shape and the visibility model.
 - security tests: list/get/snapshot filtered by membership; non-member gets
   403/404; default owner is set; list summary has no business numbers for
   non-members.
-- `test_task_table.py` / chat search: `company_id` + `roots_only` scope returns
-  exactly the root set; child tasks are excluded from Follow-up.
+- `test_task_table.py` / chat search: `company_id` / linked project scope
+  returns exactly the company’s project set; unrelated projects are excluded.
 - keep `test_company_business.py` green (snapshot shape).
 
 **Frontend (`client/tests`, node:test)**
@@ -775,7 +771,8 @@ Confirm §9. Freeze the route shape and the visibility model.
    → only the root is listed; add a child manually → it appears.
 5. Advanced view from Studio B → `/<studio-b>/workspace/<project>/desktop`;
    only its projects in the selector; click “Back to company” → Studio B home.
-6. Follow-up → only Studio B roots, never ACME’s and never child-project tasks.
+6. Follow-up → only Studio B projects, never ACME’s and never a project that
+   belongs to another company.
 7. Rename Studio B → display name changes, slug stays by default; if the slug is
    edited, the old URL still redirects.
 8. Delete Studio B → lands on the default company.
@@ -794,8 +791,9 @@ Confirm §9. Freeze the route shape and the visibility model.
 - **D3. Child projects:** per-link `include_children` with dynamic inheritance
   (children discovered later follow the flag; when off, the owner adds them
   manually).
-- **D4. Follow-up scope:** root projects only; child-project tasks do not appear
-  in Follow-up.
+- **D4. Follow-up scope:** every project the company defines
+  (`company.linkedProjectIds`: direct links, or the whole catalogue in `*`
+  mode). No project outside the company is ever in scope.
 - **D5. Existing default company:** only new installations get `ACME`; an
   existing default keeps its name. No automatic rename.
 - **D6. Simplified settings:** a company shell section at `/<slug>/settings`
@@ -803,11 +801,10 @@ Confirm §9. Freeze the route shape and the visibility model.
 
 ### Remaining questions
 
-**Q1. Tasks table (`/acme/workspace/.../tasks`) child scope.** Should it also be
-roots only (consistent with Follow-up), or list company roots but allow child
-tasks through an “include child projects” control? I recommend roots by
-default + an explicit include control, because Tasks is the workspace-level
-table and hiding child work there would make it hard to find.
+**Q1. Tasks table (`/acme/workspace/.../tasks`) child scope.** Resolved: the
+company Tasks table uses the same `company.linkedProjectIds` scope as Follow-up
+(direct links; the wildcard company includes the whole catalogue). No
+installation-wide fallback is allowed.
 
 **Q2. New company default project mode.** “Choose projects” (recommended) or
 “All projects (*)”? The default company is always `*`; a new company likely

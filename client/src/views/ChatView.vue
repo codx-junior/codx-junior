@@ -26,7 +26,7 @@ import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
          (`hideChatSidebar`). In channel mode it stays as a slim action rail:
          task features are hidden inside (see ChatSidebar's `channelMode`). -->
     <ChatSidebar
-      v-if="!isMobile"
+      v-if="!isMobile && !hideChatSidebar"
       :workingChat="theChat"
       :rootChat="rootChat"
       :allChats="hierarchyChats"
@@ -52,7 +52,7 @@ import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
     </ChatSidebar>
 
     <!-- Mobile sidebar drawer -->
-    <template v-if="isMobile">
+    <template v-if="isMobile && !hideChatSidebar">
       <div
         v-if="showMobileSidebar"
         class="fixed inset-0 z-40 bg-base-300/60 backdrop-blur-sm animate-fade-in"
@@ -104,6 +104,8 @@ import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
         :targetProject="targetProject"
         :mobile-expanded="showMobileDetails"
         :channelMode="isChannelChat"
+        :hide-sidebar="!!hideChatSidebar"
+        :hide-back="!!hideChatSidebar"
         @toggle-mobile-details="showMobileDetails = $event"
         @update-name="saveChatInfo"
         @toggle-hidden="showHidden = !showHidden"
@@ -166,6 +168,7 @@ import ChatLogsPanel from '@/components/ChatLogsPanel.vue'
              through the existing `hide-files-header` prop. -->
         <Chat 
           v-else
+          ref="chatBox"
           :chat="theChat" 
           :showHidden="showHidden" 
           :childrenChats="childrenChats"
@@ -514,6 +517,21 @@ export default {
       // composer's "Voice calls…" item and the home screen.
       return this.$voice.startCall({ chat: this.theChat })
     },
+    /**
+     * Send a predefined prompt through the real composer/send pipeline.
+     *
+     * Used by the company assistant's starter queries. The child Chat owns the
+     * optimistic message, the profile mention and the streaming turn; this
+     * method only forwards the click. Returns false when the composer is not
+     * ready or a turn is already running.
+     */
+    async sendPrompt(prompt) {
+      const value = String(prompt || '').trim()
+      if (!value) return false
+      const component = this.$refs.chatBox
+      if (!component || typeof component.sendPrompt !== 'function') return false
+      return await component.sendPrompt(value)
+    },
     async init() {
       const sourceChat = this.chat || this.params?.params?.chat || {}
       if (!sourceChat?.id) throw new Error('No chat id to load')
@@ -770,6 +788,7 @@ export default {
       this.navigateToChats()
     },
     toggleMobileSidebar() {
+      if (this.hideChatSidebar) return
       this.showMobileSidebar = !this.showMobileSidebar
     },
     closeMobileSidebar() {

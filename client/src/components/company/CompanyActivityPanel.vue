@@ -37,7 +37,7 @@ function openMission(item) {
     <header class="flex items-center justify-between gap-2">
       <div>
         <h2 class="text-lg font-black flex items-center gap-2">
-          <i class="fa-solid fa-clock-rotate-left text-primary"></i> Activity
+          <i class="fa-solid fa-clock-rotate-left text-primary-ink"></i> Activity
         </h2>
         <p class="text-xs text-base-content/50">
           The audit journal: every company change, dispatch and autonomy cycle, in order.
@@ -61,12 +61,12 @@ function openMission(item) {
         <ol v-else class="relative border-l border-base-content/10 ml-2">
           <li v-for="event in events" :key="event.id" class="ml-4 pb-4 last:pb-0">
             <span class="absolute -left-[9px] mt-1 w-4 h-4 rounded-full bg-base-100 border border-base-content/20 grid place-items-center">
-              <i :class="[eventMeta(event.type).icon, eventMeta(event.type).tone, 'text-[8px]']"></i>
+              <i :class="[eventMeta(event.type).icon, eventMeta(event.type).tone, 'text-[10px]']"></i>
             </span>
             <div class="flex items-start gap-2">
               <div class="min-w-0 flex-1">
                 <p class="text-sm leading-snug">{{ event.message || event.type }}</p>
-                <p class="text-[10px] text-base-content/40">
+                <p class="text-xs text-base-content/40">
                   <span class="font-mono">{{ event.type }}</span> · {{ event.actor }} ·
                   <span :title="formatDateTime(event.at)">{{ relativeTime(event.at) }}</span>
                   <span v-if="event.mission_id" class="ml-1">· mission {{ event.mission_id.slice(-6) }}</span>
@@ -80,7 +80,7 @@ function openMission(item) {
       <!-- Attention -->
       <section class="rounded-2xl border border-base-content/10 bg-base-100 p-4 h-fit">
         <h3 class="font-bold text-sm flex items-center gap-2 mb-3">
-          <i class="fa-solid fa-circle-exclamation text-error"></i> Needs a human
+          <i class="fa-solid fa-circle-exclamation text-error-ink"></i> Needs a human
         </h3>
         <div v-if="attention.length" class="flex flex-col gap-2">
           <div v-for="item in attention" :key="`${item.reason}-${item.mission_id || item.project_id}`"
@@ -90,8 +90,8 @@ function openMission(item) {
               <span class="text-xs font-semibold truncate flex-1">{{ item.title }}</span>
               <span class="badge badge-xs badge-ghost">{{ item.reason }}</span>
             </div>
-            <p v-if="item.last_error" class="text-[10px] text-error/70 mt-1 line-clamp-2">{{ item.last_error }}</p>
-            <div v-if="openMission(item)" class="text-[10px] text-base-content/40 mt-1">
+            <p v-if="item.last_error" class="text-xs text-error-ink/70 mt-1 line-clamp-2">{{ item.last_error }}</p>
+            <div v-if="openMission(item)" class="text-xs text-base-content/40 mt-1">
               {{ openMission(item).team_id }} · {{ openMission(item).project_id }}
             </div>
           </div>

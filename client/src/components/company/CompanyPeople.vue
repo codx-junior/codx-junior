@@ -83,7 +83,7 @@ function ask(prompt) {
   <div class="space-y-5">
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-info">People</p>
+        <p class="text-xs font-bold uppercase tracking-[0.2em] text-info-ink">People</p>
         <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">{{ t('people.title') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Humans and AI teammates with clear roles. The owner is always in control of access, money and final decisions.
@@ -101,24 +101,24 @@ function ask(prompt) {
 
     <section class="grid grid-cols-2 gap-3 md:grid-cols-4">
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
-        <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">Humans</p>
+        <p class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">Humans</p>
         <p class="mt-1 text-2xl font-black">{{ members.length }}</p>
-        <p class="mt-1 text-[10px] text-base-content/40">Owners, managers and team members</p>
+        <p class="mt-1 text-xs text-base-content/40">Owners, managers and team members</p>
       </div>
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
-        <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">AI teammates</p>
+        <p class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">AI teammates</p>
         <p class="mt-1 text-2xl font-black">{{ aiTeammates.length }}</p>
-        <p class="mt-1 text-[10px] text-base-content/40">{{ onDuty }} on duty right now</p>
+        <p class="mt-1 text-xs text-base-content/40">{{ onDuty }} on duty right now</p>
       </div>
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
-        <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">Teams</p>
+        <p class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">Teams</p>
         <p class="mt-1 text-2xl font-black">{{ teams.length }}</p>
-        <p class="mt-1 text-[10px] text-base-content/40">Hybrid operating units</p>
+        <p class="mt-1 text-xs text-base-content/40">Hybrid operating units</p>
       </div>
       <div class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
-        <p class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">Departments</p>
+        <p class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">Departments</p>
         <p class="mt-1 text-2xl font-black">{{ units.length }}</p>
-        <p class="mt-1 text-[10px] text-base-content/40">Functions the company runs on</p>
+        <p class="mt-1 text-xs text-base-content/40">Functions the company runs on</p>
       </div>
     </section>
 
@@ -126,10 +126,10 @@ function ask(prompt) {
       <div class="flex items-center justify-between">
         <div>
           <h2 class="flex items-center gap-2 text-sm font-black">
-            <span class="grid h-7 w-7 place-items-center rounded-lg bg-info/15 text-info"><i class="fa-solid fa-user-tie text-[11px]"></i></span>
+            <span class="grid h-7 w-7 place-items-center rounded-lg bg-info/15 text-info-ink"><i class="fa-solid fa-user-tie text-xs"></i></span>
             Humans
           </h2>
-          <p class="mt-1 text-[11px] text-base-content/45">The people who own decisions, money and customer relationships.</p>
+          <p class="mt-1 text-xs text-base-content/45">The people who own decisions, money and customer relationships.</p>
         </div>
         <button v-if="canAdmin" class="btn btn-ghost btn-xs gap-1" @click="ask('Who is in the company?')">Ask about people</button>
       </div>
@@ -137,7 +137,7 @@ function ask(prompt) {
       <div v-if="!members.length" class="mt-3 rounded-2xl border border-dashed border-base-content/20 p-8 text-center">
         <i class="fa-solid fa-user-group text-2xl text-base-content/20"></i>
         <p class="mt-2 text-sm font-bold">No people yet.</p>
-        <p class="text-[11px] text-base-content/45">Invite the owner, a manager or a teammate to work with the AI.</p>
+        <p class="text-xs text-base-content/45">Invite the owner, a manager or a teammate to work with the AI.</p>
         <button v-if="canAdmin" class="btn btn-primary btn-xs mt-3" @click="ask('Add a person')">Add the first person</button>
       </div>
 
@@ -153,9 +153,9 @@ function ask(prompt) {
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-1.5">
                 <h3 class="truncate text-sm font-black">{{ member.username }}</h3>
-                <span v-if="member.owner" class="badge badge-xs badge-warning gap-1"><i class="fa-solid fa-crown text-[7px]"></i> owner</span>
+                <span v-if="member.owner" class="badge badge-xs badge-warning gap-1"><i class="fa-solid fa-crown text-[10px]"></i> owner</span>
               </div>
-              <p class="truncate text-[10px] text-base-content/45">{{ member.title || member.email || 'codx-junior user' }}</p>
+              <p class="truncate text-xs text-base-content/45">{{ member.title || member.email || 'codx-junior user' }}</p>
             </div>
             <span class="badge badge-xs" :class="member.company_role === 'admin' ? 'badge-error' : member.company_role === 'manager' ? 'badge-primary' : 'badge-ghost'">{{ roleLabel(member) }}</span>
           </div>
@@ -169,10 +169,10 @@ function ask(prompt) {
 
           <div class="mt-3 flex items-center gap-1.5 border-t border-base-content/5 pt-2.5">
             <button class="btn btn-ghost btn-xs gap-1" @click="ask(`What is ${member.username} working on and what do they need from me?`)">
-              <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i> Ask AI
+              <i class="fa-solid fa-wand-magic-sparkles text-[11px]"></i> Ask AI
             </button>
             <button v-if="canAdmin" class="btn btn-ghost btn-xs ml-auto" @click="ask(`Change the company role of ${member.username}`)">
-              <i class="fa-solid fa-user-shield text-[9px]"></i> Role
+              <i class="fa-solid fa-user-shield text-[11px]"></i> Role
             </button>
           </div>
         </article>
@@ -183,10 +183,10 @@ function ask(prompt) {
       <div class="flex items-center justify-between">
         <div>
           <h2 class="flex items-center gap-2 text-sm font-black">
-            <span class="grid h-7 w-7 place-items-center rounded-lg bg-primary/15 text-primary"><i class="fa-solid fa-robot text-[11px]"></i></span>
+            <span class="grid h-7 w-7 place-items-center rounded-lg bg-primary/15 text-primary-ink"><i class="fa-solid fa-robot text-xs"></i></span>
             AI teammates
           </h2>
-          <p class="mt-1 text-[11px] text-base-content/45">Each one has a role, a team, a schedule and a budget. Ask them anything.</p>
+          <p class="mt-1 text-xs text-base-content/45">Each one has a role, a team, a schedule and a budget. Ask them anything.</p>
         </div>
         <span class="badge badge-sm badge-success badge-outline">{{ onDuty }} on duty</span>
       </div>
@@ -194,7 +194,7 @@ function ask(prompt) {
       <div v-if="!aiTeammates.length" class="mt-3 rounded-2xl border border-dashed border-base-content/20 p-8 text-center">
         <i class="fa-solid fa-robot text-2xl text-base-content/20"></i>
         <p class="mt-2 text-sm font-bold">No AI teammates yet.</p>
-        <p class="text-[11px] text-base-content/45">Generate a team from a business need; codx-junior creates the roles and the team.</p>
+        <p class="text-xs text-base-content/45">Generate a team from a business need; codx-junior creates the roles and the team.</p>
         <button v-if="canManage" class="btn btn-primary btn-xs mt-3" @click="emit('new-team')">Build my team</button>
       </div>
 
@@ -202,7 +202,7 @@ function ask(prompt) {
         <article v-for="profile in aiTeammates" :key="profile.name"
                  class="group rounded-2xl border border-base-content/10 bg-base-100 p-4 transition hover:border-primary/30">
           <div class="flex items-start gap-2.5">
-            <div class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 text-primary">
+            <div class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-primary/20 to-secondary/20 text-primary-ink">
               <i class="fa-solid fa-robot"></i>
             </div>
             <div class="min-w-0 flex-1">
@@ -212,11 +212,11 @@ function ask(prompt) {
                   {{ actorInfo(profile.name)?.config?.enabled ? 'on duty' : 'paused' }}
                 </span>
               </div>
-              <p class="truncate text-[10px] text-base-content/45">{{ profile.role }}</p>
+              <p class="truncate text-xs text-base-content/45">{{ profile.role }}</p>
             </div>
           </div>
 
-          <p class="mt-3 line-clamp-2 min-h-8 text-[11px] leading-relaxed text-base-content/55">
+          <p class="mt-3 line-clamp-2 min-h-8 text-xs leading-relaxed text-base-content/55">
             {{ profile.responsibility || 'A teammate of the company. Ask for a status or assign a goal.' }}
           </p>
 
@@ -224,23 +224,23 @@ function ask(prompt) {
             <span v-for="team in profile.teams.slice(0, 3)" :key="team" class="badge badge-xs badge-outline">{{ team }}</span>
           </div>
 
-          <div class="mt-3 grid grid-cols-2 gap-1.5 border-t border-base-content/5 pt-2.5 text-[10px]">
+          <div class="mt-3 grid grid-cols-2 gap-1.5 border-t border-base-content/5 pt-2.5 text-xs">
             <div>
-              <p class="text-[9px] uppercase text-base-content/35">Schedule</p>
+              <p class="text-[11px] uppercase text-base-content/35">Schedule</p>
               <p class="truncate font-semibold">{{ schedule(actorInfo(profile.name)) }}</p>
             </div>
             <div>
-              <p class="text-[9px] uppercase text-base-content/35">Today</p>
+              <p class="text-[11px] uppercase text-base-content/35">Today</p>
               <p class="font-semibold">{{ actorSpend(actorInfo(profile.name)).toFixed(2) }}<template v-if="actorBudget(actorInfo(profile.name))"> / {{ actorBudget(actorInfo(profile.name)) }}</template> cxj</p>
             </div>
           </div>
 
           <div class="mt-2 flex items-center gap-1.5">
             <button class="btn btn-ghost btn-xs gap-1" @click="ask(`What is ${profile.name} working on and how is it performing?`)">
-              <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i> Ask
+              <i class="fa-solid fa-wand-magic-sparkles text-[11px]"></i> Ask
             </button>
             <button class="btn btn-ghost btn-xs ml-auto" @click="ask(`Give me a performance review of ${profile.name}`)">
-              <i class="fa-solid fa-chart-line text-[9px]"></i> Review
+              <i class="fa-solid fa-chart-line text-[11px]"></i> Review
             </button>
           </div>
         </article>

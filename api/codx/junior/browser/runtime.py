@@ -70,6 +70,35 @@ PREFETCH_TTL_SECONDS = float(os.environ.get("CODX_BROWSER_PREFETCH_TTL", "20") o
 PREFETCH_SCREENSHOT = os.environ.get("CODX_BROWSER_PREFETCH_SCREENSHOT", "1").lower() not in (
     "0", "false", "no", "off",
 )
+#: Background "browser image": a cheap, continuously refreshed view of what is
+#: open (tabs, active tab text and viewport screenshot) so the model can see the
+#: page without paying a CDP round-trip (and often without an extra model turn).
+IMAGE_INTERVAL_SECONDS = max(0.5, float(os.environ.get("CODX_BROWSER_IMAGE_INTERVAL", "1.0") or 1.0))
+IMAGE_SCREENSHOT_MIN_SECONDS = 2.0
+IMAGE_TEXT_CHARS = 6000
+#: Age under which a cached text/screenshot is served instead of a live call.
+IMAGE_FRESH_SECONDS = 3.0
+#: Mutation counter: one integer read tells the loop whether the tab changed.
+IMAGE_VERSION_SCRIPT = """
+() => {
+  if (window.__codxPageVersion === undefined) {
+    window.__codxPageVersion = 0;
+    let scheduled = false;
+    const bump = () => { window.__codxPageVersion = (window.__codxPageVersion || 0) + 1; };
+    try {
+      new MutationObserver(() => {
+        if (scheduled) return;
+        scheduled = true;
+        setTimeout(() => { scheduled = false; bump(); }, 80);
+      }).observe(document.documentElement || document, { subtree: true, childList: true });
+    } catch (error) { /* not available */ }
+    document.addEventListener('visibilitychange', bump);
+    window.addEventListener('load', bump);
+  }
+  return window.__codxPageVersion || 0;
+}
+"""
+
 PREFETCH_DISABLED = os.environ.get("CODX_BROWSER_PREFETCH", "1").lower() in (
     "0", "false", "no", "off",
 )
@@ -109,6 +138,12 @@ class BrowserRuntime:
         self._prefetch: Dict[str, Any] = {}
         self._prefetch_task: Optional[asyncio.Task] = None
         self._prefetch_event: Optional[asyncio.Event] = None
+        # Background browser image (see IMAGE_* above): per-page cached summary
+        # and viewport screenshot, keyed by page identity.
+        self._image_tabs: Dict[int, Dict[str, Any]] = {}
+        self._image_at = 0.0
+        self._image_task: Optional[asyncio.Task] = None
+        self._connects = 0
 
     @staticmethod
     def _configured_user_wait_seconds() -> float:
@@ -151,6 +186,7 @@ class BrowserRuntime:
         except RuntimeError:
             self.loop = None
         self._browser = browser
+        self._connects += 1
         self._connected_at = time.monotonic()
         self._last_used = time.monotonic()
         self._last_url = (self.session.current_url or "").strip()
@@ -161,12 +197,16 @@ class BrowserRuntime:
         await browser.install_recorder()
         self._start_watcher()
         self._start_prefetch()
+        self._start_image()
         return browser
 
     async def _disconnect_browser(self) -> None:
         self._stop_watcher()
         self._stop_prefetch()
+        self._stop_image()
         self._prefetch.clear()
+        self._image_tabs.clear()
+        self._image_at = 0.0
         self._recorded_pages.clear()
         browser, self._browser = self._browser, None
         if browser is not None:
@@ -320,6 +360,169 @@ class BrowserRuntime:
             "at": time.monotonic(),
             "captured_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    # ------------------------------------------------------------------
+    # Background browser image (tabs + active text + viewport screenshot)
+    # ------------------------------------------------------------------
+    def _start_image(self) -> None:
+        """Start the image loop (idempotent; one task per runtime)."""
+        if self._image_task is not None and not self._image_task.done():
+            return
+        try:
+            self._image_task = asyncio.get_running_loop().create_task(self._image_loop())
+        except RuntimeError:
+            self._image_task = None
+
+    def _stop_image(self) -> None:
+        task, self._image_task = self._image_task, None
+        if task is None or task.done():
+            return
+        try:
+            if task is not asyncio.current_task():
+                task.cancel()
+        except RuntimeError:
+            pass
+
+    async def _image_loop(self) -> None:
+        """Keep a cheap, always-current picture of the browser in memory.
+
+        Every tick reads the tab list and, for the active tab, a single
+        mutation-counter integer. Text and a viewport screenshot are refreshed
+        only when that counter or the URL changed, and the loop yields while an
+        action is in flight so it never competes with the user's/AI's call.
+        """
+        try:
+            while not self._closed:
+                browser = self._browser
+                if browser is None or not browser.is_alive():
+                    break
+                try:
+                    await self._refresh_image(browser)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as ex:
+                    logger.debug("Browser image refresh failed: %s", ex)
+                await asyncio.sleep(IMAGE_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._image_task = None
+
+    async def _refresh_image(self, browser) -> None:
+        """Refresh the cached tab list/text/screenshot (one short CDP pass)."""
+        context = getattr(browser, "context", None)
+        if context is None or self._lock.locked():
+            return
+        try:
+            pages = list(context.pages)
+        except Exception:
+            return
+        if not pages:
+            return
+        active = getattr(browser, "page", None)
+        now = time.monotonic()
+        seen = set()
+        entries: List[Dict[str, Any]] = []
+        for index, page in enumerate(pages):
+            try:
+                url = page.url or ""
+                title = await page.title() or ""
+            except Exception:
+                continue
+            key = id(page)
+            seen.add(key)
+            entry = self._image_tabs.get(key) or {}
+            entry.update({"index": index, "url": url, "title": title, "active": page is active})
+            entry.setdefault("text", "")
+            entry.setdefault("text_at", 0.0)
+            entry.setdefault("screenshot", "")
+            entry.setdefault("screenshot_at", 0.0)
+            if page is active:
+                version = None
+                try:
+                    version = await page.evaluate(IMAGE_VERSION_SCRIPT)
+                except Exception:
+                    version = None
+                changed = version is not None and (
+                    entry.get("version") != version or entry.get("url") != url
+                )
+                entry["version"] = version
+                if changed or not entry.get("text"):
+                    try:
+                        text = await page.evaluate(
+                            "() => (document.body ? document.body.innerText : '')"
+                        )
+                        entry["text"] = str(text or "")[:IMAGE_TEXT_CHARS]
+                        entry["text_at"] = now
+                    except Exception as ex:
+                        logger.debug("Image text capture failed: %s", ex)
+                fresh_enough = now - float(entry.get("screenshot_at") or 0) < IMAGE_SCREENSHOT_MIN_SECONDS
+                if not fresh_enough and (changed or not entry.get("screenshot")):
+                    try:
+                        raw = await page.screenshot(type="jpeg", quality=55)
+                        entry["screenshot"] = (
+                            "data:image/jpeg;base64," + base64.b64encode(raw).decode("utf-8")
+                        )
+                        entry["screenshot_at"] = now
+                    except Exception as ex:
+                        logger.debug("Image screenshot capture failed: %s", ex)
+            self._image_tabs[key] = entry
+            entries.append(entry)
+        for key in list(self._image_tabs):
+            if key not in seen:
+                del self._image_tabs[key]
+        self._image_at = now
+
+    def image(self) -> Dict[str, Any]:
+        """Return the cached browser image (no CDP call, no lock).
+
+        The payload is what the model needs to decide its next step: every tab
+        with URL/title, the active tab's text summary, the age of each piece and
+        the last viewport screenshot of the active tab.
+        """
+        now = time.monotonic()
+        tabs: List[Dict[str, Any]] = []
+        for entry in self._image_tabs.values():
+            text_at = float(entry.get("text_at") or 0)
+            shot_at = float(entry.get("screenshot_at") or 0)
+            tabs.append({
+                "index": entry.get("index"),
+                "url": entry.get("url") or "",
+                "title": entry.get("title") or "",
+                "active": bool(entry.get("active")),
+                "text": entry.get("text") or "",
+                "text_age_ms": int((now - text_at) * 1000) if text_at else None,
+                "screenshot": entry.get("screenshot") or "",
+                "screenshot_age_ms": int((now - shot_at) * 1000) if shot_at else None,
+            })
+        tabs.sort(key=lambda tab: tab.get("index") if tab.get("index") is not None else 0)
+        return {
+            "age_ms": int((now - self._image_at) * 1000) if self._image_at else None,
+            "connected": bool(self._browser is not None and self._browser.is_alive()),
+            "connected_for_s": (
+                round(now - self._connected_at, 1) if self._connected_at else None
+            ),
+            "reconnects": max(0, self._connects - 1),
+            "tabs": tabs,
+        }
+
+    def cached_text(self, max_age: float = IMAGE_FRESH_SECONDS) -> str:
+        """Active tab text from the image, when it is fresh enough."""
+        now = time.monotonic()
+        for entry in self._image_tabs.values():
+            if entry.get("active") and entry.get("text"):
+                if now - float(entry.get("text_at") or 0) <= max_age:
+                    return str(entry.get("text") or "")
+        return ""
+
+    def cached_screenshot(self, max_age: float = IMAGE_FRESH_SECONDS) -> str:
+        """Active tab viewport screenshot from the image, when it is fresh."""
+        now = time.monotonic()
+        for entry in self._image_tabs.values():
+            if entry.get("active") and entry.get("screenshot"):
+                if now - float(entry.get("screenshot_at") or 0) <= max_age:
+                    return str(entry.get("screenshot") or "")
+        return ""
 
     def _cached_prefetch(self, max_age: float = PREFETCH_TTL_SECONDS) -> Dict[str, Any]:
         """Return the prefetch cache when it is still about the current page."""
@@ -529,6 +732,37 @@ class BrowserRuntime:
                 self._schedule_prefetch()
             return result
 
+    async def begin_external_ai(self) -> None:
+        """
+        Reserve the shared browser for an external agent run (browser-use).
+
+        The external agent talks CDP to the same Chromium, so it cannot use
+        :meth:`run` for every step.  This performs the two checks :meth:`run`
+        does around an action - wait for the human/AI control lease and tag the
+        page recorder as ``ai`` - once for the whole run.  Pair it with
+        :meth:`end_external_ai`.
+        """
+        if self._closed:
+            raise RuntimeError("Browser runtime is closed")
+        await self._wait_for_control(read_only=False)
+        async with self._lock:
+            browser = await self._ensure_browser()
+            self._touch()
+            # The agent will change the page: never serve the old snapshot.
+            self._prefetch = {}
+            await browser.set_actor("ai")
+
+    async def end_external_ai(self) -> None:
+        """Release the ``ai`` actor marker after an external agent run."""
+        browser = self._browser
+        if browser is None:
+            return
+        try:
+            await browser.set_actor("user")
+        except Exception as ex:  # pragma: no cover - best effort
+            logger.debug("Could not reset the browser actor: %s", ex)
+        self._touch()
+
     async def run_steps(
         self,
         steps: List[Dict[str, Any]],
@@ -721,12 +955,23 @@ class BrowserRuntime:
     async def screenshot(
         self, full_page: bool = False, prefer_cached: bool = True
     ) -> str:
-        """Return a screenshot, using the prefetched viewport when possible."""
+        """Return a screenshot, using the cached viewport when possible."""
         if prefer_cached and not full_page:
             cached = self._cached_prefetch()
             if cached.get("screenshot"):
                 return str(cached["screenshot"])
+            image = self.cached_screenshot()
+            if image:
+                return image
         return await self.run("get_screenshot", full_page=full_page, read_only=True)
+
+    async def text(self, prefer_cached: bool = True) -> str:
+        """Visible page text, served from the browser image when it is fresh."""
+        if prefer_cached:
+            cached = self.cached_text()
+            if cached:
+                return cached
+        return await self.run("get_text", read_only=True)
 
     async def page_brief(self) -> Dict[str, Any]:
         """Return a tiny page summary for the tool result after an action.

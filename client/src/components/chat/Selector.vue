@@ -11,7 +11,7 @@ import Modal from '../Modal.vue'
       :title="buttonTitle"
     >
       <i :class="icon"></i>
-      <span class="text-xs font-semibold">{{ label }}</span>
+      <span v-if="!compact" class="text-xs font-semibold">{{ label }}</span>
 
       <!-- Single select: selected badge or "default" label -->
       <template v-if="isSingle">
@@ -29,25 +29,28 @@ import Modal from '../Modal.vue'
         </div>
       </template>
 
-      <!-- Multi select: up to 1 badge + overflow count -->
+      <!-- Multi select: the owner may render the active items (the profile
+           selector shows them as avatars); the default is a compact badge. -->
       <div v-else-if="activeItems.length" class="flex gap-1 items-center">
-        <div
-          v-for="item in activeItems.slice(0, 1)"
-          :key="item.name"
-          class="badge badge-sm gap-1 badge-primary"
-          :title="item.description"
-        >
-          <img
-            v-if="item.avatar"
-            :src="item.avatar"
-            :alt="item.name"
-            class="w-3 h-3 rounded-full object-cover"
-          />
-          <span class="truncate text-xs max-w-[60px]">{{ item.name }}</span>
-        </div>
-        <div v-if="activeItems.length > 1" class="badge badge-sm badge-primary text-xs">
-          +{{ activeItems.length - 1 }}
-        </div>
+        <slot name="selected" :items="activeItems">
+          <div
+            v-for="item in activeItems.slice(0, 1)"
+            :key="item.name"
+            class="badge badge-sm gap-1 badge-primary"
+            :title="item.description"
+          >
+            <img
+              v-if="item.avatar"
+              :src="item.avatar"
+              :alt="item.name"
+              class="w-3 h-3 rounded-full object-cover"
+            />
+            <span class="truncate text-xs max-w-[60px]">{{ item.name }}</span>
+          </div>
+          <div v-if="activeItems.length > 1" class="badge badge-sm badge-primary text-xs">
+            +{{ activeItems.length - 1 }}
+          </div>
+        </slot>
       </div>
     </button>
 
@@ -207,6 +210,12 @@ export default {
     emptyLabel: {
       type: String,
       default: ''
+    },
+    // Compact trigger: hide the text label, keeping the icon and the active
+    // items. Used in narrow headers where the label would crowd the toolbar.
+    compact: {
+      type: Boolean,
+      default: false
     },
     // When enabled, a quick filter bar is shown using each item's `tags` array
     enableTagFilter: {

@@ -1347,6 +1347,30 @@ export default {
     async addSearchMessage() {
       return this.addNewMessage({ task_item: 'search' })
     },
+    /**
+     * Send a predefined prompt without touching the editor.
+     *
+     * The company assistant's starter chips use this so the message follows
+     * exactly the same optimistic/store/streaming path as typed input. While a
+     * turn is running it refuses (the caller can show a busy hint) instead of
+     * queueing a second agent turn.
+     */
+    async sendPrompt(prompt) {
+      const value = String(prompt || '').trim()
+      if (!value || this.readOnly || this.waiting || this.isProcessing) return false
+      try {
+        await this.postMyMessage({ message: value })
+        await this.sendChatMessage(this.chat)
+        this.$emit('send-message', this.lastMessage)
+        return true
+      } catch (error) {
+        this.$ui?.addNotification?.({
+          text: error?.message || 'Could not send the prompt',
+          type: 'error'
+        })
+        return false
+      }
+    },
     async sendMessage() {
       if (this.editMessage !== null) {
         await this.updateMessage()

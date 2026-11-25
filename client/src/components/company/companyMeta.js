@@ -7,12 +7,12 @@
 
 export const MISSION_STATUS_META = {
   draft: { label: 'Draft', badge: 'badge-ghost', icon: 'fa-regular fa-file-lines', tone: 'text-base-content/60' },
-  ready: { label: 'Ready', badge: 'badge-info', icon: 'fa-solid fa-circle-play', tone: 'text-info' },
-  running: { label: 'Running', badge: 'badge-primary', icon: 'fa-solid fa-person-running', tone: 'text-primary' },
-  paused: { label: 'Paused', badge: 'badge-warning', icon: 'fa-solid fa-pause', tone: 'text-warning' },
-  blocked: { label: 'Blocked', badge: 'badge-error', icon: 'fa-solid fa-circle-exclamation', tone: 'text-error' },
-  review: { label: 'In review', badge: 'badge-accent', icon: 'fa-solid fa-magnifying-glass', tone: 'text-accent' },
-  done: { label: 'Done', badge: 'badge-success', icon: 'fa-solid fa-circle-check', tone: 'text-success' },
+  ready: { label: 'Ready', badge: 'badge-info', icon: 'fa-solid fa-circle-play', tone: 'text-info-ink' },
+  running: { label: 'Running', badge: 'badge-primary', icon: 'fa-solid fa-person-running', tone: 'text-primary-ink' },
+  paused: { label: 'Paused', badge: 'badge-warning', icon: 'fa-solid fa-pause', tone: 'text-warning-ink' },
+  blocked: { label: 'Blocked', badge: 'badge-error', icon: 'fa-solid fa-circle-exclamation', tone: 'text-error-ink' },
+  review: { label: 'In review', badge: 'badge-accent', icon: 'fa-solid fa-magnifying-glass', tone: 'text-accent-ink' },
+  done: { label: 'Done', badge: 'badge-success', icon: 'fa-solid fa-circle-check', tone: 'text-success-ink' },
   cancelled: { label: 'Cancelled', badge: 'badge-ghost', icon: 'fa-solid fa-ban', tone: 'text-base-content/40' }
 }
 
@@ -156,31 +156,31 @@ export function money(value) {
 // ── Event labels ────────────────────────────────────────────────────────────
 
 export const EVENT_META = {
-  'company.created': { icon: 'fa-solid fa-building', tone: 'text-primary' },
-  'company.updated': { icon: 'fa-solid fa-pen', tone: 'text-info' },
-  'org_unit.created': { icon: 'fa-solid fa-sitemap', tone: 'text-primary' },
-  'org_unit.updated': { icon: 'fa-solid fa-pen', tone: 'text-info' },
-  'org_unit.deleted': { icon: 'fa-solid fa-trash', tone: 'text-error' },
-  'team.created': { icon: 'fa-solid fa-people-group', tone: 'text-primary' },
-  'team.updated': { icon: 'fa-solid fa-pen', tone: 'text-info' },
-  'team.deleted': { icon: 'fa-solid fa-trash', tone: 'text-error' },
-  'team.members.added': { icon: 'fa-solid fa-user-plus', tone: 'text-success' },
-  'team.members.removed': { icon: 'fa-solid fa-user-minus', tone: 'text-warning' },
-  'team.lead.changed': { icon: 'fa-solid fa-crown', tone: 'text-warning' },
-  'project.linked': { icon: 'fa-solid fa-link', tone: 'text-primary' },
-  'project.updated': { icon: 'fa-solid fa-pen', tone: 'text-info' },
-  'project.unlinked': { icon: 'fa-solid fa-link-slash', tone: 'text-warning' },
-  'mission.created': { icon: 'fa-solid fa-flag', tone: 'text-primary' },
-  'mission.updated': { icon: 'fa-solid fa-pen', tone: 'text-info' },
-  'mission.deleted': { icon: 'fa-solid fa-trash', tone: 'text-error' },
-  'mission.dispatched': { icon: 'fa-solid fa-rocket', tone: 'text-primary' },
-  'mission.dispatch_failed': { icon: 'fa-solid fa-triangle-exclamation', tone: 'text-error' },
-  'mission.run_synced': { icon: 'fa-solid fa-rotate', tone: 'text-info' },
-  'mission.transitioned': { icon: 'fa-solid fa-arrow-right-arrow-left', tone: 'text-info' },
-  'mission.accepted': { icon: 'fa-solid fa-circle-check', tone: 'text-success' },
-  'mission.rejected': { icon: 'fa-solid fa-rotate-left', tone: 'text-warning' },
-  'autopilot.cycle': { icon: 'fa-solid fa-robot', tone: 'text-primary' },
-  'autonomy.updated': { icon: 'fa-solid fa-sliders', tone: 'text-info' }
+  'company.created': { icon: 'fa-solid fa-building', tone: 'text-primary-ink' },
+  'company.updated': { icon: 'fa-solid fa-pen', tone: 'text-info-ink' },
+  'org_unit.created': { icon: 'fa-solid fa-sitemap', tone: 'text-primary-ink' },
+  'org_unit.updated': { icon: 'fa-solid fa-pen', tone: 'text-info-ink' },
+  'org_unit.deleted': { icon: 'fa-solid fa-trash', tone: 'text-error-ink' },
+  'team.created': { icon: 'fa-solid fa-people-group', tone: 'text-primary-ink' },
+  'team.updated': { icon: 'fa-solid fa-pen', tone: 'text-info-ink' },
+  'team.deleted': { icon: 'fa-solid fa-trash', tone: 'text-error-ink' },
+  'team.members.added': { icon: 'fa-solid fa-user-plus', tone: 'text-success-ink' },
+  'team.members.removed': { icon: 'fa-solid fa-user-minus', tone: 'text-warning-ink' },
+  'team.lead.changed': { icon: 'fa-solid fa-crown', tone: 'text-warning-ink' },
+  'project.linked': { icon: 'fa-solid fa-link', tone: 'text-primary-ink' },
+  'project.updated': { icon: 'fa-solid fa-pen', tone: 'text-info-ink' },
+  'project.unlinked': { icon: 'fa-solid fa-link-slash', tone: 'text-warning-ink' },
+  'mission.created': { icon: 'fa-solid fa-flag', tone: 'text-primary-ink' },
+  'mission.updated': { icon: 'fa-solid fa-pen', tone: 'text-info-ink' },
+  'mission.deleted': { icon: 'fa-solid fa-trash', tone: 'text-error-ink' },
+  'mission.dispatched': { icon: 'fa-solid fa-rocket', tone: 'text-primary-ink' },
+  'mission.dispatch_failed': { icon: 'fa-solid fa-triangle-exclamation', tone: 'text-error-ink' },
+  'mission.run_synced': { icon: 'fa-solid fa-rotate', tone: 'text-info-ink' },
+  'mission.transitioned': { icon: 'fa-solid fa-arrow-right-arrow-left', tone: 'text-info-ink' },
+  'mission.accepted': { icon: 'fa-solid fa-circle-check', tone: 'text-success-ink' },
+  'mission.rejected': { icon: 'fa-solid fa-rotate-left', tone: 'text-warning-ink' },
+  'autopilot.cycle': { icon: 'fa-solid fa-robot', tone: 'text-primary-ink' },
+  'autonomy.updated': { icon: 'fa-solid fa-sliders', tone: 'text-info-ink' }
 }
 
 export function eventMeta(type) {
@@ -193,11 +193,11 @@ export function eventMeta(type) {
 
 export const DEAL_STAGES = [
   { id: 'lead', label: 'Lead', tone: 'text-base-content/60', badge: 'badge-ghost' },
-  { id: 'qualified', label: 'Qualified', tone: 'text-info', badge: 'badge-info' },
-  { id: 'proposal', label: 'Proposal', tone: 'text-primary', badge: 'badge-primary' },
-  { id: 'negotiation', label: 'Negotiation', tone: 'text-warning', badge: 'badge-warning' },
-  { id: 'won', label: 'Won', tone: 'text-success', badge: 'badge-success' },
-  { id: 'lost', label: 'Lost', tone: 'text-error', badge: 'badge-error' }
+  { id: 'qualified', label: 'Qualified', tone: 'text-info-ink', badge: 'badge-info' },
+  { id: 'proposal', label: 'Proposal', tone: 'text-primary-ink', badge: 'badge-primary' },
+  { id: 'negotiation', label: 'Negotiation', tone: 'text-warning-ink', badge: 'badge-warning' },
+  { id: 'won', label: 'Won', tone: 'text-success-ink', badge: 'badge-success' },
+  { id: 'lost', label: 'Lost', tone: 'text-error-ink', badge: 'badge-error' }
 ]
 
 export function dealStageMeta(stage) {
@@ -236,9 +236,9 @@ export function companyHealth({ attention = 0, blocked = 0, review = 0, budgetOv
 }
 
 export function healthTone(score) {
-  if (score >= 75) return { label: 'Healthy', tone: 'text-success', stroke: '#34d399' }
-  if (score >= 50) return { label: 'Watch', tone: 'text-warning', stroke: '#fbbf24' }
-  return { label: 'At risk', tone: 'text-error', stroke: '#f87171' }
+  if (score >= 75) return { label: 'Healthy', tone: 'text-success-ink', stroke: '#34d399' }
+  if (score >= 50) return { label: 'Watch', tone: 'text-warning-ink', stroke: '#fbbf24' }
+  return { label: 'At risk', tone: 'text-error-ink', stroke: '#f87171' }
 }
 
 export function initials(name) {

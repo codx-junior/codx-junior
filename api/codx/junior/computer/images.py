@@ -87,6 +87,10 @@ class ComputerImage(BaseModel):
     viewer_user: Optional[str] = Field(default=None, description="Viewer login user (KasmVNC)")
     tags: List[str] = Field(default_factory=list, description="Known/related tags")
     source: str = Field(default="curated", description="curated or live metadata")
+    # Browser sessions only: which engine the image runs and whether the AI can
+    # drive it (Chromium engines expose CDP; Firefox engines are live-view only).
+    browser_engine: Optional[str] = Field(default=None, description="chromium or firefox")
+    supports_cdp: Optional[bool] = Field(default=None, description="AI can drive it over CDP")
 
 
 class ComputerImageListResponse(BaseModel):
@@ -129,6 +133,10 @@ class ImageSpec:
     viewer_user: Optional[str] = None
     name: Optional[str] = None
     docs_url: Optional[str] = None
+    #: Browser sessions: engine family, CDP support and the image's CLI env var.
+    browser_engine: str = ""
+    supports_cdp: bool = True
+    cli_env: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +340,121 @@ def _browseruse_entries() -> List[ComputerImage]:
     )]
 
 
+#: Browser images offered for browser sessions (all from LinuxServer, which
+#: serves Selkies on 3000 and accepts CLI flags through the per-image env var).
+#: ``(app, name, engine, supports_cdp, cli_env, description)``.
+#:
+#: Chromium-family engines expose Chrome DevTools Protocol, which is what the
+#: AI (Playwright and browser-use) drives.  Firefox-family engines have no CDP,
+#: so they are offered as live-view-only sessions (a human can test the site,
+#: the AI cannot drive it).  Safari has no Linux build: test it in a macOS VM
+#: session instead.
+BROWSER_IMAGES: List[Tuple[str, str, str, bool, Optional[str], str]] = [
+    ("chromium", "Chromium", "chromium", True, "CHROME_CLI",
+     "Chromium in a LinuxServer Selkies session. CDP-enabled: the AI and the human share the page."),
+    ("chrome", "Google Chrome", "chromium", True, "CHROME_CLI",
+     "Google Chrome in a LinuxServer Selkies session. CDP-enabled."),
+    ("ungoogled-chromium", "Ungoogled Chromium", "chromium", True, "CHROME_CLI",
+     "Ungoogled Chromium (privacy-hardened Chromium). CDP-enabled."),
+    ("brave", "Brave", "chromium", True, "BRAVE_CLI",
+     "Brave in a LinuxServer Selkies session. CDP-enabled."),
+    ("msedge", "Microsoft Edge", "chromium", True, "EDGE_CLI",
+     "Microsoft Edge for Linux in a LinuxServer Selkies session. CDP-enabled."),
+    ("opera", "Opera", "chromium", True, "OPERA_CLI",
+     "Opera in a LinuxServer Selkies session. CDP-enabled."),
+    ("vivaldi", "Vivaldi", "chromium", True, "VIVALDI_CLI",
+     "Vivaldi in a LinuxServer Selkies session. CDP-enabled."),
+    ("firefox", "Firefox", "firefox", False, "FIREFOX_CLI",
+     "Firefox in a LinuxServer Selkies session. Live view only: Firefox has no CDP, "
+     "so the AI cannot drive it."),
+    ("librewolf", "LibreWolf", "firefox", False, "LIBREWOLF_CLI",
+     "LibreWolf (privacy-hardened Firefox). Live view only: no CDP."),
+    ("zen", "Zen Browser", "firefox", False, None,
+     "Zen Browser (Firefox-based). Live view only: no CDP."),
+    ("mullvad-browser", "Mullvad Browser", "firefox", False, None,
+     "Mullvad Browser (Firefox-based, anti-fingerprinting). Live view only: no CDP."),
+]
+
+#: Documentation root for the LinuxServer browser images.
+BROWSER_DOCS = "https://docs.linuxserver.io/images/"
+
+
+@dataclass(frozen=True)
+class BrowserImageProfile:
+    """Resolved browser-specific profile of an image reference."""
+
+    app: str
+    name: str
+    engine: str
+    supports_cdp: bool
+    cli_env: Optional[str]
+    description: str = ""
+
+
+_BROWSER_APPS: Dict[str, Tuple[str, str, str, bool, Optional[str], str]] = {
+    entry[0]: entry for entry in BROWSER_IMAGES
+}
+
+
+def browser_image_profile(image: Optional[str], provider: Optional[str] = None) -> Optional[BrowserImageProfile]:
+    """
+    Resolve a browser image reference into its engine/CDP profile.
+
+    Args:
+        image: Repository or full image reference (``lscr.io/linuxserver/brave:latest``).
+        provider: Optional provider hint (unused, kept for symmetry).
+
+    Returns:
+        BrowserImageProfile for a known browser image, else None.
+    """
+    raw = (image or "").strip()
+    if not raw:
+        return None
+    repository, _tag = _split_image(raw)
+    app = (repository or "").lower().rsplit("/", 1)[-1]
+    entry = _BROWSER_APPS.get(app)
+    if not entry:
+        return None
+    app, name, engine, supports_cdp, cli_env, description = entry
+    return BrowserImageProfile(
+        app=app,
+        name=name,
+        engine=engine,
+        supports_cdp=bool(supports_cdp),
+        cli_env=cli_env,
+        description=description,
+    )
+
+
+def _browser_entries() -> List[ComputerImage]:
+    """LinuxServer browser images, one catalog entry per browser."""
+    entries: List[ComputerImage] = []
+    for app, name, engine, supports_cdp, cli_env, description in BROWSER_IMAGES:
+        entries.append(ComputerImage(
+            id=f"linuxserver:{app}:latest",
+            provider="linuxserver",
+            repository=f"linuxserver/{app}",
+            image=f"lscr.io/linuxserver/{app}:latest",
+            tag="latest",
+            default_tag="latest",
+            name=name,
+            description=description,
+            category="Browser",
+            icon_url=None,
+            screenshot_url=None,
+            docs_url=f"{BROWSER_DOCS}{app}/",
+            live_view="selkies",
+            live_port=3000,
+            live_scheme="http",
+            strip_prefix=False,
+            control="cdp" if supports_cdp else "none",
+            tags=[app, "linuxserver", "browser", engine, "cdp" if supports_cdp else "live-view-only"],
+            browser_engine=engine,
+            supports_cdp=bool(supports_cdp),
+        ))
+    return entries
+
+
 def all_catalog_images(provider: Optional[str] = None, refresh: bool = False) -> List[ComputerImage]:
     """Return the curated catalog, optionally enriched from upstream APIs."""
     provider = (provider or "").strip().lower() or None
@@ -342,6 +465,8 @@ def all_catalog_images(provider: Optional[str] = None, refresh: bool = False) ->
         images.extend(_kasm_entries())
     if provider in (None, "all", "browseruse", "browser-use"):
         images.extend(_browseruse_entries())
+    if provider in (None, "all", "linuxserver", "lscr"):
+        images.extend(_browser_entries())
     return images
 
 
@@ -353,10 +478,20 @@ def list_images(
     refresh: bool = False,
 ) -> List[ComputerImage]:
     """Filter the catalog by provider, free text and category."""
-    if kind and kind not in ("linux", "desktop", ""):
-        # Windows/macOS images are provided by dockurr, not this library.
-        return []
-    images = all_catalog_images(provider=provider, refresh=refresh)
+    provider_key = (provider or "").strip().lower()
+    if (kind or "").strip().lower() == "browser":
+        # Browser sessions pick a browser image, not a desktop.
+        if provider_key in ("kasmweb", "kasm", "saved", "custom"):
+            return []
+        images = _browser_entries()
+    else:
+        if kind and kind not in ("linux", "desktop", ""):
+            # Windows/macOS images are provided by dockurr, not this library.
+            return []
+        images = all_catalog_images(provider=provider, refresh=refresh)
+        # Desktop/browser-session images are offered on their own kind; the
+        # browser catalog is not part of the desktop library.
+        images = [image for image in images if not image.browser_engine]
     term = (query or "").strip().lower()
     category = (category or "").strip().lower()
     if category:
@@ -486,6 +621,27 @@ def resolve_image(
             viewer_user="kasm_user",
             name=name,
             docs_url=KASM_DOCS,
+        )
+
+    browser_profile = browser_image_profile(raw, provider=hint)
+    if browser_profile is not None:
+        repository, tag = _split_image(raw)
+        tag = tag or "latest"
+        return ImageSpec(
+            provider="linuxserver",
+            image=f"{repository}:{tag}",
+            repository=repository,
+            tag=tag,
+            live_view="selkies",
+            live_port=3000,
+            live_scheme="http",
+            strip_prefix=False,
+            control="cdp" if browser_profile.supports_cdp else "none",
+            name=browser_profile.name,
+            docs_url=f"{BROWSER_DOCS}{browser_profile.app}/",
+            browser_engine=browser_profile.engine,
+            supports_cdp=browser_profile.supports_cdp,
+            cli_env=browser_profile.cli_env,
         )
 
     if hint in ("linuxserver", "lscr") or "linuxserver/webtop" in lowered:

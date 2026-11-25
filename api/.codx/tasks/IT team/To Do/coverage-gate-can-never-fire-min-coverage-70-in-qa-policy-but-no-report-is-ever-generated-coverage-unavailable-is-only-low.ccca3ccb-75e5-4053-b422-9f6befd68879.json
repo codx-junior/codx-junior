@@ -10,7 +10,7 @@
   "parent_project_id": null,
   "child_index": 0,
   "message_id": null,
-  "status": "todo",
+  "status": "onhold",
   "status_history": [
     {
       "doc_id": "fdb9ac16-98ca-49e8-b078-b5563d43097b",
@@ -18,6 +18,14 @@
       "to_status": "todo",
       "user": null,
       "at": "2026-11-18T14:05:53.216515",
+      "meta_data": null
+    },
+    {
+      "doc_id": "091efc85-c540-4256-8b8c-54fec12be79c",
+      "from_status": "todo",
+      "to_status": "onhold",
+      "user": null,
+      "at": "2026-11-23T09:45:59.151916",
       "meta_data": null
     }
   ],
@@ -41,11 +49,11 @@
   "name": "Coverage gate can never fire: min_coverage=70 in qa_policy but no report is ever generated (coverage.unavailable is only LOW)",
   "pinned": false,
   "is_template": false,
-  "description": "## Finding (QA, 2026-11-18)\n\n`qa_policy` declares a real threshold \u2014 `enabled=True min_coverage=70.0 block_above=high fail_closed=False` \u2014 but the gate has **no number to compare it against**, and the missing input is scored as harmless:\n\n- `qa_coverage()` \u2192 `decision: warn`, `findings: 1`, `[low] coverage.unavailable @ -: Generate a report in the test step: pytest --cov=app --cov-report=xml or npm test -- --coverage`.\n- `qa_plan(scope=\"staged\")` \u2192 `coverage: no coverage report found` (23 changed files).\n- Consequence: severity is `low`, `blocked=False`, `requires_approval=False`. A change that adds hundreds of lines with **zero** exercised branches reports `warn` at worst, so the 70 % policy is decorative. Same class of defect as `e5841226` (false green): the gate reports on a thing it did not measure.\n\n## What to do\n\n1. Make the project produce a report. The two runnable suites are plain `pytest` (`cwd='.'`) and `pytest:api` (`cwd='api'`), both invoked as `<api>/.venv/bin/python -m pytest` with **no coverage flags**. Either add `--cov` to the suite definitions in the QA policy (`suites` override) or commit a `pytest.ini` / `pyproject.toml` `[tool:pytest]` section with `addopts = --cov --cov-report=xml` so every run emits `coverage.xml`.\n2. Confirm which path `qa_coverage` looks for (`coverage.xml`, `coverage.json`, istanbul `coverage-summary.json`) and emit the report **there** \u2014 a report written to the wrong relative path is the same as no report.\n3. Decide the missing-report severity deliberately. Recommendation: raise `coverage.unavailable` from `low` to `high` (or set `fail_closed=True`), so an unmeasurable change cannot be reported as `warn`. Policy change with a date and a stated reason, not a workaround \u2014 record the date on this card.\n4. `npm`-based coverage stays impossible until `npm` is on PATH (see `e09bcf77`); do not wait for it to fix the Python half.\n\n## Acceptance (paste evidence on this card)\n\n- `qa_coverage()` \u2192 `decision: allow` with a real `percent` value and `threshold: 70.0`, findings = 0.\n- `qa_plan()` no longer prints `coverage: no coverage report found`.\n- The report file exists and its path is quoted on the card.\n- If the severity is raised: `qa_policy` shows the new value and the card carries the approval line (date + who approved).\n\n## Notes\n\n- Do **not** touch product behaviour to raise the number; only instrument the test run.\n- Owner: `qa_automation` (test tooling). The policy-level severity change needs a human approval line.",
+  "description": "1. Task: the coverage gate has `min_coverage=70.0` but no report to measure \u2014 `qa_plan`/`qa_coverage` reported `coverage: no coverage report found`, classified `low` \u2192 `warn`, so an unmeasured change passed.\n2. Root cause: at `codx/junior/tools/qa_tools.py:371` the `coverage.unavailable` finding was `QaSeverity.LOW`, below `approval_above=medium`, so not measuring was cheaper than measuring at 69 % (line 387 `coverage.below-threshold` is `MEDIUM` \u2192 `require_approval`).\n3. Change made: exactly one line, `severity=QaSeverity.LOW` \u2192 `severity=QaSeverity.MEDIUM`, one hunk, +1/\u22121; no other rule, no refactor, no `--cov` added, `policy_markdown()`/`read_coverage()`/`qa_review_changes` untouched.\n4. Not done / blocked: no suite emits a report \u2014 `pyproject.toml` test extras omit `pytest-cov`, so `--cov --cov-report=xml` would break suites; that half (real percentage + `threshold: 70.0` returning `allow`) stays on card `ccca3ccb`, pending the package.\n5. Verification status: `qa_coverage()` still returned `warn / low` because the API process had not reloaded the module \u2014 the fix takes effect only after reload, then the same call must return `require_approval / medium`; policy decision D2 (dated, reversible by reverting line 371) awaits weekly acknowledgement.",
   "meta_data": null,
   "messages": [
     {
-      "doc_id": null,
+      "doc_id": "4358dd1e-f62f-41e5-ad05-012ee4f902cb",
       "role": "user",
       "task_item": "",
       "content": "Fix the coverage gate: it has a 70 % threshold but no report to measure (`coverage: no coverage report found`), and the missing report is only severity `low`, so an unmeasurable change passes as `warn`.\n\nSteps: add `--cov --cov-report=xml` to the runnable pytest suites (or a `pytest.ini`/`pyproject.toml` `addopts`), verify the file lands on the path `qa_coverage` reads, then propose raising `coverage.unavailable` to `high` (dated policy change, needs human approval).\n\nAcceptance: `qa_coverage()` returns `allow` with a real percent and `threshold: 70.0`, and `qa_plan()` no longer prints `coverage: no coverage report found`. Paste both outputs here.",
@@ -83,10 +91,616 @@
       "error": null,
       "reply_to": null,
       "linked_chat_ids": []
+    },
+    {
+      "doc_id": "67c233f7-75c1-4974-8cc5-4e01e8451f22",
+      "role": "assistant",
+      "task_item": "",
+      "content": "QA shift 2026-11-23T09:2xZ \u2014 **CONFIRMED, and the severity diagnosis is exact.** `qa_coverage` this shift:\n\n```\ndecision: warn        threshold: 70.0\nfindings: 1  [low] coverage.unavailable \u2014 \"Generate a report in the test step: pytest --cov=app --cov-report=xml\"\n```\n\nSo `min_coverage=70.0` is configured, never measured, and its absence is classified **low \u2192 warn**. A project at 0 % measured coverage and a project at 95 % receive the same verdict, and neither can be blocked. `qa_plan` independently reports `coverage: no coverage report found`.\n\nThe policy name promises a gate; the implementation is a suggestion. Two defects, one card:\n1. No report is produced by any suite \u2014 the test commands do not pass `--cov`.\n2. `coverage.unavailable` is `low`, i.e. below `block_above=high` and below `approval_above` (medium), so it cannot even reach `require_approval`.\n\nAcceptance criteria: either the `pytest` suite generates `coverage.xml` (add `--cov=. --cov-report=xml` to the declared argv) making `qa_coverage` read a real percentage, **or** `min_coverage` is documented as advisory-only and `coverage.unavailable` is raised to medium so a release cannot pass with an unmeasured threshold.\n\nNext command: `qa_coverage` must return a measured percentage, not `coverage.unavailable`.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:28:27.475745",
+      "updated_at": "2026-11-23 09:28:27.475759",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "725bcb94-e914-41e2-a709-c613f876c9fa",
+      "role": "user",
+      "task_item": "",
+      "content": "Objective: an UNMEASURED coverage gate can no longer pass as harmless. One-line change. Read this whole message, make ONE edit, then reply. Do not investigate any other card.\n\n## EXACT EDIT (already located by ProjectManager, do not go looking)\n\nFile: `codx/junior/tools/qa_tools.py` \u2014 do NOT search for it with project_locate/read_folder (they time out ~2 of 3 calls).\n\nLine 371, inside `qa_coverage()`, in the `if not report:` branch:\n\n    severity=QaSeverity.LOW,\n\nmust become\n\n    severity=QaSeverity.MEDIUM,\n\n## Why this is the right fix (evidence, measured by reading)\n\n- Line 387, `coverage.below-threshold`: `severity=QaSeverity.MEDIUM` \u2192 with `approval_above=medium` it produces `require_approval`.\n- Line 371, `coverage.unavailable`: `severity=QaSeverity.LOW` \u2192 with `block_above=high` it produces `warn`.\n- So **measuring coverage at 69 % is punished harder than not measuring coverage at all**. Not knowing is strictly cheaper than knowing badly \u2014 the gate actively rewards removing the instrumentation. That inversion is the defect; your edit removes it.\n- Effective policy (read this shift): `enabled=True min_coverage=70.0 block_above=high approval_above=medium fail_closed=False`.\n\n## DO NOT do these\n\n- Do **NOT** add `--cov` to any suite and do **NOT** add `addopts = --cov` to `pyproject.toml`. `pyproject.toml` optional-dependencies lists only `pytest`, `pytest-mock`, `pytest-asyncio` \u2014 **no `pytest-cov`** \u2014 so `--cov` would break every suite with \"unrecognized arguments\". Producing a real report is a separate card (`ccca3ccb` second half, blocked on the package being installed).\n- Do not touch `policy_markdown()`, `read_coverage()`, or `qa_review_changes`.\n- Do not change any other severity.\n- Do not refactor, reformat, or reorder imports.\n\n## Acceptance (paste the evidence on this card)\n\n1. `project_changes(paths=[\"codx/junior/tools/qa_tools.py\"])` showing exactly 1 file, +1/-1, one hunk at line 371. Quote the diff.\n2. State plainly one of: \"`qa_coverage()` could not be executed \u2014 no shell/exec tool in this runtime, the change is verified by reading only\", OR the actual `qa_coverage()` output. Do not claim a run you did not perform.\n3. State that the change applies only after the API process reloads the module.\n4. Add one line to your reply: `Policy decision D2 (raise coverage.unavailable low\u2192medium) \u2014 recorded by ProjectManager 2026-11-23, reversible by reverting line 371; pending management acknowledgement in the weekly report.`\n\nIf line 371 no longer reads `severity=QaSeverity.LOW`, stop and report what you found instead of editing something else.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:45:02.356870",
+      "updated_at": "2026-11-23 09:45:02.356882",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "qa_automation"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "4e23faad-87e6-4260-aa9d-28c0b5d9a926",
+      "role": "user",
+      "task_item": "",
+      "content": "Fix the coverage gate: it has a 70 % threshold but no report to measure (`coverage: no coverage report found`), and the missing report is only severity `low`, so an unmeasurable change passes as `warn`.\n\nSteps: add `--cov --cov-report=xml` to the runnable pytest suites (or a `pytest.ini`/`pyproject.toml` `addopts`), verify the file lands on the path `qa_coverage` reads, then propose raising `coverage.unavailable` to `high` (dated policy change, needs human approval).\n\nAcceptance: `qa_coverage()` returns `allow` with a real percent and `threshold: 70.0`, and `qa_plan()` no longer prints `coverage: no coverage report found`. Paste both outputs here.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-18 14:05:52.615297",
+      "updated_at": "2026-11-18 14:05:52.615304",
+      "attachments": [],
+      "files": [
+        "api/pytest.ini",
+        "api/pyproject.toml",
+        "pytest.ini",
+        "pyproject.toml"
+      ],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "qa_automation"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "a0a70277-3d76-4cc7-8d3a-5d05f62abe66",
+      "role": "assistant",
+      "task_item": "",
+      "content": "QA shift 2026-11-23T09:2xZ \u2014 **CONFIRMED, and the severity diagnosis is exact.** `qa_coverage` this shift:\n\n```\ndecision: warn        threshold: 70.0\nfindings: 1  [low] coverage.unavailable \u2014 \"Generate a report in the test step: pytest --cov=app --cov-report=xml\"\n```\n\nSo `min_coverage=70.0` is configured, never measured, and its absence is classified **low \u2192 warn**. A project at 0 % measured coverage and a project at 95 % receive the same verdict, and neither can be blocked. `qa_plan` independently reports `coverage: no coverage report found`.\n\nThe policy name promises a gate; the implementation is a suggestion. Two defects, one card:\n1. No report is produced by any suite \u2014 the test commands do not pass `--cov`.\n2. `coverage.unavailable` is `low`, i.e. below `block_above=high` and below `approval_above` (medium), so it cannot even reach `require_approval`.\n\nAcceptance criteria: either the `pytest` suite generates `coverage.xml` (add `--cov=. --cov-report=xml` to the declared argv) making `qa_coverage` read a real percentage, **or** `min_coverage` is documented as advisory-only and `coverage.unavailable` is raised to medium so a release cannot pass with an unmeasured threshold.\n\nNext command: `qa_coverage` must return a measured percentage, not `coverage.unavailable`.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:28:27.475745",
+      "updated_at": "2026-11-23 09:28:27.475759",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "faae9003-e2eb-4f5b-8ba1-f6a9b05d97e1",
+      "role": "user",
+      "task_item": "",
+      "content": "Objective: an UNMEASURED coverage gate can no longer pass as harmless. One-line change. Read this whole message, make ONE edit, then reply. Do not investigate any other card.\n\n## EXACT EDIT (already located by ProjectManager, do not go looking)\n\nFile: `codx/junior/tools/qa_tools.py` \u2014 do NOT search for it with project_locate/read_folder (they time out ~2 of 3 calls).\n\nLine 371, inside `qa_coverage()`, in the `if not report:` branch:\n\n    severity=QaSeverity.LOW,\n\nmust become\n\n    severity=QaSeverity.MEDIUM,\n\n## Why this is the right fix (evidence, measured by reading)\n\n- Line 387, `coverage.below-threshold`: `severity=QaSeverity.MEDIUM` \u2192 with `approval_above=medium` it produces `require_approval`.\n- Line 371, `coverage.unavailable`: `severity=QaSeverity.LOW` \u2192 with `block_above=high` it produces `warn`.\n- So **measuring coverage at 69 % is punished harder than not measuring coverage at all**. Not knowing is strictly cheaper than knowing badly \u2014 the gate actively rewards removing the instrumentation. That inversion is the defect; your edit removes it.\n- Effective policy (read this shift): `enabled=True min_coverage=70.0 block_above=high approval_above=medium fail_closed=False`.\n\n## DO NOT do these\n\n- Do **NOT** add `--cov` to any suite and do **NOT** add `addopts = --cov` to `pyproject.toml`. `pyproject.toml` optional-dependencies lists only `pytest`, `pytest-mock`, `pytest-asyncio` \u2014 **no `pytest-cov`** \u2014 so `--cov` would break every suite with \"unrecognized arguments\". Producing a real report is a separate card (`ccca3ccb` second half, blocked on the package being installed).\n- Do not touch `policy_markdown()`, `read_coverage()`, or `qa_review_changes`.\n- Do not change any other severity.\n- Do not refactor, reformat, or reorder imports.\n\n## Acceptance (paste the evidence on this card)\n\n1. `project_changes(paths=[\"codx/junior/tools/qa_tools.py\"])` showing exactly 1 file, +1/-1, one hunk at line 371. Quote the diff.\n2. State plainly one of: \"`qa_coverage()` could not be executed \u2014 no shell/exec tool in this runtime, the change is verified by reading only\", OR the actual `qa_coverage()` output. Do not claim a run you did not perform.\n3. State that the change applies only after the API process reloads the module.\n4. Add one line to your reply: `Policy decision D2 (raise coverage.unavailable low\u2192medium) \u2014 recorded by ProjectManager 2026-11-23, reversible by reverting line 371; pending management acknowledgement in the weekly report.`\n\nIf line 371 no longer reads `severity=QaSeverity.LOW`, stop and report what you found instead of editing something else.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:45:02.356870",
+      "updated_at": "2026-11-23 09:45:02.356882",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "qa_automation"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "37c75bf1-8890-4f7b-8e77-0652ebed0740",
+      "role": "assistant",
+      "task_item": "",
+      "content": "Done \u2014 one line, no investigation of other cards.\n\n## 1. Diff (`project_changes(paths=[\"codx/junior/tools/qa_tools.py\"])`)\n\n```diff\ndiff --git a/codx/junior/tools/qa_tools.py b/codx/junior/tools/qa_tools.py\nindex 47d1023..c93d2ae 100644\n--- a/codx/junior/tools/qa_tools.py\n+++ b/codx/junior/tools/qa_tools.py\n@@ -368,7 +368,7 @@ def qa_coverage(\n             QaFinding(\n                 rule_id=\"coverage.unavailable\",\n                 title=\"No coverage report found in the project\",\n-                severity=QaSeverity.LOW,\n+                severity=QaSeverity.MEDIUM,\n                 category=QaCategory.COVERAGE,\n                 remediation=(\n                     \"Generate a report in the test step: `pytest --cov=app \"\n@@ -492,10 +492,7 @@ def qa_policy(\n     policy = resolve_policy(settings)\n     return ToolResponse(\n         user_response=policy_markdown(policy, stored),\n-        llm_response=(\n-            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n-            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n-        ),\n+        llm_response=policy_markdown(policy, stored),\n         logs=[\"QA policy reported\"],\n     )\n```\n\n**Read the counts carefully: the report says `+2 / -5`, i.e. 2 hunks, and only one of them is mine.** My edit is exactly `+1 / -1`, one hunk at line 371. The second hunk at line ~492 (`qa_policy.llm_response`) was **already uncommitted in the working tree before this shift** \u2014 I did not touch `qa_policy()`, `policy_markdown()`, `read_coverage()` or `qa_review_changes()`, as instructed. Line 371 was verified first, by reading lines 340-400 (`if not report:` \u2192 `rule_id=\"coverage.unavailable\"` \u2192 `severity=QaSeverity.LOW`), before anything was written.\n\n## 2. Execution evidence \u2014 I ran `qa_coverage()`, it is **not** post-fix\n\n`qa_coverage()` executed in this runtime returned:\n\n```\n- decision: warn\n- passed: True\n- blocked: False\n- requires_approval: False\n- highest_severity: low\n- findings: 1\n- threshold: 70.0\n- [low] coverage.unavailable @ -: Generate a report in the test step: `pytest --cov=app --cov-report=xml` or `npm test -- --coverage`.\n```\n\nThat is the **pre-edit** module behaviour (`low` \u2192 `warn`), which is itself the confirmation that the source change has not been picked up by the live process yet. I did not run any post-fix `qa_coverage()` and I am not claiming one. The mapping the fix relies on is the sibling rule already in the file: line 387 `coverage.below-threshold` is `QaSeverity.MEDIUM` and, under `approval_above=medium`, yields `require_approval`.\n\n## 3. Activation\n\nThe change applies **only after the API process reloads the `codx.junior.tools.qa_tools` module**. Until then every `qa_coverage()` call keeps answering `warn / low`; after reload the same call must answer `require_approval / medium`. That is the re-verification: `qa_coverage()` \u2192 `requires_approval: true`, `highest_severity: medium`.\n\n## 4. Policy line\n\n`Policy decision D2 (raise coverage.unavailable low\u2192medium) \u2014 recorded by ProjectManager 2026-11-23, reversible by reverting line 371; pending management acknowledgement in the weekly report.`\n\n## Decision: require_approval (the intended, new behaviour \u2014 not a regression)\n- Scope: `codx/junior/tools/qa_tools.py` line 371 only; no suite touched, no `--cov` added, `pyproject.toml` untouched\n- Evidence: severity change `LOW \u2192 MEDIUM`, verified by reading before and after; live `qa_coverage()` still `warn/low` = module not reloaded; `pytest-cov` absent from `[project.optional-dependencies].test`, so no real percentage is measurable yet\n- Findings: 0 new \u2014 the pre-existing `coverage.unavailable` now escalates by design\n- Blocking item: the **second half** of `ccca3ccb` \u2014 with `pytest-cov` absent, nothing can produce `coverage.xml`, so the gate now correctly refuses to call coverage \"fine\" while still being unable to measure it (a visible `require_approval` instead of a silent `warn`)\n- Owner: `qa_automation` (install/declare `pytest-cov`, emit `coverage.xml` on the path `qa_coverage()` reads)\n- Next command: `qa_coverage()` after API reload \u2014 must return `requires_approval: true / highest_severity: medium`; then, once a report exists, `allow` with a real percent and `threshold: 70.0`\n\nEvidence posted on card **ccca3ccb-75e5-4053-b422-9f6befd68879**. Noted for the record, since it matters for an independent gate: this was a **QA Lead editing the gate's own severity** \u2014 permitted only because you ordered it explicitly; it is a policy decision (D2, dated, revertible), not a QA verdict.\n\n## Shift report\n\n**Done:**\n- Standing order still has no intake: `IT team` = 18 cards, **none in `Review`**, nothing moved, and no card other than `ccca3ccb` was investigated.\n- One-line gate fix applied and verified by reading: `coverage.unavailable` `QaSeverity.LOW \u2192 MEDIUM` (`qa_tools.py:371`). The inversion the user identified is gone \u2014 *measuring 69 %* and *not measuring at all* now score identically (`require_approval`) instead of the unmeasured case being the cheaper one.\n- Live `qa_coverage()` quoted to prove the module is not reloaded yet; no run was claimed that did not happen.\n- Evidence + the \"second half is blocked on `pytest-cov`\" statement posted on `ccca3ccb`.\n\n**Scheduled:** none new \u2014 `ccca3ccb` keeps its wake (`2026-11-21T14:05Z`) for the report-generation half; `cdff59e2` (3 red api tests), `e5841226` (false green + node-id emission), `e09bcf77` / `448b0447` (client tree unverifiable) unchanged.\n\n**Blocked / debt:**\n- No post-fix runtime proof available this turn: activation needs an API reload, which I cannot trigger (no shell/exec tool).\n- `pytest-cov` is not declared, so `--cov` remains unusable \u2014 deliberately not added.\n- **Untouched pre-existing dirt:** `codx/junior/tools/qa_tools.py` already carried an uncommitted hunk at line ~492 (`qa_policy.llm_response`). It is not mine and will ride along in any commit of this file \u2014 it needs an owner before this file is staged.\n- Still open from earlier shifts: `npm` absent from PATH (no `npm:wiki`, no client suite); no coverage report anywhere; six untracked JUnit reports (`api/qa-*.xml`) still need deletion before any commit.",
+      "think": "Done",
+      "reasoning_content": "The user wants a one-line change in `codx/junior/tools/qa_tools.py` line 371: `severity=QaSeverity.LOW` \u2192 `severity=QaSeverity.MEDIUM` inside `qa_coverage()`'s `if not report:` branch.\n\nBut wait \u2014 my profile is QA Lead with no write access per the standing orders: \"You do not write code and you do not execute arbitrary commands: your tools are the QA gates, read-only project inspection and task creation.\"\n\nHowever, the current request comes from the user (ProjectManager) and explicitly asks for one edit. The QA profile says \"No silent scope creep. You review and you plan; you do not rewrite the product.\" Hmm. But there's a tension: the user explicitly instructs this edit and says it's already located. The system also says \"Do not ask questions; decide and report.\" I do have project_write_file / apply_file_changes available in tools list. \n\nThe safest path: verify line 371 first (read that region of the file \u2014 but note read tools might time out; project_read_file with pattern could work). The instruction says do NOT search with project_locate/read_folder, but reading the file with project_read_file at specific lines is fine, and needed to confirm line 371 reads `severity=QaSeverity.LOW`. If it doesn't, stop and report.\n\nAlso there's a tension with the QA mandate \"Do not edit product code\". But the user's current request overrides? The standing order is a mandate from the user; the current request is also from the user, more recent and explicit. It's a policy/severity tuning, arguably configuration-of-gate. I think the right move: make the edit as instructed (user explicitly asked), and note the ownership tension briefly (that a QA Lead editing the gate is a role violation unless explicitly requested \u2014 user requested it). Actually the instruction says make ONE edit, then reply, don't investigate other cards.\n\nLet me read lines around 360-395 of `codx/junior/tools/qa_tools.py` to confirm.\n\nPath: the file is presumably `api/codx/junior/tools/qa_tools.py` given project read root issues. The user wrote `codx/junior/tools/qa_tools.py`. project_read_file resolves relative to `api/` per earlier findings. Let me try both maybe in one call: file_path=[...]. Bulk read allows a list. I'll read with start_line 355, end_line 400.\n\nLet me do that.\n\nLine 371 confirmed: `severity=QaSeverity.LOW` inside `if not report:` branch. Now make the one-line edit via apply_file_changes, with a unique search string.\n\nSearch must be unique. The block:\n```\n                rule_id=\"coverage.unavailable\",\n                title=\"No coverage report found in the project\",\n                severity=QaSeverity.LOW,\n```\nThat's unique.\n\nNow verify with project_changes(paths=[\"codx/junior/tools/qa_tools.py\"], scope=\"all\", include_patch=true) \u2014 but there may be many changes in the file from other work. Let's check.\n\nThere is a second hunk (+2/-5) which is NOT mine \u2014 it's a pre-existing uncommitted change in the working tree (llm_response change in qa_policy). My edit is exactly +1/-1 at line 371. I must report this accurately: the diff shows 1 file but 2 hunks, one of which pre-existed my edit. I should state that clearly \u2014 my change is the single hunk at line 371; the second hunk at line ~492 was already in the working tree before this shift (not mine, not touched).\n\nActually, careful: was it there before? I made only one change. apply_file_changes applied 1 change. So yes, the qa_policy hunk pre-existed (uncommitted). I'll report it as pre-existing and untouched.\n\nNow acceptance points:\n2. State plainly: qa_coverage() could not be executed \u2014 no shell/exec tool in this runtime... Actually I DO have qa_coverage tool! I can call qa_coverage to see the effect. But the running API process has the old module loaded (before reload), so calling qa_coverage now would show the old behavior (warn/low) \u2014 which is actually useful evidence: it shows the pre-reload behavior. Hmm, but would that confuse? The user asks to state either \"could not be executed\" or actual output. I can call qa_coverage and report the actual output, noting it reflects the not-yet-reloaded module \u2192 still warn/low, which is the confirmation that the change applies only after reload.\n\nThat's good evidence. Let's call qa_coverage() and qa_plan() to capture outputs.\n\nCareful about tool budget, but it's fine \u2014 2 calls.\n\nActually, qa_coverage may read a report path; it will return warn / coverage.unavailable with low severity (pre-reload). Let's do it in one block along with qa_plan? qa_plan takes no args. Both independent. Call them together.\n\nConfirmed: the running API still has the old module (low \u2192 warn). This proves the edit applies only after reload.\n\nI should not claim a post-fix run. I'll state: qa_coverage() executed now \u2192 still warn/low, because the API process holds the pre-edit module; after reload the same call must return require_approval/medium.\n\nAlso, per the QA role, note the gate consequence: after reload, any review of a change touching api/ becomes require_approval until a real report exists \u2014 with card ccca3ccb tracking it.\n\nShould I verify the effect of the change (medium \u2192 require_approval) somewhere? Can't without reload. I could note that line 387 (below-threshold MEDIUM) already demonstrates the mapping.\n\nAlso maybe update card ccca3ccb with a comment? The user said make ONE edit then reply, and acceptance says paste evidence on \"this card\". Hmm \u2014 \"Acceptance (paste the evidence on this card)\". The card is ccca3ccb presumably. Should I post a comment? The user said \"make ONE edit, then reply\" \u2014 and acceptance item 1-4 are paste-in-reply items. Posting a comment on ccca3ccb would be good practice (evidence on card). It's one extra tool call and aligned with mandate (\"post verdict on cards\"). But \"Do not investigate any other card\" \u2014 a comment isn't investigation. I think a single request_help comment on ccca3ccb with the evidence is valuable and low-cost. But the instruction says \"make ONE edit, then reply.\" Adding a comment isn't an edit to code. Risk: budget. I have room.\n\nI'll post the evidence on ccca3ccb via request_help (no processing).\n\nLet me do that, then write the reply with the required line and evidence.\n\nWait \u2014 has the tool budget already hit 10 rounds? Previous turns hit it. This turn: read (1), apply (2), changes (3), qa_coverage (4), comment (5). Fine.\n\nLet me write the comment concisely.\n\nNow write the reply per acceptance.\n\nEvidence 1: project_changes output \u2014 quote the diff. But note +2/-5 = 1 file, 2 hunks; my edit is the +1/-1 hunk at 371; the second hunk at ~492 (`llm_response=policy_markdown(...)` in `qa_policy`) was already uncommitted before my edit \u2014 I did not touch it. Be honest.\n\nEvidence 2: actual qa_coverage output (executed) \u2014 warn/low, pre-reload.\n\nEvidence 3: applies only after API module reload.\n\nEvidence 4: the exact line.\n\nAlso role note: as QA Lead I don't normally edit product code; this edit was explicitly ordered and is a gate-severity policy change \u2014 record it. Keep short.\n\nDecision block? The output discipline wants verdict block. I'll include a short verdict block for the change itself: after reload, coverage verdict becomes require_approval. Let's craft.\n\nShould I offer options? \"Do not ask questions; decide and report.\" Skip options block. Actually suggested replies: only if closed set needed. Mandate says do not ask questions. So no options.\n\nWrite final answer.",
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:45:03.165890",
+      "updated_at": "2026-11-23T09:45:48.190126",
+      "attachments": [],
+      "files": [],
+      "project_id": "ac9804d5-fcb2-4026-81c0-61f2308f6380",
+      "meta_data": {
+        "start_time": 1795427103.1173487,
+        "turn_id": "0f200697-9a4d-4049-86b3-29303b86ec58",
+        "turn_attempt": 0,
+        "cancellation_token_id": "aa23f4bf-1d19-42aa-8474-487a6ddb55c6",
+        "tool_memory": {
+          "calls": 48,
+          "entries": 48,
+          "rendered": 17,
+          "files": 12,
+          "chars": 11657
+        },
+        "model": "deepseek-flash",
+        "analytics": {
+          "prompt_tokens": 244392,
+          "completion_tokens": 4485,
+          "total_tokens": 248877,
+          "tools": {
+            "project_read_file": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 1142.534401267767
+            },
+            "apply_file_changes": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 99.60093535482883
+            },
+            "project_changes": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 164.49400782585144
+            },
+            "qa_coverage": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 289.89615850150585
+            },
+            "project_manager": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 569.581525400281
+            }
+          }
+        },
+        "time_taken": 45.07269763946533,
+        "first_chunk_time_taken": 8.194244623184204
+      },
+      "tool_events": [
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_ec2odor0aA1onPH8FDQs1933",
+          "status": "done",
+          "request": {
+            "file_path": [
+              "api/codx/junior/tools/qa_tools.py",
+              "codx/junior/tools/qa_tools.py"
+            ],
+            "start_line": 340,
+            "end_line": 400,
+            "line_numbers": true
+          },
+          "response": "error [api/codx/junior/tools/qa_tools.py]\nERROR: api/codx/junior/tools/qa_tools.py File not found\n# codx/junior/tools/qa_tools.py (lines 340-400 of 704)\n```py codx/junior/tools/qa_tools.py\n   340| ) -> ToolResponse:\n   341|     \"\"\"Read the coverage report of the project and compare it with the threshold.\n   342| \n   343|     Args:\n   344|         min_percent: Override the threshold of the policy for this check.\n   345|         paths: Optional explicit report paths (``coverage.xml``, ``coverage.json``).\n   346|         **kwargs: Runtime arguments; ``settings`` is injected automatically.\n   347| \n   348|     Returns:\n   349|         ToolResponse: Coverage verdict.\n   350| \n   351|     Example:\n   352|         >>> qa_coverage()  # doctest: +SKIP\n   353|     \"\"\"\n   354|     settings = _settings_of(kwargs)\n   355|     if not settings:\n   356|         raise Exception(\"Invalid project settings\")\n   357| \n   358|     policy = resolve_policy(settings)\n   359|     project_path = _project_path(settings)\n   360|     threshold = float(min_percent if min_percent is not None else policy.min_coverage)\n   361| \n   362|     report = read_coverage(project_path, paths=paths)\n   363|     findings: List[QaFinding] = []\n   364|     metrics: Dict[str, Any] = {\"threshold\": threshold}\n   365| \n   366|     if not report:\n   367|         findings.append(\n   368|             QaFinding(\n   369|                 rule_id=\"coverage.unavailable\",\n   370|                 title=\"No coverage report found in the project\",\n   371|                 severity=QaSeverity.LOW,\n   372|                 category=QaCategory.COVERAGE,\n   373|                 remediation=(\n   374|                     \"Generate a report in the test step: `pytest --cov=app \"\n   375|                     \"--cov-report=xml` or `npm test -- --coverage`.\"\n   376|                 ),\n   377|             )\n   378|         )\n   379|     else:\n   380|         metrics[\"coverage\"] = report.percent\n   381|         metrics[\"source\"] = report.source\n   382|         if report.percent < threshold:\n   383|             findings.append(\n   384|                 QaFinding(\n   385|                     rule_id=\"coverage.below-threshold\",\n   386|                     title=f\"Coverage {report.percent}% is below the {threshold}% threshold\",\n   387|                     severity=QaSeverity.MEDIUM,\n   388|                     category=QaCategory.COVERAGE,\n   389|                     path=report.source,\n   390|                     evidence=coverage_summary(report),\n   391|                     remediation=\"Cover the new branches, or lower the threshold with a dated decision.\",\n   392|                 )\n   393|             )\n   394| \n   395|     verdict = evaluate(QaDomain.COVERAGE, findings, policy, metrics=metrics)\n   396|     record_verdict(settings, verdict, f\"coverage:{report.source if report else 'none'}\")\n   397|     if not findings:\n   398|         verdict.summary = f\"clean: coverage {report.percent}% >= {threshold}%\"\n   399| \n   400|     return ToolResponse(\n```\n\n> Showing the requested range lines 340-400 of 704; 304 line(s) follow it. Request them only if needed, or use `pattern=...` / the outline to jump to a symbol.",
+          "output": "Read 1 file(s) | Successfully read: codx/junior/tools/qa_tools.py | Failed to read 1 file(s): api/codx/junior/tools/qa_tools.py",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 1142.534401267767,
+          "error": null,
+          "started_at": "2026-11-23T09:45:18.780Z",
+          "finished_at": "2026-11-23T09:45:19.923Z",
+          "cached": null
+        },
+        {
+          "tool": "apply_file_changes",
+          "tool_call_id": "call_00_fNnMYCMGcdnqXW5iIMlt8875",
+          "status": "done",
+          "request": {
+            "file_path": "codx/junior/tools/qa_tools.py",
+            "changes": [
+              {
+                "search": "                rule_id=\"coverage.unavailable\",\n                title=\"No coverage report found in the project\",\n                severity=QaSeverity.LOW,",
+                "replace": "                rule_id=\"coverage.unavailable\",\n                title=\"No coverage report found in the project\",\n                severity=QaSeverity.MEDIUM,"
+              }
+            ]
+          },
+          "response": "Applied 1 change(s) to codx/junior/tools/qa_tools.py",
+          "output": "```py codx/junior/tools/qa_tools.py\n\"\"\"QA tools.\n\nThese are the tools the ``qa`` profiles (and any profile granted them) use to\nvalidate a change before it is delivered: plan the verification, run the suites,\nreview the diff, read the coverage, look for flaky tests and inspect the policy.\n\nThe deterministic machinery lives in :mod:`codx.junior.quality.qa`; a tool is an\nexplicit action a profile takes, while :func:`codx.junior.quality.qa.guard_change`\nis the guarantee a process can rely on.\n\nMade with \u2764\ufe0f by codx-junior\n\"\"\"\n\nimport logging\nimport os\nfrom typing import Any, Dict, List, Optional\n\nfrom .model import ToolResponse\nfrom codx.junior.quality.qa import (\n    QaCategory,\n    QaDomain,\n    QaFinding,\n    QaSeverity,\n    coverage_summary,\n    detect_suites,\n    evaluate,\n    guard_change,\n    guard_flaky,\n    guard_tests,\n    map_tests,\n    affected_tests,\n    changed_files,\n    collect_test_files,\n    is_ignored,\n    is_test_file,\n    policy_markdown,\n    read_coverage,\n    record_verdict,\n    render_report,\n    resolve_policy,\n    select_suite,\n    stored_policy,\n    suite_catalog,\n)\nfrom codx.junior.quality.qa import policy as qa_policy_module\n\nlogger = logging.getLogger(__name__)\n\n\n# -----------------------------------------------------------------------------\n# Helpers\n# -----------------------------------------------------------------------------\ndef _settings_of(kwargs: Dict[str, Any]):\n    \"\"\"Return the project settings injected by the runtime (or ``None``).\"\"\"\n    return kwargs.get(\"settings\")\n\n\ndef _project_path(settings: Any) -> str:\n    \"\"\"Return the absolute project path of *settings*.\"\"\"\n    return getattr(settings, \"abs_project_path\", None) or os.getcwd()\n\n\ndef _verdict_answer(verdict, title: str) -> str:\n    \"\"\"Render a verdict as the user facing markdown report.\"\"\"\n    return render_report(verdict, title=title)\n\n\ndef _llm_summary(verdict, subject: str) -> str:\n    \"\"\"Build the compact machine friendly summary for the model.\"\"\"\n    lines = [\n        f\"# {subject}\",\n        f\"- decision: {verdict.action.value}\",\n        f\"- passed: {verdict.passed}\",\n        f\"- blocked: {verdict.blocked}\",\n        f\"- requires_approval: {verdict.requires_approval}\",\n        f\"- highest_severity: {(verdict.highest_severity.value if verdict.highest_severity else 'none')}\",\n        f\"- findings: {len(verdict.findings)}\",\n    ]\n    for run in verdict.runs:\n        lines.append(f\"- run `{run.suite}`: {run.summary}\")\n    for key, value in verdict.metrics.items():\n        lines.append(f\"- {key}: {value}\")\n    for finding in verdict.findings[:10]:\n        where = finding.path or \"-\"\n        if finding.path and finding.line:\n            where = f\"{finding.path}:{finding.line}\"\n        lines.append(\n            f\"- [{finding.severity.value}] {finding.rule_id} @ {where}: \"\n            f\"{finding.remediation or finding.title}\"\n        )\n    if len(verdict.findings) > 10:\n        lines.append(f\"- \u2026 {len(verdict.findings) - 10} more finding(s)\")\n    return \"\\n\".join(lines)\n\n\ndef _logs_of(verdict) -> List[str]:\n    \"\"\"Build the forensic log lines of a verdict.\"\"\"\n    logs = [f\"QA verdict: {verdict.summary}\"]\n    for run in verdict.runs:\n        logs.append(f\"QA run ({run.suite}): {' '.join(run.command)} -> {run.summary}\")\n    for finding in verdict.findings[:25]:\n        logs.append(\n            f\"[{finding.severity.value.upper()}] {finding.rule_id} \"\n            f\"{finding.path or '-'}:{finding.line or 0} \u2014 {finding.title}\"\n        )\n    return logs\n\n\n# -----------------------------------------------------------------------------\n# Tools\n# -----------------------------------------------------------------------------\ndef qa_plan(\n    base: str = \"HEAD\",\n    scope: str = \"all\",\n    paths: Optional[List[str]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Plan the verification of a change: suites, tests and coverage.\n\n    Tells the caller what can be executed (and what cannot), which tests map to\n    the pending change, which changed files have no test at all and whether a\n    coverage report is available. It never executes anything.\n\n    Args:\n        base: Git reference to compare against (default ``HEAD``).\n        scope: ``all``, ``staged`` or ``unstaged``.\n        paths: Optional path filter for the change.\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Markdown plan plus a compact summary.\n\n    Example:\n        >>> qa_plan()  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    policy = resolve_policy(settings)\n    project_path = _project_path(settings)\n\n    suites = detect_suites(project_path, policy)\n    default_suite = select_suite(suites)\n\n    try:\n        changed = changed_files(settings, base=base, scope=scope)\n    except Exception as ex:\n        changed = []\n        change_error = str(ex)\n    else:\n        change_error = \"\"\n\n    if paths:\n        filters = [path.replace(\"\\\\\", \"/\").lstrip(\"./\") for path in paths]\n        changed = [\n            path for path in changed\n            if any(path == f or path.startswith(f.rstrip(\"/\") + \"/\") for f in filters)\n        ]\n    changed = [path for path in changed if not is_ignored(path, policy.ignore_paths)]\n\n    test_files = collect_test_files(project_path)\n    mapped, unmapped = map_tests(changed, test_files)\n    selected = affected_tests(mapped, test_files)\n    report = read_coverage(project_path)\n\n    lines: List[str] = [\n        \"# QA plan\",\n        \"\",\n        f\"- Policy: **{'enabled' if policy.enabled else 'disabled'}** \u00b7 \"\n        f\"coverage threshold **{policy.min_coverage}%** \u00b7 \"\n        f\"block above `{policy.block_above.value}`\",\n        f\"- Suites detected: **{len(suites)}** \u00b7 default: \"\n        f\"`{default_suite.name if default_suite else 'none'}`\",\n        \"\",\n        \"## Suites\",\n    ]\n    if suites:\n        lines += [\"| Suite | Kind | cwd | Runs here | Command |\", \"| --- | --- | --- | --- | --- |\"]\n        for suite in suites:\n            available = \"yes\" if suite.available else f\"no ({suite.reason})\"\n            lines.append(\n                f\"| `{suite.name}` | `{suite.kind}` | `{suite.cwd or '.'}` | {available} | \"\n                f\"`{' '.join(suite.command)}` |\"\n            )\n    else:\n        lines.append(\"_No test suite detected._\")\n\n    lines += [\"\", \"## Change\", \"\"]\n    if change_error:\n        lines.append(f\"\u26a0\ufe0f Could not read the change: {change_error}\")\n    elif not changed:\n        lines.append(\"_No pending change._\")\n    else:\n        lines += [\n            f\"- Changed files: **{len(changed)}** ({sum(1 for c in changed if is_test_file(c))} test file(s))\",\n            f\"- Source files with a mapped test: **{len(mapped)}**\",\n            f\"- Source files without a test: **{len(unmapped)}**\",\n        ]\n        if mapped:\n            lines += [\"\", \"| Source | Tests |\", \"| --- | --- |\"]\n            for source, tests in list(mapped.items())[:15]:\n                lines.append(f\"| `{source}` | {', '.join(f'`{t}`' for t in tests)} |\")\n        if unmapped:\n            lines += [\"\", \"Files with no mapped test:\"]\n            lines += [f\"- `{path}`\" for path in unmapped[:15]]\n            if len(unmapped) > 15:\n                lines.append(f\"- \u2026 {len(unmapped) - 15} more\")\n\n    lines += [\"\", \"## Coverage\", \"\", f\"- {coverage_summary(report)}\"]\n    lines += [\n        \"\",\n        \"## Recommended next steps\",\n        \"\",\n        (\n            f\"1. `qa_run_tests` with `paths` = the {len(selected)} mapped test(s).\"\n            if selected else \"1. `qa_run_tests` on the default suite.\"\n        ),\n        \"2. `qa_review_changes` to get the gate verdict (tests + mapping + coverage).\",\n        \"3. `qa_flaky_check` when a failure does not reproduce.\",\n    ]\n\n    llm = \"\\n\".join(\n        [\n            \"# QA plan\",\n            f\"- suites: {', '.join(s.name for s in suites) or 'none'}\",\n            f\"- default_suite: {default_suite.name if default_suite else 'none'}\",\n            f\"- changed_files: {len(changed)}\",\n            f\"- mapped_tests: {len(selected)}\",\n            f\"- unmapped_sources: {len(unmapped)}\",\n            f\"- coverage: {coverage_summary(report)}\",\n            f\"- suites_json: {suite_catalog(suites)}\",\n            f\"- unmapped: {unmapped[:20]}\",\n        ]\n    )\n    return ToolResponse(\n        user_response=\"\\n\".join(lines),\n        llm_response=llm,\n        logs=[f\"QA plan: {len(suites)} suite(s), {len(changed)} changed file(s)\"],\n    )\n\n\ndef qa_run_tests(\n    suite: str = \"auto\",\n    paths: Optional[List[str]] = None,\n    timeout: Optional[int] = None,\n    extra_args: Optional[List[str]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Run a test suite and return the verdict of the run.\n\n    The command is a declared argv (detected suite or ``qa_policy.suites``),\n    executed without a shell, bounded by a timeout and validated by the CISO\n    command gate.\n\n    Args:\n        suite: Suite name, kind or ``auto`` for the project default.\n        paths: Optional test files or folders to restrict the run.\n        timeout: Seconds before the run is killed (policy default when omitted).\n        extra_args: Extra arguments (validated; shell metacharacters refused).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Report with the failures and the counters.\n\n    Example:\n        >>> qa_run_tests(paths=[\"api/tests/test_atlas.py\"])  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    verdict = guard_tests(\n        settings,\n        suite_name=suite,\n        paths=paths,\n        timeout=timeout,\n        extra_args=extra_args,\n    )\n    title = f\"QA tests \u2014 `{suite or 'auto'}`\"\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, title),\n        llm_response=_llm_summary(verdict, \"QA test run\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_review_changes(\n    base: str = \"HEAD\",\n    scope: str = \"all\",\n    paths: Optional[List[str]] = None,\n    run_tests: bool = True,\n    suite: str = \"auto\",\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Review a change against the QA gate (tests, mapping, coverage).\n\n    This is the gate a profile must call before it reports a change as verified:\n    it reads the diff, maps every changed source file to a test, runs the mapped\n    tests and checks the coverage threshold.\n\n    Args:\n        base: Git reference to compare against (default ``HEAD``).\n        scope: ``all`` (default), ``staged`` or ``unstaged``.\n        paths: Optional path filter for the change.\n        run_tests: Execute the mapped tests (default True).\n        suite: Suite to execute (``auto`` uses the detected one).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Verdict of the change, ready to paste in a delivery report.\n\n    Example:\n        >>> qa_review_changes(scope=\"staged\")  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    verdict = guard_change(\n        settings,\n        base=base,\n        scope=scope,\n        paths=paths,\n        run_tests=run_tests,\n        suite_name=suite,\n    )\n    title = f\"QA change review \u2014 scope `{scope}` vs `{base}`\"\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, title),\n        llm_response=_llm_summary(verdict, \"QA change review\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_coverage(\n    min_percent: Optional[float] = None,\n    paths: Optional[List[str]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Read the coverage report of the project and compare it with the threshold.\n\n    Args:\n        min_percent: Override the threshold of the policy for this check.\n        paths: Optional explicit report paths (``coverage.xml``, ``coverage.json``).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Coverage verdict.\n\n    Example:\n        >>> qa_coverage()  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    policy = resolve_policy(settings)\n    project_path = _project_path(settings)\n    threshold = float(min_percent if min_percent is not None else policy.min_coverage)\n\n    report = read_coverage(project_path, paths=paths)\n    findings: List[QaFinding] = []\n    metrics: Dict[str, Any] = {\"threshold\": threshold}\n\n    if not report:\n        findings.append(\n            QaFinding(\n                rule_id=\"coverage.unavailable\",\n                title=\"No coverage report found in the project\",\n                severity=QaSeverity.MEDIUM,\n                category=QaCategory.COVERAGE,\n                remediation=(\n                    \"Generate a report in the test step: `pytest --cov=app \"\n                    \"--cov-report=xml` or `npm test -- --coverage`.\"\n                ),\n            )\n        )\n    else:\n        metrics[\"coverage\"] = report.percent\n        metrics[\"source\"] = report.source\n        if report.percent < threshold:\n            findings.append(\n                QaFinding(\n                    rule_id=\"coverage.below-threshold\",\n                    title=f\"Coverage {report.percent}% is below the {threshold}% threshold\",\n                    severity=QaSeverity.MEDIUM,\n                    category=QaCategory.COVERAGE,\n                    path=report.source,\n                    evidence=coverage_summary(report),\n                    remediation=\"Cover the new branches, or lower the threshold with a dated decision.\",\n                )\n            )\n\n    verdict = evaluate(QaDomain.COVERAGE, findings, policy, metrics=metrics)\n    record_verdict(settings, verdict, f\"coverage:{report.source if report else 'none'}\")\n    if not findings:\n        verdict.summary = f\"clean: coverage {report.percent}% >= {threshold}%\"\n\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, \"QA coverage\"),\n        llm_response=_llm_summary(verdict, \"QA coverage\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_flaky_check(\n    suite: str = \"auto\",\n    paths: Optional[List[str]] = None,\n    repeat: Optional[int] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Re-run a suite several times and report the unstable tests.\n\n    Args:\n        suite: Suite name, kind or ``auto`` for the project default.\n        paths: Optional test files or folders to restrict the runs.\n        repeat: Number of runs (policy ``flaky_repeats`` when omitted).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Verdict listing the tests that do not reproduce.\n\n    Example:\n        >>> qa_flaky_check(repeat=3)  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    verdict = guard_flaky(settings, suite_name=suite, paths=paths, repeats=repeat)\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, f\"QA flaky check \u2014 `{suite or 'auto'}`\"),\n        llm_response=_llm_summary(verdict, \"QA flaky check\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_policy(\n    action: str = \"show\",\n    changes: Optional[Dict[str, Any]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Show or adjust the QA policy of the project.\n\n    The policy is stored in the project settings under ``qa_policy``. Every\n    field is validated against the model before it is written.\n\n    Args:\n        action: ``show`` (default) to display the effective policy.\n        changes: Partial policy to merge (``action='show'`` ignores it). Fields:\n            ``enabled``, ``min_coverage``, ``block_above``, ``approval_above``,\n            ``warn_above``, ``require_tests_for_changes``, ``block_on_failures``,\n            ``block_missing_tests``, ``fail_closed``, ``max_test_seconds``,\n            ``flaky_repeats``, ``ignore_paths``, ``suites``.\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: The effective policy as Markdown.\n\n    Example:\n        >>> qa_policy()  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    stored = stored_policy(settings)\n    if changes and action == \"show\":\n        merged = dict(stored)\n        merged.update(changes or {})\n        validated = qa_policy_module.policy_from_dict(merged)\n        configured = getattr(settings, \"settings\", None)\n        if isinstance(configured, dict):\n            configured[qa_policy_module.POLICY_SETTINGS_KEY] = validated.to_dict()\n            save = getattr(settings, \"save\", None)\n            if callable(save):\n                try:\n                    save()\n                except Exception as ex:\n                    return ToolResponse(\n                        user_response=f\"\u26a0\ufe0f Could not persist the policy: {ex}\",\n                        llm_response=f\"qa_policy: persist failed: {ex}\",\n                    )\n            stored = dict(merged)\n        else:\n            return ToolResponse(\n                user_response=\"\u26a0\ufe0f This project settings object does not expose a writable `settings` dict.\",\n                llm_response=\"qa_policy: unsupported settings object\",\n            )\n\n    policy = resolve_policy(settings)\n    return ToolResponse(\n        user_response=policy_markdown(policy, stored),\n        llm_response=policy_markdown(policy, stored),\n        logs=[\"QA policy reported\"],\n    )\n\n\n# -----------------------------------------------------------------------------\n# Tool JSON schemas\n# -----------------------------------------------------------------------------\nQA_PLAN_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_plan\",\n        \"description\": (\n            \"Plan the verification of a change without executing anything: which test \"\n            \"suites exist (and which can actually run), why, which tests map to the \"\n            \"pending change, which changed files have no test, and whether a coverage \"\n            \"report is available. Call it before qa_run_tests / qa_review_changes.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"base\": {\n                    \"type\": \"string\",\n                    \"description\": \"Git reference to compare against (default HEAD).\"\n                },\n                \"scope\": {\n                    \"type\": \"string\",\n                    \"enum\": [\"all\", \"staged\", \"unstaged\"],\n                    \"description\": \"Which change to inspect (default all).\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional path filter for the change.\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_RUN_TESTS_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_run_tests\",\n        \"description\": (\n            \"Run a test suite of the project and return a QA verdict: counters, failing \"\n            \"test ids, timeout and duration. The command is a declared argv executed \"\n            \"without a shell and validated by the CISO command gate. Use 'paths' to run \"\n            \"only the tests mapped to a change.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"suite\": {\n                    \"type\": \"string\",\n                    \"description\": \"Suite name, suite kind or 'auto' for the project default.\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional test files or folders to restrict the run.\"\n                },\n                \"timeout\": {\n                    \"type\": \"integer\",\n                    \"description\": \"Seconds before the run is killed (default: QA policy).\"\n                },\n                \"extra_args\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": (\n                        \"Extra arguments appended to the suite command (e.g. ['-k','login']). \"\n                        \"Shell metacharacters are refused.\"\n                    )\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_REVIEW_CHANGES_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_review_changes\",\n        \"description\": (\n            \"The QA gate for a change: maps every changed source file to the tests that \"\n            \"name it, runs those tests, checks the coverage threshold and returns one \"\n            \"verdict (allow / warn / require_approval / block). Call it before reporting \"\n            \"a change as done or merging a PR.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"base\": {\n                    \"type\": \"string\",\n                    \"description\": \"Git reference to compare against (default HEAD).\"\n                },\n                \"scope\": {\n                    \"type\": \"string\",\n                    \"enum\": [\"all\", \"staged\", \"unstaged\"],\n                    \"description\": \"Which change to review (default all).\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional path filter for the change.\"\n                },\n                \"run_tests\": {\n                    \"type\": \"boolean\",\n                    \"description\": \"Execute the mapped tests (default true).\"\n                },\n                \"suite\": {\n                    \"type\": \"string\",\n                    \"description\": \"Suite to execute (default 'auto').\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_COVERAGE_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_coverage\",\n        \"description\": (\n            \"Read the coverage report the project already generated (coverage.xml, \"\n            \"coverage.json or an istanbul coverage-summary.json) and compare it with the \"\n            \"threshold of the QA policy.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"min_percent\": {\n                    \"type\": \"number\",\n                    \"description\": \"Override the coverage threshold for this check.\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional explicit report paths.\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_FLAKY_CHECK_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_flaky_check\",\n        \"description\": (\n            \"Re-run a suite several times and list the tests that fail in some runs but \"\n            \"not in all of them. Use it when a reported failure does not reproduce.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"suite\": {\n                    \"type\": \"string\",\n                    \"description\": \"Suite name, suite kind or 'auto' for the project default.\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional test files or folders to restrict the runs.\"\n                },\n                \"repeat\": {\n                    \"type\": \"integer\",\n                    \"description\": \"Number of runs (default: QA policy flaky_repeats).\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_POLICY_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_policy\",\n        \"description\": (\n            \"Show the effective QA policy of the project (thresholds, severity ladder, \"\n            \"ignored paths, custom suites) and optionally merge validated changes into \"\n            \"the project settings.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"action\": {\n                    \"type\": \"string\",\n                    \"enum\": [\"show\"],\n                    \"description\": \"Only 'show' is supported today.\"\n                },\n                \"changes\": {\n                    \"type\": \"object\",\n                    \"description\": (\n                        \"Partial policy to persist: enabled, min_coverage, block_above, \"\n                        \"approval_above, warn_above, require_tests_for_changes, \"\n                        \"block_on_failures, block_missing_tests, fail_closed, \"\n                        \"max_test_seconds, flaky_repeats, ignore_paths, suites.\"\n                    )\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\n```",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 99.60093535482883,
+          "error": null,
+          "started_at": "2026-11-23T09:45:21.960Z",
+          "finished_at": "2026-11-23T09:45:22.060Z",
+          "cached": null
+        },
+        {
+          "tool": "project_changes",
+          "tool_call_id": "call_00_mUNCXfMzu6WfotxCY4OD3659",
+          "status": "done",
+          "request": {
+            "paths": [
+              "codx/junior/tools/qa_tools.py"
+            ],
+            "scope": "all",
+            "include_patch": true,
+            "context_lines": 3
+          },
+          "response": "### \ud83d\udd0d Changes vs `HEAD` \u2014 scope `all`\n\n- 1 file(s), +2 / -5\n\n**Files**\n- `M` **modified** `codx/junior/tools/qa_tools.py` (+2/-5)\n\n\n**`codx/junior/tools/qa_tools.py`**\n```diff\ndiff --git a/codx/junior/tools/qa_tools.py b/codx/junior/tools/qa_tools.py\nindex 47d1023..c93d2ae 100644\n--- a/codx/junior/tools/qa_tools.py\n+++ b/codx/junior/tools/qa_tools.py\n@@ -368,7 +368,7 @@ def qa_coverage(\n             QaFinding(\n                 rule_id=\"coverage.unavailable\",\n                 title=\"No coverage report found in the project\",\n-                severity=QaSeverity.LOW,\n+                severity=QaSeverity.MEDIUM,\n                 category=QaCategory.COVERAGE,\n                 remediation=(\n                     \"Generate a report in the test step: `pytest --cov=app \"\n@@ -492,10 +492,7 @@ def qa_policy(\n     policy = resolve_policy(settings)\n     return ToolResponse(\n         user_response=policy_markdown(policy, stored),\n-        llm_response=(\n-            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n-            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n-        ),\n+        llm_response=policy_markdown(policy, stored),\n         logs=[\"QA policy reported\"],\n     )\n```",
+          "output": "### \ud83d\udd0d Changes vs `HEAD` \u2014 scope `all`\n\n- 1 file(s), +2 / -5\n\n**Files**\n- `M` **modified** `codx/junior/tools/qa_tools.py` (+2/-5)",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 164.49400782585144,
+          "error": null,
+          "started_at": "2026-11-23T09:45:23.885Z",
+          "finished_at": "2026-11-23T09:45:24.050Z",
+          "cached": null
+        },
+        {
+          "tool": "qa_coverage",
+          "tool_call_id": "call_00_M9yxYynHpwYdgO1vuQBg8542",
+          "status": "done",
+          "request": {},
+          "response": "# QA coverage\n- decision: warn\n- passed: True\n- blocked: False\n- requires_approval: False\n- highest_severity: low\n- findings: 1\n- threshold: 70.0\n- [low] coverage.unavailable @ -: Generate a report in the test step: `pytest --cov=app --cov-report=xml` or `npm test -- --coverage`.",
+          "output": "# QA coverage\n\n\u26a0\ufe0f **Decision: `warn`** \u00b7 domain `coverage` \u00b7 highest severity `low` \u00b7 findings: **1**\n\n| Rule | Severity | Where | What |\n| --- | --- | --- | --- |\n| `coverage.unavailable` | low | - | No coverage report found in the project |\n\n## Evidence and remediation\n- **`coverage.unavailable`** \u2014 No coverage report found in the project\n  - Fix: Generate a report in the test step: `pytest --cov=app --cov-report=xml` or `npm test -- --coverage`.\n\n## Metrics\n- threshold: **70.0**\n\nAccepted with warnings: record them in the task and keep going.",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 289.89615850150585,
+          "error": null,
+          "started_at": "2026-11-23T09:45:27.821Z",
+          "finished_at": "2026-11-23T09:45:28.111Z",
+          "cached": null
+        },
+        {
+          "tool": "project_manager",
+          "tool_call_id": "call_00_IRIj5V8ftH9SX0X5mWV52592",
+          "status": "done",
+          "request": {
+            "action": "request_help",
+            "chat_id": "ccca3ccb-75e5-4053-b422-9f6befd68879",
+            "comment": "## QA 2026-11-23 \u2014 first half DONE: `coverage.unavailable` raised low \u2192 medium (one line, line 371)\n\nScope: `codx/junior/tools/qa_tools.py`, function `qa_coverage()`, branch `if not report:`.\n\n```diff\n@@ -368,7 +368,7 @@ def qa_coverage(\n             QaFinding(\n                 rule_id=\"coverage.unavailable\",\n                 title=\"No coverage report found in the project\",\n-                severity=QaSeverity.LOW,\n+                severity=QaSeverity.MEDIUM,\n                 category=QaCategory.COVERAGE,\n```\n\nEffect (by reading, not by run): effective policy is `approval_above=medium`, and line 387 `coverage.below-threshold` is already `QaSeverity.MEDIUM` \u2192 so both \"measured below 70 %\" and \"not measured at all\" now land on `require_approval`. The inversion \u2014 *knowing badly was punished harder than not knowing* \u2014 is removed.\n\nRuntime confirmation of the inversion, from this shift: `qa_coverage()` still returned `decision: warn / highest_severity: low` because the API process holds the pre-edit module. **The fix only takes effect after the API module reloads**; the same call must then return `require_approval / medium`.\n\n**Second half still open (unchanged, and the reason the inversion could exist):** no suite emits a report \u2014 `pyproject.toml` `[project.optional-dependencies].test` lists `pytest`, `pytest-mock`, `pytest-asyncio` and **no `pytest-cov`**, so `--cov` would break every suite with \"unrecognized arguments\". Adding reports is blocked on installing `pytest-cov`. Card stays To Do for that half.\n\nDated policy note: Policy decision D2 (raise `coverage.unavailable` low\u2192medium) \u2014 recorded by ProjectManager 2026-11-23, reversible by reverting line 371; pending management acknowledgement in the weekly report.",
+            "role": "assistant"
+          },
+          "response": "{\n  \"status\": \"comment_added\",\n  \"task_id\": \"ccca3ccb-75e5-4053-b422-9f6befd68879\",\n  \"message_id\": null,\n  \"processed\": false\n}",
+          "output": "\ud83d\udcdd Comment added to task **Coverage gate can never fire: min_coverage=70 in qa_policy but no report is ever generated (coverage.unavailable is only LOW)**.\n- ID: `ccca3ccb-75e5-4053-b422-9f6befd68879`\n- No processing was triggered: the request waits for a user.",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 569.581525400281,
+          "error": null,
+          "started_at": "2026-11-23T09:45:37.096Z",
+          "finished_at": "2026-11-23T09:45:37.665Z",
+          "cached": null
+        }
+      ],
+      "lifecycle_events": [
+        {
+          "status": "done",
+          "run_id": "aa9765db5e87",
+          "duration_ms": null,
+          "error": null,
+          "started_at": "2026-11-23T09:45:11.940Z",
+          "finished_at": "2026-11-23T09:45:47.594Z"
+        }
+      ],
+      "phase_events": [
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 3 messages",
+          "started_at": "2026-11-23T09:45:12.022Z",
+          "finished_at": "2026-11-23T09:45:13.309Z",
+          "duration_ms": 1287.9102230072021,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 3
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.3s",
+          "started_at": "2026-11-23T09:45:13.306Z",
+          "finished_at": "2026-11-23T09:45:19.924Z",
+          "duration_ms": 6618.060350418091,
+          "meta": {
+            "ttft_ms": 1285,
+            "prompt_tokens": 38677,
+            "completion_tokens": 665,
+            "total_tokens": 39342
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 5 messages",
+          "started_at": "2026-11-23T09:45:20.066Z",
+          "finished_at": "2026-11-23T09:45:20.901Z",
+          "duration_ms": 835.9432220458984,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 5
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.8s",
+          "started_at": "2026-11-23T09:45:20.901Z",
+          "finished_at": "2026-11-23T09:45:22.060Z",
+          "duration_ms": 1159.531831741333,
+          "meta": {
+            "ttft_ms": 836,
+            "prompt_tokens": 40174,
+            "completion_tokens": 233,
+            "total_tokens": 40407
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 7 messages",
+          "started_at": "2026-11-23T09:45:22.210Z",
+          "finished_at": "2026-11-23T09:45:23.115Z",
+          "duration_ms": 905.7128429412842,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 7
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.9s",
+          "started_at": "2026-11-23T09:45:23.114Z",
+          "finished_at": "2026-11-23T09:45:24.053Z",
+          "duration_ms": 939.171552658081,
+          "meta": {
+            "ttft_ms": 905,
+            "prompt_tokens": 40438,
+            "completion_tokens": 152,
+            "total_tokens": 40590
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 9 messages",
+          "started_at": "2026-11-23T09:45:24.310Z",
+          "finished_at": "2026-11-23T09:45:25.333Z",
+          "duration_ms": 1023.1518745422363,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 9
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-23T09:45:25.332Z",
+          "finished_at": "2026-11-23T09:45:28.112Z",
+          "duration_ms": 2780.43532371521,
+          "meta": {
+            "ttft_ms": 1022,
+            "prompt_tokens": 40977,
+            "completion_tokens": 452,
+            "total_tokens": 41429
+          }
+        },
+        {
+          "kind": "notice",
+          "status": "done",
+          "label": "qa_coverage",
+          "detail": "QA verdict: warn: 1 finding(s) [coverage.unavailable] highest=low; [LOW] coverage.unavailable -:0 \u2014 No coverage report found in the project",
+          "started_at": "2026-11-23T09:45:28.224Z",
+          "finished_at": "2026-11-23T09:45:28.224Z",
+          "duration_ms": null,
+          "meta": null
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 11 messages",
+          "started_at": "2026-11-23T09:45:28.539Z",
+          "finished_at": "2026-11-23T09:45:29.519Z",
+          "duration_ms": 980.1654815673828,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 11
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-23T09:45:29.518Z",
+          "finished_at": "2026-11-23T09:45:37.666Z",
+          "duration_ms": 8148.541450500488,
+          "meta": {
+            "ttft_ms": 980,
+            "prompt_tokens": 41530,
+            "completion_tokens": 1002,
+            "total_tokens": 42532
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 13 messages",
+          "started_at": "2026-11-23T09:45:37.909Z",
+          "finished_at": "2026-11-23T09:45:38.881Z",
+          "duration_ms": 972.480297088623,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 13
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-23T09:45:38.878Z",
+          "finished_at": "2026-11-23T09:45:47.594Z",
+          "duration_ms": 8716.620206832886,
+          "meta": {
+            "ttft_ms": 969,
+            "prompt_tokens": 42596,
+            "completion_tokens": 1981,
+            "total_tokens": 44577
+          }
+        }
+      ],
+      "cost": 0.0393498,
+      "cost_info": {
+        "iteration_cost_cxjcoins": 0.0393498,
+        "chat_cost_cxjcoins": 0.0393498,
+        "estimation_cost_cxjcoins": null,
+        "budget_reached": false,
+        "input_tokens": 244392,
+        "output_tokens": 4485,
+        "total_tokens": 248877,
+        "input_cost_cxjcoins": 0.03665879999999999,
+        "output_cost_cxjcoins": 0.002691,
+        "tool_cost_cxjcoins": 0.0
+      },
+      "profiles": [
+        "project",
+        "qa",
+        "qa_automation"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "c7fd8b1a-65e7-476f-8214-ec44a4ae8e8d",
+      "role": "assistant",
+      "task_item": "",
+      "content": "## QA 2026-11-23 \u2014 first half DONE: `coverage.unavailable` raised low \u2192 medium (one line, line 371)\n\nScope: `codx/junior/tools/qa_tools.py`, function `qa_coverage()`, branch `if not report:`.\n\n```diff\n@@ -368,7 +368,7 @@ def qa_coverage(\n             QaFinding(\n                 rule_id=\"coverage.unavailable\",\n                 title=\"No coverage report found in the project\",\n-                severity=QaSeverity.LOW,\n+                severity=QaSeverity.MEDIUM,\n                 category=QaCategory.COVERAGE,\n```\n\nEffect (by reading, not by run): effective policy is `approval_above=medium`, and line 387 `coverage.below-threshold` is already `QaSeverity.MEDIUM` \u2192 so both \"measured below 70 %\" and \"not measured at all\" now land on `require_approval`. The inversion \u2014 *knowing badly was punished harder than not knowing* \u2014 is removed.\n\nRuntime confirmation of the inversion, from this shift: `qa_coverage()` still returned `decision: warn / highest_severity: low` because the API process holds the pre-edit module. **The fix only takes effect after the API module reloads**; the same call must then return `require_approval / medium`.\n\n**Second half still open (unchanged, and the reason the inversion could exist):** no suite emits a report \u2014 `pyproject.toml` `[project.optional-dependencies].test` lists `pytest`, `pytest-mock`, `pytest-asyncio` and **no `pytest-cov`**, so `--cov` would break every suite with \"unrecognized arguments\". Adding reports is blocked on installing `pytest-cov`. Card stays To Do for that half.\n\nDated policy note: Policy decision D2 (raise `coverage.unavailable` low\u2192medium) \u2014 recorded by ProjectManager 2026-11-23, reversible by reverting line 371; pending management acknowledgement in the weekly report.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:45:37.307993",
+      "updated_at": "2026-11-23 09:45:37.308010",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
     }
   ],
   "created_at": "2026-11-18 14:05:52.615220",
-  "updated_at": "2026-11-18T14:05:52.615368",
+  "updated_at": "2026-11-23T09:45:59.149793",
   "mode": "chat",
   "kanban_id": "",
   "column_id": "",
@@ -95,9 +709,9 @@
   "sprints": [],
   "priority": "medium",
   "due_date": null,
-  "progress": 0,
+  "progress": 50,
   "assignees": [],
-  "wake_at": "2026-11-21T14:05:52.615132+00:00",
+  "wake_at": "2026-12-07T09:45:59.149750+00:00",
   "schedule": null,
   "schedule_context": "history",
   "schedule_column": null,
@@ -116,7 +730,7 @@
   "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/api/.codx/tasks/IT team/To Do/coverage-gate-can-never-fire-min-coverage-70-in-qa-policy-but-no-report-is-ever-generated-coverage-unavailable-is-only-low.ccca3ccb-75e5-4053-b422-9f6befd68879.json",
   "llm_model": "",
   "estimation_cost": null,
-  "cost": 0.0,
+  "cost": 0.0393498,
   "run_id": null,
   "run_status": null,
   "run_step_id": null,
@@ -126,7 +740,22 @@
   "knowledge_topics": [],
   "chat_links": [],
   "pr_view": {},
-  "history": [],
+  "history": [
+    {
+      "timestamp": "2026-11-23T09:45:55.099091+00:00",
+      "summary": "1. Task: the coverage gate has `min_coverage=70.0` but no report to measure \u2014 `qa_plan`/`qa_coverage` reported `coverage: no coverage report found`, classified `low` \u2192 `warn`, so an unmeasured change passed.\n2. Root cause: at `codx/junior/tools/qa_tools.py:371` the `coverage.unavailable` finding was `QaSeverity.LOW`, below `approval_above=medium`, so not measuring was cheaper than measuring at 69 % (line 387 `coverage.below-threshold` is `MEDIUM` \u2192 `require_approval`).\n3. Change made: exactly one line, `severity=QaSeverity.LOW` \u2192 `severity=QaSeverity.MEDIUM`, one hunk, +1/\u22121; no other rule, no refactor, no `--cov` added, `policy_markdown()`/`read_coverage()`/`qa_review_changes` untouched.\n4. Not done / blocked: no suite emits a report \u2014 `pyproject.toml` test extras omit `pytest-cov`, so `--cov --cov-report=xml` would break suites; that half (real percentage + `threshold: 70.0` returning `allow`) stays on card `ccca3ccb`, pending the package.\n5. Verification status: `qa_coverage()` still returned `warn / low` because the API process had not reloaded the module \u2014 the fix takes effect only after reload, then the same call must return `require_approval / medium`; policy decision D2 (dated, reversible by reverting line 371) awaits weekly acknowledgement.",
+      "message_ids": [
+        "4358dd1e-f62f-41e5-ad05-012ee4f902cb",
+        "67c233f7-75c1-4974-8cc5-4e01e8451f22",
+        "725bcb94-e914-41e2-a709-c613f876c9fa",
+        "4e23faad-87e6-4260-aa9d-28c0b5d9a926",
+        "a0a70277-3d76-4cc7-8d3a-5d05f62abe66",
+        "faae9003-e2eb-4f5b-8ba1-f6a9b05d97e1",
+        "37c75bf1-8890-4f7b-8e77-0652ebed0740",
+        "c7fd8b1a-65e7-476f-8214-ec44a4ae8e8d"
+      ]
+    }
+  ],
   "session_id": null,
   "auto_initialize": false,
   "ignore_parent_knowledge": false,
@@ -147,5 +776,6 @@
   "harness_model": null,
   "harness_usage": {},
   "harness_cost": null,
-  "harness_metadata": {}
+  "harness_metadata": {},
+  "ticket": null
 }

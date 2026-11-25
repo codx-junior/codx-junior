@@ -10,7 +10,7 @@ database service. Optional model servers are external OpenAI-compatible
 endpoints, not services the installer starts.
 
 ::: tip One installer, four modes
-`local`, `server` (Traefik master), `slave` (behind a master proxy) and `dind`
+`local`, `server` (normally Traefik primary) and `dind`; add `--dev` for the development option (host: live checkout; DIND: DEBUG=1)
 (one isolated nested instance per container). The full rationale, module audit
 and known issues are in
 [the installer refactor review](/installer-refactor).
@@ -25,9 +25,9 @@ using the current values as defaults:
 sudo ./install.sh
 ```
 
-Press Enter to accept each default. It covers the mode, domain, DIND inner mode,
-master proxy network/resolver, instance, paths, provider and key, coworking and
-Sysbox. `--interactive` forces it; `--non-interactive` disables it.
+Press Enter to accept each default. The first question is the target folder
+(default: the current directory); it covers the mode, domain, DIND proxy network/resolver, instance, paths,
+provider and key, coworking and Sysbox. `--interactive` forces it; `--non-interactive` disables it.
 
 ## One-line install (recommended)
 
@@ -66,17 +66,19 @@ Only the provider and its key are required. Useful extras:
 The installer installs Docker when it is missing, clones or updates the runtime
 assets, writes the settings and verifies the health endpoint. Exit code `0`
 means the check passed. `install.sh --help` lists everything. Running it again is
-the upgrade path: your projects and settings are kept.
+the upgrade path: your projects and settings are kept. From the web UI,
+**Settings → Updates** (admin) runs the same upgrade from a helper container, so
+nobody needs SSH access; see `api/docs/system-update.md`.
 
 ## Deployment modes
 
 | Mode | What it is | Publishes | TLS |
 |---|---|---|---|
 | `local` | laptop, CI, single-user test | `127.0.0.1:19981` | no |
-| `server` | standalone server with Traefik master | `:80`, `:443` | ACME (HTTP-01) |
+| `server` | standalone server with Traefik primary | `:80`, `:443` | ACME (HTTP-01) |
 | `server --no-tls` | standalone server without a domain | `:19981` | no |
-| `slave` | instance behind an existing master proxy | nothing (master network) | terminated by the master |
-| `dind` | one isolated nested stack per container | per `--dind-mode` | per `--dind-mode` |
+| `server --traefik slave` | instance behind an existing primary proxy | nothing (primary network) | terminated by the primary |
+| `dind` | one isolated nested stack per container; inner install is always `server` | per `--traefik` | per `--traefik` |
 
 ### Localhost / CI
 
@@ -97,7 +99,7 @@ sudo ./install.sh --mode server --domain codx.example.com \
 
 Create the DNS A record first. Traefik obtains the certificate with HTTP-01 and
 the installer waits for `https://<domain>/api/health`. Ports 80/443 are owned by
-this instance: a second instance on the same host must use `slave`.
+this instance: a second instance on the same host must use `--traefik slave`.
 
 For a server without a domain (plain HTTP on `:19981`):
 
@@ -105,47 +107,92 @@ For a server without a domain (plain HTTP on `:19981`):
 sudo ./install.sh --mode server --no-tls --provider deepseek --key sk-xxxxxxxx
 ```
 
-### Slave behind a master proxy
+### Slave behind an existing primary
 
 Use this when a central Traefik (or another edge) already owns DNS, ports 80/443
 and certificates, and forwards traffic to this container:
 
 ```sh
-sudo ./install.sh --mode slave --domain team.example.com \
+sudo ./install.sh --mode server --traefik slave --domain team.example.com \
   --proxy-network traefik --trusted-proxy 172.16.0.0/12 \
   --provider openai --key sk-xxxxxxxx
 ```
 
 The slave publishes no host port. It runs Traefik on `:80` and trusts
-`X-Forwarded-*` only from the given master CIDRs. The master needs a route
+`X-Forwarded-*` only from the given primary CIDRs. The primary needs a route
 `Host(team.example.com) -> <container>:80`; if it watches Docker labels, the
 installer's `<instance>-edge` labels provide it.
 
 ### Docker-in-Docker (multiple instances per host)
 
 ```sh
-sudo ./install.sh --mode dind --dind-mode server --domain acme.example.com \
+sudo ./install.sh --mode dind --traefik primary --domain acme.example.com \
   --acme-email ops@example.com --provider deepseek --key sk-xxxxxxxx
 ```
 
+Each install/upgrade pulls the latest `codxjuniorai/codx-junior:dind` image and
+fails if the pull fails. Use `--no-pull` to use a local image intentionally.
+
 Each instance is one wrapper container with its own nested Docker daemon,
-containers, networks and volumes. Only one instance per host can be
-`--dind-mode server` (ports 80/443); the others use `--dind-mode slave` and join
-the master network. Persisted host data lives under `<home>/data` plus the
+containers, networks and volumes. The inner installation is always `server`.
+Only one instance per host can use `--traefik primary` (ports 80/443); the
+others use `--traefik slave`, which joins the existing Traefik network and
+publishes no host port. Persisted host data lives under `<home>/data` plus the
 instance's `dind-storage` volume.
 
 `--sysbox` uses `runtime: sysbox-runc` instead of `privileged: true` on hosts
 that provide Sysbox.
 
-To keep local access **and** publish through a master proxy, combine the inner
-app mode with the Traefik mode:
+Before the final confirmation the wizard creates in the target folder:
+
+```text
+<target>/docker-compose.yaml
+<target>/.env
+```
+
+Edit `docker-compose.yaml` to add folder mappings under
+`services.dind.volumes`. The installer uses the file as-is. If either file
+already exists, the wizard asks whether to overwrite it; answering no preserves
+your edits. Map project folders under `/data/projects/<name>` so the inner app
+sees them as projects.
+
+For an existing primary, the DIND container joins its network:
 
 ```bash
-sudo ./install.sh --mode dind --dind-mode local --traefik slave \
+sudo ./install.sh --mode dind --traefik slave \
   --domain demo.example.com --proxy-network traefik \
   --provider deepseek --key sk-...
-# 127.0.0.1:19981 locally + https://demo.example.com through the master
+# https://demo.example.com through the existing primary
 ```
+
+`--proxy-network` is consumed only by the outer DIND container in this slave
+case. The inner stack creates its own nested `codx-proxy` network.
+
+### Development option
+
+Use `--dev` to enable development mode. On a host install it runs the checkout you are editing; on DIND it sets `DEBUG=1` inside the packaged image:
+
+```bash
+cd ~/codx-junior
+./install.sh --mode local --dev --provider deepseek --key-file ~/.config/codx-junior/deepseek.key
+# http://localhost:19981
+```
+
+The checkout is mounted live. The API uses `uvicorn --reload` and the SPA is
+served by Vite with HMR (nginx is not used). Edit `api/` or `client/src/` and
+refresh/hot-reload; no image rebuild. Rebuild with `--build` after changing
+`pyproject.toml` or `package.json`.
+
+On a host, the development option can still be combined with `--traefik slave` for
+local access plus a public URL through an existing primary.
+
+### Reusing the last selections
+
+The installer writes the resolved selections to
+`${XDG_CONFIG_HOME:-$HOME/.config}/codx-junior/installer.env` (mode `600`) before building or pulling the image. If an install is interrupted, the next run uses those values as
+the wizard defaults. The instance settings file and explicit CLI flags still
+take precedence. Override the path with `CODX_JUNIOR_INSTALLER_STATE` or delete
+the file to reset the defaults.
 
 ## Requirements
 
@@ -164,7 +211,8 @@ sudo ./install.sh --mode dind --dind-mode local --traefik slave \
 /opt/codx-junior/bin/codx-junior-compose logs -f
 /opt/codx-junior/bin/codx-junior-compose down     # projects/settings kept
 
-sudo ./install.sh --upgrade                        # source + image + recreate
+sudo /opt/codx-junior/bin/codx-junior upgrade       # source + image + recreate
+sudo ./install.sh --upgrade                        # same, from the checkout
 sudo ./install.sh status|logs|down|doctor|config
 ```
 
@@ -180,7 +228,7 @@ invocation, so the unit can be inspected and run by hand.
   and port 80 must be reachable for ACME. `docker logs -f <instance>-traefik`
   shows the order. Use `--acme-ca staging` while rehearsing.
 * **A port is already in use**: another proxy (Caddy, nginx, Traefik) owns 80/443.
-  Stop it, or install this instance with `--mode slave` behind the existing one.
+  Stop it, or install this instance with `--traefik slave` behind the existing one.
 * **Knowledge search returns nothing**: configure an embeddings model. Providers
   without an embeddings endpoint (`deepseek`, `openrouter`, `groq`) fall back to
   lexical search.

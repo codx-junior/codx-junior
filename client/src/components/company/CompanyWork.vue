@@ -203,7 +203,7 @@ async function sync() {
 }
 
 function eventTone(event) {
-  return String(event.type || '').includes('failed') ? 'text-error' : 'text-primary'
+  return String(event.type || '').includes('failed') ? 'text-error-ink' : 'text-primary-ink'
 }
 </script>
 
@@ -211,7 +211,7 @@ function eventTone(event) {
   <div class="space-y-5">
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <p class="text-[10px] font-bold uppercase tracking-[0.2em] text-primary">Execution</p>
+        <p class="text-xs font-bold uppercase tracking-[0.2em] text-primary-ink">Execution</p>
         <h1 class="mt-1 text-2xl font-black tracking-tight md:text-3xl">{{ t('nav.work') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Every goal has an owner, a deadline and evidence. Start it, review it, accept it — or ask the assistant why it is stuck.
@@ -242,7 +242,7 @@ function eventTone(event) {
 
     <!-- Blocked / paused row -->
     <section v-if="otherMissions.length" class="rounded-2xl border border-warning/20 bg-warning/5 p-3">
-      <div class="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.16em] text-warning">
+      <div class="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-warning-ink">
         <i class="fa-solid fa-triangle-exclamation"></i> Outside the main flow
       </div>
       <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -253,7 +253,7 @@ function eventTone(event) {
             <span class="badge badge-xs" :class="statusMeta(mission.status).badge">{{ statusMeta(mission.status).label }}</span>
             <span class="truncate text-xs font-bold">{{ mission.title }}</span>
           </div>
-          <p class="mt-1 truncate text-[10px] text-base-content/45">{{ mission.last_error || missionTeam(mission) }}</p>
+          <p class="mt-1 truncate text-xs text-base-content/45">{{ mission.last_error || missionTeam(mission) }}</p>
         </button>
       </div>
     </section>
@@ -265,11 +265,11 @@ function eventTone(event) {
           <div class="mb-2 flex items-center justify-between px-1">
             <div class="flex items-center gap-1.5">
               <span class="h-1.5 w-1.5 rounded-full" :class="column.id === 'running' ? 'bg-primary' : column.id === 'review' ? 'bg-warning' : column.id === 'done' ? 'bg-success' : 'bg-base-content/30'"></span>
-              <span class="text-[10px] font-bold uppercase tracking-[0.14em] text-base-content/50">{{ t(`status.${column.id}`) }}</span>
+              <span class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/50">{{ t(`status.${column.id}`) }}</span>
             </div>
-            <span class="text-[10px] text-base-content/35">{{ (columnMissions[column.id] || []).length }}</span>
+            <span class="text-xs text-base-content/35">{{ (columnMissions[column.id] || []).length }}</span>
           </div>
-          <p class="mb-2 px-1 text-[9px] text-base-content/30">{{ column.hint }}</p>
+          <p class="mb-2 px-1 text-[11px] text-base-content/30">{{ column.hint }}</p>
 
           <div class="space-y-2">
             <button v-for="mission in columnMissions[column.id]" :key="mission.id"
@@ -277,14 +277,14 @@ function eventTone(event) {
                     @click="openMission(mission)">
               <div class="flex items-start gap-1.5">
                 <span class="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full" :class="mission.priority === 'critical' ? 'bg-error' : mission.priority === 'high' ? 'bg-warning' : mission.priority === 'low' ? 'bg-base-content/30' : 'bg-info'"></span>
-                <span class="line-clamp-2 text-[11px] font-bold leading-snug">{{ mission.title }}</span>
+                <span class="line-clamp-2 text-xs font-bold leading-snug">{{ mission.title }}</span>
               </div>
               <div class="mt-2 flex flex-wrap items-center gap-1">
-                <span class="badge badge-xs border-0 bg-base-200 text-[8px]">{{ missionTeam(mission) }}</span>
-                <span v-if="mission.approval_status === 'pending'" class="badge badge-xs badge-warning gap-0.5"><i class="fa-solid fa-stamp text-[7px]"></i>approve</span>
+                <span class="badge badge-xs border-0 bg-base-200 text-[10px]">{{ missionTeam(mission) }}</span>
+                <span v-if="mission.approval_status === 'pending'" class="badge badge-xs badge-warning gap-0.5"><i class="fa-solid fa-stamp text-[10px]"></i>approve</span>
                 <span v-if="mission.run_status" class="badge badge-xs badge-ghost">{{ mission.run_status }}</span>
               </div>
-              <div class="mt-2 flex items-center justify-between text-[9px] text-base-content/40">
+              <div class="mt-2 flex items-center justify-between text-[11px] text-base-content/40">
                 <span>{{ mission.due_date ? formatDate(mission.due_date) : 'No deadline' }}</span>
                 <span>{{ mission.progress || 0 }}%</span>
               </div>
@@ -293,7 +293,7 @@ function eventTone(event) {
               </div>
             </button>
 
-            <div v-if="!(columnMissions[column.id] || []).length" class="rounded-lg border border-dashed border-base-content/15 p-4 text-center text-[9px] text-base-content/30">
+            <div v-if="!(columnMissions[column.id] || []).length" class="rounded-lg border border-dashed border-base-content/15 p-4 text-center text-[11px] text-base-content/30">
               {{ t('work.empty') }}
             </div>
           </div>
@@ -301,7 +301,7 @@ function eventTone(event) {
       </div>
     </section>
 
-    <p class="text-[10px] text-base-content/35">
+    <p class="text-xs text-base-content/35">
       <i class="fa-solid fa-circle-info mr-1"></i>
       A goal in <strong>Running</strong> is being executed by the team. <strong>Review</strong> means the AI team has delivered and is waiting for a human decision.
     </p>
@@ -315,13 +315,13 @@ function eventTone(event) {
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-1.5">
                 <span class="badge badge-sm gap-1" :class="statusMeta(selected.status).badge">
-                  <i :class="statusMeta(selected.status).icon" class="text-[8px]"></i>{{ statusMeta(selected.status).label }}
+                  <i :class="statusMeta(selected.status).icon" class="text-[10px]"></i>{{ statusMeta(selected.status).label }}
                 </span>
                 <span class="badge badge-sm" :class="priorityMeta(selected.priority).badge">{{ priorityMeta(selected.priority).label }}</span>
                 <span v-if="selected.approval_status === 'pending'" class="badge badge-sm badge-warning">approval needed</span>
               </div>
               <h2 class="mt-2 text-lg font-black leading-tight">{{ selected.title }}</h2>
-              <p class="mt-1 text-[11px] text-base-content/45">{{ missionTeam(selected) }} · {{ missionProject(selected) }}</p>
+              <p class="mt-1 text-xs text-base-content/45">{{ missionTeam(selected) }} · {{ missionProject(selected) }}</p>
             </div>
             <button class="btn btn-ghost btn-sm btn-square" aria-label="Close" @click="closeDrawer"><i class="fa-solid fa-xmark"></i></button>
           </div>
@@ -365,58 +365,58 @@ function eventTone(event) {
         <div class="flex-1 overflow-y-auto p-4 md:p-5">
           <div class="grid gap-3 sm:grid-cols-3">
             <div class="rounded-xl border border-base-content/10 bg-base-200/30 p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Progress</p>
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Progress</p>
               <p class="mt-1 text-lg font-black">{{ selected.progress || 0 }}%</p>
             </div>
             <div class="rounded-xl border border-base-content/10 bg-base-200/30 p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Budget</p>
-              <p class="mt-1 text-lg font-black">{{ Number(selected.spent_cxjcoins || 0).toFixed(2) }}<span class="text-[10px] font-normal text-base-content/40"> / {{ selected.budget_cxjcoins || 0 }} cxj</span></p>
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Budget</p>
+              <p class="mt-1 text-lg font-black">{{ Number(selected.spent_cxjcoins || 0).toFixed(2) }}<span class="text-xs font-normal text-base-content/40"> / {{ selected.budget_cxjcoins || 0 }} cxj</span></p>
             </div>
             <div class="rounded-xl border border-base-content/10 bg-base-200/30 p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Deadline</p>
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Deadline</p>
               <p class="mt-1 text-sm font-black">{{ selected.due_date ? formatDate(selected.due_date) : 'None' }}</p>
             </div>
           </div>
 
           <section class="mt-4">
-            <h3 class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">The outcome</h3>
+            <h3 class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">The outcome</h3>
             <p class="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-base-content/70">{{ selected.objective || selected.title }}</p>
           </section>
 
           <section v-if="selected.acceptance" class="mt-4">
-            <h3 class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">Done means</h3>
+            <h3 class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">Done means</h3>
             <p class="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-base-content/70">{{ selected.acceptance }}</p>
           </section>
 
           <section v-if="selected.result" class="mt-4 rounded-xl border border-success/25 bg-success/5 p-3">
-            <h3 class="text-[10px] font-bold uppercase tracking-[0.16em] text-success">Delivered result</h3>
+            <h3 class="text-xs font-bold uppercase tracking-[0.16em] text-success-ink">Delivered result</h3>
             <p class="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-base-content/75">{{ selected.result }}</p>
           </section>
 
           <section v-if="selected.last_error" class="mt-4 rounded-xl border border-error/25 bg-error/5 p-3">
-            <h3 class="text-[10px] font-bold uppercase tracking-[0.16em] text-error">Needs attention</h3>
+            <h3 class="text-xs font-bold uppercase tracking-[0.16em] text-error-ink">Needs attention</h3>
             <p class="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-base-content/75">{{ selected.last_error }}</p>
           </section>
 
           <section class="mt-4 grid gap-2 sm:grid-cols-2">
             <div class="rounded-xl border border-base-content/10 p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Approval</p>
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Approval</p>
               <p class="mt-1 text-xs font-semibold">{{ selected.approval_status }}<template v-if="selected.approved_by"> · {{ selected.approved_by }}</template></p>
             </div>
             <div class="rounded-xl border border-base-content/10 p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Run</p>
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Run</p>
               <p class="mt-1 text-xs font-semibold">{{ selected.run_status || 'Not started' }}<template v-if="selected.run_id"> · {{ selected.run_id.slice(-6) }}</template></p>
             </div>
           </section>
 
           <section v-if="selectedTimeline.length" class="mt-5">
-            <h3 class="text-[10px] font-bold uppercase tracking-[0.16em] text-base-content/40">Timeline</h3>
+            <h3 class="text-xs font-bold uppercase tracking-[0.16em] text-base-content/40">Timeline</h3>
             <div class="mt-2 space-y-2">
               <div v-for="event in selectedTimeline" :key="event.id" class="flex gap-2">
                 <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full" :class="eventTone(event).replace('text-', 'bg-')"></span>
                 <div class="min-w-0 flex-1">
-                  <p class="text-[11px] leading-snug text-base-content/70">{{ event.message }}</p>
-                  <p class="text-[9px] text-base-content/35">{{ formatDateTime(event.at) }} · {{ event.actor }}</p>
+                  <p class="text-xs leading-snug text-base-content/70">{{ event.message }}</p>
+                  <p class="text-[11px] text-base-content/35">{{ formatDateTime(event.at) }} · {{ event.actor }}</p>
                 </div>
               </div>
             </div>
@@ -429,10 +429,10 @@ function eventTone(event) {
     <div v-if="action.open" class="modal modal-open z-[95]" role="dialog" aria-modal="true">
       <div class="modal-box max-w-md border border-base-content/10 bg-base-100">
         <h3 class="text-base font-black">{{ action.title }}</h3>
-        <p class="mt-1 text-[11px] text-base-content/50">{{ action.hint }}</p>
+        <p class="mt-1 text-xs text-base-content/50">{{ action.hint }}</p>
         <textarea v-model="action.value" class="textarea textarea-bordered mt-3 w-full" rows="4"
                   :placeholder="action.type === 'accept' ? 'Describe the outcome and the evidence…' : 'Add a note for the team…'"></textarea>
-        <p v-if="action.error" class="mt-2 text-[11px] text-error">{{ action.error }}</p>
+        <p v-if="action.error" class="mt-2 text-xs text-error-ink">{{ action.error }}</p>
         <div class="modal-action">
           <button class="btn btn-ghost btn-sm" @click="closeAction">Cancel</button>
           <button class="btn btn-primary btn-sm" :disabled="busy" @click="submitAction">

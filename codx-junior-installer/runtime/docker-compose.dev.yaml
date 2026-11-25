@@ -1,0 +1,31 @@
+# =============================================================================
+# codx-junior — DEV overlay
+#
+#   install.sh --mode dev [--traefik none|master|slave]
+#
+# Builds the `dev` target of the application Dockerfile and mounts the checkout
+# live. The API runs with uvicorn --reload; the web process is the Vite dev
+# server (HMR) instead of nginx. Python and Vue edits are visible without a
+# rebuild; dependency changes (pyproject.toml / package.json) need --build.
+#
+# CODX_SOURCE_DIR must point at the repository checkout, not at ~/lib.
+# =============================================================================
+services:
+  codx-junior:
+    image: ${CODX_JUNIOR_IMAGE:-codxjuniorai/codx-junior:dev}
+    build:
+      context: ${CODX_SOURCE_DIR:?CODX_SOURCE_DIR is required for dev mode}
+      dockerfile: codx-junior-installer/demo/Dockerfile.dev
+      target: dev
+    environment:
+      DEBUG: "1"
+      CODX_JUNIOR_DEV: "1"
+      CODX_JUNIOR_API_RELOAD: "1"
+      CODX_JUNIOR_SKIP_INSTALL: "1"
+      # Vite proxies /api + socket.io here.
+      CODX_JUNIOR_DEV_API_URL: http://127.0.0.1:19980
+      CODX_JUNIOR_WEB_PORT: ${CODX_JUNIOR_WEB_PORT:-19981}
+    volumes:
+      # The live checkout. node_modules are baked at /home/codx-junior/node_modules,
+      # outside this mount, so they are not hidden.
+      - ${CODX_SOURCE_DIR:?CODX_SOURCE_DIR is required for dev mode}:/home/codx-junior/codx-junior

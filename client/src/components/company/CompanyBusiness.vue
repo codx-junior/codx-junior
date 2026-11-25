@@ -263,116 +263,116 @@ function metricProgress(metric) {
   <div class="space-y-5">
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <p class="cp-eyebrow">Commercial</p>
+        <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">Commercial</p>
         <h1 class="mt-1 text-2xl font-extrabold tracking-tight md:text-3xl">{{ t('nav.business') }}</h1>
         <p class="mt-1 text-sm text-base-content/55">
           Revenue, margin and pipeline in one place. Ask the assistant to turn the gap into a plan the team can execute.
         </p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button class="cp-chip" :disabled="saving" @click="openTarget">
-          <i class="fa-solid fa-bullseye text-[9px]"></i> {{ t('business.edit') }}
+        <button class="btn btn-xs" :disabled="saving" @click="openTarget">
+          <i class="fa-solid fa-bullseye text-[11px]"></i> {{ t('business.edit') }}
         </button>
-        <button v-if="canManage" class="cp-cta" @click="openDeal()">
-          <i class="fa-solid fa-handshake text-[9px]"></i> {{ t('business.add') }}
+        <button v-if="canManage" class="btn btn-sm btn-primary" @click="openDeal()">
+          <i class="fa-solid fa-handshake text-[11px]"></i> {{ t('business.add') }}
         </button>
       </div>
     </header>
 
     <!-- ── Revenue hero ──────────────────────────────────────────────────── -->
     <section class="grid gap-4 lg:grid-cols-12">
-      <div class="cp-card relative overflow-hidden p-5 lg:col-span-8">
-        <div class="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-[var(--cp-lime-soft)] blur-3xl"></div>
+      <div class="rounded-box border border-base-300 bg-base-100 shadow-sm relative overflow-hidden p-5 lg:col-span-8">
+        <div class="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-accent/10 blur-3xl"></div>
         <div class="relative">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
-              <p class="cp-eyebrow">Revenue this {{ business.period || 'month' }}</p>
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">Revenue this {{ business.period || 'month' }}</p>
               <p class="mt-1 text-3xl font-black tracking-tight md:text-4xl">{{ formatMoney(revenue, currency) }}</p>
               <p class="mt-1 text-xs text-base-content/50">
                 of {{ formatMoney(target, currency) }} target
-                <span v-if="gap > 0" class="text-warning"> · {{ formatMoney(gap, currency) }} to go</span>
-                <span v-else class="text-success"> · target reached</span>
+                <span v-if="gap > 0" class="text-warning-ink"> · {{ formatMoney(gap, currency) }} to go</span>
+                <span v-else class="text-success-ink"> · target reached</span>
               </p>
             </div>
-            <div class="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-3 py-2 text-right">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Attainment</p>
-              <p class="text-2xl font-black" :class="progress >= 100 ? 'text-success' : progress >= 60 ? 'text-primary' : 'text-warning'">{{ progress }}%</p>
+            <div class="rounded-xl border border-base-300 bg-base-200 px-3 py-2 text-right">
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Attainment</p>
+              <p class="text-2xl font-black" :class="progress >= 100 ? 'text-success-ink' : progress >= 60 ? 'text-primary-ink' : 'text-warning-ink'">{{ progress }}%</p>
             </div>
           </div>
 
-          <div class="mt-4 h-2.5 overflow-hidden rounded-full bg-[var(--cp-track)]">
-            <div class="h-full rounded-full bg-[var(--cp-lime)] transition-all" :style="{ width: `${progress}%` }"></div>
+          <div class="mt-4 h-2.5 overflow-hidden rounded-full bg-base-300">
+            <div class="h-full rounded-full bg-accent transition-all" :style="{ width: `${progress}%` }"></div>
           </div>
 
           <div class="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-            <div class="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Gross profit</p>
-              <p class="mt-1 text-sm font-black" :class="grossProfit >= 0 ? 'text-success' : 'text-error'">{{ formatMoney(grossProfit, currency, true) }}</p>
+            <div class="rounded-xl border border-base-300 bg-base-200 p-3">
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Gross profit</p>
+              <p class="mt-1 text-sm font-black" :class="grossProfit >= 0 ? 'text-success-ink' : 'text-error-ink'">{{ formatMoney(grossProfit, currency, true) }}</p>
             </div>
-            <div class="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Costs</p>
+            <div class="rounded-xl border border-base-300 bg-base-200 p-3">
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Costs</p>
               <p class="mt-1 text-sm font-black">{{ formatMoney(costs, currency, true) }}</p>
             </div>
-            <div class="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Open pipeline</p>
+            <div class="rounded-xl border border-base-300 bg-base-200 p-3">
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Open pipeline</p>
               <p class="mt-1 text-sm font-black">{{ formatMoney(pipelineValue, currency, true) }}</p>
             </div>
-            <div class="rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-3">
-              <p class="text-[9px] uppercase tracking-wide text-base-content/40">Weighted pipeline</p>
+            <div class="rounded-xl border border-base-300 bg-base-200 p-3">
+              <p class="text-[11px] uppercase tracking-wide text-base-content/40">Weighted pipeline</p>
               <p class="mt-1 text-sm font-black">{{ formatMoney(weightedPipeline, currency, true) }}</p>
             </div>
           </div>
         </div>
       </div>
 
-      <div class="cp-card relative overflow-hidden p-5 lg:col-span-4">
-        <div class="grid h-9 w-9 place-items-center rounded-xl bg-[var(--cp-lime)] text-[var(--cp-lime-ink)]">
+      <div class="rounded-box border border-base-300 bg-base-100 shadow-sm relative overflow-hidden p-5 lg:col-span-4">
+        <div class="grid h-9 w-9 place-items-center rounded-xl bg-accent text-accent-content">
           <i class="fa-solid fa-wand-magic-sparkles"></i>
         </div>
-        <h2 class="mt-2.5 cp-title">Turn the gap into a plan</h2>
-        <p class="mt-1 text-[11px] leading-relaxed text-base-content/55">
+        <h2 class="mt-2.5 text-base font-bold tracking-tight">Turn the gap into a plan</h2>
+        <p class="mt-1 text-xs leading-relaxed text-base-content/55">
           The assistant sees revenue, margin, pipeline, team load and open work. Ask for a concrete path to the target — and assign it as goals.
         </p>
-        <button class="cp-cta mt-3 w-full" @click="ask('We have a revenue gap of ' + gap + ' ' + currency + '. Build a concrete plan to close it this period using the current team and pipeline. Give me 3 actions with owners and deadlines.')">
+        <button class="btn btn-sm btn-primary mt-3 w-full" @click="ask('We have a revenue gap of ' + gap + ' ' + currency + '. Build a concrete plan to close it this period using the current team and pipeline. Give me 3 actions with owners and deadlines.')">
           <i class="fa-solid fa-bolt"></i> Build the growth plan
         </button>
-        <button class="cp-chip mt-1.5 w-full justify-center" @click="ask('Where are we losing money and what should I fix first?')">Where are we losing money?</button>
+        <button class="btn btn-xs mt-1.5 w-full justify-center" @click="ask('Where are we losing money and what should I fix first?')">Where are we losing money?</button>
       </div>
     </section>
 
     <!-- ── Metrics ───────────────────────────────────────────────────────── -->
-    <section class="cp-card cp-card-pad">
+    <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
       <div class="flex items-center justify-between gap-2">
         <div>
           <h2 class="text-sm font-black">Business metrics</h2>
-          <p class="mt-0.5 text-[11px] text-base-content/45">The numbers that tell you whether the company is healthy beyond revenue.</p>
+          <p class="mt-0.5 text-xs text-base-content/45">The numbers that tell you whether the company is healthy beyond revenue.</p>
         </div>
         <button class="btn btn-ghost btn-xs gap-1" @click="openMetric()"><i class="fa-solid fa-plus"></i> Add metric</button>
       </div>
       <div v-if="metrics.length" class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <div v-for="metric in metrics" :key="metric.id" class="group rounded-xl border border-base-content/10 p-3">
           <div class="flex items-start justify-between gap-2">
-            <p class="truncate text-[10px] font-bold uppercase tracking-wide text-base-content/45">{{ metric.label }}</p>
-            <button class="opacity-0 transition group-hover:opacity-100" @click="openMetric(metric)"><i class="fa-solid fa-pen text-[9px] text-base-content/40"></i></button>
+            <p class="truncate text-xs font-bold uppercase tracking-wide text-base-content/45">{{ metric.label }}</p>
+            <button class="opacity-0 transition group-hover:opacity-100" @click="openMetric(metric)"><i class="fa-solid fa-pen text-[11px] text-base-content/40"></i></button>
           </div>
-          <p class="mt-1 text-lg font-black">{{ Number(metric.value || 0).toLocaleString() }}<span class="ml-1 text-[10px] font-normal text-base-content/40">{{ metric.unit }}</span></p>
-          <p v-if="Number(metric.target || 0)" class="text-[10px] text-base-content/40">target {{ Number(metric.target).toLocaleString() }} {{ metric.unit }}</p>
+          <p class="mt-1 text-lg font-black">{{ Number(metric.value || 0).toLocaleString() }}<span class="ml-1 text-xs font-normal text-base-content/40">{{ metric.unit }}</span></p>
+          <p v-if="Number(metric.target || 0)" class="text-xs text-base-content/40">target {{ Number(metric.target).toLocaleString() }} {{ metric.unit }}</p>
           <div class="mt-2 h-1 overflow-hidden rounded-full bg-base-content/10">
             <div class="h-full rounded-full bg-primary" :style="{ width: `${metricProgress(metric)}%` }"></div>
           </div>
         </div>
       </div>
       <div v-else class="mt-3 rounded-xl border border-dashed border-base-content/15 p-4 text-center">
-        <p class="text-[11px] text-base-content/45">No metrics yet. Add the 3 numbers you check every week (MRR, customers, churn, margin…).</p>
+        <p class="text-xs text-base-content/45">No metrics yet. Add the 3 numbers you check every week (MRR, customers, churn, margin…).</p>
       </div>
     </section>
 
     <!-- ── Pipeline board ────────────────────────────────────────────────── -->
-    <section class="cp-card cp-card-pad">
+    <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-sm font-black">Pipeline</h2>
-          <p class="mt-0.5 text-[11px] text-base-content/45">Every opportunity has a value, a probability and a next step. The weighted value is what you can plan with.</p>
+          <p class="mt-0.5 text-xs text-base-content/45">Every opportunity has a value, a probability and a next step. The weighted value is what you can plan with.</p>
         </div>
         <div class="flex items-center gap-2">
           <span class="badge badge-sm badge-ghost">{{ deals.length }} opportunities</span>
@@ -384,34 +384,34 @@ function metricProgress(metric) {
         <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
           <div v-for="stage in openStages" :key="stage.id" class="rounded-xl bg-base-200/35 p-2">
             <div class="mb-2 flex items-center justify-between px-1">
-              <span class="text-[10px] font-bold uppercase tracking-[0.14em]" :class="stage.tone">{{ stage.label }}</span>
-              <span class="text-[10px] text-base-content/35">{{ stageDeals(stage.id).length }}</span>
+              <span class="text-xs font-bold uppercase tracking-[0.14em]" :class="stage.tone">{{ stage.label }}</span>
+              <span class="text-xs text-base-content/35">{{ stageDeals(stage.id).length }}</span>
             </div>
             <div class="space-y-2">
               <div v-for="deal in stageDeals(stage.id)" :key="deal.id"
                    class="group rounded-xl border border-base-content/10 bg-base-100 p-2.5 shadow-sm transition hover:border-primary/40">
                 <div class="flex items-start justify-between gap-1">
                   <button class="min-w-0 text-left" @click="openDeal(deal)">
-                    <p class="truncate text-[11px] font-bold">{{ deal.name }}</p>
-                    <p class="truncate text-[9px] text-base-content/40">{{ deal.account || 'No account' }}</p>
+                    <p class="truncate text-xs font-bold">{{ deal.name }}</p>
+                    <p class="truncate text-[11px] text-base-content/40">{{ deal.account || 'No account' }}</p>
                   </button>
-                  <button class="opacity-0 transition group-hover:opacity-100" title="Remove" @click="removeDeal(deal)"><i class="fa-solid fa-xmark text-[9px] text-base-content/30"></i></button>
+                  <button class="opacity-0 transition group-hover:opacity-100" title="Remove" @click="removeDeal(deal)"><i class="fa-solid fa-xmark text-[11px] text-base-content/30"></i></button>
                 </div>
                 <p class="mt-1.5 text-xs font-black">{{ formatMoney(deal.value, deal.currency || currency, true) }}</p>
-                <div class="mt-1 flex items-center gap-1 text-[9px] text-base-content/40">
+                <div class="mt-1 flex items-center gap-1 text-[11px] text-base-content/40">
                   <span class="badge badge-xs badge-ghost">{{ deal.probability }}%</span>
                   <span class="truncate">{{ dealOwner(deal) }}</span>
                 </div>
-                <p v-if="deal.next_step" class="mt-1.5 line-clamp-2 rounded-md bg-base-200/50 px-1.5 py-1 text-[9px] leading-snug text-base-content/55">{{ deal.next_step }}</p>
+                <p v-if="deal.next_step" class="mt-1.5 line-clamp-2 rounded-md bg-base-200/50 px-1.5 py-1 text-[11px] leading-snug text-base-content/55">{{ deal.next_step }}</p>
                 <div class="mt-1.5 flex items-center justify-between">
-                  <span class="text-[8px] text-base-content/35">{{ deal.due_date ? formatDate(deal.due_date) : 'No date' }}</span>
+                  <span class="text-[10px] text-base-content/35">{{ deal.due_date ? formatDate(deal.due_date) : 'No date' }}</span>
                   <div class="flex gap-0.5 opacity-0 transition group-hover:opacity-100">
-                    <button class="btn btn-ghost btn-xs btn-square" title="Mark won" @click="moveDeal(deal, 'won')"><i class="fa-solid fa-check text-[8px] text-success"></i></button>
-                    <button class="btn btn-ghost btn-xs btn-square" title="Mark lost" @click="moveDeal(deal, 'lost')"><i class="fa-solid fa-xmark text-[8px] text-error"></i></button>
+                    <button class="btn btn-ghost btn-xs btn-square" title="Mark won" @click="moveDeal(deal, 'won')"><i class="fa-solid fa-check text-[10px] text-success-ink"></i></button>
+                    <button class="btn btn-ghost btn-xs btn-square" title="Mark lost" @click="moveDeal(deal, 'lost')"><i class="fa-solid fa-xmark text-[10px] text-error-ink"></i></button>
                   </div>
                 </div>
               </div>
-              <button class="w-full rounded-lg border border-dashed border-base-content/15 p-2 text-[9px] text-base-content/35 hover:border-primary/40 hover:text-primary" @click="openDeal(null, stage.id)">+ Opportunity</button>
+              <button class="w-full rounded-lg border border-dashed border-base-content/15 p-2 text-[11px] text-base-content/35 hover:border-primary/40 hover:text-primary-ink" @click="openDeal(null, stage.id)">+ Opportunity</button>
             </div>
           </div>
         </div>
@@ -420,10 +420,10 @@ function metricProgress(metric) {
       <div class="mt-3 grid gap-2 sm:grid-cols-2">
         <div v-for="stage in closedStages" :key="stage.id" class="rounded-xl border border-base-content/10 p-3">
           <div class="flex items-center justify-between">
-            <span class="text-[10px] font-bold uppercase tracking-wide" :class="stage.tone">{{ stage.label }}</span>
+            <span class="text-xs font-bold uppercase tracking-wide" :class="stage.tone">{{ stage.label }}</span>
             <span class="text-xs font-black">{{ formatMoney(stageDeals(stage.id).reduce((sum, deal) => sum + Number(deal.value || 0), 0), currency, true) }}</span>
           </div>
-          <p class="mt-1 text-[10px] text-base-content/40">{{ stageDeals(stage.id).length }} deal(s)</p>
+          <p class="mt-1 text-xs text-base-content/40">{{ stageDeals(stage.id).length }} deal(s)</p>
         </div>
       </div>
     </section>
@@ -432,14 +432,14 @@ function metricProgress(metric) {
     <div v-if="targetOpen" class="modal modal-open z-[90]" role="dialog" aria-modal="true">
       <div class="modal-box max-w-lg border border-base-content/10 bg-base-100">
         <h3 class="text-base font-black">Business numbers</h3>
-        <p class="mt-1 text-[11px] text-base-content/50">The owner's cockpit, not the accounting ledger. Update it whenever you have a new number.</p>
+        <p class="mt-1 text-xs text-base-content/50">The owner's cockpit, not the accounting ledger. Update it whenever you have a new number.</p>
         <div class="mt-3 grid gap-3 sm:grid-cols-2">
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Currency</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Currency</span>
             <input v-model="overview.currency" class="input input-sm input-bordered mt-1" maxlength="3" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Period</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Period</span>
             <select v-model="overview.period" class="select select-sm select-bordered mt-1">
               <option value="month">Month</option>
               <option value="quarter">Quarter</option>
@@ -447,19 +447,19 @@ function metricProgress(metric) {
             </select>
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Revenue target</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Revenue target</span>
             <input v-model.number="overview.revenue_target" type="number" min="0" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Revenue booked</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Revenue booked</span>
             <input v-model.number="overview.revenue_actual" type="number" min="0" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Costs booked</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Costs booked</span>
             <input v-model.number="overview.costs_actual" type="number" min="0" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control sm:col-span-2">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Owner notes / strategy</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Owner notes / strategy</span>
             <textarea v-model="overview.notes" class="textarea textarea-sm textarea-bordered mt-1" rows="3" placeholder="What is the commercial focus this period?"></textarea>
           </label>
         </div>
@@ -477,48 +477,48 @@ function metricProgress(metric) {
         <h3 class="text-base font-black">{{ dealForm.id ? 'Edit opportunity' : 'New opportunity' }}</h3>
         <div class="mt-3 grid gap-3 sm:grid-cols-2">
           <label class="form-control sm:col-span-2">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Opportunity</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Opportunity</span>
             <input v-model="dealForm.name" class="input input-sm input-bordered mt-1" placeholder="Website redesign for Acme" autofocus />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Account</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Account</span>
             <input v-model="dealForm.account" class="input input-sm input-bordered mt-1" placeholder="Acme" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Owner</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Owner</span>
             <select v-model="dealForm.owner_name" class="select select-sm select-bordered mt-1">
               <option value="">Unassigned</option>
               <option v-for="member in members" :key="member.username" :value="member.username">{{ member.username }}</option>
             </select>
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Value</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Value</span>
             <input v-model.number="dealForm.value" type="number" min="0" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Currency</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Currency</span>
             <input v-model="dealForm.currency" class="input input-sm input-bordered mt-1" maxlength="3" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Stage</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Stage</span>
             <select v-model="dealForm.stage" class="select select-sm select-bordered mt-1">
               <option v-for="stage in DEAL_STAGES" :key="stage.id" :value="stage.id">{{ stage.label }}</option>
             </select>
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Win probability %</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Win probability %</span>
             <input v-model.number="dealForm.probability" type="number" min="0" max="100" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control sm:col-span-2">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Next step</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Next step</span>
             <input v-model="dealForm.next_step" class="input input-sm input-bordered mt-1" placeholder="Send the proposal and book a call" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Expected close</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Expected close</span>
             <input v-model="dealForm.due_date" type="date" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control sm:col-span-2">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Notes</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Notes</span>
             <textarea v-model="dealForm.notes" class="textarea textarea-sm textarea-bordered mt-1" rows="2"></textarea>
           </label>
         </div>
@@ -534,7 +534,7 @@ function metricProgress(metric) {
     <div v-if="confirmDeal" class="modal modal-open z-[95]" role="dialog" aria-modal="true">
       <div class="modal-box max-w-sm border border-base-content/10 bg-base-100">
         <h3 class="text-base font-black">Remove opportunity?</h3>
-        <p class="mt-1 text-[11px] text-base-content/55">
+        <p class="mt-1 text-xs text-base-content/55">
           <strong>{{ confirmDeal.name }}</strong> will be removed from the pipeline. The rest of the business data is kept.
         </p>
         <div class="modal-action">
@@ -551,23 +551,23 @@ function metricProgress(metric) {
         <h3 class="text-base font-black">{{ metricForm.id ? 'Edit metric' : 'New metric' }}</h3>
         <div class="mt-3 grid gap-3 sm:grid-cols-2">
           <label class="form-control sm:col-span-2">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Name</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Name</span>
             <input v-model="metricForm.label" class="input input-sm input-bordered mt-1" placeholder="Recurring revenue" autofocus />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Value</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Value</span>
             <input v-model.number="metricForm.value" type="number" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Target</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Target</span>
             <input v-model.number="metricForm.target" type="number" class="input input-sm input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Unit</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Unit</span>
             <input v-model="metricForm.unit" class="input input-sm input-bordered mt-1" placeholder="€, %, customers" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[10px] uppercase text-base-content/45">Period</span>
+            <span class="label-text text-xs uppercase text-base-content/45">Period</span>
             <select v-model="metricForm.period" class="select select-sm select-bordered mt-1">
               <option value="month">Month</option>
               <option value="quarter">Quarter</option>
@@ -576,7 +576,7 @@ function metricProgress(metric) {
           </label>
         </div>
         <div class="modal-action">
-          <button v-if="metricForm.id" class="btn btn-ghost btn-sm text-error mr-auto" @click="removeCurrentMetric">Delete</button>
+          <button v-if="metricForm.id" class="btn btn-ghost btn-sm text-error-ink mr-auto" @click="removeCurrentMetric">Delete</button>
           <button class="btn btn-ghost btn-sm" @click="metricOpen = false">Cancel</button>
           <button class="btn btn-primary btn-sm" :disabled="saving" @click="saveMetric">Save</button>
         </div>

@@ -39,6 +39,7 @@ from codx.junior.task_board import (
     DEFAULT_PAGE_SIZE,
     MAX_PAGE_SIZE,
     TaskBoardService,
+    invalidate_task_cache,
 )
 
 logger = logging.getLogger(__name__)
@@ -258,6 +259,8 @@ def api_update_task_board(
         )
         if board is None:
             raise HTTPException(status_code=404, detail="Board not found after update")
+        # The read model is cached: a write must never leave a stale board.
+        invalidate_task_cache()
         return {"board": board.model_dump()}
     except HTTPException:
         raise

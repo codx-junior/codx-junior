@@ -223,6 +223,77 @@ function mergeMessages(current, next) {
   return sameMessages(current, merged) ? current : merged
 }
 
+// Patch a SUBSET of messages into the loaded conversation, in place.
+//
+// Message endpoints can answer with only the messages the call changed
+// (`?compact=1`, see `_compact_chat_response` in the API). `mergeMessages`
+// cannot be used for that: it rebuilds the list from the incoming array and
+// would drop every message that is not in the delta.
+function applyMessagePatches(current, updates) {
+  if (!Array.isArray(current)) return conversationMessages(updates)
+  if (!Array.isArray(updates) || !updates.length) return current
+
+  let next = current
+  updates.forEach(update => {
+    if (!update) return
+    // A composer draft is never a conversation bubble, even when it is the
+    // message this call updated (the full-chat path filters it server-side).
+    if (update.unsent) return
+    const key = messageKey(update)
+    if (!key) return
+    const index = next.findIndex(message => messageKey(message) === key)
+    if (index === -1) {
+      if (next === current) next = current.slice()
+      next.push(update)
+      return
+    }
+    const merged = mergeMessage(next[index], update)
+    if (merged !== next[index]) {
+      if (next === current) next = current.slice()
+      next[index] = merged
+    }
+  })
+  return next
+}
+
+// Apply a compact write response: chat metadata + only the changed messages.
+function applyCompactChatResponse(state, result) {
+  if (!result || !result.chat_id) return false
+  const chatId = result.chat_id
+  const existing = state.chats[chatId]
+
+  if (!existing) {
+    // A chat we did not have yet: rebuild it from the delta and register it.
+    if (result.chat && result.chat.id) {
+      registerChat(state, {
+        ...result.chat,
+        messages: conversationMessages(result.messages || [])
+      })
+      return true
+    }
+    return false
+  }
+  if (result.chat) mergeChat(existing, result.chat)
+
+  const removed = result.removed_message_ids
+  if (Array.isArray(removed) && removed.length) {
+    const remaining = (existing.messages || []).filter(
+      message => !removed.includes(messageKey(message))
+    )
+    if (remaining.length !== (existing.messages || []).length) {
+      existing.messages = remaining
+    }
+  }
+
+  const patched = applyMessagePatches(existing.messages, result.messages)
+  if (patched !== existing.messages) existing.messages = patched
+
+  const lastMessage = (existing.messages || [])[existing.messages.length - 1]
+  const timestamp = lastMessage?.timestamp || lastMessage?.created_at || result.chat?.updated_at
+  if (timestamp) $storex.chats.updateChatLastMessageAt({ chatId, timestamp })
+  return true
+}
+
 // Store a conversation returned by a message endpoint (add/update/remove),
 // patching the messages instead of replacing them.
 function applyChatMessages(state, chatId, messages) {
@@ -912,8 +983,25 @@ export const actions = actionTree(
       }
       try {
         const project = getChatProject(chat)
-        const updatedChat = await project.$api.chats.saveChatInfo({ ...chat, messages: [] })
-        registerChat(state, updatedChat)
+        // `compact=1`: a metadata save answers with the chat record, not with
+        // the whole conversation (the caller already has/lacks the messages).
+        const response = await project.$api.chats.saveChatInfo(
+          { ...chat, messages: [] },
+          { compact: true }
+        )
+        let updatedChat = response
+        if (response?.chat_id) {
+          const existing = state.chats[response.chat_id]
+          if (existing) {
+            if (response.chat) mergeChat(existing, response.chat)
+            updatedChat = existing
+          } else {
+            updatedChat = { ...(response.chat || {}), messages: [] }
+            registerChat(state, updatedChat)
+          }
+        } else {
+          registerChat(state, response)
+        }
         $storex.chats.setChatLoadingStatus({ chatId: updatedChat.id, status: ENTITY_STATUS.LOADED })
         // A chat was created or its metadata was written: signal the change so
         // activity feeds (e.g. the solopreneur summary) refresh.
@@ -1090,8 +1178,12 @@ export const actions = actionTree(
       const project = getChatProject(chat)
 
       try {
-        const updatedChat = await project.$api.chats.updateMessage(chat.id, message)
-        registerChat(state, updatedChat)
+        // `compact=1`: the API answers with the chat metadata and ONLY this
+        // message instead of re-sending the whole conversation.
+        const updatedChat = await project.$api.chats.updateMessage(chat.id, message, { compact: true })
+        if (!applyCompactChatResponse(state, updatedChat)) {
+          registerChat(state, updatedChat)
+        }
         $storex.chats.setChatLoadingStatus({ chatId: chat.id, status: ENTITY_STATUS.LOADED })
 
         return updatedChat
@@ -1126,19 +1218,16 @@ export const actions = actionTree(
       const project = getChatProject(chat)
 
       try {
-        let lastResult = null
-        for (const message of messages) {
-          if (message.doc_id) {
-            lastResult = await project.$api.chats.updateMessage(chat.id, message)
-          } else {
-            lastResult = await project.$api.chats.addMessage(chat.id, message)
-          }
-        }
+        // ONE request and ONE chat write for the whole batch. The old loop did
+        // one full-chat read+write (and one full-chat response) per message.
+        const result = await project.$api.chats.updateMessages(chat.id, messages, { compact: true })
 
-        if (lastResult?.messages) {
-          applyChatMessages(state, chat.id, lastResult.messages)
-          // Update lastMessageAt with the latest message timestamp
-          const lastMessage = lastResult.messages[lastResult.messages.length - 1]
+        if (applyCompactChatResponse(state, result)) {
+          return state.chats[chat.id]
+        }
+        if (result?.messages) {
+          applyChatMessages(state, chat.id, result.messages)
+          const lastMessage = result.messages[result.messages.length - 1]
           if (lastMessage) {
             const timestamp = lastMessage.timestamp || lastMessage.created_at || new Date().toISOString()
             $storex.chats.updateChatLastMessageAt({ chatId: chat.id, timestamp })
@@ -1159,7 +1248,10 @@ export const actions = actionTree(
       const project = getChatProject(chat)
 
       try {
-        const updatedChat = await project.$api.chats.updateMetadata(chat.id, updates)
+        const response = await project.$api.chats.updateMetadata(chat.id, updates, { compact: true })
+        const updatedChat = applyCompactChatResponse(state, response)
+          ? state.chats[chat.id]
+          : response
 
         if (updatedChat && state.chats[chat.id]) {
           Object.assign(state.chats[chat.id], updates)
@@ -1593,7 +1685,10 @@ export const actions = actionTree(
       const project = getChatProject(chat)
 
       try {
-        const updatedChat = await project.$api.chats.updateMetadata(chat.id, { status })
+        const response = await project.$api.chats.updateMetadata(chat.id, { status }, { compact: true })
+        const updatedChat = applyCompactChatResponse(state, response)
+          ? state.chats[chat.id]
+          : response
 
         if (updatedChat && state.chats[chat.id]) {
           state.chats[chat.id].status = updatedChat.status

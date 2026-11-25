@@ -197,7 +197,7 @@ watch(
     <header class="flex items-center justify-between gap-2">
       <div>
         <h2 class="text-lg font-black flex items-center gap-2">
-          <i class="fa-solid fa-flag text-primary"></i> Missions
+          <i class="fa-solid fa-flag text-primary-ink"></i> Missions
         </h2>
         <p class="text-xs text-base-content/50">
           Company objectives. Drag a card between columns or use the actions; dispatch starts a real orchestration run in its project.
@@ -225,9 +225,9 @@ watch(
         <header class="flex items-center justify-between px-3 py-2 border-b border-base-content/10">
           <div class="flex items-center gap-1.5">
             <span class="badge badge-sm" :class="statusMeta(column.id).badge">{{ column.label }}</span>
-            <span class="text-[10px] text-base-content/40">{{ column.missions.length }}</span>
+            <span class="text-xs text-base-content/40">{{ column.missions.length }}</span>
           </div>
-          <span class="text-[10px] text-base-content/30">{{ column.hint }}</span>
+          <span class="text-xs text-base-content/30">{{ column.hint }}</span>
         </header>
         <div class="p-2 flex flex-col gap-2 min-h-32">
           <article
@@ -242,21 +242,21 @@ watch(
             <div class="flex items-start gap-1.5">
               <span class="badge badge-xs" :class="priorityMeta(mission.priority).badge">{{ mission.priority }}</span>
               <span v-if="mission.dispatch_mode === 'auto'" class="badge badge-xs badge-outline" title="Autopilot may dispatch">auto</span>
-              <span class="ml-auto text-[9px] text-base-content/30 font-mono">{{ mission.id.slice(-6) }}</span>
+              <span class="ml-auto text-[11px] text-base-content/30 font-mono">{{ mission.id.slice(-6) }}</span>
             </div>
             <h3 class="text-sm font-semibold leading-snug mt-1 line-clamp-2">{{ mission.title }}</h3>
-            <div class="flex flex-wrap items-center gap-1 mt-1.5 text-[9px] text-base-content/50">
+            <div class="flex flex-wrap items-center gap-1 mt-1.5 text-[11px] text-base-content/50">
               <span v-if="mission.team_id" class="truncate max-w-24"><i class="fa-solid fa-people-group mr-0.5"></i>{{ teamName(mission.team_id) }}</span>
               <span v-if="mission.project_id" class="truncate max-w-24"><i class="fa-solid fa-cube mr-0.5"></i>{{ projectName(mission.project_id) }}</span>
             </div>
             <div v-if="mission.status === 'running'" class="mt-2">
-              <div class="flex justify-between text-[9px] text-base-content/40 mb-0.5">
+              <div class="flex justify-between text-[11px] text-base-content/40 mb-0.5">
                 <span>{{ mission.run_status || 'running' }}</span>
                 <span>{{ mission.progress || 0 }}%</span>
               </div>
               <progress class="progress progress-primary w-full h-1" :value="mission.progress || 0" max="100"></progress>
             </div>
-            <p v-if="mission.last_error" class="text-[9px] text-error/70 line-clamp-2 mt-1">{{ mission.last_error }}</p>
+            <p v-if="mission.last_error" class="text-[11px] text-error-ink/70 line-clamp-2 mt-1">{{ mission.last_error }}</p>
             <div class="flex items-center gap-1 mt-2" @click.stop>
               <button
                 v-if="mission.status === 'draft'"
@@ -285,14 +285,14 @@ watch(
               <button class="btn btn-xs btn-ghost btn-square ml-auto" title="Edit" @click="openEdit(mission)">
                 <i class="fa-solid fa-pen"></i>
               </button>
-              <button class="btn btn-xs btn-ghost btn-square text-error" title="Delete" @click="remove(mission)">
+              <button class="btn btn-xs btn-ghost btn-square text-error-ink" title="Delete" @click="remove(mission)">
                 <i class="fa-solid fa-trash"></i>
               </button>
             </div>
           </article>
           <button
             v-if="!column.missions.length"
-            class="rounded-lg border border-dashed border-base-content/15 py-4 text-[10px] text-base-content/30 hover:border-primary/30"
+            class="rounded-lg border border-dashed border-base-content/15 py-4 text-xs text-base-content/30 hover:border-primary/30"
             @click="openCreate"
           >
             + add mission
@@ -314,10 +314,10 @@ watch(
           <div class="flex items-center gap-1.5">
             <span class="badge badge-xs" :class="statusMeta(mission.status).badge">{{ statusMeta(mission.status).label }}</span>
             <span class="badge badge-xs" :class="priorityMeta(mission.priority).badge">{{ mission.priority }}</span>
-            <span class="ml-auto text-[9px] text-base-content/30 font-mono">{{ mission.id.slice(-6) }}</span>
+            <span class="ml-auto text-[11px] text-base-content/30 font-mono">{{ mission.id.slice(-6) }}</span>
           </div>
           <h3 class="text-sm font-semibold mt-1 truncate">{{ mission.title }}</h3>
-          <p v-if="mission.last_error" class="text-[10px] text-error/70 line-clamp-2">{{ mission.last_error }}</p>
+          <p v-if="mission.last_error" class="text-xs text-error-ink/70 line-clamp-2">{{ mission.last_error }}</p>
           <div class="flex gap-1 mt-2" @click.stop>
             <button v-if="canDispatch(mission)" class="btn btn-xs btn-ghost" @click="dispatch(mission)">
               <i class="fa-solid fa-rocket"></i> Retry
@@ -399,7 +399,7 @@ watch(
           </label>
         </div>
 
-        <p v-if="formError" class="text-error text-xs mt-3">{{ formError }}</p>
+        <p v-if="formError" class="text-error-ink text-xs mt-3">{{ formError }}</p>
 
         <div class="modal-action">
           <button class="btn btn-sm btn-ghost" @click="close">Cancel</button>
@@ -430,38 +430,38 @@ watch(
 
         <div class="grid gap-2 md:grid-cols-2 mt-3 text-xs">
           <div class="rounded-lg bg-base-200/50 p-2">
-            <div class="text-[10px] uppercase text-base-content/40">Team</div>
+            <div class="text-xs uppercase text-base-content/40">Team</div>
             <div class="font-semibold">{{ teamName(detail.team_id) || 'Unassigned' }}</div>
           </div>
           <div class="rounded-lg bg-base-200/50 p-2">
-            <div class="text-[10px] uppercase text-base-content/40">Project</div>
+            <div class="text-xs uppercase text-base-content/40">Project</div>
             <button class="font-semibold link link-hover text-left" @click="emit('open-project', projectRouteName(detail.project_id))">
               {{ projectName(detail.project_id) || 'Unassigned' }}
             </button>
           </div>
           <div class="rounded-lg bg-base-200/50 p-2">
-            <div class="text-[10px] uppercase text-base-content/40">Run</div>
-            <div class="font-mono text-[10px] truncate">{{ detail.run_id || 'not dispatched' }}</div>
-            <div class="text-[10px] text-base-content/40">{{ detail.run_status || '-' }} · {{ detail.progress || 0 }}%</div>
+            <div class="text-xs uppercase text-base-content/40">Run</div>
+            <div class="font-mono text-xs truncate">{{ detail.run_id || 'not dispatched' }}</div>
+            <div class="text-xs text-base-content/40">{{ detail.run_status || '-' }} · {{ detail.progress || 0 }}%</div>
           </div>
           <div class="rounded-lg bg-base-200/50 p-2">
-            <div class="text-[10px] uppercase text-base-content/40">Due</div>
+            <div class="text-xs uppercase text-base-content/40">Due</div>
             <div class="font-semibold">{{ formatDate(detail.due_date) }}</div>
           </div>
         </div>
 
         <div class="mt-3">
-          <div class="text-[10px] uppercase text-base-content/40">Objective</div>
+          <div class="text-xs uppercase text-base-content/40">Objective</div>
           <p class="text-sm whitespace-pre-wrap">{{ detail.objective }}</p>
         </div>
         <div v-if="detail.acceptance" class="mt-3">
-          <div class="text-[10px] uppercase text-base-content/40">Acceptance</div>
+          <div class="text-xs uppercase text-base-content/40">Acceptance</div>
           <p class="text-sm whitespace-pre-wrap">{{ detail.acceptance }}</p>
         </div>
-        <div v-if="detail.last_error" class="mt-3 rounded-lg bg-error/10 text-error p-2 text-xs">
+        <div v-if="detail.last_error" class="mt-3 rounded-lg bg-error/10 text-error-ink p-2 text-xs">
           <i class="fa-solid fa-triangle-exclamation mr-1"></i>{{ detail.last_error }}
         </div>
-        <div v-if="detail.result" class="mt-3 rounded-lg bg-success/10 text-success p-2 text-xs">
+        <div v-if="detail.result" class="mt-3 rounded-lg bg-success/10 text-success-ink p-2 text-xs">
           <i class="fa-solid fa-circle-check mr-1"></i>{{ detail.result }}
         </div>
 

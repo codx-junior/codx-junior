@@ -368,7 +368,7 @@ def qa_coverage(
             QaFinding(
                 rule_id="coverage.unavailable",
                 title="No coverage report found in the project",
-                severity=QaSeverity.LOW,
+                severity=QaSeverity.MEDIUM,
                 category=QaCategory.COVERAGE,
                 remediation=(
                     "Generate a report in the test step: `pytest --cov=app "
@@ -492,10 +492,7 @@ def qa_policy(
     policy = resolve_policy(settings)
     return ToolResponse(
         user_response=policy_markdown(policy, stored),
-        llm_response=(
-            f"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} "
-            f"block_above={policy.block_above.value} fail_closed={policy.fail_closed}"
-        ),
+        llm_response=policy_markdown(policy, stored),
         logs=["QA policy reported"],
     )
 

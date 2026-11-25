@@ -135,7 +135,7 @@ function missionForAttention(item) {
       <div class="rounded-2xl border border-base-content/10 bg-base-200/40 p-4">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <i class="fa-solid fa-robot text-primary"></i>
+            <i class="fa-solid fa-robot text-primary-ink"></i>
             <span class="font-bold">Autopilot</span>
           </div>
           <input
@@ -147,7 +147,7 @@ function missionForAttention(item) {
             @change="toggleAutonomy"
           />
         </div>
-        <p class="text-[11px] text-base-content/50 mt-1">
+        <p class="text-xs text-base-content/50 mt-1">
           {{ autonomyEnabled ? 'Enabled' : 'Off' }} · {{ autonomy.level || 'supervised' }} ·
           next cycle {{ nextCycle }}
         </p>
@@ -167,7 +167,7 @@ function missionForAttention(item) {
           </button>
         </div>
 
-        <label class="flex items-center gap-2 text-[11px] text-base-content/60 mt-3">
+        <label class="flex items-center gap-2 text-xs text-base-content/60 mt-3">
           <span class="shrink-0">Every</span>
           <input
             type="number"
@@ -190,7 +190,7 @@ function missionForAttention(item) {
             Missions
           </button>
         </div>
-        <p v-if="autonomy.last_cycle_summary" class="text-[10px] text-base-content/40 mt-2 truncate" :title="autonomy.last_cycle_summary">
+        <p v-if="autonomy.last_cycle_summary" class="text-xs text-base-content/40 mt-2 truncate" :title="autonomy.last_cycle_summary">
           {{ autonomy.last_cycle_summary }}
         </p>
       </div>
@@ -199,36 +199,36 @@ function missionForAttention(item) {
     <!-- Counts -->
     <section class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-2">
       <div class="rounded-xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wider text-base-content/40">Projects</div>
+        <div class="text-xs uppercase tracking-wider text-base-content/40">Projects</div>
         <div class="text-2xl font-black">{{ counts.projects || 0 }}</div>
-        <div class="text-[10px] text-base-content/40">{{ projects.filter(p => p.available).length }} available</div>
+        <div class="text-xs text-base-content/40">{{ projects.filter(p => p.available).length }} available</div>
       </div>
       <div class="rounded-xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wider text-base-content/40">Teams</div>
+        <div class="text-xs uppercase tracking-wider text-base-content/40">Teams</div>
         <div class="text-2xl font-black">{{ counts.teams || 0 }}</div>
-        <div class="text-[10px] text-base-content/40">{{ counts.org_units || 0 }} org units</div>
+        <div class="text-xs text-base-content/40">{{ counts.org_units || 0 }} org units</div>
       </div>
       <div class="rounded-xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wider text-base-content/40">Humans</div>
+        <div class="text-xs uppercase tracking-wider text-base-content/40">Humans</div>
         <div class="text-2xl font-black">{{ counts.humans || 0 }}</div>
-        <div class="text-[10px] text-base-content/40">people</div>
+        <div class="text-xs text-base-content/40">people</div>
       </div>
       <div class="rounded-xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wider text-base-content/40">AI profiles</div>
-        <div class="text-2xl font-black text-primary">{{ counts.ai || 0 }}</div>
-        <div class="text-[10px] text-base-content/40">working with you</div>
+        <div class="text-xs uppercase tracking-wider text-base-content/40">AI profiles</div>
+        <div class="text-2xl font-black text-primary-ink">{{ counts.ai || 0 }}</div>
+        <div class="text-xs text-base-content/40">working with you</div>
       </div>
       <div class="rounded-xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wider text-base-content/40">Open missions</div>
+        <div class="text-xs uppercase tracking-wider text-base-content/40">Open missions</div>
         <div class="text-2xl font-black">{{ counts.open_missions || 0 }}</div>
-        <div class="text-[10px] text-base-content/40">{{ counts.running || 0 }} running · {{ counts.review || 0 }} review</div>
+        <div class="text-xs text-base-content/40">{{ counts.running || 0 }} running · {{ counts.review || 0 }} review</div>
       </div>
       <div class="rounded-xl border border-base-content/10 bg-base-100 p-3">
-        <div class="text-[10px] uppercase tracking-wider text-base-content/40">Needs you</div>
-        <div class="text-2xl font-black" :class="attention.length ? 'text-error' : 'text-success'">
+        <div class="text-xs uppercase tracking-wider text-base-content/40">Needs you</div>
+        <div class="text-2xl font-black" :class="attention.length ? 'text-error-ink' : 'text-success-ink'">
           {{ attention.length }}
         </div>
-        <div class="text-[10px] text-base-content/40">blockers & overdue</div>
+        <div class="text-xs text-base-content/40">blockers & overdue</div>
       </div>
     </section>
 
@@ -237,7 +237,7 @@ function missionForAttention(item) {
       <section class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="font-bold text-sm flex items-center gap-2">
-            <i class="fa-solid fa-sitemap text-primary"></i> Organization
+            <i class="fa-solid fa-sitemap text-primary-ink"></i> Organization
           </h3>
           <button class="btn btn-ghost btn-xs" @click="emit('select-tab', 'organization')">
             Edit <i class="fa-solid fa-arrow-right"></i>
@@ -250,10 +250,10 @@ function missionForAttention(item) {
             class="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-base-200/60"
             :style="{ marginLeft: `${unit.depth * 16}px` }"
           >
-            <i :class="unit.icon || 'fa-solid fa-building'" class="text-[11px] text-base-content/40 w-3 text-center"></i>
+            <i :class="unit.icon || 'fa-solid fa-building'" class="text-xs text-base-content/40 w-3 text-center"></i>
             <span class="text-sm font-medium truncate">{{ unit.name }}</span>
             <span class="badge badge-xs badge-ghost">{{ unit.kind }}</span>
-            <span v-if="leaderName(unit)" class="ml-auto text-[10px] text-base-content/40 truncate">
+            <span v-if="leaderName(unit)" class="ml-auto text-xs text-base-content/40 truncate">
               lead: {{ leaderName(unit) }}
             </span>
           </div>
@@ -267,7 +267,7 @@ function missionForAttention(item) {
       <section class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="font-bold text-sm flex items-center gap-2">
-            <i class="fa-solid fa-people-group text-primary"></i> Teams
+            <i class="fa-solid fa-people-group text-primary-ink"></i> Teams
           </h3>
           <button class="btn btn-ghost btn-xs" @click="emit('select-tab', 'teams')">
             Manage <i class="fa-solid fa-arrow-right"></i>
@@ -281,19 +281,19 @@ function missionForAttention(item) {
             @click="emit('select-tab', 'teams')"
           >
             <div class="avatar placeholder">
-              <div class="w-7 h-7 rounded-lg bg-primary/15 text-primary grid place-items-center">
-                <i :class="team.icon || 'fa-solid fa-people-group'" class="text-[11px]"></i>
+              <div class="w-7 h-7 rounded-lg bg-primary/15 text-primary-ink grid place-items-center">
+                <i :class="team.icon || 'fa-solid fa-people-group'" class="text-xs"></i>
               </div>
             </div>
             <div class="min-w-0 flex-1">
               <div class="text-sm font-semibold truncate">{{ team.name }}</div>
-              <div class="text-[10px] text-base-content/40 truncate">
+              <div class="text-xs text-base-content/40 truncate">
                 {{ team.human_count }} human · {{ team.ai_count }} AI · {{ team.autonomy }}
               </div>
             </div>
             <div class="text-right shrink-0">
               <div class="text-xs font-bold">{{ (runningTeamLoad.get(team.id) || {}).running || 0 }}</div>
-              <div class="text-[9px] text-base-content/40">running</div>
+              <div class="text-[11px] text-base-content/40">running</div>
             </div>
           </button>
         </div>
@@ -306,7 +306,7 @@ function missionForAttention(item) {
       <section class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="font-bold text-sm flex items-center gap-2">
-            <i class="fa-solid fa-circle-exclamation text-error"></i> Needs a human
+            <i class="fa-solid fa-circle-exclamation text-error-ink"></i> Needs a human
           </h3>
           <span class="badge badge-sm badge-ghost">{{ attention.length }}</span>
         </div>
@@ -322,7 +322,7 @@ function missionForAttention(item) {
               <span class="text-sm font-semibold truncate flex-1">{{ item.title }}</span>
               <span class="badge badge-xs badge-ghost">{{ item.reason }}</span>
             </div>
-            <p v-if="item.last_error" class="text-[10px] text-error/70 truncate mt-1">{{ item.last_error }}</p>
+            <p v-if="item.last_error" class="text-xs text-error-ink/70 truncate mt-1">{{ item.last_error }}</p>
           </button>
         </div>
         <p v-else class="text-xs text-base-content/40">Nothing blocked or overdue. The company is flowing.</p>
@@ -332,7 +332,7 @@ function missionForAttention(item) {
       <section class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
         <div class="flex items-center justify-between mb-3">
           <h3 class="font-bold text-sm flex items-center gap-2">
-            <i class="fa-solid fa-clock-rotate-left text-primary"></i> Recent activity
+            <i class="fa-solid fa-clock-rotate-left text-primary-ink"></i> Recent activity
           </h3>
           <button class="btn btn-ghost btn-xs" @click="emit('select-tab', 'activity')">
             All <i class="fa-solid fa-arrow-right"></i>
@@ -340,10 +340,10 @@ function missionForAttention(item) {
         </div>
         <div v-if="journal.length" class="flex flex-col gap-2">
           <div v-for="event in journal" :key="event.id" class="flex items-start gap-2">
-            <i :class="[eventMeta(event.type).icon, eventMeta(event.type).tone, 'text-[11px] mt-1 w-3 text-center']"></i>
+            <i :class="[eventMeta(event.type).icon, eventMeta(event.type).tone, 'text-xs mt-1 w-3 text-center']"></i>
             <div class="min-w-0 flex-1">
               <p class="text-xs leading-snug">{{ event.message || event.type }}</p>
-              <p class="text-[10px] text-base-content/40">{{ event.actor }} · {{ relativeTime(event.at) }}</p>
+              <p class="text-xs text-base-content/40">{{ event.actor }} · {{ relativeTime(event.at) }}</p>
             </div>
           </div>
         </div>
@@ -355,7 +355,7 @@ function missionForAttention(item) {
     <section v-if="openMissions.length" class="rounded-2xl border border-base-content/10 bg-base-100 p-4">
       <div class="flex items-center justify-between mb-3">
         <h3 class="font-bold text-sm flex items-center gap-2">
-          <i class="fa-solid fa-flag text-primary"></i> Open missions
+          <i class="fa-solid fa-flag text-primary-ink"></i> Open missions
         </h3>
         <button class="btn btn-ghost btn-xs" @click="emit('select-tab', 'missions')">
           Board <i class="fa-solid fa-arrow-right"></i>
@@ -373,7 +373,7 @@ function missionForAttention(item) {
             <span class="badge badge-xs" :class="priorityMeta(mission.priority).badge">{{ mission.priority }}</span>
           </div>
           <div class="text-xs font-semibold truncate mt-1">{{ mission.title }}</div>
-          <div class="text-[10px] text-base-content/40 truncate">{{ mission.status }} · {{ mission.run_status || 'no run' }}</div>
+          <div class="text-xs text-base-content/40 truncate">{{ mission.status }} · {{ mission.run_status || 'no run' }}</div>
         </button>
       </div>
     </section>

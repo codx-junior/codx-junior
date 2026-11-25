@@ -167,6 +167,12 @@ export default {
   methods: {
     async loadProjects() {
       try {
+        if (this.$storex.company?.loaded) {
+          // Workspaces are created from the company shell: only the projects
+          // linked to that company may be mounted.
+          this.allProjects = this.$storex.company.linkedProjects || []
+          return
+        }
         this.allProjects = await this.theProject.$api.projects.list() || []
       } catch (error) {
         console.error('Failed to load projects', error)

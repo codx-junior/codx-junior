@@ -146,6 +146,7 @@ from codx.junior.infra.shell import (
     ShellLimitError,
     ShellUnavailableError,
     ShellValidationError,
+    check_cli_available,
     create_container_shell,
     decode_input,
     encode_output,
@@ -540,6 +541,10 @@ def create_shell_ticket(
             raise ShellUnavailableError(
                 "Container shells are disabled by CODX_JUNIOR_CONTAINER_SHELL_ENABLED."
             )
+        # Fail with a 503 and a readable reason here, where the caller still has
+        # an HTTP response. Otherwise the ticket is issued and the failure only
+        # surfaces after the WebSocket upgrade (close 1011 "connection lost").
+        check_cli_available()
         manager = get_infra_manager()
         host = manager.host_config(payload.host_id)
         shell = normalize_shell(payload.shell)

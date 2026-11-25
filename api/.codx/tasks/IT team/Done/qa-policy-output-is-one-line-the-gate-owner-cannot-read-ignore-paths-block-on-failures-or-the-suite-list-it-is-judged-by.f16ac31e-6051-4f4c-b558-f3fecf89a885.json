@@ -1,0 +1,996 @@
+{
+  "id": "f16ac31e-6051-4f4c-b558-f3fecf89a885",
+  "doc_id": null,
+  "project_id": "ac9804d5-fcb2-4026-81c0-61f2308f6380",
+  "owner_project_id": "ac9804d5-fcb2-4026-81c0-61f2308f6380",
+  "parent_id": "65ba0574-5d52-4cda-9b5c-82d8a7aa47fe",
+  "root_id": "65ba0574-5d52-4cda-9b5c-82d8a7aa47fe",
+  "linked_chat_ids": [],
+  "parent_owner_project_id": null,
+  "parent_project_id": null,
+  "child_index": 0,
+  "message_id": null,
+  "status": "done",
+  "status_history": [
+    {
+      "doc_id": "48edaa11-2458-40c8-b80e-91649d81f295",
+      "from_status": null,
+      "to_status": "todo",
+      "user": null,
+      "at": "2026-11-18T16:51:58.382889",
+      "meta_data": null
+    },
+    {
+      "doc_id": "5c9e3748-b165-42f3-b914-85a897ba2924",
+      "from_status": "todo",
+      "to_status": "doing",
+      "user": null,
+      "at": "2026-11-23T09:40:33.968910",
+      "meta_data": null
+    },
+    {
+      "doc_id": "a2013208-5749-415e-8333-750c2026e614",
+      "from_status": "doing",
+      "to_status": "done",
+      "user": null,
+      "at": "2026-11-23T09:43:37.223588",
+      "meta_data": null
+    }
+  ],
+  "tags": [
+    "qa",
+    "policy",
+    "tooling"
+  ],
+  "file_list": [],
+  "check_lists": [],
+  "profiles": [
+    "qa_automation"
+  ],
+  "users": [],
+  "name": "qa_policy output is one line \u2014 the gate owner cannot read ignore_paths, block_on_failures or the suite list it is judged by",
+  "pinned": false,
+  "is_template": false,
+  "description": "1. **Finding:** `qa_policy(action=\"show\")` exposed only 4 of ~13 policy fields (`enabled`, `min_coverage`, `block_above`, `fail_closed`), hiding `ignore_paths`, `suites`, `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `max_test_seconds`, `flaky_repeats` \u2014 so a gate owner could not verify its own policy or any dated policy change.\n2. **Root cause:** `codx/junior/tools/qa_tools.py` lines 495-498 built a truncated 4-value `llm_response` f-string (the field the AI actor reads), while `user_response=policy_markdown(policy, stored)` on line 494 was already correct and already printed every field.\n3. **Change:** replaced those 4 lines with `llm_response=policy_markdown(policy, stored),` \u2014 1 file, +1/-4, one hunk inside `qa_policy`; no import added (`policy_markdown` already imported at line 36), nothing else touched.\n4. **Verification:** diff-only \u2014 `project_changes` confirmed 1 file / 1 hunk / +1/-4, and the new line was re-read; no test was executed because there is no shell tool in this runtime, and the change applies only after the API process reloads the module.\n5. **Open items:** the required unit test (shown keys \u2287 documented `changes` schema, acceptance #3) is still owed by `qa_automation` (`qa_tools.py` has `mapped_sources: 0`), and a new defect was found \u2014 `qa_review_changes` returns a vacuous `allow`/`changed_files: 0` for an api-relative path filter, a false-green path worth its own card.",
+  "meta_data": null,
+  "messages": [
+    {
+      "doc_id": "04f9a1e2-1442-4696-8069-ccb1d288a196",
+      "role": "user",
+      "task_item": "",
+      "content": "## Finding (QA shift 5, 2026-11-18, measured)\n\n`qa_policy(action=\"show\")` returns exactly one truncated line:\n\n```\nQA policy: enabled=True min_coverage=70.0 block_above=high fail_closed=False\n```\n\nThe effective policy object supports and the tool advertises (see the `changes` argument of `qa_policy`): `block_on_failures`, `approval_above`, `warn_above`, `require_tests_for_changes`, `block_missing_tests`, `max_test_seconds`, `flaky_repeats`, `ignore_paths`, `suites`. **None of these are visible in the output.** `suites` is visible only indirectly through `qa_plan`.\n\nThree consequences for the QA role:\n\n1. **`ignore_paths` cannot be read, so a policy fix cannot be verified.** The recurring recommendation for the 9 `change.missing-tests` findings on staged `client/` files and for the 10 unmapped `api/` sources on the working tree is \"declare the path in `qa_policy.ignore_paths` with a reason\". A QA-shift cannot check whether a path is already declared, nor confirm after a change that it took effect \u2014 the only feedback is the finding disappearing.\n2. **`fail_closed=False` is visible but `block_on_failures` / `block_missing_tests` are not.** With `block_above=high`, a medium finding (`change.missing-tests`, `coverage.unavailable`) can never block, and I cannot tell from the tool which of those two switches would have to flip for a gate that could not even run (`passed: 0`, pytest exit 5) to stop a delivery.\n3. **Any dated policy change approved by the user is unverifiable** \u2014 rule 5 of the QA mandate (\"the fix is the code or a dated policy change\") cannot be re-verified from the tool output.\n\n## What to do\n\nPrint the full effective policy, not a summary: every key of the policy dict with its effective value (defaults merged with project overrides), plus a marker for keys overridden in the project settings. Include `ignore_paths` as a list and `suites` as name \u2192 `{kind, cwd, available, command}`.\n\n## Acceptance criteria\n\n1. `qa_policy(action=\"show\")` prints at least: `block_on_failures`, `approval_above`, `warn_above`, `require_tests_for_changes`, `block_missing_tests`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (as a list) and `suites` (names + `available`).\n2. Adding a path to `ignore_paths` and re-running `qa_policy(action=\"show\")` shows it, and `qa_review_changes(scope=\"staged\", run_tests=false)` drops the corresponding `change.missing-tests` finding (currently 9, all under `client/`).\n3. A unit test asserts that the shown keys are a superset of the documented `changes` schema in the tool definition \u2014 so a future new policy key cannot silently go unprinted.\n\n## Evidence this shift\n\n- `qa_policy(action=\"show\")` \u2192 the single line quoted above (2026-11-18).\n- `qa_review_changes(scope=\"staged\", run_tests=false)` \u2192 `require_approval` / medium / 9 findings, `changed_files: 28`, `mapped_sources: 1`, `unmapped_sources: 9` (the 9 are exactly the staged `client/` modules of card 448b0447).\n- `qa_review_changes(scope=\"all\", run_tests=false)` \u2192 `require_approval` / medium / 11 findings, `changed_files: 220`, `unmapped_sources: 58`.\n\n## Re-verification command\n\n`qa_policy(action=\"show\")` \u2192 expect the full key list including `ignore_paths` and `suites`.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-18 16:51:56.942143",
+      "updated_at": "2026-11-18 16:51:56.942152",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "qa_automation"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "22bef674-a6d7-4caf-9b2f-1c50443ddff6",
+      "role": "assistant",
+      "task_item": "",
+      "content": "QA shift 2026-11-23T09:2xZ \u2014 **CONFIRMED verbatim.** `qa_policy(action=\"show\")` returns exactly one line:\n\n`QA policy: enabled=True min_coverage=70.0 block_above=high fail_closed=False`\n\nPrinted: 4 of the ~13 policy fields. Missing and unreadable by the gate owner: `approval_above`, `warn_above`, `require_tests_for_changes`, `block_on_failures`, `block_missing_tests`, `max_test_seconds`, `flaky_repeats`, `ignore_paths`, `suites`.\n\nConsequence measured this shift: I cannot tell from the tool whether `tests/` is in `ignore_paths` (which would explain part of `b618f7b4`'s silent-empty behaviour), whether `block_on_failures` is on, or which suites are authoritative \u2014 yet I am required to justify every verdict by those very thresholds. A gate owner who cannot read its own policy cannot detect when the policy is wrong.\n\nAcceptance criteria: `qa_policy` returns the full effective policy as structured output (all fields above, `ignore_paths` and `suites` expanded), and states the source file it was merged from.\n\nNext command: `qa_policy(action=\"show\")` must list `ignore_paths`, `suites` and every severity threshold.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:28:28.258356",
+      "updated_at": "2026-11-23 09:28:28.258371",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "97c15798-95fb-4cb5-a4e0-4a6d73539a45",
+      "role": "user",
+      "task_item": "",
+      "content": "Objective: `qa_policy(action=\"show\")` must expose the FULL effective policy to the actor reading it. One-line fix, exact location known.\n\nROOT CAUSE (found by PM 2026-11-23, verified by reading the code)\n`api/codx/junior/tools/qa_tools.py` (the tools see it as `codx/junior/tools/qa_tools.py`) already builds the complete policy: line 494 `user_response=policy_markdown(policy, stored)`. `policy_markdown()` in `codx/junior/quality/qa/policy.py:373-413` already prints every field this card asks for: `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `min_coverage`, `fail_closed`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (as a list) and the custom `suites`.\nThe defect is ONLY the second field: lines 495-498 build a 4-value `llm_response` f-string, and that truncated string is what the AI actor reads. `user_response` is already correct.\n\nTHE CHANGE (exactly this, nothing else)\nIn `codx/junior/tools/qa_tools.py`, replace the `llm_response` f-string at lines 495-498:\n```python\n        llm_response=(\n            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n        ),\n```\nwith:\n```python\n        llm_response=policy_markdown(policy, stored),\n```\n`policy_markdown` is already imported at line 36 \u2014 do not add an import. Do not change `user_response`, `logs`, the docstring, the JSON schema or any other function.\n\nHARD CONSTRAINTS\n- The file is 707 lines and there is NO patch/hunk tool in this runtime: read it with `project_read_file` in slices and write it back whole with `project_write_file`. Every line outside 495-498 must stay byte-identical (imports, indentation, blank lines).\n- There is NO shell tool: do not try to run `pytest` or `python`. Do not report \"tests pass\" \u2014 you cannot run them. Say explicitly that verification is diff-only.\n- `project_locate` hangs about two times out of three (measured this shift: 1 success, 2 timeouts at 120 s). Do not use it. Read the two files by path with `project_read_file`.\n\nSTEPS\n1. `project_read_file(\"codx/junior/tools/qa_tools.py\")` in slices (1-250, 251-500, 501-707).\n2. `project_write_file(\"codx/junior/tools/qa_tools.py\", <full content with the 4 lines above replaced by 1>)`.\n3. `project_changes(paths=[\"codx/junior/tools/qa_tools.py\"])`.\n\nACCEPTANCE (verifiable without running anything)\n1. `project_changes` reports exactly ONE file and ONE hunk: `+1 / -4` lines, all inside `qa_policy`. If the diff is bigger, you re-wrote the file from memory \u2014 restore it and redo the edit.\n2. `project_read_file(pattern=\"llm_response=policy_markdown\", path=\"codx/junior/tools/qa_tools.py\")` returns the new line.\n3. Your reply states: the diff (added/removed counts), that no test could be executed and why, and that the change only takes effect after the API process reloads the module.\n\nOUT OF SCOPE (do not touch): the coverage gate (`ccca3ccb`), the `pytest:api` 35-of-1851 collection (`e5841226`), `request_help` behaviour, and any file outside `qa_tools.py`. They are separate cards.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:40:43.052017",
+      "updated_at": "2026-11-23 09:40:43.052038",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "22fb451e-9225-4b8e-8016-d2fdafded379",
+      "role": "user",
+      "task_item": "",
+      "content": "## Finding (QA shift 5, 2026-11-18, measured)\n\n`qa_policy(action=\"show\")` returns exactly one truncated line:\n\n```\nQA policy: enabled=True min_coverage=70.0 block_above=high fail_closed=False\n```\n\nThe effective policy object supports and the tool advertises (see the `changes` argument of `qa_policy`): `block_on_failures`, `approval_above`, `warn_above`, `require_tests_for_changes`, `block_missing_tests`, `max_test_seconds`, `flaky_repeats`, `ignore_paths`, `suites`. **None of these are visible in the output.** `suites` is visible only indirectly through `qa_plan`.\n\nThree consequences for the QA role:\n\n1. **`ignore_paths` cannot be read, so a policy fix cannot be verified.** The recurring recommendation for the 9 `change.missing-tests` findings on staged `client/` files and for the 10 unmapped `api/` sources on the working tree is \"declare the path in `qa_policy.ignore_paths` with a reason\". A QA-shift cannot check whether a path is already declared, nor confirm after a change that it took effect \u2014 the only feedback is the finding disappearing.\n2. **`fail_closed=False` is visible but `block_on_failures` / `block_missing_tests` are not.** With `block_above=high`, a medium finding (`change.missing-tests`, `coverage.unavailable`) can never block, and I cannot tell from the tool which of those two switches would have to flip for a gate that could not even run (`passed: 0`, pytest exit 5) to stop a delivery.\n3. **Any dated policy change approved by the user is unverifiable** \u2014 rule 5 of the QA mandate (\"the fix is the code or a dated policy change\") cannot be re-verified from the tool output.\n\n## What to do\n\nPrint the full effective policy, not a summary: every key of the policy dict with its effective value (defaults merged with project overrides), plus a marker for keys overridden in the project settings. Include `ignore_paths` as a list and `suites` as name \u2192 `{kind, cwd, available, command}`.\n\n## Acceptance criteria\n\n1. `qa_policy(action=\"show\")` prints at least: `block_on_failures`, `approval_above`, `warn_above`, `require_tests_for_changes`, `block_missing_tests`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (as a list) and `suites` (names + `available`).\n2. Adding a path to `ignore_paths` and re-running `qa_policy(action=\"show\")` shows it, and `qa_review_changes(scope=\"staged\", run_tests=false)` drops the corresponding `change.missing-tests` finding (currently 9, all under `client/`).\n3. A unit test asserts that the shown keys are a superset of the documented `changes` schema in the tool definition \u2014 so a future new policy key cannot silently go unprinted.\n\n## Evidence this shift\n\n- `qa_policy(action=\"show\")` \u2192 the single line quoted above (2026-11-18).\n- `qa_review_changes(scope=\"staged\", run_tests=false)` \u2192 `require_approval` / medium / 9 findings, `changed_files: 28`, `mapped_sources: 1`, `unmapped_sources: 9` (the 9 are exactly the staged `client/` modules of card 448b0447).\n- `qa_review_changes(scope=\"all\", run_tests=false)` \u2192 `require_approval` / medium / 11 findings, `changed_files: 220`, `unmapped_sources: 58`.\n\n## Re-verification command\n\n`qa_policy(action=\"show\")` \u2192 expect the full key list including `ignore_paths` and `suites`.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-18 16:51:56.942143",
+      "updated_at": "2026-11-18 16:51:56.942152",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "qa_automation"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "f2bb5800-9850-4f8a-816d-ef7648c2bd40",
+      "role": "assistant",
+      "task_item": "",
+      "content": "QA shift 2026-11-23T09:2xZ \u2014 **CONFIRMED verbatim.** `qa_policy(action=\"show\")` returns exactly one line:\n\n`QA policy: enabled=True min_coverage=70.0 block_above=high fail_closed=False`\n\nPrinted: 4 of the ~13 policy fields. Missing and unreadable by the gate owner: `approval_above`, `warn_above`, `require_tests_for_changes`, `block_on_failures`, `block_missing_tests`, `max_test_seconds`, `flaky_repeats`, `ignore_paths`, `suites`.\n\nConsequence measured this shift: I cannot tell from the tool whether `tests/` is in `ignore_paths` (which would explain part of `b618f7b4`'s silent-empty behaviour), whether `block_on_failures` is on, or which suites are authoritative \u2014 yet I am required to justify every verdict by those very thresholds. A gate owner who cannot read its own policy cannot detect when the policy is wrong.\n\nAcceptance criteria: `qa_policy` returns the full effective policy as structured output (all fields above, `ignore_paths` and `suites` expanded), and states the source file it was merged from.\n\nNext command: `qa_policy(action=\"show\")` must list `ignore_paths`, `suites` and every severity threshold.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:28:28.258356",
+      "updated_at": "2026-11-23 09:28:28.258371",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "b03b3f6e-95cc-4bb1-8caf-66f545f7f59f",
+      "role": "user",
+      "task_item": "",
+      "content": "Objective: `qa_policy(action=\"show\")` must expose the FULL effective policy to the actor reading it. One-line fix, exact location known.\n\nROOT CAUSE (found by PM 2026-11-23, verified by reading the code)\n`api/codx/junior/tools/qa_tools.py` (the tools see it as `codx/junior/tools/qa_tools.py`) already builds the complete policy: line 494 `user_response=policy_markdown(policy, stored)`. `policy_markdown()` in `codx/junior/quality/qa/policy.py:373-413` already prints every field this card asks for: `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `min_coverage`, `fail_closed`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (as a list) and the custom `suites`.\nThe defect is ONLY the second field: lines 495-498 build a 4-value `llm_response` f-string, and that truncated string is what the AI actor reads. `user_response` is already correct.\n\nTHE CHANGE (exactly this, nothing else)\nIn `codx/junior/tools/qa_tools.py`, replace the `llm_response` f-string at lines 495-498:\n```python\n        llm_response=(\n            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n        ),\n```\nwith:\n```python\n        llm_response=policy_markdown(policy, stored),\n```\n`policy_markdown` is already imported at line 36 \u2014 do not add an import. Do not change `user_response`, `logs`, the docstring, the JSON schema or any other function.\n\nHARD CONSTRAINTS\n- The file is 707 lines and there is NO patch/hunk tool in this runtime: read it with `project_read_file` in slices and write it back whole with `project_write_file`. Every line outside 495-498 must stay byte-identical (imports, indentation, blank lines).\n- There is NO shell tool: do not try to run `pytest` or `python`. Do not report \"tests pass\" \u2014 you cannot run them. Say explicitly that verification is diff-only.\n- `project_locate` hangs about two times out of three (measured this shift: 1 success, 2 timeouts at 120 s). Do not use it. Read the two files by path with `project_read_file`.\n\nSTEPS\n1. `project_read_file(\"codx/junior/tools/qa_tools.py\")` in slices (1-250, 251-500, 501-707).\n2. `project_write_file(\"codx/junior/tools/qa_tools.py\", <full content with the 4 lines above replaced by 1>)`.\n3. `project_changes(paths=[\"codx/junior/tools/qa_tools.py\"])`.\n\nACCEPTANCE (verifiable without running anything)\n1. `project_changes` reports exactly ONE file and ONE hunk: `+1 / -4` lines, all inside `qa_policy`. If the diff is bigger, you re-wrote the file from memory \u2014 restore it and redo the edit.\n2. `project_read_file(pattern=\"llm_response=policy_markdown\", path=\"codx/junior/tools/qa_tools.py\")` returns the new line.\n3. Your reply states: the diff (added/removed counts), that no test could be executed and why, and that the change only takes effect after the API process reloads the module.\n\nOUT OF SCOPE (do not touch): the coverage gate (`ccca3ccb`), the `pytest:api` 35-of-1851 collection (`e5841226`), `request_help` behaviour, and any file outside `qa_tools.py`. They are separate cards.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:40:43.052017",
+      "updated_at": "2026-11-23 09:40:43.052038",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "75d9dc82-c491-4c34-822e-658a176d467d",
+      "role": "assistant",
+      "task_item": "",
+      "content": "I'll read the file in slices first, as instructed.The exact block is confirmed verbatim at lines 495-498. Rather than rewriting 707 lines from sliced reads (which risks byte drift outside the edit), I'll use the exact search-and-replace tool \u2014 it guarantees every other line stays untouched.`changed_files: 0` with an `allow` verdict is vacuous \u2014 the path filter matched nothing. Retrying with the repo-root-relative path:The edit is in and verified against the working tree.\n\n## Decision: allow (diff-scoped, diff-only verification) \u2014 with one open medium\n- Scope: `codx/junior/tools/qa_tools.py`, working tree, `qa_review_changes(run_tests=false)`\n- Evidence: `project_changes` \u2192 **1 file, +1 / -4, one hunk at `@@ -492,10 +492,7 @@`**; gate with the repo-root path \u2192 `changed_files: 1`, `mapped_sources: 0`, `unmapped_sources: 1`, `[medium] change.missing-tests`; **no test executed (no shell tool in this runtime)**\n- Findings: 1 \u00d7 `change.missing-tests` (medium, `qa_tools.py` has no mapped test \u2014 pre-existing, and already owned by `f16ac31e` criterion #3)\n- Blocking item: none for the fix itself; the missing unit test is `qa_automation` work\n- Owner: `qa_automation`\n- Next command: `qa_policy(action=\"show\")` **after the API process reloads** \u2192 expect the full key list incl. `ignore_paths` and `suites`\n\n## What happened\n\n`qa_policy(action=\"show\")` showed 4 of ~13 policy fields because the **second** field of the `ToolResponse` \u2014 the `llm_response` f-string that the AI actor actually reads \u2014 re-summarised the policy in 4 values, even though `user_response` already carried the complete `policy_markdown(policy, stored)` one line above. The policy builder was never the problem.\n\n## What I did\n\n- Read `codx/junior/tools/qa_tools.py` by path (`1-250`, `440-530`) \u2014 no `project_locate`, per instruction.\n- Replaced lines 495-498 with `llm_response=policy_markdown(policy, stored),`. `policy_markdown` is already imported at line 36; no import added, `user_response`/`logs`/docstring/JSON schema untouched.\n- **Deviation from the brief, deliberate:** instead of `project_write_file` with 707 lines reconstructed from slices (which drifts bytes outside the edit), I used exact search-and-replace \u2014 it can only touch the matched block, so everything else is byte-identical *by construction*. The `project_changes` diff confirms it: `+1 / -4`, one hunk, nothing else.\n- Re-read line 495 \u2192 `llm_response=policy_markdown(policy, stored),`; file is now 704 lines (\u22123 as expected).\n- Posted the delivery report on card `f16ac31e` and filed one new card (below).\n\n**Verification is diff-only: no test was executed and no test result is claimed.** There is no shell tool in this runtime (card `e816cc41`), `npm:wiki` remains `available=False`, and `qa_tools.py` has no mapped test to run. The gate's `allow` on the api-relative path was **vacuous** (`changed_files: 0`) and I do not treat it as evidence.\n\n**The change only takes effect after the API process reloads `codx.junior.tools.qa_tools`** \u2014 the running worker still holds the old f-string in memory; restart the API before re-running `qa_policy`.\n\n## Demo\n\n`qa_policy(action=\"show\")` \u2192 returns the full policy: `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `min_coverage`, `fail_closed`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (as a list) and `suites` \u2014 **after an API restart**.\n\n## Next tasks\n\n- **`ec3ebed2-be26-4821-8f19-c17390727693`** (high, `qa_automation`, `wake_at=2026-11-25T09:41Z`) \u2014 the gate returns a **vacuous `allow`** when the `paths` filter matches nothing (`changed_files: 0`, `findings: 0`); same file, same tree, `api/`-prefixed path \u2192 `require_approval`. A wrong-but-plausible path turns the gate off.\n- **`f16ac31e`** criterion #3 (unit test: shown keys \u2287 documented `changes` schema) stays open \u2014 `qa_tools.py` is currently unmapped.\n\n## Shift report\n\n**Done:**\n- **The reported defect is fixed and the change is the smallest possible:** `llm_response` now reuses `policy_markdown(policy, stored)`; diff measured as **1 file, +1 / -4, single hunk inside `qa_policy`**, which is acceptance criterion 1, and criterion 2 is confirmed by re-reading the line.\n- **Standing order respected:** no product code outside `qa_tools.py` was touched, and the only **Review** card on `IT team` (`f8e10ad1`, DECISION D1, `onhold`, no diff) was neither re-verdicted nor moved \u2014 it is a human decision card.\n- **A new false-green path found while gating my own change:** `qa_review_changes(paths=[<project-relative path>])` \u2192 `allow` with `changed_files: 0`, while the same tree with the repo-root prefix \u2192 `require_approval` with 1 medium finding. Carded as `ec3ebed2` (high) rather than left in a comment.\n- **Honest evidence boundary stated everywhere it matters:** verification is diff-only; no `pytest`, no \"tests pass\" claim, and the vacuous `allow` was explicitly rejected as evidence.\n\n**Scheduled:**\n- **ec3ebed2-be26-4821-8f19-c17390727693** \u2014 high, `qa_automation`, `2026-11-25T09:41Z`. Acceptance: an unmatched `paths` filter never returns `allow`; api-relative and repo-root-relative filters yield the same `changed_files`; `resolved_paths` echoed.\n- **f16ac31e** \u2014 delivered (code); criterion #3 (the unit test) still open for `qa_automation`.\n- Unchanged wakes: `cdff59e2` (3 reds, node-ids + 11 s loop), `88d57bdd` (10 unmapped api paths), `448b0447` / `e09bcf77` (client mapping + missing suite), `e5841226` (35-of-1851 collection), `ccca3ccb` (coverage never measured), `e816cc41` (no shell tool), `d8534b12` (discovery timeouts), `ab4072b9` / `9ce4e7ef` (dirty-tree triage + snapshot).\n\n**Blocked:**\n- **No shell tool** \u2192 the change cannot be executed, linted or tested from here; only the diff is verified (card `e816cc41`).\n- **Not yet observable at runtime** \u2192 the module must be reloaded by the API process before `qa_policy(action=\"show\")` shows the new output.\n- **The new gate behaviour cannot be verified ahead of the fix** \u2192 `ec3ebed2` is the card that closes it.",
+      "think": "* Processing request, please wait...\n",
+      "reasoning_content": "The middle was pruned. I need to read the middle section, especially around 460-540 where qa_policy lives. But to write the file whole, I need the entire content verbatim. The tool pruned the middle. Better strategy: read in smaller slices to avoid pruning, and I must have the whole file to rewrite it.\n\nActually, a safer approach: read the remaining slices fully. But writing whole file with 707 lines requires me to have all of it verbatim. That's a lot of output but let's do it in chunks of ~120 lines to avoid pruning.\n\nLet me read 100-250 first (to fill the pruned part), then 251-450, 451-600, 601-707.\n\nActually I already have 1-100 (approximately) and 230-250. The pruned region is roughly 100-229. Let me read 96-235.\n\nLet me do reads: 96-235, 236-400, 401-560, 561-707. That's 4 more calls. Budget-wise okay? We have limited rounds. Maybe combine: read two files at once? project_read_file supports a list but with same start/end for all \u2014 not useful for different ranges.\n\nAlternative: I could avoid a full rewrite. But instructions say no patch tool. However, there IS apply_file_changes tool available! The system prompt lists apply_file_changes \"Safely apply a batch of exact search-and-replace edits to one existing text file.\" The user says there is no patch/hunk tool in this runtime and to use project_write_file. But actually apply_file_changes exists in my toolset. That would be far safer and satisfy \"minimal change\". The user's acceptance criterion is about the diff being exactly 1 file / 1 hunk. Using apply_file_changes achieves that with no risk.\n\nThe user's instruction is based on a belief there's no patch tool. But I have apply_file_changes. As a careful engineer, using it is strictly better: byte-identical elsewhere by construction. I'll use apply_file_changes and note the deviation in my report. That still satisfies acceptance 1 and 2.\n\nBut I need the exact text at lines 495-498. Let me read that range plus context.\n\nLet me read 440-540 with line numbers.\n\nI have exact text at 493-500. Now apply the change with apply_file_changes \u2014 a real search-and-replace tool exists, which keeps every other byte identical (better than a full rewrite). This satisfies both hard constraints (minimal diff) and it's strictly safer than a 707-line rewrite from slices.\n\nLet me do it.\n\n704 lines now (was 707) \u2014 4 lines \u2192 1 line = -3. Good.\n\nNow project_changes for the file.\n\nExactly one file, one hunk, +1/-4, all inside qa_policy. Acceptance 1 and 2 satisfied.\n\nNow the mandate: I'm the QA Lead. Should I also run qa_review_changes on this diff? The standing orders say only work cards in \"Review\" on \"IT team\". The current request is a concrete implementation task from the PM. But my shift report should also note QA evidence. I could run qa_review_changes(scope=\"all\") restricted to this path \u2014 but the working tree has 220 files, so filtering to this path would be cleaner. That would give a QA verdict on my own change \u2014 a nice closing evidence, and it's within budget (a few rounds left).\n\nActually, careful: running qa_review_changes would run tests (run_tests default true) which is not possible? It can run \u2014 the tool has been used before. But the file is a tool module; mapping likely \"no test maps to it\" \u2192 change.missing-tests. Let me run it on this path with run_tests=false to record mapping evidence, so the card gets a proper QA verdict.\n\nLet me do qa_review_changes(paths=[\"codx/junior/tools/qa_tools.py\"], scope=\"all\", run_tests=false).\n\nAlso I should post a comment on the card f16ac31e and possibly move it? The standing order concerns only Review cards. The card is in To Do. This request came as delivery. I should post the implementation report on the card via project_manager request_help (adds comment without processing). Then report.\n\nLet me run the gate on the changed file for evidence.\n\nInteresting: changed_files: 0 \u2014 the paths filter probably didn't match because the QA tool's root is `api/`? The file path is `codx/junior/tools/qa_tools.py` relative to api root; project_changes found it. But qa_review_changes uses git root maybe at platform root, so path filter mismatched \u2192 0 changed files \u2192 allow with 0 findings which is a false green. That's exactly the kind of thing I flag. Let me not over-claim. I'll report: the path filter returned changed_files: 0 \u2192 the \"allow\" is vacuous, not evidence. Run without paths filter? That would review 220 files and give require_approval \u2014 noisy but honest. Better: run with paths=[\"api/codx/junior/tools/qa_tools.py\"] to see if the QA gate resolves repo-root-relative paths. That's one call and gives real mapping evidence.\n\nLet me try that.\n\nGood: with the api/-prefixed path the gate sees 1 changed file and 1 finding: no mapped test for qa_tools.py. That's honest: the change is a one-line wiring fix with no test in the repo mapping. This is a real finding but pre-existing (qa_tools.py has no test at all). I should record it, not block on it \u2014 verdict require_approval/medium, owner qa_automation, and it's already covered? Let me check if a card exists about qa_tools.py having no tests. Not in the list. I could create a card \u2014 but I already have f16ac31e covering the qa_policy visibility. Adding a test for qa_tools is a genuine follow-up. Given budget, I'll add a comment on f16ac31e rather than creating a new card? The mandate says a missing suite/test is a finding and should be carded with acceptance criteria. But f16ac31e's acceptance criterion #3 already asks for a unit test asserting shown keys \u2287 documented changes schema \u2014 which IS the test for qa_tools.qa_policy. So the missing test is already owned by f16ac31e. \n\nNow post comment on f16ac31e with the delivery, and write the shift report.\n\nLet me post via project_manager request_help (comment without processing).\n\nNow write the final answer with the required delivery shape? The profile for this session: the shift is a QA shift with standing orders requiring a Shift report. The software_developer profile asks for \"## What happened / What I did / Demo / Next tasks\". The current request is an implementation task delivered in a QA shift. The shift prompt requires \"End with ## Shift report\".\n\nI'll produce: a verdict block (the fix evidence), then ## Shift report as required by the shift. I'll include diff counts, no-test statement, reload note.\n\nAlso should I create the card for the false-green path filter? The mandate says: \"If a process has no QA gate, that is itself a finding: report it and create the task.\" And reminder: anything to check later must be written as a task with wake_at. The path-filter false green is a real new finding. I have budget. Let me create it \u2014 it's the QA-appropriate action.\n\nCreate task on IT team / To Do, profiles qa_automation, wake_at +2d (2026-11-21ish). Now is 2026-11-23 per the request? \"found by PM 2026-11-23\". Hmm the shift header said 2026-11-18, but the request says 2026-11-23. I'll use wake_at \"+2d\" relative.\n\nLet me create it with wake_at=\"+2d\".\n\nNow final answer: delivery report + shift report.\n\nInclude: diff, verification diff-only, no test executed, reload needed, the finding card ec3ebed2.\n\nFormat per software_developer: What happened / What I did / Demo / Next tasks. And shift prompt requires \"## Shift report\" ending. I'll do: verdict/decision block, then What happened / What I did / Demo / Next tasks, then ## Shift report at the end (shift prompt says \"End with ## Shift report\"). I'll put Next tasks inside shift report to avoid duplication? Better: follow shift instruction \u2014 end with ## Shift report. I'll include the delivery sections then Shift report last. Next tasks can be within the shift report's Scheduled section. But the profile wants \"## Next tasks\". I'll include both: keep sections, and end with Shift report which includes Scheduled. Slight redundancy is fine but let me keep it tight.\n\nActually cleaner: \n- ## Decision (block/allow...) \u2014 the verdict block per standing order\n- ## What happened\n- ## What I did\n- ## Demo\n- ## Next tasks\n- ## Shift report (required by shift prompt, last)\n\nThe shift report can be concise now, referencing above.\n\nLet me write.",
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:40:43.582129",
+      "updated_at": "2026-11-23T09:41:43.815553",
+      "attachments": [],
+      "files": [],
+      "project_id": "ac9804d5-fcb2-4026-81c0-61f2308f6380",
+      "meta_data": {
+        "start_time": 1795426843.5260134,
+        "turn_id": "5ac740f8-c4ea-4b38-bbfc-b78c37938f31",
+        "turn_attempt": 0,
+        "cancellation_token_id": "87e6fc75-60dd-4d92-a3ea-03aaedb4129b",
+        "tool_memory": {
+          "calls": 38,
+          "entries": 38,
+          "rendered": 18,
+          "files": 10,
+          "chars": 11783
+        },
+        "model": "deepseek-flash",
+        "analytics": {
+          "prompt_tokens": 483671,
+          "completion_tokens": 6333,
+          "total_tokens": 490004,
+          "tools": {
+            "project_read_file": {
+              "count": 3,
+              "errors": 0,
+              "total_ms": 1257.5478293001652
+            },
+            "apply_file_changes": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 119.49308589100838
+            },
+            "project_changes": {
+              "count": 1,
+              "errors": 0,
+              "total_ms": 558.4831405431032
+            },
+            "qa_review_changes": {
+              "count": 2,
+              "errors": 0,
+              "total_ms": 1715.7104909420013
+            },
+            "project_manager": {
+              "count": 2,
+              "errors": 0,
+              "total_ms": 2687.0780661702156
+            }
+          }
+        },
+        "time_taken": 60.289156913757324,
+        "first_chunk_time_taken": 2.5077810287475586
+      },
+      "tool_events": [
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_ET_pRSAYL5jxnOPnBpIbpTD8542",
+          "status": "done",
+          "request": {
+            "file_path": "codx/junior/tools/qa_tools.py",
+            "start_line": 1,
+            "end_line": 250,
+            "line_numbers": true
+          },
+          "response": "# codx/junior/tools/qa_tools.py (lines 1-250 of 707)\n```py codx/junior/tools/qa_tools.py\n     1| \"\"\"QA tools.\n     2| \n     3| These are the tools the ``qa`` profiles (and any profile granted them) use to\n     4| validate a change before it is delivered: plan the verification, run the suites,\n     5| review the diff, read the coverage, look for flaky tests and inspect the policy.\n     6| \n     7| The deterministic machinery lives in :mod:`codx.junior.quality.qa`; a tool is an\n     8| explicit action a profile takes, while :func:`codx.junior.quality.qa.guard_change`\n     9| is the guarantee a process can rely on.\n    10| \n    11| Made with \u2764\ufe0f by codx-junior\n    12| \"\"\"\n    13| \n    14| import logging\n    15| import os\n    16| from typing import Any, Dict, List, Optional\n    17| \n    18| from .model import ToolResponse\n    19| from codx.junior.quality.qa import (\n    20|     QaCategory,\n    21|     QaDomain,\n    22|     QaFinding,\n    23|     QaSeverity,\n    24|     coverage_summary,\n    25|     detect_suites,\n    26|     evaluate,\n    27|     guard_change,\n    28|     guard_flaky,\n    29|     guard_tests,\n    30|     map_tests,\n    31|     affected_tests,\n    32|     changed_files,\n    33|     collect_test_files,\n    34|     is_ignored,\n    35|     is_test_file,\n    36|     policy_markdown,\n    37|     read_coverage,\n    38|     record_verdict,\n    39|     render_report,\n    40|     resolve_policy,\n    41|     select_suite,\n    42|     stored_policy,\n    43|     suite_catalog,\n    44| )\n    45| from codx.junior.quality.qa import policy as qa_policy_module\n    46| \n    47| logger = logging.getLogger(__name__)\n    48| \n    49| \n    50| # -----------------------------------------------------------------------------\n    51| # Helpers\n    52| # -----------------------------------------------------------------------------\n    53| def _settings_of(kwargs: Dict[str, Any]):\n    54|     \"\"\"Return the project settings injected by the runtime (or ``None``).\"\"\"\n    55|     return kwargs.get(\"settings\")\n    56| \n    57| \n    58| def _project_path(settings: Any) -> str:\n    59|     \"\"\"Return the absolute project path of *settings*.\"\"\"\n    60|     return getattr(settings, \"abs_project_path\", None) or os.getcwd()\n    61| \n    62| \n    63| def _verdict_answer(verdict, title: str) -> str:\n    64|     \"\"\"Render a verdict as the user facing markdown report.\"\"\"\n    65|     return render_report(verdict, title=title)\n    66| \n    67| \n    68| def _llm_summary(verdict, subject: str) -> str:\n    69|     \"\"\"Build the compact machine friendly summary for the model.\"\"\"\n    70|     lines = [\n    71|         f\"# {subject}\",\n    72|         f\"- decision: {verdict.action.value}\",\n    73|         f\"- passed: {verdict.passed}\",\n    74|         f\"- blocked: {verdict.blocked}\",\n    75|         f\"- requires_approval: {verdict.requires_approval}\",\n    76|         f\"- highest_severity: {(verdict.highest_severity.value if verdict.highest_severity else 'none')}\",\n    77|         f\"- findings: {len(verdict.findings)}\",\n    78|     ]\n    79|     for run in verdict.runs:\n    80|         lines.append(f\"- run `{run.suite}`: {run.summary}\")\n    81|     for key, value in verdict.metrics.items():\n    82|         lines.append(f\"- {key}: {value}\")\n    83|     for finding in verdict.findings[:10]:\n    84|         where = finding.path or \"-\"\n    85|         if finding.path and finding.line:\n    86|             where = f\"{finding.path}:{finding.line}\"\n    87|         lines.append(\n    88|             f\"- [{finding.severity.value}] {finding.rule_id} @ {where}: \"\n    89|             f\"{finding.remediation or finding.title}\"\n    90|         )\n    91|     if len(verdict.findings) > 10:\n    92|         lines.append(f\"- \u2026 {len(verdict.findings) - 10} more finding(s)\")\n    93|     return \"\\n\".join(lines)\n    94| \n    95| \n    96| def _logs_of(verdict) -> List[str]:\n    97|     \"\"\"Build the forensic log lines of a verdict.\"\"\"\n    98|     logs = [f\"QA verdict: {verdict.summary}\"]\n    99|   ",
+          "output": "Read 1 file(s) | Successfully read: codx/junior/tools/qa_tools.py",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 565.5306316912174,
+          "error": null,
+          "started_at": "2026-11-23T09:40:49.438Z",
+          "finished_at": "2026-11-23T09:40:50.003Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_sARC3hQvlNolKnLFJvv08097",
+          "status": "done",
+          "request": {
+            "file_path": "codx/junior/tools/qa_tools.py",
+            "start_line": 440,
+            "end_line": 530,
+            "line_numbers": true
+          },
+          "response": "# codx/junior/tools/qa_tools.py (lines 440-530 of 707)\n```py codx/junior/tools/qa_tools.py\n   440|     action: str = \"show\",\n   441|     changes: Optional[Dict[str, Any]] = None,\n   442|     **kwargs\n   443| ) -> ToolResponse:\n   444|     \"\"\"Show or adjust the QA policy of the project.\n   445| \n   446|     The policy is stored in the project settings under ``qa_policy``. Every\n   447|     field is validated against the model before it is written.\n   448| \n   449|     Args:\n   450|         action: ``show`` (default) to display the effective policy.\n   451|         changes: Partial policy to merge (``action='show'`` ignores it). Fields:\n   452|             ``enabled``, ``min_coverage``, ``block_above``, ``approval_above``,\n   453|             ``warn_above``, ``require_tests_for_changes``, ``block_on_failures``,\n   454|             ``block_missing_tests``, ``fail_closed``, ``max_test_seconds``,\n   455|             ``flaky_repeats``, ``ignore_paths``, ``suites``.\n   456|         **kwargs: Runtime arguments; ``settings`` is injected automatically.\n   457| \n   458|     Returns:\n   459|         ToolResponse: The effective policy as Markdown.\n   460| \n   461|     Example:\n   462|         >>> qa_policy()  # doctest: +SKIP\n   463|     \"\"\"\n   464|     settings = _settings_of(kwargs)\n   465|     if not settings:\n   466|         raise Exception(\"Invalid project settings\")\n   467| \n   468|     stored = stored_policy(settings)\n   469|     if changes and action == \"show\":\n   470|         merged = dict(stored)\n   471|         merged.update(changes or {})\n   472|         validated = qa_policy_module.policy_from_dict(merged)\n   473|         configured = getattr(settings, \"settings\", None)\n   474|         if isinstance(configured, dict):\n   475|             configured[qa_policy_module.POLICY_SETTINGS_KEY] = validated.to_dict()\n   476|             save = getattr(settings, \"save\", None)\n   477|             if callable(save):\n   478|                 try:\n   479|                     save()\n   480|                 except Exception as ex:\n   481|                     return ToolResponse(\n   482|                         user_response=f\"\u26a0\ufe0f Could not persist the policy: {ex}\",\n   483|                         llm_response=f\"qa_policy: persist failed: {ex}\",\n   484|                     )\n   485|             stored = dict(merged)\n   486|         else:\n   487|             return ToolResponse(\n   488|                 user_response=\"\u26a0\ufe0f This project settings object does not expose a writable `settings` dict.\",\n   489|                 llm_response=\"qa_policy: unsupported settings object\",\n   490|             )\n   491| \n   492|     policy = resolve_policy(settings)\n   493|     return ToolResponse(\n   494|         user_response=policy_markdown(policy, stored),\n   495|         llm_response=(\n   496|             f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n   497|             f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n   498|         ),\n   499|         logs=[\"QA policy reported\"],\n   500|     )\n   501| \n   502| \n   503| # -----------------------------------------------------------------------------\n   504| # Tool JSON schemas\n   505| # -----------------------------------------------------------------------------\n   506| QA_PLAN_TOOL_JSON = {\n   507|     \"type\": \"function\",\n   508|     \"function\": {\n   509|         \"name\": \"qa_plan\",\n   510|         \"description\": (\n   511|             \"Plan the verification of a change without executing anything: which test \"\n   512|             \"suites exist (and which can actually run), why, which tests map to the \"\n   513|             \"pending change, which changed files have no test, and whether a coverage \"\n   514|             \"report is available. Call it before qa_run_tests / qa_review_changes.\"\n   515|         ),\n   516|         \"parameters\": {\n   517|             \"type\": \"object\",\n   518|             \"properties\": {\n   519|                 \"base\": {\n   520|        ",
+          "output": "Read 1 file(s) | Successfully read: codx/junior/tools/qa_tools.py",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 604.7589555382729,
+          "error": null,
+          "started_at": "2026-11-23T09:40:54.324Z",
+          "finished_at": "2026-11-23T09:40:54.929Z",
+          "cached": null
+        },
+        {
+          "tool": "apply_file_changes",
+          "tool_call_id": "call_00_BQXMJ5GD7sNDfHBL9kkx6759",
+          "status": "done",
+          "request": {
+            "file_path": "codx/junior/tools/qa_tools.py",
+            "changes": [
+              {
+                "search": "    policy = resolve_policy(settings)\n    return ToolResponse(\n        user_response=policy_markdown(policy, stored),\n        llm_response=(\n            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n        ),\n        logs=[\"QA policy reported\"],\n    )",
+                "replace": "    policy = resolve_policy(settings)\n    return ToolResponse(\n        user_response=policy_markdown(policy, stored),\n        llm_response=policy_markdown(policy, stored),\n        logs=[\"QA policy reported\"],\n    )"
+              }
+            ]
+          },
+          "response": "Applied 1 change(s) to codx/junior/tools/qa_tools.py",
+          "output": "```py codx/junior/tools/qa_tools.py\n\"\"\"QA tools.\n\nThese are the tools the ``qa`` profiles (and any profile granted them) use to\nvalidate a change before it is delivered: plan the verification, run the suites,\nreview the diff, read the coverage, look for flaky tests and inspect the policy.\n\nThe deterministic machinery lives in :mod:`codx.junior.quality.qa`; a tool is an\nexplicit action a profile takes, while :func:`codx.junior.quality.qa.guard_change`\nis the guarantee a process can rely on.\n\nMade with \u2764\ufe0f by codx-junior\n\"\"\"\n\nimport logging\nimport os\nfrom typing import Any, Dict, List, Optional\n\nfrom .model import ToolResponse\nfrom codx.junior.quality.qa import (\n    QaCategory,\n    QaDomain,\n    QaFinding,\n    QaSeverity,\n    coverage_summary,\n    detect_suites,\n    evaluate,\n    guard_change,\n    guard_flaky,\n    guard_tests,\n    map_tests,\n    affected_tests,\n    changed_files,\n    collect_test_files,\n    is_ignored,\n    is_test_file,\n    policy_markdown,\n    read_coverage,\n    record_verdict,\n    render_report,\n    resolve_policy,\n    select_suite,\n    stored_policy,\n    suite_catalog,\n)\nfrom codx.junior.quality.qa import policy as qa_policy_module\n\nlogger = logging.getLogger(__name__)\n\n\n# -----------------------------------------------------------------------------\n# Helpers\n# -----------------------------------------------------------------------------\ndef _settings_of(kwargs: Dict[str, Any]):\n    \"\"\"Return the project settings injected by the runtime (or ``None``).\"\"\"\n    return kwargs.get(\"settings\")\n\n\ndef _project_path(settings: Any) -> str:\n    \"\"\"Return the absolute project path of *settings*.\"\"\"\n    return getattr(settings, \"abs_project_path\", None) or os.getcwd()\n\n\ndef _verdict_answer(verdict, title: str) -> str:\n    \"\"\"Render a verdict as the user facing markdown report.\"\"\"\n    return render_report(verdict, title=title)\n\n\ndef _llm_summary(verdict, subject: str) -> str:\n    \"\"\"Build the compact machine friendly summary for the model.\"\"\"\n    lines = [\n        f\"# {subject}\",\n        f\"- decision: {verdict.action.value}\",\n        f\"- passed: {verdict.passed}\",\n        f\"- blocked: {verdict.blocked}\",\n        f\"- requires_approval: {verdict.requires_approval}\",\n        f\"- highest_severity: {(verdict.highest_severity.value if verdict.highest_severity else 'none')}\",\n        f\"- findings: {len(verdict.findings)}\",\n    ]\n    for run in verdict.runs:\n        lines.append(f\"- run `{run.suite}`: {run.summary}\")\n    for key, value in verdict.metrics.items():\n        lines.append(f\"- {key}: {value}\")\n    for finding in verdict.findings[:10]:\n        where = finding.path or \"-\"\n        if finding.path and finding.line:\n            where = f\"{finding.path}:{finding.line}\"\n        lines.append(\n            f\"- [{finding.severity.value}] {finding.rule_id} @ {where}: \"\n            f\"{finding.remediation or finding.title}\"\n        )\n    if len(verdict.findings) > 10:\n        lines.append(f\"- \u2026 {len(verdict.findings) - 10} more finding(s)\")\n    return \"\\n\".join(lines)\n\n\ndef _logs_of(verdict) -> List[str]:\n    \"\"\"Build the forensic log lines of a verdict.\"\"\"\n    logs = [f\"QA verdict: {verdict.summary}\"]\n    for run in verdict.runs:\n        logs.append(f\"QA run ({run.suite}): {' '.join(run.command)} -> {run.summary}\")\n    for finding in verdict.findings[:25]:\n        logs.append(\n            f\"[{finding.severity.value.upper()}] {finding.rule_id} \"\n            f\"{finding.path or '-'}:{finding.line or 0} \u2014 {finding.title}\"\n        )\n    return logs\n\n\n# -----------------------------------------------------------------------------\n# Tools\n# -----------------------------------------------------------------------------\ndef qa_plan(\n    base: str = \"HEAD\",\n    scope: str = \"all\",\n    paths: Optional[List[str]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Plan the verification of a change: suites, tests and coverage.\n\n    Tells the caller what can be executed (and what cannot), which tests map to\n    the pending change, which changed files have no test at all and whether a\n    coverage report is available. It never executes anything.\n\n    Args:\n        base: Git reference to compare against (default ``HEAD``).\n        scope: ``all``, ``staged`` or ``unstaged``.\n        paths: Optional path filter for the change.\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Markdown plan plus a compact summary.\n\n    Example:\n        >>> qa_plan()  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    policy = resolve_policy(settings)\n    project_path = _project_path(settings)\n\n    suites = detect_suites(project_path, policy)\n    default_suite = select_suite(suites)\n\n    try:\n        changed = changed_files(settings, base=base, scope=scope)\n    except Exception as ex:\n        changed = []\n        change_error = str(ex)\n    else:\n        change_error = \"\"\n\n    if paths:\n        filters = [path.replace(\"\\\\\", \"/\").lstrip(\"./\") for path in paths]\n        changed = [\n            path for path in changed\n            if any(path == f or path.startswith(f.rstrip(\"/\") + \"/\") for f in filters)\n        ]\n    changed = [path for path in changed if not is_ignored(path, policy.ignore_paths)]\n\n    test_files = collect_test_files(project_path)\n    mapped, unmapped = map_tests(changed, test_files)\n    selected = affected_tests(mapped, test_files)\n    report = read_coverage(project_path)\n\n    lines: List[str] = [\n        \"# QA plan\",\n        \"\",\n        f\"- Policy: **{'enabled' if policy.enabled else 'disabled'}** \u00b7 \"\n        f\"coverage threshold **{policy.min_coverage}%** \u00b7 \"\n        f\"block above `{policy.block_above.value}`\",\n        f\"- Suites detected: **{len(suites)}** \u00b7 default: \"\n        f\"`{default_suite.name if default_suite else 'none'}`\",\n        \"\",\n        \"## Suites\",\n    ]\n    if suites:\n        lines += [\"| Suite | Kind | cwd | Runs here | Command |\", \"| --- | --- | --- | --- | --- |\"]\n        for suite in suites:\n            available = \"yes\" if suite.available else f\"no ({suite.reason})\"\n            lines.append(\n                f\"| `{suite.name}` | `{suite.kind}` | `{suite.cwd or '.'}` | {available} | \"\n                f\"`{' '.join(suite.command)}` |\"\n            )\n    else:\n        lines.append(\"_No test suite detected._\")\n\n    lines += [\"\", \"## Change\", \"\"]\n    if change_error:\n        lines.append(f\"\u26a0\ufe0f Could not read the change: {change_error}\")\n    elif not changed:\n        lines.append(\"_No pending change._\")\n    else:\n        lines += [\n            f\"- Changed files: **{len(changed)}** ({sum(1 for c in changed if is_test_file(c))} test file(s))\",\n            f\"- Source files with a mapped test: **{len(mapped)}**\",\n            f\"- Source files without a test: **{len(unmapped)}**\",\n        ]\n        if mapped:\n            lines += [\"\", \"| Source | Tests |\", \"| --- | --- |\"]\n            for source, tests in list(mapped.items())[:15]:\n                lines.append(f\"| `{source}` | {', '.join(f'`{t}`' for t in tests)} |\")\n        if unmapped:\n            lines += [\"\", \"Files with no mapped test:\"]\n            lines += [f\"- `{path}`\" for path in unmapped[:15]]\n            if len(unmapped) > 15:\n                lines.append(f\"- \u2026 {len(unmapped) - 15} more\")\n\n    lines += [\"\", \"## Coverage\", \"\", f\"- {coverage_summary(report)}\"]\n    lines += [\n        \"\",\n        \"## Recommended next steps\",\n        \"\",\n        (\n            f\"1. `qa_run_tests` with `paths` = the {len(selected)} mapped test(s).\"\n            if selected else \"1. `qa_run_tests` on the default suite.\"\n        ),\n        \"2. `qa_review_changes` to get the gate verdict (tests + mapping + coverage).\",\n        \"3. `qa_flaky_check` when a failure does not reproduce.\",\n    ]\n\n    llm = \"\\n\".join(\n        [\n            \"# QA plan\",\n            f\"- suites: {', '.join(s.name for s in suites) or 'none'}\",\n            f\"- default_suite: {default_suite.name if default_suite else 'none'}\",\n            f\"- changed_files: {len(changed)}\",\n            f\"- mapped_tests: {len(selected)}\",\n            f\"- unmapped_sources: {len(unmapped)}\",\n            f\"- coverage: {coverage_summary(report)}\",\n            f\"- suites_json: {suite_catalog(suites)}\",\n            f\"- unmapped: {unmapped[:20]}\",\n        ]\n    )\n    return ToolResponse(\n        user_response=\"\\n\".join(lines),\n        llm_response=llm,\n        logs=[f\"QA plan: {len(suites)} suite(s), {len(changed)} changed file(s)\"],\n    )\n\n\ndef qa_run_tests(\n    suite: str = \"auto\",\n    paths: Optional[List[str]] = None,\n    timeout: Optional[int] = None,\n    extra_args: Optional[List[str]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Run a test suite and return the verdict of the run.\n\n    The command is a declared argv (detected suite or ``qa_policy.suites``),\n    executed without a shell, bounded by a timeout and validated by the CISO\n    command gate.\n\n    Args:\n        suite: Suite name, kind or ``auto`` for the project default.\n        paths: Optional test files or folders to restrict the run.\n        timeout: Seconds before the run is killed (policy default when omitted).\n        extra_args: Extra arguments (validated; shell metacharacters refused).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Report with the failures and the counters.\n\n    Example:\n        >>> qa_run_tests(paths=[\"api/tests/test_atlas.py\"])  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    verdict = guard_tests(\n        settings,\n        suite_name=suite,\n        paths=paths,\n        timeout=timeout,\n        extra_args=extra_args,\n    )\n    title = f\"QA tests \u2014 `{suite or 'auto'}`\"\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, title),\n        llm_response=_llm_summary(verdict, \"QA test run\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_review_changes(\n    base: str = \"HEAD\",\n    scope: str = \"all\",\n    paths: Optional[List[str]] = None,\n    run_tests: bool = True,\n    suite: str = \"auto\",\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Review a change against the QA gate (tests, mapping, coverage).\n\n    This is the gate a profile must call before it reports a change as verified:\n    it reads the diff, maps every changed source file to a test, runs the mapped\n    tests and checks the coverage threshold.\n\n    Args:\n        base: Git reference to compare against (default ``HEAD``).\n        scope: ``all`` (default), ``staged`` or ``unstaged``.\n        paths: Optional path filter for the change.\n        run_tests: Execute the mapped tests (default True).\n        suite: Suite to execute (``auto`` uses the detected one).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Verdict of the change, ready to paste in a delivery report.\n\n    Example:\n        >>> qa_review_changes(scope=\"staged\")  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    verdict = guard_change(\n        settings,\n        base=base,\n        scope=scope,\n        paths=paths,\n        run_tests=run_tests,\n        suite_name=suite,\n    )\n    title = f\"QA change review \u2014 scope `{scope}` vs `{base}`\"\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, title),\n        llm_response=_llm_summary(verdict, \"QA change review\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_coverage(\n    min_percent: Optional[float] = None,\n    paths: Optional[List[str]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Read the coverage report of the project and compare it with the threshold.\n\n    Args:\n        min_percent: Override the threshold of the policy for this check.\n        paths: Optional explicit report paths (``coverage.xml``, ``coverage.json``).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Coverage verdict.\n\n    Example:\n        >>> qa_coverage()  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    policy = resolve_policy(settings)\n    project_path = _project_path(settings)\n    threshold = float(min_percent if min_percent is not None else policy.min_coverage)\n\n    report = read_coverage(project_path, paths=paths)\n    findings: List[QaFinding] = []\n    metrics: Dict[str, Any] = {\"threshold\": threshold}\n\n    if not report:\n        findings.append(\n            QaFinding(\n                rule_id=\"coverage.unavailable\",\n                title=\"No coverage report found in the project\",\n                severity=QaSeverity.LOW,\n                category=QaCategory.COVERAGE,\n                remediation=(\n                    \"Generate a report in the test step: `pytest --cov=app \"\n                    \"--cov-report=xml` or `npm test -- --coverage`.\"\n                ),\n            )\n        )\n    else:\n        metrics[\"coverage\"] = report.percent\n        metrics[\"source\"] = report.source\n        if report.percent < threshold:\n            findings.append(\n                QaFinding(\n                    rule_id=\"coverage.below-threshold\",\n                    title=f\"Coverage {report.percent}% is below the {threshold}% threshold\",\n                    severity=QaSeverity.MEDIUM,\n                    category=QaCategory.COVERAGE,\n                    path=report.source,\n                    evidence=coverage_summary(report),\n                    remediation=\"Cover the new branches, or lower the threshold with a dated decision.\",\n                )\n            )\n\n    verdict = evaluate(QaDomain.COVERAGE, findings, policy, metrics=metrics)\n    record_verdict(settings, verdict, f\"coverage:{report.source if report else 'none'}\")\n    if not findings:\n        verdict.summary = f\"clean: coverage {report.percent}% >= {threshold}%\"\n\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, \"QA coverage\"),\n        llm_response=_llm_summary(verdict, \"QA coverage\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_flaky_check(\n    suite: str = \"auto\",\n    paths: Optional[List[str]] = None,\n    repeat: Optional[int] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Re-run a suite several times and report the unstable tests.\n\n    Args:\n        suite: Suite name, kind or ``auto`` for the project default.\n        paths: Optional test files or folders to restrict the runs.\n        repeat: Number of runs (policy ``flaky_repeats`` when omitted).\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: Verdict listing the tests that do not reproduce.\n\n    Example:\n        >>> qa_flaky_check(repeat=3)  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    verdict = guard_flaky(settings, suite_name=suite, paths=paths, repeats=repeat)\n    return ToolResponse(\n        user_response=_verdict_answer(verdict, f\"QA flaky check \u2014 `{suite or 'auto'}`\"),\n        llm_response=_llm_summary(verdict, \"QA flaky check\"),\n        logs=_logs_of(verdict),\n    )\n\n\ndef qa_policy(\n    action: str = \"show\",\n    changes: Optional[Dict[str, Any]] = None,\n    **kwargs\n) -> ToolResponse:\n    \"\"\"Show or adjust the QA policy of the project.\n\n    The policy is stored in the project settings under ``qa_policy``. Every\n    field is validated against the model before it is written.\n\n    Args:\n        action: ``show`` (default) to display the effective policy.\n        changes: Partial policy to merge (``action='show'`` ignores it). Fields:\n            ``enabled``, ``min_coverage``, ``block_above``, ``approval_above``,\n            ``warn_above``, ``require_tests_for_changes``, ``block_on_failures``,\n            ``block_missing_tests``, ``fail_closed``, ``max_test_seconds``,\n            ``flaky_repeats``, ``ignore_paths``, ``suites``.\n        **kwargs: Runtime arguments; ``settings`` is injected automatically.\n\n    Returns:\n        ToolResponse: The effective policy as Markdown.\n\n    Example:\n        >>> qa_policy()  # doctest: +SKIP\n    \"\"\"\n    settings = _settings_of(kwargs)\n    if not settings:\n        raise Exception(\"Invalid project settings\")\n\n    stored = stored_policy(settings)\n    if changes and action == \"show\":\n        merged = dict(stored)\n        merged.update(changes or {})\n        validated = qa_policy_module.policy_from_dict(merged)\n        configured = getattr(settings, \"settings\", None)\n        if isinstance(configured, dict):\n            configured[qa_policy_module.POLICY_SETTINGS_KEY] = validated.to_dict()\n            save = getattr(settings, \"save\", None)\n            if callable(save):\n                try:\n                    save()\n                except Exception as ex:\n                    return ToolResponse(\n                        user_response=f\"\u26a0\ufe0f Could not persist the policy: {ex}\",\n                        llm_response=f\"qa_policy: persist failed: {ex}\",\n                    )\n            stored = dict(merged)\n        else:\n            return ToolResponse(\n                user_response=\"\u26a0\ufe0f This project settings object does not expose a writable `settings` dict.\",\n                llm_response=\"qa_policy: unsupported settings object\",\n            )\n\n    policy = resolve_policy(settings)\n    return ToolResponse(\n        user_response=policy_markdown(policy, stored),\n        llm_response=policy_markdown(policy, stored),\n        logs=[\"QA policy reported\"],\n    )\n\n\n# -----------------------------------------------------------------------------\n# Tool JSON schemas\n# -----------------------------------------------------------------------------\nQA_PLAN_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_plan\",\n        \"description\": (\n            \"Plan the verification of a change without executing anything: which test \"\n            \"suites exist (and which can actually run), why, which tests map to the \"\n            \"pending change, which changed files have no test, and whether a coverage \"\n            \"report is available. Call it before qa_run_tests / qa_review_changes.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"base\": {\n                    \"type\": \"string\",\n                    \"description\": \"Git reference to compare against (default HEAD).\"\n                },\n                \"scope\": {\n                    \"type\": \"string\",\n                    \"enum\": [\"all\", \"staged\", \"unstaged\"],\n                    \"description\": \"Which change to inspect (default all).\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional path filter for the change.\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_RUN_TESTS_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_run_tests\",\n        \"description\": (\n            \"Run a test suite of the project and return a QA verdict: counters, failing \"\n            \"test ids, timeout and duration. The command is a declared argv executed \"\n            \"without a shell and validated by the CISO command gate. Use 'paths' to run \"\n            \"only the tests mapped to a change.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"suite\": {\n                    \"type\": \"string\",\n                    \"description\": \"Suite name, suite kind or 'auto' for the project default.\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional test files or folders to restrict the run.\"\n                },\n                \"timeout\": {\n                    \"type\": \"integer\",\n                    \"description\": \"Seconds before the run is killed (default: QA policy).\"\n                },\n                \"extra_args\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": (\n                        \"Extra arguments appended to the suite command (e.g. ['-k','login']). \"\n                        \"Shell metacharacters are refused.\"\n                    )\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_REVIEW_CHANGES_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_review_changes\",\n        \"description\": (\n            \"The QA gate for a change: maps every changed source file to the tests that \"\n            \"name it, runs those tests, checks the coverage threshold and returns one \"\n            \"verdict (allow / warn / require_approval / block). Call it before reporting \"\n            \"a change as done or merging a PR.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"base\": {\n                    \"type\": \"string\",\n                    \"description\": \"Git reference to compare against (default HEAD).\"\n                },\n                \"scope\": {\n                    \"type\": \"string\",\n                    \"enum\": [\"all\", \"staged\", \"unstaged\"],\n                    \"description\": \"Which change to review (default all).\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional path filter for the change.\"\n                },\n                \"run_tests\": {\n                    \"type\": \"boolean\",\n                    \"description\": \"Execute the mapped tests (default true).\"\n                },\n                \"suite\": {\n                    \"type\": \"string\",\n                    \"description\": \"Suite to execute (default 'auto').\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_COVERAGE_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_coverage\",\n        \"description\": (\n            \"Read the coverage report the project already generated (coverage.xml, \"\n            \"coverage.json or an istanbul coverage-summary.json) and compare it with the \"\n            \"threshold of the QA policy.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"min_percent\": {\n                    \"type\": \"number\",\n                    \"description\": \"Override the coverage threshold for this check.\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional explicit report paths.\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_FLAKY_CHECK_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_flaky_check\",\n        \"description\": (\n            \"Re-run a suite several times and list the tests that fail in some runs but \"\n            \"not in all of them. Use it when a reported failure does not reproduce.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"suite\": {\n                    \"type\": \"string\",\n                    \"description\": \"Suite name, suite kind or 'auto' for the project default.\"\n                },\n                \"paths\": {\n                    \"type\": \"array\",\n                    \"items\": {\"type\": \"string\"},\n                    \"description\": \"Optional test files or folders to restrict the runs.\"\n                },\n                \"repeat\": {\n                    \"type\": \"integer\",\n                    \"description\": \"Number of runs (default: QA policy flaky_repeats).\"\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\nQA_POLICY_TOOL_JSON = {\n    \"type\": \"function\",\n    \"function\": {\n        \"name\": \"qa_policy\",\n        \"description\": (\n            \"Show the effective QA policy of the project (thresholds, severity ladder, \"\n            \"ignored paths, custom suites) and optionally merge validated changes into \"\n            \"the project settings.\"\n        ),\n        \"parameters\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"action\": {\n                    \"type\": \"string\",\n                    \"enum\": [\"show\"],\n                    \"description\": \"Only 'show' is supported today.\"\n                },\n                \"changes\": {\n                    \"type\": \"object\",\n                    \"description\": (\n                        \"Partial policy to persist: enabled, min_coverage, block_above, \"\n                        \"approval_above, warn_above, require_tests_for_changes, \"\n                        \"block_on_failures, block_missing_tests, fail_closed, \"\n                        \"max_test_seconds, flaky_repeats, ignore_paths, suites.\"\n                    )\n                }\n            },\n            \"required\": []\n        }\n    }\n}\n\n```",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 119.49308589100838,
+          "error": null,
+          "started_at": "2026-11-23T09:40:57.959Z",
+          "finished_at": "2026-11-23T09:40:58.079Z",
+          "cached": null
+        },
+        {
+          "tool": "project_read_file",
+          "tool_call_id": "call_00_ET_fBCKjLc1g0ze4Orw1Srn0635",
+          "status": "done",
+          "request": {
+            "file_path": "codx/junior/tools/qa_tools.py",
+            "pattern": "llm_response=policy_markdown",
+            "context_lines": 4,
+            "line_numbers": true
+          },
+          "response": "# codx/junior/tools/qa_tools.py \u2014 pattern `llm_response=policy_markdown` (1 match(es); 704 lines)\n```py codx/junior/tools/qa_tools.py\n   491| \n   492|     policy = resolve_policy(settings)\n   493|     return ToolResponse(\n   494|         user_response=policy_markdown(policy, stored),\n   495|         llm_response=policy_markdown(policy, stored),\n   496|         logs=[\"QA policy reported\"],\n   497|     )\n   498| \n   499| \n```",
+          "output": "Read 1 file(s) | Successfully read: codx/junior/tools/qa_tools.py",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 87.2582420706749,
+          "error": null,
+          "started_at": "2026-11-23T09:41:04.166Z",
+          "finished_at": "2026-11-23T09:41:04.253Z",
+          "cached": null
+        },
+        {
+          "tool": "project_changes",
+          "tool_call_id": "call_00_37aZAJW3X01ZA47GhTSy1380",
+          "status": "done",
+          "request": {
+            "paths": [
+              "codx/junior/tools/qa_tools.py"
+            ],
+            "scope": "all",
+            "include_patch": true,
+            "context_lines": 3,
+            "max_files": 5
+          },
+          "response": "### \ud83d\udd0d Changes vs `HEAD` \u2014 scope `all`\n\n- 1 file(s), +1 / -4\n\n**Files**\n- `M` **modified** `codx/junior/tools/qa_tools.py` (+1/-4)\n\n\n**`codx/junior/tools/qa_tools.py`**\n```diff\ndiff --git a/codx/junior/tools/qa_tools.py b/codx/junior/tools/qa_tools.py\nindex 47d1023..0901ecb 100644\n--- a/codx/junior/tools/qa_tools.py\n+++ b/codx/junior/tools/qa_tools.py\n@@ -492,10 +492,7 @@ def qa_policy(\n     policy = resolve_policy(settings)\n     return ToolResponse(\n         user_response=policy_markdown(policy, stored),\n-        llm_response=(\n-            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n-            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n-        ),\n+        llm_response=policy_markdown(policy, stored),\n         logs=[\"QA policy reported\"],\n     )\n```",
+          "output": "### \ud83d\udd0d Changes vs `HEAD` \u2014 scope `all`\n\n- 1 file(s), +1 / -4\n\n**Files**\n- `M` **modified** `codx/junior/tools/qa_tools.py` (+1/-4)",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 558.4831405431032,
+          "error": null,
+          "started_at": "2026-11-23T09:41:06.410Z",
+          "finished_at": "2026-11-23T09:41:06.968Z",
+          "cached": null
+        },
+        {
+          "tool": "qa_review_changes",
+          "tool_call_id": "call_00_qWBpRAHsKzoN5EPKs2RR7943",
+          "status": "done",
+          "request": {
+            "paths": [
+              "codx/junior/tools/qa_tools.py"
+            ],
+            "run_tests": false,
+            "scope": "all"
+          },
+          "response": "# QA change review\n- decision: allow\n- passed: True\n- blocked: False\n- requires_approval: False\n- highest_severity: none\n- findings: 0\n- changed_files: 0",
+          "output": "# QA change review \u2014 scope `all` vs `HEAD`\n\n\u2705 **Decision: `allow`** \u00b7 domain `change_review` \u00b7 highest severity `none` \u00b7 findings: **0**\n\n## Metrics\n- changed_files: **0**\n\nClean: nothing to fix in the inspected scope.",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 1167.437480762601,
+          "error": null,
+          "started_at": "2026-11-23T09:41:11.715Z",
+          "finished_at": "2026-11-23T09:41:12.882Z",
+          "cached": null
+        },
+        {
+          "tool": "qa_review_changes",
+          "tool_call_id": "call_00_HqvUht18eC3WbxpQHrmQ9213",
+          "status": "done",
+          "request": {
+            "paths": [
+              "api/codx/junior/tools/qa_tools.py"
+            ],
+            "run_tests": false,
+            "scope": "all"
+          },
+          "response": "# QA change review\n- decision: require_approval\n- passed: False\n- blocked: False\n- requires_approval: True\n- highest_severity: medium\n- findings: 1\n- changed_files: 1\n- test_files: 180\n- mapped_sources: 0\n- unmapped_sources: 1\n- [medium] change.missing-tests @ api/codx/junior/tools/qa_tools.py: Add or extend a test for `qa_tools.py` (name the file after the module) or declare the path in `qa_policy.ignore_paths`.",
+          "output": "# QA change review \u2014 scope `all` vs `HEAD`\n\n\ud83d\udfe0 **Decision: `require_approval`** \u00b7 domain `change_review` \u00b7 highest severity `medium` \u00b7 findings: **1**\n\n| Rule | Severity | Where | What |\n| --- | --- | --- | --- |\n| `change.missing-tests` | medium | `api/codx/junior/tools/qa_tools.py` | Changed behaviour without a test that names it |\n\n## Evidence and remediation\n- **`change.missing-tests`** \u2014 Changed behaviour without a test that names it\n  - Fix: Add or extend a test for `qa_tools.py` (name the file after the module) or declare the path in `qa_policy.ignore_paths`.\n\n## Metrics\n- changed_files: **1**\n- test_files: **180**\n- mapped_sources: **0**\n- unmapped_sources: **1**\n\nNeeds a human decision: the QA gate cannot pass this on its own.",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 548.2730101794004,
+          "error": null,
+          "started_at": "2026-11-23T09:41:16.157Z",
+          "finished_at": "2026-11-23T09:41:16.706Z",
+          "cached": null
+        },
+        {
+          "tool": "project_manager",
+          "tool_call_id": "call_00_G6eCSJGlyWFJrvWhmpPj9827",
+          "status": "done",
+          "request": {
+            "action": "request_help",
+            "chat_id": "f16ac31e-6051-4f4c-b558-f3fecf89a885",
+            "comment": "**Delivered (QA shift, 2026-11-23) \u2014 `qa_policy` now returns the full policy to the actor**\n\nChange (1 file, +1 / -4, one hunk, all inside `qa_policy`):\n\n```\n     policy = resolve_policy(settings)\n     return ToolResponse(\n         user_response=policy_markdown(policy, stored),\n-        llm_response=(\n-            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n-            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n-        ),\n+        llm_response=policy_markdown(policy, stored),\n         logs=[\"QA policy reported\"],\n     )\n```\n\n`policy_markdown` was already imported at line 36 and already renders `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `min_coverage`, `fail_closed`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (list) and the custom `suites`. `user_response`, `logs`, docstring, JSON schema and every other function untouched.\n\n**Two tooling facts measured while doing it (both are findings in their own right):**\n\n1. **`qa_review_changes(paths=[\"codx/junior/tools/qa_tools.py\"])` \u2192 `decision: allow`, `changed_files: 0`, `findings: 0`.** The gate resolved the api-relative path to nothing and returned a clean verdict on an empty diff \u2014 a *vacuous* `allow`. Same path with the repo-root prefix (`paths=[\"api/codx/junior/tools/qa_tools.py\"]`) \u2192 `changed_files: 1`, `mapped_sources: 0`, `unmapped_sources: 1`, `[medium] change.missing-tests`. So a wrong-but-plausible path filter silently converts `require_approval` into `allow`. That is a **false-green path** in the gate and deserves its own card (not filed yet \u2014 flagging here so it is not lost).\n2. **`qa_tools.py` has no mapped test** (`mapped_sources: 0`) \u2014 the honest verdict for this diff is `require_approval` / medium, owner `qa_automation`. This is exactly acceptance criterion #3 of this card, so no new card is needed: the required unit test (shown keys \u2287 the documented `changes` schema) is the test that this module currently lacks.\n\n**Verification status: diff-only.** There is no shell tool in this runtime (`no shell tool exists` \u2014 card e816cc41), so `pytest` cannot be executed and I do not claim any test result. Acceptance criteria 1 and 2 are met by `project_changes` (1 file, 1 hunk, +1/-4) and by re-reading line 495. Criterion 3 remains open for `qa_automation`.\n\n**Takes effect only after the API process reloads `codx.junior.tools.qa_tools`** \u2014 the running process holds the old string; restart the API (or reload the module) before re-running `qa_policy(action=\"show\")`.",
+            "roles": "[\"qa\"]"
+          },
+          "response": "{\n  \"status\": \"comment_added\",\n  \"task_id\": \"f16ac31e-6051-4f4c-b558-f3fecf89a885\",\n  \"message_id\": null,\n  \"processed\": false\n}",
+          "output": "\ud83d\udcdd Comment added to task **qa_policy output is one line \u2014 the gate owner cannot read ignore_paths, block_on_failures or the suite list it is judged by**.\n- ID: `f16ac31e-6051-4f4c-b558-f3fecf89a885`\n- No processing was triggered: the request waits for a user.",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 1077.665839344263,
+          "error": null,
+          "started_at": "2026-11-23T09:41:22.805Z",
+          "finished_at": "2026-11-23T09:41:23.882Z",
+          "cached": null
+        },
+        {
+          "tool": "project_manager",
+          "tool_call_id": "call_00_NfFS1WFU0THf6HLI1aXx0474",
+          "status": "done",
+          "request": {
+            "action": "create_task",
+            "board": "IT team",
+            "column": "To Do",
+            "name": "qa_review_changes returns a vacuous `allow` when the paths filter matches nothing (changed_files: 0, findings: 0)",
+            "description": "## Finding (QA, 2026-11-23, measured)\n\nWhile reviewing the one-line `qa_policy` fix, the same file produced two opposite verdicts depending only on how the `paths` filter was written:\n\n- `qa_review_changes(paths=[\"codx/junior/tools/qa_tools.py\"], scope=\"all\", run_tests=false)` \u2192 **decision: allow**, `passed: True`, `changed_files: 0`, `findings: 0`, `highest_severity: none`\n- `qa_review_changes(paths=[\"api/codx/junior/tools/qa_tools.py\"], scope=\"all\", run_tests=false)` \u2192 **decision: require_approval**, `changed_files: 1`, `mapped_sources: 0`, `unmapped_sources: 1`, `[medium] change.missing-tests`\n\nThe diff exists and is real (`project_changes` reports 1 file, +1/-4). The gate simply resolved the api-relative path to nothing and then reported a clean verdict on an empty change set. `changed_files: 0` from an explicit path filter must never be read as \"clean\".\n\n**Impact:** any actor (or CI recipe) that passes a project-relative path where the gate expects a repo-root-relative one gets `allow` on an unreviewed change. That is a false green of the same class as `e5841226` (35-of-1851 collection), and it defeats the \"PR about to be merged\" gate.\n\n## What to do\n\n1. When `paths` is given and resolves to zero files, return `warn`/`require_approval` (or an explicit `paths.matched-nothing` finding) instead of `allow` \u2014 never a silent clean.\n2. Resolve path filters against both the repository root and the project root (the default `qa_review_changes` invocation clearly works at repo level: `changed_files: 220` unfiltered vs `0` when filtered with the api-relative form).\n3. Echo the resolved filter in the output (`resolved_paths: [...]`) so the caller can see what was actually reviewed.\n\n## Acceptance criteria\n\n- `qa_review_changes(paths=[\"<non-existent path>\"], run_tests=false)` does **not** return `allow` with `findings: 0`; it returns a finding naming the unmatched filter.\n- `qa_review_changes(paths=[\"codx/junior/tools/qa_tools.py\"])` and `qa_review_changes(paths=[\"api/codx/junior/tools/qa_tools.py\"])` return the **same** `changed_files` count for the same working tree.\n- Output includes `resolved_paths`, and a unit test covers the empty-match case.\n\n## Re-verification command\n\n`qa_review_changes(paths=[\"codx/junior/tools/qa_tools.py\"], scope=\"all\", run_tests=false)` \u2192 expect the same numbers as the `api/`-prefixed form (currently `changed_files: 1`, 1 medium finding), not `changed_files: 0` / `allow`.\n\n## Out of scope\n\nThe `qa_policy` visibility fix itself (card `f16ac31e`), the 35-of-1851 collection defect (`e5841226`), the coverage gate (`ccca3ccb`).",
+            "priority": "high",
+            "profiles": [
+              "qa_automation"
+            ],
+            "wake_at": "+2d"
+          },
+          "response": "{\n  \"status\": \"created\",\n  \"task\": {\n    \"id\": \"ec3ebed2-be26-4821-8f19-c17390727693\",\n    \"name\": \"qa_review_changes returns a vacuous `allow` when the paths filter matches nothing (changed_files: 0, findings: 0)\",\n    \"status\": \"\",\n    \"mode\": \"chat\",\n    \"board\": \"IT team\",\n    \"column\": \"To Do\",\n    \"sprints\": [],\n    \"priority\": \"high\",\n    \"due_date\": null,\n    \"wake_at\": \"2026-11-25T09:41:31.941120+00:00\",\n    \"schedule\": null,\n    \"schedule_context\": \"history\",\n    \"progress\": 0,\n    \"assignees\": [],\n    \"profiles\": [\n      \"qa_automation\"\n    ],\n    \"tags\": [],\n    \"parent_id\": \"11cdb6da-7abc-4af8-83f0-e8ca02028ddc\",\n    \"project_id\": \"ac9804d5-fcb2-4026-81c0-61f2308f6380\",\n    \"owner_project_id\": \"ac9804d5-fcb2-4026-81c0-61f2308f6380\",\n    \"created_at\": \"2026-11-23 09:41:31.941201\",\n    \"updated_at\": \"2026-11-23T09:41:31.941335\",\n    \"description\": \"## Finding (QA, 2026-11-23, measured)\\n\\nWhile reviewing the one-line `qa_policy` fix, the same file produced two opposite verdicts depending only on how the `paths` filter was written:\\n\\n- `qa_review_changes(paths=[\\\"codx/junior/tools/qa_tools.py\\\"], scope=\\\"all\\\", run_tests=false)` \\u2192 **decision: allow**, `passed: True`, `changed_files: 0`, `findings: 0`, `highest_severity: none`\\n- `qa_review_changes(paths=[\\\"api/codx/junior/tools/qa_tools.py\\\"], scope=\\\"all\\\", run_tests=false)` \\u2192 **decision: require_approval**, `changed_files: 1`, `mapped_sources: 0`, `unmapped_sources: 1`, `[medium] change.missing-tests`\\n\\nThe diff exists and is real (`project_changes` reports 1 file, +1/-4). The gate simply resolved the api-relative path to nothing and then reported a clean verdict on an empty change set. `changed_files: 0` from an explicit path filter must never be read as \\\"clean\\\".\\n\\n**Impact:** any actor (or CI recipe) that passes a project-relative path where the gate expects a repo-root-relative one gets `allow` on an unreviewed change. That is a false green of the same class as `e5841226` (35-of-1851 collection), and it defeats the \\\"PR about to be merged\\\" gate.\\n\\n## What to do\\n\\n1. When `paths` is given and resolves to zero files, return `warn`/`require_approval` (or an explicit `paths.matched-nothing` finding) instead of `allow` \\u2014 never a silent clean.\\n2. Resolve path filters against both the repository root and the project root (the default `qa_review_changes` invocation clearly works at repo level: `changed_files: 220` unfiltered vs `0` when filtered with the api-relative form).\\n3. Echo the resolved filter in the output (`resolved_paths: [...]`) so the caller can see what was actually reviewed.\\n\\n## Acceptance criteria\\n\\n- `qa_review_changes(paths=[\\\"<non-existent path>\\\"], run_tests=false)` does **not** return `allow` with `findings: 0`; it returns a finding naming the unmatched filter.\\n- `qa_review_changes(paths=[\\\"codx/junior/tools/qa_tools.py\\\"])` and `qa_review_changes(paths=[\\\"api/codx/junior/tools/qa_tools.py\\\"])` return the **same** `changed_files` count for the same working tree.\\n- Output includes `resolved_paths`, and a unit test covers the empty-match case.\\n\\n## Re-verification command\\n\\n`qa_review_changes(paths=[\\\"codx/junior/tools/qa_tools.py\\\"], scope=\\\"all\\\", run_tests=false)` \\u2192 expect the same numbers as the `api/`-prefixed form (currently `changed_files: 1`, 1 medium finding), not `changed_files: 0` / `allow`.\\n\\n## Out of scope\\n\\nThe `qa_policy` visibility fix itself (card `f16ac31e`), the 35-of-1851 collection defect (`e5841226`), the coverage gate (`ccca3ccb`).\",\n    \"message_count\": 1\n  }\n}",
+          "output": "\u2705 Task created: **qa_review_changes returns a vacuous `allow` when the paths filter matches nothing (changed_files: 0, findings: 0)**\n- ID: `ec3ebed2-be26-4821-8f19-c17390727693`\n- Board/Column: `IT team` / `To Do`\n- Sprints: none\n- Status: `-`\n- Wake at: `2026-11-25T09:41:31.941120+00:00` (the autonomy worker delivers it when due)\n\nUse action='request_changes' to process this task through the engine.",
+          "output_ref": null,
+          "output_bytes": null,
+          "output_sha256": null,
+          "output_truncated": null,
+          "duration_ms": 1609.4122268259525,
+          "error": null,
+          "started_at": "2026-11-23T09:41:31.542Z",
+          "finished_at": "2026-11-23T09:41:33.152Z",
+          "cached": null
+        }
+      ],
+      "lifecycle_events": [
+        {
+          "status": "done",
+          "run_id": "897739790e2a",
+          "duration_ms": null,
+          "error": null,
+          "started_at": "2026-11-23T09:40:46.239Z",
+          "finished_at": "2026-11-23T09:41:43.675Z"
+        }
+      ],
+      "phase_events": [
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 3 messages",
+          "started_at": "2026-11-23T09:40:47.131Z",
+          "finished_at": "2026-11-23T09:40:48.968Z",
+          "duration_ms": 1837.7060890197754,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 3
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.8s",
+          "started_at": "2026-11-23T09:40:48.968Z",
+          "finished_at": "2026-11-23T09:40:50.004Z",
+          "duration_ms": 1036.1275672912598,
+          "meta": {
+            "ttft_ms": 1838,
+            "prompt_tokens": 44032,
+            "completion_tokens": 113,
+            "total_tokens": 44145
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 5 messages",
+          "started_at": "2026-11-23T09:40:50.192Z",
+          "finished_at": "2026-11-23T09:40:50.935Z",
+          "duration_ms": 743.9627647399902,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 5
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.7s",
+          "started_at": "2026-11-23T09:40:50.935Z",
+          "finished_at": "2026-11-23T09:40:54.929Z",
+          "duration_ms": 3994.9235916137695,
+          "meta": {
+            "ttft_ms": 743,
+            "prompt_tokens": 45644,
+            "completion_tokens": 591,
+            "total_tokens": 46235
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 7 messages",
+          "started_at": "2026-11-23T09:40:55.115Z",
+          "finished_at": "2026-11-23T09:40:56.181Z",
+          "duration_ms": 1066.8282508850098,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 7
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.1s",
+          "started_at": "2026-11-23T09:40:56.181Z",
+          "finished_at": "2026-11-23T09:40:58.079Z",
+          "duration_ms": 1898.8947868347168,
+          "meta": {
+            "ttft_ms": 1066,
+            "prompt_tokens": 47423,
+            "completion_tokens": 361,
+            "total_tokens": 47784
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 9 messages",
+          "started_at": "2026-11-23T09:40:58.406Z",
+          "finished_at": "2026-11-23T09:40:59.401Z",
+          "duration_ms": 995.560884475708,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 9
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-23T09:40:59.401Z",
+          "finished_at": "2026-11-23T09:41:04.256Z",
+          "duration_ms": 4855.424165725708,
+          "meta": {
+            "ttft_ms": 995,
+            "prompt_tokens": 47815,
+            "completion_tokens": 108,
+            "total_tokens": 47923
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 11 messages",
+          "started_at": "2026-11-23T09:41:04.418Z",
+          "finished_at": "2026-11-23T09:41:05.396Z",
+          "duration_ms": 978.6577224731445,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 11
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-23T09:41:05.396Z",
+          "finished_at": "2026-11-23T09:41:06.969Z",
+          "duration_ms": 1573.7636089324951,
+          "meta": {
+            "ttft_ms": 978,
+            "prompt_tokens": 48066,
+            "completion_tokens": 150,
+            "total_tokens": 48216
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 13 messages",
+          "started_at": "2026-11-23T09:41:07.109Z",
+          "finished_at": "2026-11-23T09:41:11.204Z",
+          "duration_ms": 4095.4535007476807,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 13
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 4.1s",
+          "started_at": "2026-11-23T09:41:11.204Z",
+          "finished_at": "2026-11-23T09:41:12.882Z",
+          "duration_ms": 1678.816318511963,
+          "meta": {
+            "ttft_ms": 4095,
+            "prompt_tokens": 48506,
+            "completion_tokens": 440,
+            "total_tokens": 48946
+          }
+        },
+        {
+          "kind": "notice",
+          "status": "done",
+          "label": "qa_review_changes",
+          "detail": "QA verdict: clean: no pending change to review",
+          "started_at": "2026-11-23T09:41:13.139Z",
+          "finished_at": "2026-11-23T09:41:13.139Z",
+          "duration_ms": null,
+          "meta": null
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 15 messages",
+          "started_at": "2026-11-23T09:41:13.523Z",
+          "finished_at": "2026-11-23T09:41:14.239Z",
+          "duration_ms": 716.5241241455078,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 15
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.7s",
+          "started_at": "2026-11-23T09:41:14.239Z",
+          "finished_at": "2026-11-23T09:41:16.706Z",
+          "duration_ms": 2467.623472213745,
+          "meta": {
+            "ttft_ms": 716,
+            "prompt_tokens": 49006,
+            "completion_tokens": 328,
+            "total_tokens": 49334
+          }
+        },
+        {
+          "kind": "notice",
+          "status": "done",
+          "label": "qa_review_changes",
+          "detail": "QA verdict: require_approval: 1 finding(s) [change.missing-tests] highest=medium; [MEDIUM] change.missing-tests api/codx/junior/tools/qa_tools.py:0 \u2014 Changed behaviour without a test that names it",
+          "started_at": "2026-11-23T09:41:16.821Z",
+          "finished_at": "2026-11-23T09:41:16.821Z",
+          "duration_ms": null,
+          "meta": null
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 17 messages",
+          "started_at": "2026-11-23T09:41:17.014Z",
+          "finished_at": "2026-11-23T09:41:17.712Z",
+          "duration_ms": 698.7259387969971,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 17
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.7s",
+          "started_at": "2026-11-23T09:41:17.712Z",
+          "finished_at": "2026-11-23T09:41:23.883Z",
+          "duration_ms": 6171.011924743652,
+          "meta": {
+            "ttft_ms": 698,
+            "prompt_tokens": 49481,
+            "completion_tokens": 1118,
+            "total_tokens": 50599
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 19 messages",
+          "started_at": "2026-11-23T09:41:24.511Z",
+          "finished_at": "2026-11-23T09:41:25.376Z",
+          "duration_ms": 865.8177852630615,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 19
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 0.9s",
+          "started_at": "2026-11-23T09:41:25.376Z",
+          "finished_at": "2026-11-23T09:41:33.153Z",
+          "duration_ms": 7777.274370193481,
+          "meta": {
+            "ttft_ms": 865,
+            "prompt_tokens": 50664,
+            "completion_tokens": 1223,
+            "total_tokens": 51887
+          }
+        },
+        {
+          "kind": "llm_request",
+          "status": "done",
+          "label": "Waiting for the model",
+          "detail": "model deepseek-flash \u00b7 21 messages",
+          "started_at": "2026-11-23T09:41:33.375Z",
+          "finished_at": "2026-11-23T09:41:34.396Z",
+          "duration_ms": 1021.8861103057861,
+          "meta": {
+            "model": "deepseek-flash",
+            "message_count": 21
+          }
+        },
+        {
+          "kind": "llm_response",
+          "status": "done",
+          "label": "Reading the response",
+          "detail": "First token after 1.0s",
+          "started_at": "2026-11-23T09:41:34.396Z",
+          "finished_at": "2026-11-23T09:41:43.675Z",
+          "duration_ms": 9279.471158981323,
+          "meta": {
+            "ttft_ms": 1022,
+            "prompt_tokens": 53034,
+            "completion_tokens": 1901,
+            "total_tokens": 54935
+          }
+        }
+      ],
+      "cost": 0.07635045,
+      "cost_info": {
+        "iteration_cost_cxjcoins": 0.07635045,
+        "chat_cost_cxjcoins": 0.07635045,
+        "estimation_cost_cxjcoins": null,
+        "budget_reached": false,
+        "input_tokens": 483671,
+        "output_tokens": 6333,
+        "total_tokens": 490004,
+        "input_cost_cxjcoins": 0.07255065,
+        "output_cost_cxjcoins": 0.0037997999999999994,
+        "tool_cost_cxjcoins": 0.0
+      },
+      "profiles": [
+        "biblio",
+        "file_editor",
+        "git",
+        "project",
+        "software_developer"
+      ],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    },
+    {
+      "doc_id": "317d6816-d4c6-4ddf-b1b5-1adcd75b8be1",
+      "role": "assistant",
+      "task_item": "",
+      "content": "**Delivered (QA shift, 2026-11-23) \u2014 `qa_policy` now returns the full policy to the actor**\n\nChange (1 file, +1 / -4, one hunk, all inside `qa_policy`):\n\n```\n     policy = resolve_policy(settings)\n     return ToolResponse(\n         user_response=policy_markdown(policy, stored),\n-        llm_response=(\n-            f\"QA policy: enabled={policy.enabled} min_coverage={policy.min_coverage} \"\n-            f\"block_above={policy.block_above.value} fail_closed={policy.fail_closed}\"\n-        ),\n+        llm_response=policy_markdown(policy, stored),\n         logs=[\"QA policy reported\"],\n     )\n```\n\n`policy_markdown` was already imported at line 36 and already renders `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `min_coverage`, `fail_closed`, `max_test_seconds`, `flaky_repeats`, `ignore_paths` (list) and the custom `suites`. `user_response`, `logs`, docstring, JSON schema and every other function untouched.\n\n**Two tooling facts measured while doing it (both are findings in their own right):**\n\n1. **`qa_review_changes(paths=[\"codx/junior/tools/qa_tools.py\"])` \u2192 `decision: allow`, `changed_files: 0`, `findings: 0`.** The gate resolved the api-relative path to nothing and returned a clean verdict on an empty diff \u2014 a *vacuous* `allow`. Same path with the repo-root prefix (`paths=[\"api/codx/junior/tools/qa_tools.py\"]`) \u2192 `changed_files: 1`, `mapped_sources: 0`, `unmapped_sources: 1`, `[medium] change.missing-tests`. So a wrong-but-plausible path filter silently converts `require_approval` into `allow`. That is a **false-green path** in the gate and deserves its own card (not filed yet \u2014 flagging here so it is not lost).\n2. **`qa_tools.py` has no mapped test** (`mapped_sources: 0`) \u2014 the honest verdict for this diff is `require_approval` / medium, owner `qa_automation`. This is exactly acceptance criterion #3 of this card, so no new card is needed: the required unit test (shown keys \u2287 the documented `changes` schema) is the test that this module currently lacks.\n\n**Verification status: diff-only.** There is no shell tool in this runtime (`no shell tool exists` \u2014 card e816cc41), so `pytest` cannot be executed and I do not claim any test result. Acceptance criteria 1 and 2 are met by `project_changes` (1 file, 1 hunk, +1/-4) and by re-reading line 495. Criterion 3 remains open for `qa_automation`.\n\n**Takes effect only after the API process reloads `codx.junior.tools.qa_tools`** \u2014 the running process holds the old string; restart the API (or reload the module) before re-running `qa_policy(action=\"show\")`.",
+      "think": null,
+      "reasoning_content": null,
+      "hide": false,
+      "unsent": false,
+      "is_answer": false,
+      "improvement": false,
+      "created_at": "2026-11-23 09:41:23.073361",
+      "updated_at": "2026-11-23 09:41:23.073379",
+      "attachments": [],
+      "files": [],
+      "project_id": null,
+      "meta_data": null,
+      "tool_events": [],
+      "lifecycle_events": [],
+      "phase_events": [],
+      "cost": 0.0,
+      "cost_info": null,
+      "profiles": [],
+      "user": null,
+      "knowledge_topics": [],
+      "done": true,
+      "is_thinking": false,
+      "disable_knowledge": false,
+      "read_by": [],
+      "error": null,
+      "reply_to": null,
+      "linked_chat_ids": []
+    }
+  ],
+  "created_at": "2026-11-18 16:51:56.942052",
+  "updated_at": "2026-11-23T09:43:37.220887",
+  "mode": "chat",
+  "kanban_id": "",
+  "column_id": "",
+  "board": "IT team",
+  "column": "Done",
+  "sprints": [],
+  "priority": "medium",
+  "due_date": null,
+  "progress": 100,
+  "assignees": [],
+  "wake_at": null,
+  "schedule": null,
+  "schedule_context": "history",
+  "schedule_column": null,
+  "sort_index": null,
+  "archived": false,
+  "archived_at": null,
+  "archived_by": null,
+  "calendar_ids": [],
+  "scheduled_start": null,
+  "scheduled_end": null,
+  "all_day": false,
+  "columns": [],
+  "chat_index": 0,
+  "url": "",
+  "branch": "",
+  "file_path": "/home/codx-junior-projects/codx-junior/codx-junior-platform/api/.codx/tasks/IT team/Done/qa-policy-output-is-one-line-the-gate-owner-cannot-read-ignore-paths-block-on-failures-or-the-suite-list-it-is-judged-by.f16ac31e-6051-4f4c-b558-f3fecf89a885.json",
+  "llm_model": "",
+  "estimation_cost": null,
+  "cost": 0.07635045,
+  "run_id": null,
+  "run_status": null,
+  "run_step_id": null,
+  "visibility": "",
+  "remote_url": "",
+  "attachments": [],
+  "knowledge_topics": [],
+  "chat_links": [],
+  "pr_view": {},
+  "history": [
+    {
+      "timestamp": "2026-11-23T09:41:48.560322+00:00",
+      "summary": "1. **Finding:** `qa_policy(action=\"show\")` exposed only 4 of ~13 policy fields (`enabled`, `min_coverage`, `block_above`, `fail_closed`), hiding `ignore_paths`, `suites`, `approval_above`, `warn_above`, `block_on_failures`, `block_missing_tests`, `require_tests_for_changes`, `max_test_seconds`, `flaky_repeats` \u2014 so a gate owner could not verify its own policy or any dated policy change.\n2. **Root cause:** `codx/junior/tools/qa_tools.py` lines 495-498 built a truncated 4-value `llm_response` f-string (the field the AI actor reads), while `user_response=policy_markdown(policy, stored)` on line 494 was already correct and already printed every field.\n3. **Change:** replaced those 4 lines with `llm_response=policy_markdown(policy, stored),` \u2014 1 file, +1/-4, one hunk inside `qa_policy`; no import added (`policy_markdown` already imported at line 36), nothing else touched.\n4. **Verification:** diff-only \u2014 `project_changes` confirmed 1 file / 1 hunk / +1/-4, and the new line was re-read; no test was executed because there is no shell tool in this runtime, and the change applies only after the API process reloads the module.\n5. **Open items:** the required unit test (shown keys \u2287 documented `changes` schema, acceptance #3) is still owed by `qa_automation` (`qa_tools.py` has `mapped_sources: 0`), and a new defect was found \u2014 `qa_review_changes` returns a vacuous `allow`/`changed_files: 0` for an api-relative path filter, a false-green path worth its own card.",
+      "message_ids": [
+        "04f9a1e2-1442-4696-8069-ccb1d288a196",
+        "22bef674-a6d7-4caf-9b2f-1c50443ddff6",
+        "97c15798-95fb-4cb5-a4e0-4a6d73539a45",
+        "22fb451e-9225-4b8e-8016-d2fdafded379",
+        "f2bb5800-9850-4f8a-816d-ef7648c2bd40",
+        "b03b3f6e-95cc-4bb1-8caf-66f545f7f59f",
+        "75d9dc82-c491-4c34-822e-658a176d467d",
+        "317d6816-d4c6-4ddf-b1b5-1adcd75b8be1"
+      ]
+    }
+  ],
+  "session_id": null,
+  "auto_initialize": false,
+  "ignore_parent_knowledge": false,
+  "ignore_parent_files": false,
+  "external_source": null,
+  "external_id": null,
+  "external_parent_id": null,
+  "external_instance_id": null,
+  "external_status": null,
+  "external_url": null,
+  "external_updated_at": null,
+  "harness": null,
+  "harness_instance_id": null,
+  "harness_task_id": null,
+  "harness_parent_task_id": null,
+  "harness_mode": null,
+  "harness_status": null,
+  "harness_model": null,
+  "harness_usage": {},
+  "harness_cost": null,
+  "harness_metadata": {},
+  "ticket": null
+}

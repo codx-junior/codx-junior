@@ -126,6 +126,8 @@ BROWSER_LIFECYCLE_PREFIX = "/api/browsers"
 # Computer sessions also start containers/VMs: give create/restart/delete the
 # longer budget instead of the 30 s global API timeout.
 COMPUTER_LIFECYCLE_PREFIX = "/api/computers"
+#: Delegated-agent LLM gateway (see api/ai_gateway.py).
+LLM_GATEWAY_PREFIX = "/api/ai/llm"
 
 # ── API performance logging ────────────────────────────────────────────────────
 # Records every HTTP call's duration/status into the API logs storage so that
@@ -533,6 +535,11 @@ class ApiRequestMiddleware:
         timeout = GLOBAL_REQUEST_TIMEOUT_SECONDS
         if path.startswith((BROWSER_LIFECYCLE_PREFIX, COMPUTER_LIFECYCLE_PREFIX)):
             timeout = BROWSER_REQUEST_TIMEOUT_SECONDS
+        elif path.startswith(LLM_GATEWAY_PREFIX):
+            # Browser-use model calls go through here; a big context may take
+            # longer than the global 30 s budget (the upstream has its own
+            # timeout, CODX_LLM_GATEWAY_TIMEOUT_SECONDS).
+            timeout = BROWSER_REQUEST_TIMEOUT_SECONDS
 
         _attach_session(request, scope)
 
@@ -589,6 +596,40 @@ class ApiRequestMiddleware:
 
 
 app.add_middleware(ApiRequestMiddleware)
+
+
+class SelectiveGZipMiddleware:
+    """GZip JSON responses, except the transports that must stay untouched.
+
+    Task cards and chat payloads are JSON with a lot of repetition: a 6 MB
+    conversation compresses to a few hundred KB, which is the difference
+    between "the chat list is slow" and an instant render on a remote client.
+
+    Socket.IO and the static assets are skipped: the Engine.IO polling
+    transport has its own framing/encoding and compressing it buys nothing
+    while risking a broken handshake.
+    """
+
+    SKIP_PREFIXES = ("/api/socket.io", "/api/static")
+
+    def __init__(self, app):
+        self.app = app
+        from starlette.middleware.gzip import GZipMiddleware
+
+        self._gzip = GZipMiddleware(app, minimum_size=1024)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not str(scope.get("path") or "").startswith(
+            self.SKIP_PREFIXES
+        ):
+            await self._gzip(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+# Added last so it wraps the request middleware: the response the client
+# receives is the compressed one.
+app.add_middleware(SelectiveGZipMiddleware)
 
 
 # ── Health ────────────────────────────────────────────────────────────────────

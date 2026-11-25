@@ -395,6 +395,21 @@ class TicketAutonomy(BaseModel):
     requested_by: Optional[str] = Field(
         default=None, description="Project/user that asked for autonomy (source side)."
     )
+    # -- human review of the delivery --------------------------------------
+    # A validated run closes the ticket (``done``) but the work is only
+    # accepted once a person reviews it. Keeping the review on the ticket
+    # lets every surface (company workbench, target board, requester) know
+    # whether a delivery still needs a human decision.
+    reviewed_at: Optional[str] = Field(
+        default=None,
+        description="When a human accepted the delivery (None = pending review).",
+    )
+    reviewed_by: Optional[str] = Field(
+        default=None, description="User that accepted the delivery."
+    )
+    review_note: Optional[str] = Field(
+        default=None, description="Note left by the reviewer."
+    )
     updated_at: Optional[str] = Field(default=None)
 
     def normalized(self) -> "TicketAutonomy":
@@ -432,6 +447,9 @@ class TicketAutonomy(BaseModel):
             workspace_branch=self.workspace_branch or None,
             workspace_path=self.workspace_path or None,
             requested_by=self.requested_by or None,
+            reviewed_at=self.reviewed_at or None,
+            reviewed_by=self.reviewed_by or None,
+            review_note=self.review_note or None,
             updated_at=self.updated_at or None,
         )
 
@@ -450,6 +468,7 @@ class TicketAutonomy(BaseModel):
         self.validation_passed = False
         self.delivery = None
         self.next_retry_at = None
+        self.clear_review()
         self.updated_at = self.queued_at
 
     def mark_running(self) -> None:
@@ -466,7 +485,26 @@ class TicketAutonomy(BaseModel):
         self.workspace_path = None
         self.rounds = 0
         self.attempts = max(1, int(self.attempts or 0) + 1)
+        self.clear_review()
         self.updated_at = self.started_at
+
+    def mark_reviewed(self, reviewed_by: Optional[str] = None, note: Optional[str] = None) -> None:
+        """Record that a human accepted the delivery."""
+        self.reviewed_at = now_iso()
+        self.reviewed_by = str(reviewed_by or "").strip() or None
+        self.review_note = str(note or "").strip() or None
+        self.updated_at = self.reviewed_at
+
+    def clear_review(self) -> None:
+        """Forget a previous review (a new delivery must be reviewed again)."""
+        self.reviewed_at = None
+        self.reviewed_by = None
+        self.review_note = None
+
+    @property
+    def review_pending(self) -> bool:
+        """True when the delivery is done but a human has not accepted it."""
+        return bool(self.finished_at) and not bool(self.reviewed_at)
 
     def mark_passed(self, delivery: str = "") -> None:
         """Mark the ticket as done and validated."""
@@ -822,6 +860,13 @@ class TicketRecord(BaseModel):
             "workspace branch, delivery). None means the ticket is manual."
         ),
     )
+    review_pending: bool = Field(
+        default=False,
+        description=(
+            "True when the ticket is done but a human has not accepted the "
+            "delivery yet (the workbench's To review queue)."
+        ),
+    )
     created_at: Optional[str] = Field(default=None)
     updated_at: Optional[str] = Field(default=None)
 
@@ -874,6 +919,10 @@ class TicketRecord(BaseModel):
                 if hasattr(autonomy, "model_dump")
                 else (autonomy if isinstance(autonomy, dict) else None)
             ),
+            review_pending=(
+                str(getattr(ticket, "status", "") or "") == TICKET_STATUS_DONE
+                and not getattr(autonomy, "reviewed_at", None)
+            ),
             created_at=getattr(ticket, "created_at", None) or getattr(chat, "created_at", None),
             updated_at=getattr(ticket, "updated_at", None) or getattr(chat, "updated_at", None),
         )
@@ -911,6 +960,10 @@ class TicketRecord(BaseModel):
             column=data.get("column"),
             available=False,
             autonomy=data.get("autonomy"),
+            review_pending=(
+                str(data.get("status") or "") == TICKET_STATUS_DONE
+                and not (data.get("autonomy") or {}).get("reviewed_at")
+            ),
             created_at=data.get("created_at"),
             updated_at=data.get("updated_at"),
         )

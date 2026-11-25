@@ -1,0 +1,19 @@
+# =============================================================================
+# codx-junior — HOST slave edge labels
+#
+# Host slave only: the outer primary discovers this Traefik through its Docker
+# provider. Inside DIND these labels live on the outer DIND container instead,
+# so the nested Traefik does not try to load websecure/myresolver it does not
+# own.
+# =============================================================================
+services:
+  traefik:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${CODX_PROXY_NETWORK:?CODX_PROXY_NETWORK is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.rule=${CODX_DOMAIN_RULE:?CODX_DOMAIN_RULE is required}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.entrypoints=${CODX_MASTER_ENTRYPOINT:-websecure}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls=true
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.tls.certresolver=${CODX_MASTER_CERT_RESOLVER:-letsencrypt}
+      - traefik.http.routers.${CODX_INSTANCE:-codx-junior}-edge.service=${CODX_INSTANCE:-codx-junior}-edge
+      - traefik.http.services.${CODX_INSTANCE:-codx-junior}-edge.loadbalancer.server.port=80

@@ -150,6 +150,10 @@ from .company_tools import (
     company_management,
     COMPANY_MANAGEMENT_TOOL_JSON,
 )
+from .company_ticket_tools import (
+    company_ticket,
+    COMPANY_TICKET_TOOL_JSON,
+)
 from .project_manager_tools import project_manager, PROJECT_MANAGER_TOOL_JSON
 from .autonomy_tools import (
     autonomy_management,
@@ -208,6 +212,7 @@ from .duckduckgo_search import duckduckgo_search, DUCKDUCKGO_SEARCH_TOOL_JSON
 from .browser_tools import (
     start_session,
     browse_action,
+    browser_agent,
     get_screenshot,
     get_source_code,
     browser_activity,
@@ -216,6 +221,7 @@ from .browser_tools import (
     browser_control,
     START_SESSION_TOOL_JSON,
     BROWSE_ACTION_TOOL_JSON,
+    BROWSER_AGENT_TOOL_JSON,
     GET_SCREENSHOT_TOOL_JSON,
     GET_SOURCE_CODE_TOOL_JSON,
     BROWSER_ACTIVITY_TOOL_JSON,
@@ -426,6 +432,7 @@ __all__ = [
     "duckduckgo_search",
     "start_session",
     "browse_action",
+    "browser_agent",
     "get_screenshot",
     "get_source_code",
     "browser_activity",
@@ -1053,6 +1060,24 @@ TOOLS = [
             "administration",
         ],
         "tool_call": company_management
+    },
+    {
+        "tool_json": COMPANY_TICKET_TOOL_JSON,
+        "settings": {
+            "session": True,
+            "dual_response": True,
+            "scope": "chat",
+            "cache": False,
+            "inject_user": True,
+        },
+        "tags": [
+            "company",
+            "tickets",
+            "unattended",
+            "review",
+            "delivery",
+        ],
+        "tool_call": company_ticket
     },
     {
         "tool_json": PROJECT_MANAGER_TOOL_JSON,
@@ -1838,6 +1863,12 @@ TOOLS = [
         "settings": BROWSER_TOOL_SETTINGS,
         "tags": ["browser", "web", "automation", "navigation"],
         "tool_call": browse_action
+    },
+    {
+        "tool_json": BROWSER_AGENT_TOOL_JSON,
+        "settings": BROWSER_TOOL_SETTINGS,
+        "tags": ["browser", "web", "automation", "browser-use", "agent", "upload"],
+        "tool_call": browser_agent
     },
     {
         "tool_json": GET_SCREENSHOT_TOOL_JSON,

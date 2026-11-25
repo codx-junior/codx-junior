@@ -34,7 +34,7 @@ const props = defineProps({
 const { t } = useCompanyI18n()
 
 const emit = defineEmits([
-  'assistant', 'open-work', 'open-team', 'open-business', 'open-activity',
+  'assistant', 'open-work', 'open-tickets', 'open-team', 'open-business', 'open-activity',
   'open-settings', 'open-calendar', 'new-goal', 'open-chat'
 ])
 
@@ -80,8 +80,8 @@ const kpis = computed(() => [
     value: formatMoney(revenueTarget.value, currency.value),
     hint: t('home.attained', { value: Math.min(999, revenueProgress.value) }),
     icon: 'fa-solid fa-bullseye',
-    color: 'var(--cp-lime)',
-    tone: 'var(--cp-success-ink)'
+    color: 'var(--color-accent)',
+    tone: 'var(--color-success-ink)'
   },
   {
     id: 'costs',
@@ -89,8 +89,8 @@ const kpis = computed(() => [
     value: formatMoney(costs.value, currency.value),
     hint: t('home.ofRevenue', { value: costRatio.value }),
     icon: 'fa-solid fa-arrow-trend-down',
-    color: 'var(--cp-yellow)',
-    tone: 'var(--cp-warning-ink)'
+    color: 'var(--color-warning)',
+    tone: 'var(--color-warning-ink)'
   },
   {
     id: 'saved',
@@ -98,8 +98,8 @@ const kpis = computed(() => [
     value: formatMoney(grossProfit.value, currency.value),
     hint: t('home.grossMargin', { value: margin.value }),
     icon: grossProfit.value >= 0 ? 'fa-solid fa-arrow-trend-up' : 'fa-solid fa-arrow-trend-down',
-    color: 'var(--cp-green)',
-    tone: grossProfit.value >= 0 ? 'var(--cp-success-ink)' : 'var(--cp-error-ink)'
+    color: 'var(--color-success)',
+    tone: grossProfit.value >= 0 ? 'var(--color-success-ink)' : 'var(--color-error-ink)'
   }
 ])
 
@@ -125,7 +125,7 @@ const health = computed(() => companyHealth({
   teamsWithoutManager: teams.value.filter(team => !team.lead_name).length
 }))
 const healthLabel = computed(() => health.value >= 75 ? 'Healthy' : health.value >= 50 ? 'Watch' : 'At risk')
-const healthTone = computed(() => health.value >= 75 ? 'var(--cp-success-ink)' : health.value >= 50 ? 'var(--cp-warning-ink)' : 'var(--cp-error-ink)')
+const healthTone = computed(() => health.value >= 75 ? 'var(--color-success-ink)' : health.value >= 50 ? 'var(--color-warning-ink)' : 'var(--color-error-ink)')
 
 const goalRows = computed(() => {
   const weight = { blocked: 0, review: 1, running: 2, ready: 3, paused: 4 }
@@ -158,6 +158,7 @@ const roster = computed(() => {
 
 const quickActions = [
   { id: 'brief', labelKey: 'home.brief', icon: 'fa-solid fa-wand-magic-sparkles', run: () => ask("Give me today's executive brief") },
+  { id: 'tickets', labelKey: 'nav.tickets', icon: 'fa-solid fa-ticket', run: () => emit('open-tickets') },
   { id: 'goal', labelKey: 'shell.newGoal', icon: 'fa-solid fa-flag', run: () => emit('new-goal') },
   { id: 'teams', labelKey: 'nav.team', icon: 'fa-solid fa-people-group', run: () => emit('open-team') },
   { id: 'chat', labelKey: 'nav.channels', icon: 'fa-regular fa-comments', run: () => emit('open-chat') },
@@ -171,9 +172,9 @@ const visibleQuickActions = computed(() => quickActions.filter(action => action.
 // operating activity of the last seven days (never random demo data).
 
 const legend = [
-  { id: 'done', labelKey: 'home.delivered', color: 'var(--cp-lime)' },
-  { id: 'active', labelKey: 'home.inMotion', color: 'var(--cp-yellow)' },
-  { id: 'attention', labelKey: 'home.attention', color: 'var(--cp-peach)' }
+  { id: 'done', labelKey: 'home.delivered', color: 'var(--color-accent)' },
+  { id: 'active', labelKey: 'home.inMotion', color: 'var(--color-warning)' },
+  { id: 'attention', labelKey: 'home.attention', color: 'var(--color-error)' }
 ]
 
 const weekBars = computed(() => {
@@ -214,9 +215,9 @@ const weekBars = computed(() => {
     isToday: index === 6,
     height: day.count ? Math.max(7, Math.round((day.count / axisMax) * 100)) : 0,
     segments: [
-      { id: 'done', value: day.done, color: 'var(--cp-lime)' },
-      { id: 'active', value: day.active, color: 'var(--cp-yellow)' },
-      { id: 'attention', value: day.attention, color: 'var(--cp-peach)' }
+      { id: 'done', value: day.done, color: 'var(--color-accent)' },
+      { id: 'active', value: day.active, color: 'var(--color-warning)' },
+      { id: 'attention', value: day.attention, color: 'var(--color-error)' }
     ].filter(part => part.value > 0),
     axisMax
   }))
@@ -273,11 +274,11 @@ const resetLabel = computed(() => {
 // ── Cost split ─────────────────────────────────────────────────────────────
 
 const costPalette = [
-  'var(--cp-lime)',
-  'var(--cp-green)',
-  'var(--cp-yellow)',
-  'var(--cp-peach)',
-  'var(--cp-muted-soft)'
+  'var(--color-accent)',
+  'var(--color-success)',
+  'var(--color-warning)',
+  'var(--color-error)',
+  'var(--color-base-content)'
 ]
 
 const costRows = computed(() => {
@@ -319,7 +320,7 @@ const tips = computed(() => {
       title: `${attention.value.length} decision${attention.value.length === 1 ? '' : 's'} need you`,
       body: attentionLabel(attention.value[0]?.reason) || 'Unblock the team',
       icon: 'fa-solid fa-bell',
-      tile: 'cp-icon-tile--yellow'
+      tile: 'bg-warning/10 text-warning-ink'
     })
   }
   if (reviewMissions.value.length) {
@@ -329,7 +330,7 @@ const tips = computed(() => {
       title: `${reviewMissions.value.length} goal${reviewMissions.value.length === 1 ? '' : 's'} ready to review`,
       body: 'Accept the outcome or send it back with notes.',
       icon: 'fa-solid fa-magnifying-glass',
-      tile: 'cp-icon-tile--lime'
+      tile: 'bg-accent/10 text-accent-ink'
     })
   }
   if (budgetOver.value) {
@@ -340,7 +341,7 @@ const tips = computed(() => {
       title: 'AI budget exhausted',
       body: 'Ask for a plan before the next autopilot cycle.',
       icon: 'fa-solid fa-coins',
-      tile: 'cp-icon-tile--red'
+      tile: 'bg-error/10 text-error-ink'
     })
   } else if (revenueGap.value > 0 && revenueTarget.value > 0) {
     list.push({
@@ -349,7 +350,7 @@ const tips = computed(() => {
       title: `${formatMoney(revenueGap.value, currency.value)} to the revenue target`,
       body: 'Review the pipeline and the next best deal.',
       icon: 'fa-solid fa-arrow-trend-up',
-      tile: 'cp-icon-tile--green'
+      tile: 'bg-success/10 text-success-ink'
     })
   }
   if (!list.length) {
@@ -360,7 +361,7 @@ const tips = computed(() => {
       title: "Ask for this week's plan",
       body: 'Turn the current numbers into three concrete moves.',
       icon: 'fa-solid fa-wand-magic-sparkles',
-      tile: 'cp-icon-tile--lime'
+      tile: 'bg-accent/10 text-accent-ink'
     })
   }
   return list.slice(0, 3)
@@ -426,18 +427,18 @@ function eventIcon(event) {
 function eventLook(event) {
   const type = String(event.type || '')
   if (type.includes('failed') || type.includes('deleted') || type.includes('rejected')) {
-    return { label: 'Review', color: 'var(--cp-error-ink)', tile: 'cp-icon-tile--red' }
+    return { label: 'Review', color: 'var(--color-error-ink)', tile: 'bg-error/10 text-error-ink' }
   }
   if (type.includes('accepted') || type.includes('done') || type.includes('closed')) {
-    return { label: 'Done', color: 'var(--cp-success-ink)', tile: 'cp-icon-tile--lime' }
+    return { label: 'Done', color: 'var(--color-success-ink)', tile: 'bg-accent/10 text-accent-ink' }
   }
   if (type.includes('created') || type.includes('dispatched')) {
-    return { label: 'New', color: 'var(--cp-accent-ink)', tile: 'cp-icon-tile--green' }
+    return { label: 'New', color: 'var(--color-accent-ink)', tile: 'bg-success/10 text-success-ink' }
   }
   if (type.includes('updated') || type.includes('transitioned') || type.includes('synced')) {
-    return { label: 'Update', color: 'var(--cp-info-ink)', tile: 'cp-icon-tile' }
+    return { label: 'Update', color: 'var(--color-info-ink)', tile: '' }
   }
-  return { label: 'Info', color: 'var(--cp-muted)', tile: 'cp-icon-tile--yellow' }
+  return { label: 'Info', color: 'var(--color-base-content)', tile: 'bg-warning/10 text-warning-ink' }
 }
 
 function openEvent(event) {
@@ -450,10 +451,10 @@ function openEvent(event) {
 </script>
 
 <template>
-  <div class="company-dashboard">
+  <div>
     <!-- Company identity: the owner always sees which company is open. -->
-    <header class="cp-card cp-card-pad mb-4 flex flex-wrap items-center gap-3" aria-label="Company">
-      <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[14px] bg-[var(--cp-lime)] text-[16px] font-black text-[var(--cp-lime-ink)] shadow-sm">
+    <header class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3" aria-label="Company">
+      <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[14px] bg-accent text-lg font-black text-accent-content shadow-sm">
         <img
           v-if="logoIsImage"
           :src="logo"
@@ -465,13 +466,13 @@ function openEvent(event) {
         <span v-else>{{ companyInitials }}</span>
       </span>
       <div class="min-w-0 flex-1">
-        <p class="cp-eyebrow">Company</p>
+        <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">Company</p>
         <h1 class="mt-0.5 truncate text-xl font-extrabold tracking-tight md:text-2xl">{{ company.name || 'Your company' }}</h1>
-        <p class="mt-0.5 line-clamp-2 text-[10.5px] leading-relaxed cp-muted">{{ company.mission || company.description || 'Add the company purpose in Settings.' }}</p>
+        <p class="mt-0.5 line-clamp-2 text-xs leading-relaxed text-base-content/60">{{ company.mission || company.description || 'Add the company purpose in Settings.' }}</p>
       </div>
       <div class="flex shrink-0 items-center gap-1.5">
-        <button class="cp-chip" title="Edit this company" @click="emit('open-settings')">
-          <i class="fa-solid fa-pen text-[9px]"></i> Edit
+        <button class="btn btn-xs" title="Edit this company" @click="emit('open-settings')">
+          <i class="fa-solid fa-pen text-[11px]"></i> Edit
         </button>
       </div>
     </header>
@@ -481,64 +482,64 @@ function openEvent(event) {
       <div class="space-y-4 min-[1180px]:col-span-8 min-[1180px]:space-y-5">
         <div class="grid gap-4 md:grid-cols-12">
           <!-- Delivery activity -->
-          <section class="cp-card cp-card-pad flex flex-col md:col-span-8" aria-label="Company activity">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col md:col-span-8" aria-label="Company activity">
             <header class="flex flex-wrap items-start justify-between gap-3">
               <div class="min-w-0">
-                <p class="cp-eyebrow">{{ t('home.companyActivity') }}</p>
-                <p class="cp-display mt-2">{{ weekTotal }}<span class="ml-1.5 text-[13px] font-bold cp-muted">{{ t('home.events') }}</span></p>
-                <p class="mt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
-                  <span class="cp-muted">{{ t('home.last7') }}</span>
-                  <span class="text-[var(--cp-muted-soft)]">·</span>
-                  <span class="inline-flex items-center gap-1 font-semibold" :style="{ color: 'var(--cp-success-ink)' }">
-                    <i class="fa-solid fa-wave-square text-[8px]"></i>
+                <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">{{ t('home.companyActivity') }}</p>
+                <p class="text-3xl font-extrabold leading-none tracking-tight tabular-nums md:text-4xl mt-2">{{ weekTotal }}<span class="ml-1.5 text-base font-bold text-base-content/60">{{ t('home.events') }}</span></p>
+                <p class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                  <span class="text-base-content/60">{{ t('home.last7') }}</span>
+                  <span class="text-base-content/40">·</span>
+                  <span class="inline-flex items-center gap-1 font-semibold" :style="{ color: 'var(--color-success-ink)' }">
+                    <i class="fa-solid fa-wave-square text-[10px]"></i>
                     {{ t('home.deliveryDecisions') }}
                   </span>
                 </p>
               </div>
               <div class="flex items-center gap-1.5">
-                <button class="cp-icon-btn !h-7 !w-7 !rounded-md" title="Open activity" aria-label="Open activity" @click="emit('open-activity')">
-                  <i class="fa-solid fa-list-ul text-[10px]"></i>
+                <button class="btn btn-ghost btn-sm btn-square !h-7 !w-7 !rounded-md" title="Open activity" aria-label="Open activity" @click="emit('open-activity')">
+                  <i class="fa-solid fa-list-ul text-xs"></i>
                 </button>
-                <button class="cp-icon-btn !h-7 !w-7 !rounded-md bg-[var(--cp-surface-soft)]" title="Weekly chart" aria-label="Weekly chart" @click="emit('open-activity')">
-                  <i class="fa-solid fa-chart-column text-[10px]"></i>
+                <button class="btn btn-ghost btn-sm btn-square !h-7 !w-7 !rounded-md bg-base-200" title="Weekly chart" aria-label="Weekly chart" @click="emit('open-activity')">
+                  <i class="fa-solid fa-chart-column text-xs"></i>
                 </button>
               </div>
             </header>
 
             <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
               <div class="flex flex-wrap items-center gap-3">
-                <span v-for="item in legend" :key="item.id" class="inline-flex items-center gap-1.5 text-[9px] font-semibold cp-muted">
+                <span v-for="item in legend" :key="item.id" class="inline-flex items-center gap-1.5 text-[11px] font-semibold text-base-content/60">
                   <span class="h-1.5 w-1.5 rounded-full" :style="{ background: item.color }"></span>
                   {{ t(item.labelKey) }}
                 </span>
               </div>
-              <span class="text-[9px] cp-muted-soft">{{ activity.length }} {{ t('home.recentEntries') }}</span>
+              <span class="text-[11px] text-base-content/40">{{ activity.length }} {{ t('home.recentEntries') }}</span>
             </div>
 
             <div class="relative mt-auto pt-4">
               <div v-if="!weekTotal" class="pointer-events-none absolute inset-x-0 top-8 z-[2] flex justify-center">
-                <span class="cp-chip !h-6 !border-transparent !bg-[var(--cp-surface-soft)] !text-[8.5px]">No activity in the last 7 days</span>
+                <span class="btn btn-xs !h-6 !border-transparent !bg-base-200 !text-[10px]">No activity in the last 7 days</span>
               </div>
-              <div class="cp-chart">
-                <div class="cp-chart-y">
+              <div class="grid h-[194px] grid-cols-[26px_minmax(0,1fr)] gap-2.5">
+                <div class="flex flex-col justify-between pb-6 text-xs tabular-nums text-base-content/40">
                   <span v-for="tick in axisTicks" :key="tick">{{ tick }}</span>
                 </div>
-                <div class="cp-chart-plot" @mouseleave="hoverBar = -1">
-                  <div class="cp-chart-lines">
-                    <span v-for="tick in axisTicks" :key="`line-${tick}`"></span>
+                <div class="relative min-w-0" @mouseleave="hoverBar = -1">
+                  <div class="pointer-events-none absolute inset-x-0 bottom-6 top-0 flex flex-col justify-between">
+                    <span v-for="tick in axisTicks" :key="`line-${tick}`" class="block w-full border-t border-dashed border-base-300"></span>
                   </div>
-                  <div class="cp-chart-cols">
+                  <div class="absolute inset-0 flex items-stretch justify-between gap-1">
                     <div
                       v-for="bar in weekBars"
                       :key="bar.date.getTime()"
-                      class="cp-chart-col"
-                      :class="barActive(bar.index) ? 'is-active' : ''"
+                      class="relative flex h-full min-w-0 flex-1 flex-col items-center justify-end pb-6"
+
                       @mouseenter="hoverBar = bar.index"
                       @focusin="hoverBar = bar.index"
                       tabindex="0"
                       :aria-label="`${bar.dateLabel}: ${bar.count} activity events`"
                     >
-                      <div class="cp-chart-stack" :style="{ height: `${bar.height}%` }">
+                      <div class="w-full max-w-[44px] min-h-[2px] overflow-hidden rounded-[7px] bg-base-300 transition-all" :class="barActive(bar.index) ? 'bg-base-300/80' : ''" :style="{ height: `${bar.height}%` }">
                         <template v-if="barActive(bar.index)">
                           <i
                             v-for="part in bar.segments"
@@ -547,17 +548,18 @@ function openEvent(event) {
                           ></i>
                         </template>
                       </div>
-                      <span class="cp-chart-label">{{ bar.label }}</span>
+                      <span class="absolute bottom-0 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs font-semibold" :class="barActive(bar.index) ? 'text-base-content' : 'text-base-content/40'">{{ bar.label }}</span>
                     </div>
                   </div>
 
-                  <div v-if="activeBar && weekTotal" class="cp-chart-tooltip" :style="{ left: `${tooltipLeft}%` }">
-                    <p class="cp-chart-tooltip-title">{{ activeBar.dateLabel }}</p>
+                  <div v-if="activeBar && weekTotal" class="absolute top-1 z-[5] w-32 -translate-x-1/2 rounded-field bg-neutral p-2.5 text-neutral-content shadow-xl max-[520px]:hidden [@media(hover:none)]:hidden" :style="{ left: `${tooltipLeft}%` }">
+                    <p class="text-xs font-semibold uppercase tracking-wide opacity-60">{{ activeBar.dateLabel }}</p>
                     <ul class="mt-1 space-y-0.5">
-                      <li class="cp-chart-tooltip-row"><span class="h-1.5 w-1.5 rounded-full" style="background: var(--cp-lime)"></span> Delivered <b>{{ activeBar.done }}</b></li>
-                      <li class="cp-chart-tooltip-row"><span class="h-1.5 w-1.5 rounded-full" style="background: var(--cp-yellow)"></span> In motion <b>{{ activeBar.active }}</b></li>
-                      <li class="cp-chart-tooltip-row"><span class="h-1.5 w-1.5 rounded-full" style="background: var(--cp-peach)"></span> Attention <b>{{ activeBar.attention }}</b></li>
+                      <li class="flex items-center gap-1 text-xs"><span class="h-1.5 w-1.5 rounded-full" style="background: var(--color-accent)"></span> Delivered <b>{{ activeBar.done }}</b></li>
+                      <li class="flex items-center gap-1 text-xs"><span class="h-1.5 w-1.5 rounded-full" style="background: var(--color-warning)"></span> In motion <b>{{ activeBar.active }}</b></li>
+                      <li class="flex items-center gap-1 text-xs"><span class="h-1.5 w-1.5 rounded-full" style="background: var(--color-error)"></span> Attention <b>{{ activeBar.attention }}</b></li>
                     </ul>
+                    <span class="absolute -bottom-1 left-1/2 h-2 w-2 -translate-x-1/2 rotate-45 bg-neutral"></span>
                   </div>
                 </div>
               </div>
@@ -565,26 +567,26 @@ function openEvent(event) {
           </section>
 
           <!-- Financial pulse -->
-          <section class="cp-card cp-card-pad flex flex-col md:col-span-4" aria-label="Financial pulse">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col md:col-span-4" aria-label="Financial pulse">
             <header class="flex items-start justify-between gap-2">
               <div>
-                <p class="cp-eyebrow">{{ t('home.financials') }}</p>
-                <p class="mt-1.5 text-[10px] cp-muted">{{ t('home.snapshot') }}</p>
+                <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">{{ t('home.financials') }}</p>
+                <p class="mt-1.5 text-xs text-base-content/60">{{ t('home.snapshot') }}</p>
               </div>
-              <span class="cp-icon-tile cp-icon-tile--lime !h-7 !w-7">
-                <i class="fa-solid fa-wallet text-[10px]"></i>
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 bg-accent/10 text-accent-ink !h-7 !w-7">
+                <i class="fa-solid fa-wallet text-xs"></i>
               </span>
             </header>
 
-            <div class="mt-3 flex-1 divide-y divide-[var(--cp-border)]">
+            <div class="mt-3 flex-1 divide-y divide-base-300">
               <div v-for="kpi in kpis" :key="kpi.id" class="py-3 first:pt-1 last:pb-1">
                 <div class="flex items-center gap-1.5">
                   <span class="h-1.5 w-1.5 rounded-full" :style="{ background: kpi.color }"></span>
-                  <p class="text-[9.5px] cp-muted">{{ kpi.label }}</p>
-                  <i :class="kpi.icon" class="ml-auto text-[9px]" :style="{ color: kpi.tone }"></i>
+                  <p class="text-[11px] text-base-content/60">{{ kpi.label }}</p>
+                  <i :class="kpi.icon" class="ml-auto text-[11px]" :style="{ color: kpi.tone }"></i>
                 </div>
-                <p class="mt-1 text-[19px] font-extrabold leading-none tracking-tight tabular-nums">{{ kpi.value }}</p>
-                <p class="mt-1 inline-flex items-center gap-1 text-[8.5px] font-semibold" :style="{ color: kpi.tone }">
+                <p class="mt-1 text-2xl font-extrabold leading-none tracking-tight tabular-nums">{{ kpi.value }}</p>
+                <p class="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold" :style="{ color: kpi.tone }">
                   {{ kpi.hint }}
                 </p>
               </div>
@@ -592,69 +594,69 @@ function openEvent(event) {
 
             <button
               type="button"
-              class="mt-3 flex items-center justify-between rounded-[10px] bg-[var(--cp-surface-soft)] px-2.5 py-2 text-[9px] font-semibold cp-muted transition hover:text-[var(--cp-text)]"
+              class="mt-3 flex items-center justify-between rounded-[10px] bg-base-200 px-2.5 py-2 text-[11px] font-semibold text-base-content/60 transition hover:text-base-content"
               @click="emit('open-business')"
             >
               Business cockpit
-              <i class="fa-solid fa-arrow-right text-[8px]"></i>
+              <i class="fa-solid fa-arrow-right text-[10px]"></i>
             </button>
           </section>
         </div>
 
         <!-- Budget + quick wins -->
         <div class="grid gap-4 md:grid-cols-2">
-          <section class="cp-card cp-card-pad flex flex-col" aria-label="AI spending limit">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col" aria-label="AI spending limit">
             <header class="flex items-start justify-between gap-2">
               <div>
-                <h2 class="cp-title">{{ limitTitle }}</h2>
-                <p class="mt-1 text-[9.5px] leading-snug cp-muted">{{ limitSubtitle }}</p>
+                <h2 class="text-base font-bold tracking-tight">{{ limitTitle }}</h2>
+                <p class="mt-1 text-[11px] leading-snug text-base-content/60">{{ limitSubtitle }}</p>
               </div>
               <button
-                class="cp-icon-btn !h-7 !w-7 !rounded-md border border-[var(--cp-border)]"
+                class="btn btn-ghost btn-sm btn-square !h-7 !w-7 !rounded-md border border-base-300"
                 title="Open AI budget settings"
                 aria-label="Open AI budget settings"
                 @click="emit('open-settings')"
               >
-                <i class="fa-solid fa-pen text-[9px]"></i>
+                <i class="fa-solid fa-pen text-[11px]"></i>
               </button>
             </header>
 
             <div class="mt-4 flex flex-1 flex-col">
-              <div class="flex items-center justify-between text-[9px] font-semibold">
-                <span :style="{ color: budgetOver ? 'var(--cp-error-ink)' : 'var(--cp-text)' }">
+              <div class="flex items-center justify-between text-[11px] font-semibold">
+                <span :style="{ color: budgetOver ? 'var(--color-error-ink)' : 'var(--color-base-content)' }">
                   {{ budgetProgressRaw }}% used
                 </span>
-                <span class="cp-muted">
+                <span class="text-base-content/60">
                   <template v-if="budgetLimit > 0">{{ formatCxj(remainingBudget) }} cxj left</template>
                   <template v-else>No limit set</template>
                 </span>
               </div>
-              <div class="cp-progress mt-1.5" :class="budgetOver ? 'cp-progress--danger' : ''">
-                <span :style="{ width: `${budgetProgress}%` }"></span>
+              <div class="relative mt-1.5 h-2.5 w-full overflow-hidden rounded-full bg-base-300">
+                <span class="block h-full rounded-full bg-accent" :class="budgetOver ? 'bg-error' : ''" :style="{ width: `${budgetProgress}%` }"></span>
               </div>
               <div class="mt-2 flex items-end justify-between gap-2">
                 <div class="min-w-0">
-                  <p class="text-[18px] font-extrabold leading-none tracking-tight tabular-nums">{{ formatCxj(budgetSpent) }} <span class="text-[9px] font-semibold cp-muted">cxj spent</span></p>
-                  <p class="mt-1 text-[8.5px] cp-muted-soft">{{ hasDailyLimit ? 'Today' : 'Total' }} · {{ activeActors.length }} AI on duty</p>
+                  <p class="text-2xl font-extrabold leading-none tracking-tight tabular-nums">{{ formatCxj(budgetSpent) }} <span class="text-[11px] font-semibold text-base-content/60">cxj spent</span></p>
+                  <p class="mt-1 text-[10px] text-base-content/40">{{ hasDailyLimit ? 'Today' : 'Total' }} · {{ activeActors.length }} AI on duty</p>
                 </div>
-                <p class="shrink-0 text-[10px] font-semibold cp-muted">
+                <p class="shrink-0 text-xs font-semibold text-base-content/60">
                   {{ budgetLimit > 0 ? formatCxj(budgetLimit) : '—' }}
                 </p>
               </div>
-              <div class="mt-auto flex items-center justify-between rounded-lg bg-[var(--cp-surface-soft)] px-2.5 py-1.5">
-                <span class="flex items-center gap-1.5 text-[8.5px] font-semibold cp-muted">
-                  <i class="fa-solid fa-shield-halved text-[8px] text-success"></i>
+              <div class="mt-auto flex items-center justify-between rounded-lg bg-base-200 px-2.5 py-1.5">
+                <span class="flex items-center gap-1.5 text-[10px] font-semibold text-base-content/60">
+                  <i class="fa-solid fa-shield-halved text-[10px] text-success-ink"></i>
                   Autopilot enforced
                 </span>
-                <span class="text-[8px] cp-muted-soft">Resets in {{ resetLabel }}</span>
+                <span class="text-[10px] text-base-content/40">Resets in {{ resetLabel }}</span>
               </div>
             </div>
           </section>
 
-          <section class="cp-card cp-card-pad relative flex flex-col overflow-hidden" aria-label="Quick wins">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 relative flex flex-col overflow-hidden" aria-label="Quick wins">
             <header>
-              <h2 class="cp-title">{{ t('home.nextActions') }}</h2>
-              <p class="mt-1 text-[9.5px] cp-muted">The three most useful moves from today's signals.</p>
+              <h2 class="text-base font-bold tracking-tight">{{ t('home.nextActions') }}</h2>
+              <p class="mt-1 text-[11px] text-base-content/60">The three most useful moves from today's signals.</p>
             </header>
 
             <div class="mt-2.5 flex items-start gap-2">
@@ -662,52 +664,52 @@ function openEvent(event) {
                 <button
                   v-for="tip in tips"
                   :key="tip.id"
-                  class="cp-list-row group !px-0.5"
+                  class="flex w-full min-w-0 items-center gap-2.5 rounded-field px-1.5 py-1.5 text-left transition-colors hover:bg-base-200 group !px-0.5"
                   @click="runTip(tip)"
                 >
-                  <span class="cp-icon-tile !h-7 !w-7" :class="tip.tile">
-                    <i :class="tip.icon" class="text-[9px]"></i>
+                  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 !h-7 !w-7" :class="tip.tile">
+                    <i :class="tip.icon" class="text-[11px]"></i>
                   </span>
                   <span class="min-w-0 flex-1">
-                    <span class="block truncate text-[10px] font-bold">{{ tip.title }}</span>
-                    <span class="mt-0.5 block truncate text-[8.5px] cp-muted">{{ tip.body }}</span>
+                    <span class="block truncate text-xs font-bold">{{ tip.title }}</span>
+                    <span class="mt-0.5 block truncate text-[10px] text-base-content/60">{{ tip.body }}</span>
                   </span>
-                  <i class="fa-solid fa-chevron-right text-[7px] cp-muted-soft transition group-hover:text-[var(--cp-text)]"></i>
+                  <i class="fa-solid fa-chevron-right text-[10px] text-base-content/40 transition group-hover:text-base-content"></i>
                 </button>
               </div>
               <div class="pointer-events-none absolute right-3 top-10 hidden sm:block">
-                <div class="cp-mosaic">
-                  <span v-for="cell in 16" :key="cell"></span>
+                <div class="grid w-24 rotate-[-6deg] grid-cols-4 gap-1">
+                  <span v-for="(cell, index) in 16" :key="cell" class="aspect-square rounded-[4px]" :class="(index + 1) % 5 === 0 ? 'bg-accent' : (index + 1) % 4 === 0 ? 'bg-success/10' : (index + 1) % 3 === 0 ? 'bg-warning/10' : 'bg-accent/10'"></span>
                 </div>
               </div>
             </div>
 
             <button
               type="button"
-              class="mt-auto inline-flex items-center gap-1 pt-2 text-[9px] font-bold"
-              :style="{ color: 'var(--cp-accent-ink)' }"
+              class="mt-auto inline-flex items-center gap-1 pt-2 text-[11px] font-bold"
+              :style="{ color: 'var(--color-accent-ink)' }"
               @click="ask('Give me three ways to optimize spending and delivery this week')"
             >
-              Read more <i class="fa-solid fa-chevron-right text-[7px]"></i>
+              Read more <i class="fa-solid fa-chevron-right text-[10px]"></i>
             </button>
           </section>
         </div>
 
         <!-- Analysis row -->
-        <div class="company-analysis-grid grid gap-4 sm:grid-cols-2">
+        <div class="grid gap-4 sm:grid-cols-2 min-[1180px]:grid-cols-3">
           <!-- AI spend -->
-          <section class="cp-card cp-card-pad flex flex-col" aria-label="AI spend">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col" aria-label="AI spend">
             <header class="flex items-center justify-between gap-2">
-              <h2 class="cp-title whitespace-nowrap">{{ t('home.aiSpend') }}</h2>
-              <span class="cp-chip !h-6 !text-[8.5px]">All time</span>
+              <h2 class="text-base font-bold tracking-tight whitespace-nowrap">{{ t('home.aiSpend') }}</h2>
+              <span class="btn btn-xs !h-6 !text-[10px]">All time</span>
             </header>
-            <p class="mt-2.5 text-[20px] font-extrabold leading-none tracking-tight tabular-nums">
-              {{ formatCxj(costTotal) }}<span class="ml-1 text-[9px] font-semibold cp-muted">cxj</span>
+            <p class="mt-2.5 text-2xl font-extrabold leading-none tracking-tight tabular-nums">
+              {{ formatCxj(costTotal) }}<span class="ml-1 text-[11px] font-semibold text-base-content/60">cxj</span>
             </p>
-            <p class="mt-1 text-[8.5px] cp-muted">Autopilot and teammate usage</p>
+            <p class="mt-1 text-[10px] text-base-content/60">Autopilot and teammate usage</p>
 
             <div v-if="costRows.length" class="mt-3">
-              <div class="flex h-2 overflow-hidden rounded-full bg-[var(--cp-track)]">
+              <div class="flex h-2 overflow-hidden rounded-full bg-base-300">
                 <span
                   v-for="row in costRows"
                   :key="`bar-${row.key}`"
@@ -717,38 +719,38 @@ function openEvent(event) {
               <div class="mt-2.5 space-y-1.5">
                 <div v-for="row in costRows" :key="row.key" class="flex items-center gap-1.5">
                   <span class="h-1.5 w-1.5 shrink-0 rounded-full" :style="{ background: row.color }"></span>
-                  <span class="min-w-0 flex-1 truncate text-[9px] cp-muted">{{ row.label }}</span>
-                  <span class="text-[9px] font-semibold">{{ row.share }}%</span>
+                  <span class="min-w-0 flex-1 truncate text-[11px] text-base-content/60">{{ row.label }}</span>
+                  <span class="text-[11px] font-semibold">{{ row.share }}%</span>
                 </div>
               </div>
             </div>
-            <div v-else class="mt-4 flex flex-1 flex-col items-start justify-center rounded-xl border border-dashed border-[var(--cp-border)] p-3">
-              <p class="text-[9.5px] font-semibold">{{ t('home.noSpend') }}</p>
-              <p class="mt-0.5 text-[8.5px] cp-muted">Dispatch a goal and the cost shows up here.</p>
+            <div v-else class="mt-4 flex flex-1 flex-col items-start justify-center rounded-xl border border-dashed border-base-300 p-3">
+              <p class="text-[11px] font-semibold">{{ t('home.noSpend') }}</p>
+              <p class="mt-0.5 text-[10px] text-base-content/60">Dispatch a goal and the cost shows up here.</p>
             </div>
 
             <button
               type="button"
-              class="mt-auto flex items-center justify-between border-t border-[var(--cp-border)] pt-2.5 text-[8.5px] font-semibold cp-muted transition hover:text-[var(--cp-text)]"
+              class="mt-auto flex items-center justify-between border-t border-base-300 pt-2.5 text-[10px] font-semibold text-base-content/60 transition hover:text-base-content"
               @click="emit('open-settings')"
             >
               {{ t('home.budgetSettings') }}
-              <i class="fa-solid fa-arrow-right text-[7px]"></i>
+              <i class="fa-solid fa-arrow-right text-[10px]"></i>
             </button>
           </section>
 
           <!-- Operating health -->
-          <section class="cp-card cp-card-pad flex flex-col" aria-label="Operating health">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col" aria-label="Operating health">
             <header class="flex items-center justify-between gap-2">
-              <h2 class="cp-title whitespace-nowrap">{{ t('home.operatingHealth') }}</h2>
-              <span class="cp-chip !h-6 !text-[8.5px]">Now</span>
+              <h2 class="text-base font-bold tracking-tight whitespace-nowrap">{{ t('home.operatingHealth') }}</h2>
+              <span class="btn btn-xs !h-6 !text-[10px]">Now</span>
             </header>
             <div class="mt-2.5 flex items-end justify-between gap-2">
               <div class="min-w-0">
-                <p class="text-[19px] font-extrabold leading-none tracking-tight tabular-nums">{{ formatMoney(grossProfit, currency) }}</p>
-                <p class="mt-1 text-[8.5px] cp-muted">Gross profit · {{ margin }}% margin</p>
+                <p class="text-2xl font-extrabold leading-none tracking-tight tabular-nums">{{ formatMoney(grossProfit, currency) }}</p>
+                <p class="mt-1 text-[10px] text-base-content/60">Gross profit · {{ margin }}% margin</p>
               </div>
-              <span class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[8px] font-bold" :style="{ color: healthTone, background: 'var(--cp-surface-soft)' }">
+              <span class="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold" :style="{ color: healthTone, background: 'var(--color-base-200)' }">
                 <span class="h-1 w-1 rounded-full" :style="{ background: healthTone }"></span>
                 {{ healthLabel }}
               </span>
@@ -757,17 +759,17 @@ function openEvent(event) {
             <div class="relative mx-auto mt-2 h-[132px] w-[168px]" role="img" :aria-label="`Operating health ${health} percent`">
               <svg viewBox="0 0 200 200" class="h-full w-full" aria-hidden="true">
                 <defs>
-                  <linearGradient id="cp-health-gradient" x1="0%" y1="100%" x2="100%" y2="0%">
-                    <stop offset="0%" stop-color="var(--cp-yellow)" />
-                    <stop offset="55%" stop-color="var(--cp-lime)" />
-                    <stop offset="100%" stop-color="var(--cp-green)" />
+                  <linearGradient id="company-health-gradient" x1="0%" y1="100%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="var(--color-warning)" />
+                    <stop offset="55%" stop-color="var(--color-accent)" />
+                    <stop offset="100%" stop-color="var(--color-success)" />
                   </linearGradient>
                 </defs>
-                <path d="M 46 154 A 76 76 0 1 1 154 154" fill="none" stroke="var(--cp-track)" stroke-width="13" stroke-linecap="round" />
+                <path d="M 46 154 A 76 76 0 1 1 154 154" fill="none" stroke="var(--color-base-300)" stroke-width="13" stroke-linecap="round" />
                 <path
                   d="M 46 154 A 76 76 0 1 1 154 154"
                   fill="none"
-                  stroke="url(#cp-health-gradient)"
+                  stroke="url(#company-health-gradient)"
                   stroke-width="13"
                   stroke-linecap="round"
                   pathLength="100"
@@ -776,25 +778,25 @@ function openEvent(event) {
                 />
               </svg>
               <div class="absolute inset-0 flex flex-col items-center justify-center pt-3">
-                <span class="text-[24px] font-extrabold leading-none tracking-tight">{{ health }}<span class="text-[11px] font-bold cp-muted">%</span></span>
-                <span class="mt-1 text-[8px] font-bold uppercase tracking-[0.14em]" :style="{ color: healthTone }">{{ healthLabel }}</span>
+                <span class="text-3xl font-extrabold leading-none tracking-tight">{{ health }}<span class="text-xs font-bold text-base-content/60">%</span></span>
+                <span class="mt-1 text-[10px] font-bold uppercase tracking-[0.14em]" :style="{ color: healthTone }">{{ healthLabel }}</span>
               </div>
             </div>
 
-            <p class="mt-auto text-center text-[8px] leading-relaxed cp-muted">
+            <p class="mt-auto text-center text-[10px] leading-relaxed text-base-content/60">
               Based on open decisions, blocked work, budget pressure and team coverage.
             </p>
           </section>
 
           <!-- Goal tracker -->
-          <section class="company-goal-card cp-card cp-card-pad flex flex-col sm:col-span-2" aria-label="Goal tracker">
+          <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col sm:col-span-2 min-[1180px]:col-span-1" aria-label="Goal tracker">
             <header class="flex items-center justify-between gap-2">
               <div>
-                <h2 class="cp-title whitespace-nowrap">{{ t('home.goalTracker') }}</h2>
-                <p class="mt-0.5 text-[8.5px] cp-muted">In motion right now</p>
+                <h2 class="text-base font-bold tracking-tight whitespace-nowrap">{{ t('home.goalTracker') }}</h2>
+                <p class="mt-0.5 text-[10px] text-base-content/60">In motion right now</p>
               </div>
-              <button v-if="canManage" class="cp-chip !h-6 !text-[8.5px]" @click="emit('new-goal')">
-                <i class="fa-solid fa-plus text-[7px]"></i> {{ t('home.addGoal') }}
+              <button v-if="canManage" class="btn btn-xs !h-6 !text-[10px]" @click="emit('new-goal')">
+                <i class="fa-solid fa-plus text-[10px]"></i> {{ t('home.addGoal') }}
               </button>
             </header>
 
@@ -802,7 +804,7 @@ function openEvent(event) {
               <div
                 v-for="goal in goalRows"
                 :key="goal.id"
-                class="group -mx-1 w-[calc(100%+0.5rem)] cursor-pointer rounded-[10px] px-1 py-1.5 text-left transition hover:bg-[var(--cp-surface-soft)]"
+                class="group -mx-1 w-[calc(100%+0.5rem)] cursor-pointer rounded-[10px] px-1 py-1.5 text-left transition hover:bg-base-200"
                 role="button"
                 tabindex="0"
                 @click="openMission(goal)"
@@ -810,40 +812,40 @@ function openEvent(event) {
                 @keydown.space.prevent="openMission(goal)"
               >
                 <div class="flex items-start gap-2">
-                  <span class="cp-icon-tile !h-7 !w-7" :class="goal.status === 'blocked' ? 'cp-icon-tile--red' : goal.status === 'review' ? 'cp-icon-tile--yellow' : 'cp-icon-tile--lime'">
-                    <i :class="goal.meta.icon" class="text-[9px]"></i>
+                  <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 !h-7 !w-7" :class="goal.status === 'blocked' ? 'bg-error/10 text-error-ink' : goal.status === 'review' ? 'bg-warning/10 text-warning-ink' : 'bg-accent/10 text-accent-ink'">
+                    <i :class="goal.meta.icon" class="text-[11px]"></i>
                   </span>
                   <span class="min-w-0 flex-1">
                     <span class="flex items-center gap-1">
-                      <span class="min-w-0 flex-1 truncate text-[9.5px] font-bold">{{ goal.title }}</span>
-                      <span class="shrink-0 text-[8.5px] font-bold tabular-nums">{{ goal.progress }}%</span>
+                      <span class="min-w-0 flex-1 truncate text-[11px] font-bold">{{ goal.title }}</span>
+                      <span class="shrink-0 text-[10px] font-bold tabular-nums">{{ goal.progress }}%</span>
                     </span>
-                    <span class="mt-0.5 block truncate text-[8px] cp-muted">{{ goal.team }} · {{ goal.due }}</span>
-                    <span class="cp-progress cp-progress--slim mt-1 block">
-                      <span :style="{ width: `${Math.max(3, goal.progress)}%`, background: goal.status === 'blocked' ? 'var(--cp-red)' : goal.status === 'review' ? 'var(--cp-yellow)' : 'var(--cp-lime)' }"></span>
+                    <span class="mt-0.5 block truncate text-[10px] text-base-content/60">{{ goal.team }} · {{ goal.due }}</span>
+                    <span class="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-base-300">
+                      <span class="block h-full rounded-full bg-accent" :class="goal.status === 'blocked' ? 'bg-error' : goal.status === 'review' ? 'bg-warning' : ''" :style="{ width: `${Math.max(3, goal.progress)}%` }"></span>
                     </span>
                   </span>
-                  <button class="grid h-5 w-5 shrink-0 place-items-center rounded-md cp-muted-soft opacity-0 transition group-hover:opacity-100" title="Ask about this goal" aria-label="Ask about this goal" @click.stop="askGoal(goal)">
-                    <i class="fa-solid fa-wand-magic-sparkles text-[8px]"></i>
+                  <button class="grid h-5 w-5 shrink-0 place-items-center rounded-md text-base-content/40 opacity-0 transition group-hover:opacity-100" title="Ask about this goal" aria-label="Ask about this goal" @click.stop="askGoal(goal)">
+                    <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
                   </button>
                 </div>
               </div>
             </div>
 
-            <div v-else class="mt-3 flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--cp-border)] p-3 text-center">
-              <i class="fa-solid fa-flag-checkered text-lg text-[var(--cp-muted-soft)]"></i>
-              <p class="mt-1 text-[9.5px] font-bold">{{ t('home.noGoals') }}</p>
-              <p class="mt-0.5 text-[8.5px] cp-muted">Turn an outcome into work the team can run.</p>
-              <button v-if="canManage" class="cp-cta mt-2 !h-7 !text-[9px]" @click="emit('new-goal')">Set a goal</button>
+            <div v-else class="mt-3 flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-base-300 p-3 text-center">
+              <i class="fa-solid fa-flag-checkered text-lg text-base-content/40"></i>
+              <p class="mt-1 text-[11px] font-bold">{{ t('home.noGoals') }}</p>
+              <p class="mt-0.5 text-[10px] text-base-content/60">Turn an outcome into work the team can run.</p>
+              <button v-if="canManage" class="btn btn-sm btn-primary mt-2 !h-7 !text-[11px]" @click="emit('new-goal')">Set a goal</button>
             </div>
 
             <button
               type="button"
-              class="mt-2 flex items-center justify-between border-t border-[var(--cp-border)] pt-2.5 text-[8.5px] font-semibold cp-muted transition hover:text-[var(--cp-text)]"
+              class="mt-2 flex items-center justify-between border-t border-base-300 pt-2.5 text-[10px] font-semibold text-base-content/60 transition hover:text-base-content"
               @click="emit('open-work')"
             >
               See all goals
-              <i class="fa-solid fa-arrow-right text-[7px]"></i>
+              <i class="fa-solid fa-arrow-right text-[10px]"></i>
             </button>
           </section>
         </div>
@@ -852,21 +854,21 @@ function openEvent(event) {
       <!-- ── Right rail ──────────────────────────────────────────────────── -->
       <div class="space-y-4 min-[1180px]:col-span-4 min-[1180px]:space-y-5">
         <!-- Quick actions + team shortcuts -->
-        <section class="cp-card cp-card-pad" aria-label="Quick actions">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4" aria-label="Quick actions">
           <header class="flex items-center justify-between gap-2">
             <div>
-              <h2 class="cp-title">{{ t('home.quickActions') }}</h2>
-              <p class="mt-0.5 text-[8.5px] cp-muted">One click to the work that matters.</p>
+              <h2 class="text-base font-bold tracking-tight">{{ t('home.quickActions') }}</h2>
+              <p class="mt-0.5 text-[10px] text-base-content/60">One click to the work that matters.</p>
             </div>
-            <span class="cp-chip !h-6 !text-[8.5px]">{{ counts.teams || teams.length || 0 }} teams</span>
+            <span class="btn btn-xs !h-6 !text-[10px]">{{ counts.teams || teams.length || 0 }} teams</span>
           </header>
 
-          <div class="mt-2.5 grid grid-cols-5 gap-0.5 border-b border-[var(--cp-border)] pb-2">
+          <div class="mt-2.5 grid grid-cols-3 gap-0.5 border-b border-base-300 pb-2 sm:grid-cols-6">
             <button
               v-for="action in visibleQuickActions"
               :key="action.id"
               type="button"
-              class="cp-quick-btn"
+              class="flex min-w-0 flex-col items-center justify-center gap-1 rounded-selector px-0.5 py-1 text-xs font-medium text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content [&>i]:text-base [&>i]:text-base-content"
               :title="t(action.labelKey)"
               @click="action.run"
             >
@@ -876,23 +878,23 @@ function openEvent(event) {
           </div>
 
           <div class="mt-2.5 grid grid-cols-2 gap-2">
-            <button class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5 text-left transition hover:bg-[var(--cp-surface-strong)]" @click="emit('open-business')">
-              <span class="cp-eyebrow !text-[7.5px]">{{ t('home.openPipeline') }}</span>
-              <span class="mt-1 block text-[14px] font-extrabold leading-tight tabular-nums">{{ formatMoney(pipelineValue, currency, true) }}</span>
-              <span class="mt-0.5 block text-[8px] cp-muted">{{ openDealCount }} opportunit{{ openDealCount === 1 ? 'y' : 'ies' }}</span>
+            <button class="rounded-xl bg-base-200 p-2.5 text-left transition hover:bg-base-300" @click="emit('open-business')">
+              <span class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('home.openPipeline') }}</span>
+              <span class="mt-1 block text-base font-extrabold leading-tight tabular-nums">{{ formatMoney(pipelineValue, currency, true) }}</span>
+              <span class="mt-0.5 block text-[10px] text-base-content/60">{{ openDealCount }} opportunit{{ openDealCount === 1 ? 'y' : 'ies' }}</span>
             </button>
-            <button class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5 text-left transition hover:bg-[var(--cp-surface-strong)]" @click="emit('open-team')">
-              <span class="cp-eyebrow !text-[7.5px]">{{ t('home.people') }}</span>
-              <span class="mt-1 block text-[14px] font-extrabold leading-tight tabular-nums">{{ peopleCount }}</span>
-              <span class="mt-0.5 block text-[8px] cp-muted">humans + AI</span>
+            <button class="rounded-xl bg-base-200 p-2.5 text-left transition hover:bg-base-300" @click="emit('open-team')">
+              <span class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('home.people') }}</span>
+              <span class="mt-1 block text-base font-extrabold leading-tight tabular-nums">{{ peopleCount }}</span>
+              <span class="mt-0.5 block text-[10px] text-base-content/60">humans + AI</span>
             </button>
           </div>
 
-          <div class="mt-2.5 border-t border-[var(--cp-border)] pt-2.5">
+          <div class="mt-2.5 border-t border-base-300 pt-2.5">
             <div class="flex items-center justify-between">
-              <p class="cp-eyebrow !text-[8px]">{{ t('home.aiTeammates') }}</p>
-              <button class="grid h-5 w-5 place-items-center rounded-md cp-muted transition hover:bg-[var(--cp-surface-soft)] hover:text-[var(--cp-text)]" title="Manage the team" aria-label="Manage the team" @click="emit('open-team')">
-                <i class="fa-solid fa-plus text-[8px]"></i>
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('home.aiTeammates') }}</p>
+              <button class="grid h-5 w-5 place-items-center rounded-md text-base-content/60 transition hover:bg-base-200 hover:text-base-content" title="Manage the team" aria-label="Manage the team" @click="emit('open-team')">
+                <i class="fa-solid fa-plus text-[10px]"></i>
               </button>
             </div>
             <div class="mt-2 flex items-center">
@@ -906,21 +908,21 @@ function openEvent(event) {
                   :aria-label="`Ask about ${person.name}`"
                   @click="ask(`What is ${person.name} working on and how is it performing?`)"
                 >
-                  <span class="relative grid h-[31px] w-[31px] place-items-center overflow-hidden rounded-full border-2 border-[var(--cp-surface)] bg-[var(--cp-lime-soft)]">
-                    <span class="absolute inset-0 grid place-items-center text-[8px] font-extrabold text-[var(--cp-accent-ink)]">{{ initials(person.name) }}</span>
+                  <span class="relative grid h-[31px] w-[31px] place-items-center overflow-hidden rounded-full border-2 border-[var(--color-base-100)] bg-accent/10">
+                    <span class="absolute inset-0 grid place-items-center text-[10px] font-extrabold text-accent-ink">{{ initials(person.name) }}</span>
                     <img :src="person.avatar" :alt="person.name" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
                   </span>
-                  <span class="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[var(--cp-surface)]" :class="person.kind === 'ai' ? 'bg-[var(--cp-lime)]' : 'bg-[var(--cp-green)]'"></span>
+                  <span class="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-[var(--color-base-100)]" :class="person.kind === 'ai' ? 'bg-accent' : 'bg-success'"></span>
                 </button>
               </div>
-              <span v-else class="text-[8.5px] cp-muted">{{ t('home.noTeammates') }}</span>
+              <span v-else class="text-[10px] text-base-content/60">{{ t('home.noTeammates') }}</span>
               <button
-                class="ml-auto grid h-7 w-7 place-items-center rounded-full border border-[var(--cp-border)] cp-muted transition hover:bg-[var(--cp-surface-soft)] hover:text-[var(--cp-text)]"
+                class="ml-auto grid h-7 w-7 place-items-center rounded-full border border-base-300 text-base-content/60 transition hover:bg-base-200 hover:text-base-content"
                 title="Ask the team"
                 aria-label="Ask the team"
                 @click="ask('Give me a status update of the whole team')"
               >
-                <i class="fa-solid fa-ellipsis text-[9px]"></i>
+                <i class="fa-solid fa-ellipsis text-[11px]"></i>
               </button>
             </div>
           </div>
@@ -929,10 +931,10 @@ function openEvent(event) {
         <CompanyCalendar :snapshot="snapshot" @open="emit('open-calendar')" />
 
         <!-- Activity history -->
-        <section class="cp-card cp-card-pad flex flex-col" aria-label="Company activity">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 flex flex-col" aria-label="Company activity">
           <header class="flex items-center justify-between gap-2">
-            <h2 class="cp-title">{{ t('home.activityHistory') }}</h2>
-            <span class="cp-chip !h-6 !text-[8.5px]">7d</span>
+            <h2 class="text-base font-bold tracking-tight">{{ t('home.activityHistory') }}</h2>
+            <span class="btn btn-xs !h-6 !text-[10px]">7d</span>
           </header>
 
           <div class="-mx-1 mt-2 flex-1">
@@ -940,56 +942,56 @@ function openEvent(event) {
               v-for="event in activity"
               :key="event.id || `${event.at}-${event.type}`"
               type="button"
-              class="cp-list-row"
+              class="flex w-full min-w-0 items-center gap-2.5 rounded-field px-1.5 py-1.5 text-left transition-colors hover:bg-base-200"
               :title="event.message"
               @click="openEvent(event)"
             >
-              <span class="cp-icon-tile !h-8 !w-8" :class="eventLook(event).tile">
-                <i :class="eventIcon(event)" class="text-[9px]"></i>
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 !h-8 !w-8" :class="eventLook(event).tile">
+                <i :class="eventIcon(event)" class="text-[11px]"></i>
               </span>
               <span class="min-w-0 flex-1">
-                <span class="block truncate text-[9.5px] font-semibold">{{ event.message || event.type }}</span>
-                <span class="mt-0.5 block truncate text-[8px] cp-muted">{{ event.actor || 'system' }}</span>
+                <span class="block truncate text-[11px] font-semibold">{{ event.message || event.type }}</span>
+                <span class="mt-0.5 block truncate text-[10px] text-base-content/60">{{ event.actor || 'system' }}</span>
               </span>
               <span class="shrink-0 text-right">
-                <span class="block text-[8px] font-bold" :style="{ color: eventLook(event).color }">{{ eventLook(event).label }}</span>
-                <span class="mt-0.5 block text-[7px] cp-muted-soft">{{ relativeTime(event.at) }}</span>
+                <span class="block text-[10px] font-bold" :style="{ color: eventLook(event).color }">{{ eventLook(event).label }}</span>
+                <span class="mt-0.5 block text-[10px] text-base-content/40">{{ relativeTime(event.at) }}</span>
               </span>
             </button>
 
             <div v-if="!activity.length" class="flex flex-col items-center justify-center px-3 py-8 text-center">
-              <span class="cp-icon-tile !h-9 !w-9"><i class="fa-solid fa-wave-square text-[11px]"></i></span>
-              <p class="mt-2 text-[9.5px] font-semibold">Nothing has happened yet.</p>
-              <p class="mt-0.5 text-[8.5px] cp-muted">Create a goal and the company journal starts here.</p>
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 !h-9 !w-9"><i class="fa-solid fa-wave-square text-xs"></i></span>
+              <p class="mt-2 text-[11px] font-semibold">Nothing has happened yet.</p>
+              <p class="mt-0.5 text-[10px] text-base-content/60">Create a goal and the company journal starts here.</p>
             </div>
           </div>
 
           <button
             type="button"
-            class="mt-2 flex items-center justify-between border-t border-[var(--cp-border)] pt-2.5 text-[9px] font-semibold cp-muted transition hover:text-[var(--cp-text)]"
+            class="mt-2 flex items-center justify-between border-t border-base-300 pt-2.5 text-[11px] font-semibold text-base-content/60 transition hover:text-base-content"
             @click="emit('open-activity')"
           >
             {{ t('home.allActivity') }}
-            <i class="fa-solid fa-arrow-right text-[8px]"></i>
+            <i class="fa-solid fa-arrow-right text-[10px]"></i>
           </button>
         </section>
 
         <!-- One decision, surfaced -->
-        <section v-if="attentionFocus" class="cp-card cp-card-pad" aria-label="Next decision">
+        <section v-if="attentionFocus" class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4" aria-label="Next decision">
           <div class="flex items-start gap-2.5">
-            <span class="cp-icon-tile cp-icon-tile--yellow !h-8 !w-8">
-              <i class="fa-solid fa-stamp text-[10px]"></i>
+            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 bg-warning/10 text-warning-ink !h-8 !w-8">
+              <i class="fa-solid fa-stamp text-xs"></i>
             </span>
             <div class="min-w-0 flex-1">
-              <p class="cp-eyebrow !text-[8px]">Next decision</p>
-              <p class="mt-1 truncate text-[10px] font-bold">{{ attentionFocus.title }}</p>
-              <p class="mt-0.5 truncate text-[8.5px] cp-muted">{{ attentionLabel(attentionFocus.reason) }} · {{ attentionFocus.status }}</p>
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">Next decision</p>
+              <p class="mt-1 truncate text-xs font-bold">{{ attentionFocus.title }}</p>
+              <p class="mt-0.5 truncate text-[10px] text-base-content/60">{{ attentionLabel(attentionFocus.reason) }} · {{ attentionFocus.status }}</p>
             </div>
           </div>
           <div class="mt-2.5 flex gap-1.5">
-            <button class="cp-cta flex-1 !h-8 !text-[9px]" @click="openAttention(attentionFocus)">Review now</button>
-            <button class="cp-chip !h-8" title="Ask about this decision" aria-label="Ask about this decision" @click="ask(`Help me decide about ${attentionFocus.title}`)">
-              <i class="fa-solid fa-wand-magic-sparkles text-[8px]"></i>
+            <button class="btn btn-sm btn-primary flex-1 !h-8 !text-[11px]" @click="openAttention(attentionFocus)">Review now</button>
+            <button class="btn btn-xs !h-8" title="Ask about this decision" aria-label="Ask about this decision" @click="ask(`Help me decide about ${attentionFocus.title}`)">
+              <i class="fa-solid fa-wand-magic-sparkles text-[10px]"></i>
             </button>
           </div>
         </section>

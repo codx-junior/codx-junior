@@ -15,6 +15,8 @@ context and stay in budget. This section documents every feature in detail.
 | [Profiles](/features/profiles) | Reusable instructions that set the model, tools and coding standards. |
 | [Autonomous agents](/features/autonomous-agents) | Actors: profiles with initiative that take their own shifts, schedule their own follow-ups and work only inside a weekly availability window. |
 | [Autonomous tickets](/features/autonomous-tickets) | Cross-project requests that the target project works end to end — dive, implement, test, validate — until the gate is green. |
+| [Company assistant](/features/company-assistant) | The company's real `codx-junior` chat: starter prompts, streaming, tools, voice and role-aware permissions. |
+| [Company tickets](/features/company-tickets) | The company workbench: queues per linked project, unattended runs and the review of each delivery. |
 
 ## Build
 
@@ -31,6 +33,7 @@ context and stay in budget. This section documents every feature in detail.
 | --- | --- |
 | [Workspaces](/features/workspaces) | Docker Compose dev containers with VS Code, a virtual desktop and your apps. |
 | [Coworking](/features/computer-use) | A whole machine shared by the user and the AI: Linux desktops, Windows/macOS VMs, remote VNC/SSH hosts and the original browser sessions. |
+| [Company files](/features/company-spaces) | Company-owned coworking spaces: the company's own files plus read-only virtual folders for every linked project and mapped host folder. |
 | [Browser use and co-browsing](/features/browser-use) | The `browser` kind: one Chromium page shared by the user (live view) and the AI (CDP tools). |
 | [Teams and messenger](/features/teams) | Teams, categories, channels and direct messages shared by humans and agents — a team can also be generated from a plain-language need. |
 | [Company meetings](/features/company-meetings) | Live calls with people and AI profiles: transcript, recording, minutes and tasks created from the meeting. |

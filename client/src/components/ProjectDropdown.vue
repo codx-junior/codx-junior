@@ -81,11 +81,24 @@ export default {
   },
   computed: {
     projects () {
+      // The company is the root: the switcher only offers the projects the
+      // company links. Child projects are opened from their parent.
+      if (this.$storex.company?.loaded) {
+        const linked = new Set(
+          (this.$storex.company.linkedProjectIds || []).map(String)
+        )
+        return (this.$projects.allProjects || [])
+          .filter(project => linked.has(String(project.project_id)) && !project.parentProject)
+      }
       return this.$projects.allParentProjects;
     },
     recentProjects () {
-      return this.$projects
-        .recentProjects?.filter(p => p.project_id !== this.$project.project_id);
+      const recent = this.$projects.recentProjects?.filter(p =>
+        p.project_id !== this.$project.project_id
+      ) || []
+      if (!this.$storex.company?.loaded) return recent
+      const linked = new Set((this.$storex.company.linkedProjectIds || []).map(String))
+      return recent.filter(project => linked.has(String(project.project_id)))
     },
     showFilter () {
       return this.projects?.length > 10;

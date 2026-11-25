@@ -179,7 +179,8 @@ Outside a voice call it explains how to start one and does nothing.
 - Browser `SpeechRecognition` availability depends on the browser; Chrome/Edge
   are the best supported. Firefox/Safari rely on the optional server
   transcription backend.
-- The call listens and speaks sequentially (the microphone is paused while
-  codx-junior speaks) to avoid transcribing its own voice.
+- The microphone stays open while codx-junior speaks, so barge-in keeps working:
+  the assistant's own audio is filtered out of the transcript instead of the
+  microphone being paused.
 - A call can only switch between chats that are visible/loadable in the active
   project; the panel and the tool use the project's chat catalogue.

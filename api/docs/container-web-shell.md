@@ -27,9 +27,11 @@ directions. The project's Docker client is `httpx` over a Unix socket, which
 cannot half-close a request and keep writing to the hijacked socket. Speaking
 that protocol by hand would mean writing a raw HTTP upgrade parser.
 
-The `docker` CLI already implements it and ships in the codx-junior image (the
-compose stack actions already shell out to `docker compose`). The backend
-therefore:
+The `docker` CLI already implements it and ships in the codx-junior image
+(`docker-ce-cli` plus the compose and buildx plugins, see
+`codx-junior-installer/demo/Dockerfile`); the compose stack actions and
+`docker build` already shell out to the same binary. A source checkout must
+provide it, or point `CODX_JUNIOR_DOCKER_BIN` at it. The backend therefore:
 
 1. allocates a local PTY (`pty.openpty()`);
 2. spawns `docker exec -i -t …` attached to the PTY;
@@ -95,6 +97,10 @@ The ticket is:
 Error statuses: `400` invalid/empty values, `403` not an admin, `404` unknown
 host/container, `409` container not running or paused, `429` too many open
 shells, `503` Docker CLI/socket unavailable or the feature is disabled.
+
+The CLI is resolved when the ticket is requested, so a missing binary fails
+here with a `503` and an actionable message — the WebSocket is never opened
+just to die with close code `1011`.
 
 ### 2.2 WebSocket
 
@@ -165,6 +171,11 @@ default socket; remote hosts are passed through `docker -H <endpoint>`.
 `https://` endpoints are mapped to `tcp://` with `DOCKER_TLS_VERIFY=1`; client
 certificates, when needed, come from the CLI's usual `DOCKER_CERT_PATH`.
 
+The released image already ships `docker`, `docker compose` and
+`docker buildx` (`codx-junior-installer/demo/Dockerfile`). Running the API from
+a source checkout requires those binaries on the API host; otherwise the ticket
+request answers `503` naming the missing CLI.
+
 ---
 
 ## 5. UI
@@ -195,6 +206,8 @@ a JWT directly.
 * base64 frame validation and size limits;
 * route-level `403` for non-admins, `409` for stopped containers, `400` for an
   unlisted shell;
+* `503` with an actionable message when the Docker CLI is missing (checked on
+  the ticket request, before any WebSocket is opened);
 * the WebSocket handshake, invalid-ticket rejection and frame relay with a fake
   session (no Docker daemon needed).
 
@@ -208,8 +221,8 @@ pytest -q api/tests/test_infra_shell.py
 
 ## 7. Limitations
 
-* The feature requires the Docker CLI on the API host. The Engine API's hijacked
-  exec stream is not implemented directly.
+* The feature requires the Docker CLI on the API host (the released image
+  ships it). The Engine API's hijacked exec stream is not implemented directly.
 * The terminal is not persisted: closing the modal ends the `docker exec`
   process. Nothing survives an API restart either, because tickets are in
   memory.

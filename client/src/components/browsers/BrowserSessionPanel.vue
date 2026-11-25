@@ -3,6 +3,7 @@ import BrowserViewer from './BrowserViewer.vue'
 import DesktopViewer from './DesktopViewer.vue'
 import DesktopSizeSelect from './DesktopSizeSelect.vue'
 import Chat from '@/components/chat/Chat.vue'
+import ChatProfileSelector from '@/components/chat/ChatProfileSelector.vue'
 import ConfirmDialog from '../ConfirmDialog.vue'
 import VerticalSplitter from '../layout/VerticalSplitter.vue'
 import CoworkingVolumeMappings from './CoworkingVolumeMappings.vue'
@@ -10,9 +11,13 @@ import CoworkingFoldersBrowser from './CoworkingFoldersBrowser.vue'
 import BrowserRecorder from './BrowserRecorder.vue'
 import { SESSION_LABELS, label } from '@/utils/sessionLabels'
 
+// Stable empty list for chats without profiles: a fresh `[]` in the template
+// would re-arm the selector's deep watcher on every render.
+const EMPTY_PROFILES = Object.freeze([])
+
 export default {
   name: 'BrowserSessionPanel',
-  components: { BrowserViewer, DesktopViewer, DesktopSizeSelect, Chat, ConfirmDialog, VerticalSplitter, CoworkingVolumeMappings, CoworkingFoldersBrowser, BrowserRecorder },
+  components: { BrowserViewer, DesktopViewer, DesktopSizeSelect, Chat, ChatProfileSelector, ConfirmDialog, VerticalSplitter, CoworkingVolumeMappings, CoworkingFoldersBrowser, BrowserRecorder },
   props: {
     // Present when the panel is rendered inside a meeting call. It enables
     // collaborative annotations and the "share with call" action.
@@ -106,6 +111,19 @@ export default {
     },
     browserChatHasTools() {
       return (this.browserChat?.profiles || []).some(p => p === 'browser' || p === 'computer')
+    },
+    // Profiles of the docked chat, as a stable list for the header selector.
+    browserChatProfiles() {
+      return this.browserChat?.profiles || EMPTY_PROFILES
+    },
+    // Project that owns the docked chat: the chat's project when it is a
+    // cross-project task, otherwise the active one. The profile selector needs
+    // it to list the profiles available to this conversation.
+    browserChatProject() {
+      const projectId = this.browserChat?.project_id || this.browserChat?.owner_project_id
+      return this.$storex.projects.allProjectsById?.[projectId] ||
+        this.$storex.projects.activeProject ||
+        null
     },
     linkedChatIds() {
       return this.selectedSession?.chat_ids || []
@@ -525,6 +543,21 @@ export default {
       if (event.key === 'Escape' && this.showChatMenu) {
         this.showChatMenu = false
       }
+    },
+    /**
+     * Profiles of the docked chat, edited from the header.
+     *
+     * The chat strip that owns this selector in a normal chat is hidden here
+     * (`hide-files-header`), so the header is the only place to see and change
+     * who takes part in the coworking conversation. The chat is the same store
+     * record the embedded <Chat> renders: updating it and persisting the chat
+     * keeps both views in sync.
+     */
+    async onBrowserChatProfilesChanged(selectedProfiles) {
+      const chat = this.browserChat
+      if (!chat) return
+      chat.profiles = (selectedProfiles || []).map(profile => profile.name || profile)
+      await this.$storex.chats.saveChatInfo(chat)
     },
 
     // ── Chat picker / opening ──────────────────────────────────────────────
@@ -1373,7 +1406,7 @@ export default {
 
         <template #right>
           <div ref="chatPane" class="h-full min-h-0 flex flex-col bg-base-300 border-base-content/10 md:border-l">
-            <div class="flex items-center gap-2 px-3 py-2 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
+            <div class="flex flex-wrap items-center gap-2 px-3 py-2 border-b border-base-content/10 bg-base-200/70 flex-shrink-0">
               <button v-if="isMobile" class="btn btn-xs btn-ghost btn-circle" @click="closeChat" title="Back">
                 <i class="fa-solid fa-arrow-left"></i>
               </button>
@@ -1471,6 +1504,21 @@ export default {
                   </button>
                 </div>
               </div>
+
+              <!-- Profiles in this coworking conversation. The embedded chat
+                   hides its files/profiles strip, so the header is where the
+                   active profiles stay visible (avatars + tooltip names) and
+                   can be changed. Compact on mobile: avatars only. -->
+              <ChatProfileSelector
+                v-if="browserChat"
+                class="shrink-0"
+                :project="browserChatProject"
+                :selected-profiles="browserChatProfiles"
+                :compact="isMobile"
+                label="Profiles"
+                icon="fa-solid fa-user-group"
+                @profiles-changed="onBrowserChatProfilesChanged"
+              />
 
               <span
                 class="badge badge-xs"

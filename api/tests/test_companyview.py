@@ -1,9 +1,9 @@
 """CompanyView — the company shell.
 
 The shell is the company-first home of codx-junior: it owns the sections a
-company works in (its tasks under "work", projects, the workplaces) and the
-project selector that gives every screen the active project of the company,
-because a company can run several projects.
+company works in (its tasks under "work", projects, the workplaces) and
+aggregates every project the company links. There is no active-project
+selector; project-scoped panels widen to the company project set.
 
 The sources are asserted instead of rendered: the shell is a Vue SFC and this
 suite runs without a browser or a Node runtime.
@@ -15,7 +15,6 @@ import pytest
 
 CLIENT = Path(__file__).resolve().parents[2] / "client"
 SHELL = CLIENT / "src" / "views" / "CompanyView.vue"
-CSS = CLIENT / "src" / "assets" / "company.css"
 
 
 def read(path):
@@ -33,18 +32,34 @@ def test_the_shell_owns_the_company_sections(section):
     assert f"id: '{section}'" in read(SHELL)
 
 
-def test_the_shell_offers_a_project_selector():
-    """A company runs several projects: the active one is chosen in the top bar
-    and every company screen follows it."""
+def test_the_shell_has_no_active_project_selector():
+    """A company aggregates every project it links: there is no top-bar
+    selector that scopes the shell to one project, and no project outside the
+    company is offered."""
     source = read(SHELL)
-    assert "const companyProjectOptions = computed" in source, (
-        "the selector lists the projects linked to the company"
+    assert "cp-project-select" not in source, (
+        "the company shell does not scope every screen to one active project"
     )
-    assert "async function onSelectProject(" in source, (
-        "switching the project updates the active project in place"
+    assert "onSelectProject" not in source, (
+        "the shell never switches the global active project behind the owner's back"
     )
-    assert 'class="cp-project-select"' in source, "the selector is in the top bar"
-    assert "$storex.company.companyProjects" in source, (
-        "the options come from the projects the company runs"
+    assert "companyProjectOptions" not in source, (
+        "the removed selector no longer leaks inherited child projects as options"
     )
-    assert ".cp-project-select {" in read(CSS), "the selector has its own styles"
+    assert "$storex.company.linkedProjects" in source, (
+        "company surfaces read the projects the company defines"
+    )
+    assert "$storex.company.linkedProjectIds" in source, (
+        "company-wide actions use every linked project"
+    )
+
+
+def test_company_panels_are_company_wide():
+    """Security and the calendar widget aggregate every linked project instead
+    of following a single active project chosen in the shell."""
+    security = read(CLIENT / "src" / "components" / "company" / "CompanySecurity.vue")
+    calendar = read(CLIENT / "src" / "components" / "company" / "CompanyCalendar.vue")
+    assert "props.projectId" not in security.replace("props.projectIds", "")
+    assert "api.security(props.companyId)" in security
+    assert "projects: [projectId.value]" not in calendar
+    assert "projects: projectIds.value" in calendar

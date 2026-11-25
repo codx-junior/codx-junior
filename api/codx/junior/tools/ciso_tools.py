@@ -16,7 +16,7 @@ Made with ❤️ by codx-junior
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .model import ToolResponse
 from codx.junior.security.ciso import (
@@ -78,6 +78,70 @@ def _llm_summary(verdict, subject: str) -> str:
     return "\n".join(lines)
 
 
+def _repo_root(settings: Any) -> Optional[str]:
+    """Return the git top level of the project, or ``None`` outside a repo.
+
+    A project may live in a sub directory of the repository (``api/`` inside a
+    monorepo). ``git diff`` run from there only reports the changes of that sub
+    directory, so a commit that stages files elsewhere looks empty — the gate
+    then reported "nothing to review" over a dirty tree.
+    """
+    from .project_tools import _run_git
+
+    ok, stdout, _stderr = _run_git(settings, ["rev-parse", "--show-toplevel"])
+    if not ok:
+        return None
+    lines = [line.strip() for line in (stdout or "").splitlines() if line.strip()]
+    return lines[0] if lines else None
+
+
+def _repo_args(settings: Any) -> List[str]:
+    """Return the ``git -C <top level>`` prefix that scopes a command to the repo."""
+    root = _repo_root(settings)
+    return ["-C", root] if root else []
+
+
+def _pending_files(
+    settings: Any, base: str, scope: str, paths: Optional[List[str]]
+) -> List[str]:
+    """Return the files git reports as pending for *scope*.
+
+    ``git diff`` can return an empty patch while the tree is dirty: a project
+    root nested inside the repository, a ``paths`` filter that resolves
+    nowhere, or a change git will not render. The change gate uses this list to
+    refuse a vacuous "nothing to review" answer.
+
+    Args:
+        settings: Project settings.
+        base: Git reference used by the ``all`` scope.
+        scope: ``all`` | ``staged`` | ``unstaged``.
+        paths: Optional path filter.
+
+    Returns:
+        List[str]: Pending file names (empty when nothing is pending).
+    """
+    from .project_tools import _run_git
+
+    args: List[str] = ["diff", "--name-only", "-z"]
+    if scope == "staged":
+        args.append("--cached")
+    elif scope == "all":
+        args.append(base or "HEAD")
+
+    if paths:
+        args += ["--", *paths]
+
+    ok, stdout, stderr = _run_git(settings, _repo_args(settings) + args)
+    if not ok:
+        logger.warning(
+            "CISO change gate: git %s failed: %s",
+            " ".join(args),
+            (stderr or "").strip(),
+        )
+        return []
+    return sorted({entry for entry in (stdout or "").split("\0") if entry.strip()})
+
+
 def _git_diff(settings: Any, base: str, scope: str, paths: Optional[List[str]]) -> str:
     """Return the unified diff requested by the caller.
 
@@ -101,10 +165,35 @@ def _git_diff(settings: Any, base: str, scope: str, paths: Optional[List[str]]) 
     if paths:
         args += ["--", *paths]
 
-    ok, stdout, stderr = _run_git(settings, args)
+    ok, stdout, stderr = _run_git(settings, _repo_args(settings) + args)
     if not ok:
         raise ValueError(f"git diff failed: {(stderr or '').strip()}")
     return stdout or ""
+
+
+def _patch_stats(patch: str) -> Tuple[int, int]:
+    """Return ``(files_inspected, added_lines_inspected)`` of a unified diff.
+
+    A verdict that does not state how much of the change it read cannot be told
+    apart from a verdict produced over an empty diff — the exact shape of the
+    false ``allow`` this gate used to emit. The numbers are printed with every
+    review so a human can compare them with ``git diff --cached --stat``.
+
+    Args:
+        patch: Unified diff text.
+
+    Returns:
+        Tuple[int, int]: Number of files with a ``+++`` header and number of
+        added lines (``+`` lines, excluding the ``+++`` header).
+    """
+    files = 0
+    added = 0
+    for line in (patch or "").splitlines():
+        if line.startswith("+++ "):
+            files += 1
+        elif line.startswith("+"):
+            added += 1
+    return files, added
 
 
 # -----------------------------------------------------------------------------
@@ -278,16 +367,62 @@ def security_review_changes(
         )
 
     if not (patch or "").strip():
+        pending = _pending_files(settings, base=base, scope=scope, paths=paths)
+        if pending:
+            shown = "\n".join(f"- `{item}`" for item in pending[:5])
+            if len(pending) > 5:
+                shown += f"\n- … {len(pending) - 5} more"
+            return ToolResponse(
+                user_response=(
+                    f"⚠️ **Unverifiable scope `{scope}`** — git reports "
+                    f"{len(pending)} pending file(s) but the diff came back empty, "
+                    "so nothing was scanned. This is **not** a clean result.\n\n"
+                    f"{shown}\n\n"
+                    "Re-run without a `paths` filter (or from the repository root) "
+                    "and review the change before treating it as reviewed."
+                ),
+                llm_response=(
+                    "security_review_changes: UNVERIFIABLE — "
+                    f"scope={scope} base={base} pending_files={len(pending)} "
+                    "scanned_lines=0 (empty diff over a dirty tree, decision unknown)"
+                ),
+                logs=[
+                    "CISO change review: empty diff over a dirty tree "
+                    f"({len(pending)} pending file(s)) — refusing to report clean",
+                ],
+            )
         return ToolResponse(
             user_response="✅ No pending changes to review.",
-            llm_response="security_review_changes: empty diff, nothing to review.",
+            llm_response=(
+                "security_review_changes: empty diff, nothing to review "
+                f"(scope={scope} base={base} pending_files=0)."
+            ),
         )
 
     verdict = scan_diff(patch, domain=domain, policy=policy)
+    files_inspected, added_inspected = _patch_stats(patch)
+    root = _repo_root(settings) or _project_path(settings)
+    coverage = (
+        f"Inspected {files_inspected} file(s) and {added_inspected} added line(s) "
+        f"at `{root}` (base `{base}`, scope `{scope}`)."
+    )
     return ToolResponse(
-        user_response=_verdict_answer(verdict, f"CISO review — scope `{scope}` vs `{base}`"),
-        llm_response=_llm_summary(verdict, "CISO change review"),
-        logs=[f"CISO change review: {verdict.summary}"],
+        user_response=(
+            _verdict_answer(verdict, f"CISO review — scope `{scope}` vs `{base}`")
+            + f"\n\n> {coverage}"
+        ),
+        llm_response=(
+            _llm_summary(verdict, "CISO change review")
+            + f"\n- repo_root: {root}"
+            + f"\n- base: {base}"
+            + f"\n- scope: {scope}"
+            + f"\n- files_inspected: {files_inspected}"
+            + f"\n- added_lines_inspected: {added_inspected}"
+        ),
+        logs=[
+            f"CISO change review: {verdict.summary}",
+            f"CISO change review: {coverage}",
+        ],
     )
 
 

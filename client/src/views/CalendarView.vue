@@ -18,7 +18,7 @@
  * The server returns occurrences already expanded and timezone-shifted, so the
  * view does no date arithmetic beyond formatting and grid placement.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { $storex } from '@/store'
 import { PERSONAL_PROJECT } from '@/store/calendar'
 import { formatDayLong } from '@/utils/calendarDate'
@@ -31,7 +31,15 @@ import EventPopover from '@/components/calendar/EventPopover.vue'
 
 const props = defineProps({
   /** Route params handed over by <AppRouteView> (deep-links). */
-  params: { type: Object, default: () => ({}) }
+  params: { type: Object, default: () => ({}) },
+  /**
+   * Projects the calendar may expose. The company shell passes the projects
+   * linked to the company; `null` means "caller did not scope the calendar",
+   * so the standalone workspace falls back to every project the active company
+   * sees (or the old catalogue while no company is loaded). An explicit empty
+   * list means "this company has no projects" and must show an empty calendar.
+   */
+  projectIds: { type: Array, default: null }
 })
 
 const VIEW_OPTIONS = [
@@ -51,14 +59,60 @@ const rangeLabel = computed(() => store.rangeLabel)
 const calendars = computed(() => store.calendarList)
 const calendarGroups = computed(() => store.calendarGroups)
 const visibleIds = computed(() => store.visibleCalendarIds)
-const occurrencesByDay = computed(() => store.occurrencesByDay)
-const projectOptions = computed(() => store.projectOptions)
-const activeProjects = computed(() => store.activeProjects)
-const isAllProjects = computed(() => store.isAllProjects)
+const occurrencesByDay = computed(() =>
+  scopeEmpty.value ? {} : store.occurrencesByDay
+)
+
+// ─── Company project scope ──────────────────────────────────────────────────
+// The calendar is global, but inside a company it may only expose the projects
+// that company links (or, for the standalone workspace, the projects the active
+// company sees). "All" then means "all projects of the company", never every
+// project of the installation.
+const hasExplicitScope = computed(() => Array.isArray(props.projectIds))
+const companyScopeIds = computed(() => {
+  if (hasExplicitScope.value) {
+    return [...new Set((props.projectIds || []).map(id => String(id)).filter(Boolean))]
+  }
+  if ($storex.company?.loaded) {
+    return ($storex.company.companyProjects || []).map(project => String(project.project_id))
+  }
+  return []
+})
+const scopeSet = computed(() => new Set(companyScopeIds.value))
+// A company with no linked projects has an empty calendar. Without this guard
+// the global store would fall back to "all projects" and leak another
+// company's events.
+const scopeEmpty = computed(() => hasExplicitScope.value && !scopeSet.value.size)
+const allProjectOptions = computed(() => store.projectOptions)
+const projectOptions = computed(() => {
+  const options = allProjectOptions.value || []
+  if (!scopeSet.value.size) return options
+  return options.filter(option =>
+    option.id === PERSONAL_PROJECT || scopeSet.value.has(String(option.id))
+  )
+})
+const scopedProjectIds = computed(() =>
+  projectOptions.value
+    .filter(option => option.id !== PERSONAL_PROJECT)
+    .map(option => String(option.id))
+)
+const activeProjects = computed(() => {
+  const selected = (store.activeProjects || []).map(id => String(id))
+  if (!scopeSet.value.size) return selected
+  const inScope = selected.filter(id =>
+    id === PERSONAL_PROJECT || scopeSet.value.has(id)
+  )
+  return inScope.length ? inScope : scopedProjectIds.value
+})
+const isAllProjects = computed(() => {
+  if (!scopeSet.value.size) return store.isAllProjects
+  if (!scopedProjectIds.value.length) return true
+  return scopedProjectIds.value.every(id => activeProjects.value.includes(id))
+})
 const loading = computed(() => store.isLoading)
 const error = computed(() => store.loadError)
-const filteredCount = computed(() => store.filteredCount)
-const totalCount = computed(() => store.totalCount)
+const filteredCount = computed(() => scopeEmpty.value ? 0 : store.filteredCount)
+const totalCount = computed(() => scopeEmpty.value ? 0 : store.totalCount)
 /** Calendars the editor may write to (`can_write` already resolves scope + role). */
 const writableCalendars = computed(() =>
   calendars.value.filter(calendar => (calendar.can_write ?? !calendar.read_only))
@@ -68,6 +122,22 @@ const writableCalendars = computed(() =>
 const editorProjects = computed(() =>
   projectOptions.value.filter(option => option.id !== PERSONAL_PROJECT)
 )
+
+/**
+ * Keep the store query inside the company scope. When the saved filter is empty
+ * or points at a project outside the company, select every company project
+ * instead of letting the API return the whole installation agenda.
+ */
+async function ensureCompanyScope() {
+  if (!scopeSet.value.size || scopeEmpty.value) return
+  const current = (store.activeProjects || []).map(id => String(id))
+  const outside = current.filter(id =>
+    id !== PERSONAL_PROJECT && !scopeSet.value.has(id)
+  )
+  if (!current.length || outside.length) {
+    await store.setProjectFilter(scopedProjectIds.value)
+  }
+}
 
 /** Mini-month dots: one colour per calendar present on that day (max 3). */
 const dotsByDay = computed(() => {
@@ -86,7 +156,7 @@ const dotsByDay = computed(() => {
 })
 
 const selectedProjectNames = computed(() => {
-  if (isAllProjects.value) return 'All projects'
+  if (isAllProjects.value) return scopeSet.value.size ? 'All company projects' : 'All projects'
   return projectOptions.value
     .filter(option => activeProjects.value.includes(option.id))
     .map(option => option.name)
@@ -247,7 +317,9 @@ async function toggleProject(projectId) {
 }
 
 async function selectAllProjects() {
-  await store.setProjectFilter([])
+  // In a company, "All" means every project the company runs; it must never
+  // clear the filter and fall back to the installation-wide agenda.
+  await store.setProjectFilter(scopeSet.value.size ? scopedProjectIds.value : [])
 }
 
 async function createCalendar(payload) {
@@ -319,9 +391,14 @@ onMounted(async () => {
   const initialDate = props.params?.date
   if (initialDate) await store.setCursor(initialDate)
   await store.ensureLoaded()
+  await ensureCompanyScope()
   window.addEventListener('keydown', onKeydown)
   document.addEventListener('click', onDocumentClick)
 })
+
+// The company project list can grow while the calendar is open (a project was
+// linked); scope the persisted filter again when that happens.
+watch(companyScopeIds, () => ensureCompanyScope())
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)

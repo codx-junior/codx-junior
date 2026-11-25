@@ -61,6 +61,30 @@ CHANGED — persist hot-path:
     the chat directly from ``chat.file_path`` when possible instead of
     scanning the whole tasks tree via ``find_by_id``.
 
+CHANGED — incremental persistence (2026 refactor):
+    The chat file is still the single, pretty-printed, git-tracked artifact
+    (the format LLMs and humans read), but it is no longer re-sanitised and
+    re-serialised from scratch on every write. :mod:`codx.junior.chat.chat_document`
+    keeps a per-process cache of the sanitised chat fields and of each
+    message's pretty JSON fragment; ``store_chat`` only re-sanitises what
+    changed and streams the unchanged fragments to disk. The output is
+    byte-identical to ``json.dumps(payload, indent=2)``.
+
+    Three supporting changes make the hot path O(changed) instead of O(chat):
+
+    * ``save_chat`` accepts the already-loaded ``stored_chat`` so a message
+      update no longer parses the conversation three times.
+    * the index (``chat_index``) receives the set of changed ``doc_id`` values
+      and records a sanitisation fingerprint per message; a restarted process
+      reuses messages that are already sanitised on disk.
+    * ``load_chat_from_path`` serves the parsed document from
+      ``DOCUMENT_CACHE`` (keyed by the file signature) instead of always
+      reading/parsing the file.
+
+    ``fsync`` is off by default (``CODX_JUNIOR_CHAT_FSYNC=1`` enables it): the
+    temp-file + ``os.replace`` write is still atomic, so a crash cannot corrupt
+    the file; only a power loss can lose the last write.
+
 NEW — chat search:
     The :meth:`ChatManager.search_chats` method provides full-text search
     across all chat data with optional time-frame filtering, user filtering,
@@ -141,6 +165,13 @@ from codx.junior.profiling.profiler import profile_function
 
 from codx.junior.chat.chat_export import ChatExport, ExportedDocument
 from codx.junior.chat.chat_index import ChatIndexStore
+from codx.junior.chat.chat_document import (
+    DOCUMENT_CACHE,
+    file_signature,
+    fsync_enabled,
+    thaw_payload,
+    write_document,
+)
 
 from codx.junior.events.collection_events import (
     ACTION_CHANGED,
@@ -152,7 +183,6 @@ from codx.junior.events.event_manager import EventManager
 
 from codx.junior.project.project_discover import find_project_by_id
 
-from codx.junior.security.ciso.payload import redact_payload
 
 logger = logging.getLogger(__name__)
 
@@ -190,11 +220,7 @@ def _chat_file_signature(file_path: str):
     :return: ``(mtime_ns, size)`` tuple, or ``None`` when the file cannot be
         stat'ed (missing/permission), which disables the cache for it.
     """
-    try:
-        stat = os.stat(file_path)
-        return (stat.st_mtime_ns, stat.st_size)
-    except OSError:
-        return None
+    return file_signature(file_path)
 
 
 def _chat_info_cache_get(file_path: str, signature) -> Optional[Chat]:
@@ -632,8 +658,24 @@ class ChatManager:
             if isinstance(document, dict) and document.get("id"):
                 yield file_path, document
 
-    def _index_upsert_payload(self, payload: Dict[str, Any], file_path: str) -> None:
-        """Write one chat to the index; never fail the canonical write."""
+    def _index_upsert_payload(
+        self,
+        payload: Dict[str, Any],
+        file_path: str,
+        changed_messages: Optional[set] = None,
+        trusted: bool = False,
+    ) -> None:
+        """Write one chat to the index; never fail the canonical write.
+
+        :param payload: Sanitised chat document exactly as written to disk.
+        :param file_path: Canonical path of the chat file.
+        :param changed_messages: ``doc_id`` values whose message row changed,
+            or ``None`` when every message must be re-synced (cold cache). The
+            index uses it to skip unchanged rows, keeping a save O(changed).
+        :param trusted: True when *payload* was sanitised by this process; the
+            index then records each message's sanitisation fingerprint so a
+            later process can skip re-scanning it.
+        """
         if self._chat_index_mode() == "off" or not payload:
             return
         key = os.path.abspath(self.chat_path)
@@ -652,7 +694,12 @@ class ChatManager:
                 _CHAT_INDEX_DIRTY.add(key)
                 _CHAT_INDEX_LAST_RECONCILE[key] = 0.0
                 return
-            store.upsert_chat(payload, file_path)
+            store.upsert_chat(
+                payload,
+                file_path,
+                changed_messages=changed_messages,
+                trusted=trusted,
+            )
             # First write of a project: build the rest of the index in the
             # background so the next read is already fast.
             if not store.is_ready():
@@ -660,6 +707,24 @@ class ChatManager:
         except Exception as ex:  # pragma: no cover - defensive
             _CHAT_INDEX_DIRTY.add(key)
             logger.warning("Chat index upsert failed for %s: %s", file_path, ex)
+
+    def _index_message_hashes(self, chat_id: Optional[str]) -> Optional[Dict[str, str]]:
+        """Return the index's sanitisation manifest for *chat_id* (or None).
+
+        Used only when the in-process document cache is cold: it tells the
+        encoder which messages are already sanitised on disk, so a restarted
+        process does not re-scan a whole conversation before its first save.
+        """
+        if not chat_id or self._chat_index_mode() == "off":
+            return None
+        try:
+            store = self._chat_index_store()
+            if store is None or store.is_building():
+                return None
+            return store.message_hashes(str(chat_id)) or None
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.debug("Chat index manifest read failed for %s: %s", chat_id, ex)
+            return None
 
     def _mark_index_dirty_if_building(self) -> None:
         """Remember a change that a full rebuild may have missed."""
@@ -1964,7 +2029,7 @@ class ChatManager:
                 stored_chat=stored_chat,
                 message=cost_message,
             )
-        return manager.save_chat(chat=chat)
+        return manager.save_chat(chat=chat, stored_chat=stored_chat)
 
     def add_message(self, chat: Chat, message: Message) -> Chat:
         """
@@ -2034,6 +2099,64 @@ class ChatManager:
         self._emit_message_event(chat=chat, message=message)
         return saved
 
+    def apply_messages(self, chat: Chat, messages: List[Message]) -> Chat:
+        """
+        Apply several message changes and persist them with ONE chat write.
+
+        This is the batch counterpart of :meth:`add_message` /
+        :meth:`update_message`. The client used to PATCH every edited message in
+        a loop, and every call re-read and re-wrote the whole conversation
+        (N round trips, N full saves). Here the chat is loaded once, every
+        change is merged in memory, and a single save (with cost accumulation
+        and event emission per message) persists the result.
+
+        :param chat: The chat to update (mutated in place).
+        :param messages: Messages to upsert, matched by ``doc_id`` (a message
+            without one is appended).
+        :return: The persisted chat.
+        """
+        if not messages:
+            return chat
+        manager = self._resolve_owner_manager(chat)
+        stored_chat = manager._load_stored_chat(chat)
+        now = datetime.now().isoformat()
+
+        for message in messages:
+            if not message.doc_id:
+                message.doc_id = str(uuid.uuid4())
+            message.updated_at = now
+            found = False
+            for index, existing in enumerate(chat.messages or []):
+                if existing.doc_id == message.doc_id:
+                    chat.messages[index] = message
+                    found = True
+                    break
+            if not found:
+                chat.messages.append(message)
+
+        if stored_chat:
+            # Never lose a concurrent writer's change: merge against disk.
+            if (stored_chat.cost or 0.0) > (chat.cost or 0.0):
+                chat.cost = stored_chat.cost
+            chat.messages = self._merge_message_lists(
+                stored_messages=stored_chat.messages,
+                incoming_messages=chat.messages,
+            )
+        for message in messages:
+            manager._accumulate_message_cost(
+                chat=chat,
+                stored_chat=stored_chat,
+                message=message,
+            )
+
+        logger.debug(
+            "apply_messages: chat='%s' messages=%d", chat.id, len(messages)
+        )
+        saved = manager.save_chat(chat=chat, stored_chat=stored_chat)
+        for message in messages:
+            self._emit_message_event(chat=saved, message=message)
+        return saved
+
     def update_chat_metadata(self, chat: Chat, metadata: dict) -> Chat:
         """
         Update chat metadata only (name, description, board, column, etc.)
@@ -2081,7 +2204,7 @@ class ChatManager:
         logger.info(
             "remove_message: chat='%s' message='%s'", chat.id, message_doc_id
         )
-        saved = manager.save_chat(chat=chat)
+        saved = manager.save_chat(chat=chat, stored_chat=stored_chat)
         self._emit_message_removed_event(chat=saved, message_doc_id=message_doc_id)
         return saved
 
@@ -2149,7 +2272,12 @@ class ChatManager:
         )
         return True
 
-    def save_chat(self, chat: Chat, chat_only: bool = False) -> Chat:
+    def save_chat(
+        self,
+        chat: Chat,
+        chat_only: bool = False,
+        stored_chat: Optional[Chat] = None,
+    ) -> Chat:
         """
         Persist *chat* to disk, handling board/column defaults, ID assignment,
         user/profile aggregation, old-file cleanup and event emission.
@@ -2167,12 +2295,18 @@ class ChatManager:
         :param chat: The chat to save.
         :param chat_only: If ``True`` and the chat already exists, preserve
             its stored messages (useful for metadata-only updates).
+        :param stored_chat: Optional already-loaded persisted version of the
+            chat. The granular message operations load it to merge concurrent
+            updates; passing it here avoids a SECOND full read/parse of the
+            conversation (this was one of the three reads per message update).
         :return: The saved chat.
         """
         # Delegate to the owning project's manager when necessary
         manager = self._resolve_owner_manager(chat)
         if manager is not self:
-            return manager.save_chat(chat=chat, chat_only=chat_only)
+            return manager.save_chat(
+                chat=chat, chat_only=chat_only, stored_chat=stored_chat
+            )
 
         if not chat.board:
             chat.board = DEFAULT_BOARD
@@ -2185,7 +2319,12 @@ class ChatManager:
 
         chat.updated_at = datetime.now().isoformat()
 
-        current_chat = self.find_by_id(chat_id=chat.id)
+        if stored_chat is not None:
+            current_chat = stored_chat
+        else:
+            # Fast path: read the chat from its known file path instead of
+            # scanning the tree through the index on every save.
+            current_chat = self._load_stored_chat(chat)
         if chat_only and current_chat:
             chat.messages = current_chat.messages
 
@@ -2223,7 +2362,7 @@ class ChatManager:
 
         return chat
 
-    def store_chat(self, chat: Chat) -> Dict[str, Any]:
+    def store_chat(self, chat: Chat, fsync: Optional[bool] = None) -> Dict[str, Any]:
         """
         Write *chat* to its ``file_path`` as JSON.
 
@@ -2240,46 +2379,63 @@ class ChatManager:
         replacement is logged and (when ``settings.codx_path`` is known) also
         recorded by the gate that produced it.
 
+        PERFORMANCE: sanitisation and pretty-printing are incremental (see
+        :mod:`codx.junior.chat.chat_document`). Only messages whose content
+        changed are re-sanitised and re-rendered; the rest are streamed from
+        the process cache. The resulting file is byte-identical to
+        ``json.dumps(payload, indent=2)``.
+
         :param chat: The chat to write.
+        :param fsync: Force (or skip) the ``fsync`` of the temporary file. By
+            default it follows ``CODX_JUNIOR_CHAT_FSYNC`` (off): the rename is
+            atomic either way, ``fsync`` only protects against power loss.
         :return: The sanitized payload that was written (also used to update
             the derived index without serializing the chat twice).
         """
         logger.info("Save chat: %s", chat.file_path)
-        os.makedirs(os.path.dirname(chat.file_path), exist_ok=True)
-        payload, redactions = redact_payload(chat.model_dump())
-        if redactions:
-            logger.warning(
-                "CISO: redacted %d secret(s) before storing chat '%s' at %s",
-                redactions,
-                chat.id,
-                chat.file_path,
-            )
+        # Signature of the current file lets the codec reuse the previous
+        # messages; an external change (git/editor/other worker) invalidates it.
+        signature = file_signature(chat.file_path)
         # CONCURRENCY: the write must be atomic. ``open(..., "w")`` truncates
         # the file and then refills it, so a reader running at the same time
         # (another request, the background worker, a socket handler) used to
         # see a partially written task and fail with
         # ``Extra data: line N column 2`` — corrupting the very artifact this
-        # module is meant to preserve. Writing to a sibling temp file and
-        # renaming it keeps readers on either the old or the new content,
-        # never in between (``os.replace`` is atomic on POSIX).
-        tmp_path = f"{chat.file_path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
-        try:
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(json.dumps(payload, indent=2))
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, chat.file_path)
-        finally:
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    logger.warning("Could not remove temp chat file %s", tmp_path)
+        # module is meant to preserve. ``write_document`` writes a sibling temp
+        # file and renames it, so readers see either the old or the new
+        # content, never in between (``os.replace`` is atomic on POSIX).
+        known_clean = None
+        if not DOCUMENT_CACHE.is_warm(chat.file_path, signature):
+            # Cold process cache: the index still remembers which messages were
+            # already sanitised, so they are not scanned again.
+            known_clean = self._index_message_hashes(chat.id)
+        encoded = DOCUMENT_CACHE.encode(
+            chat.model_dump(), chat.file_path, signature, known_clean=known_clean
+        )
+        if encoded.redactions:
+            logger.warning(
+                "CISO: redacted %d secret(s) before storing chat '%s' at %s",
+                encoded.redactions,
+                chat.id,
+                chat.file_path,
+            )
+        durable = fsync_enabled() if fsync is None else bool(fsync)
+        write_document(chat.file_path, encoded, fsync=durable)
+        # Re-key the incremental cache under the signature the file has now, so
+        # the next save reuses the messages it just wrote.
+        DOCUMENT_CACHE.remember_written(
+            chat.file_path, encoded, file_signature(chat.file_path)
+        )
         # Write-through index. The file is the truth and has been replaced
         # atomically; a failure here only leaves the index stale until the
         # reconciler runs, so it must never fail the save.
-        self._index_upsert_payload(payload, chat.file_path)
-        return payload
+        self._index_upsert_payload(
+            encoded.payload,
+            chat.file_path,
+            encoded.changed_messages,
+            trusted=True,
+        )
+        return encoded.payload
 
     def delete_chat(
         self,
@@ -2358,8 +2514,21 @@ class ChatManager:
             unread/activity annotations before the message list is truncated.
         :return: Loaded Chat object with guaranteed valid ID.
         """
-        with open(chat_file, "r", encoding="utf-8") as f:
-            chat_data = json.loads(f.read())
+        # The process cache holds the exact document this process last wrote,
+        # keyed by the file signature: an unchanged file costs one ``os.stat``
+        # instead of reading + parsing megabytes of JSON. Pydantic validates
+        # the cached dict into a FRESH Chat, so callers may mutate it freely
+        # (the cache is never exposed).
+        signature = _chat_file_signature(chat_file)
+        chat_data = DOCUMENT_CACHE.payload(chat_file, signature)
+        if chat_data is None:
+            with open(chat_file, "r", encoding="utf-8") as f:
+                chat_data = json.loads(f.read())
+            DOCUMENT_CACHE.remember_loaded(chat_file, chat_data, signature)
+        else:
+            # The cached dict is shared: hand pydantic a copy whose free-form
+            # fields cannot be mutated back into the cache.
+            chat_data = thaw_payload(chat_data)
         chat = Chat(**chat_data)
         
         # ADDED: Ensure chat always has an ID

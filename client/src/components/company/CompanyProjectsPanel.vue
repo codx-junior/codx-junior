@@ -135,7 +135,7 @@ function openMissions(projectId) {
     <header class="flex items-center justify-between gap-2">
       <div>
         <h2 class="text-lg font-black flex items-center gap-2">
-          <i class="fa-solid fa-cubes text-primary"></i> Projects
+          <i class="fa-solid fa-cubes text-primary-ink"></i> Projects
         </h2>
         <p class="text-xs text-base-content/50">
           The codx-junior projects this company runs. Missions are dispatched into these projects.
@@ -159,7 +159,7 @@ function openMissions(projectId) {
     <div v-if="allProjects" class="rounded-2xl border border-primary/20 bg-primary/5 p-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p class="text-sm font-bold"><i class="fa-solid fa-asterisk text-primary mr-1"></i>All projects (*)</p>
+          <p class="text-sm font-bold"><i class="fa-solid fa-asterisk text-primary-ink mr-1"></i>All projects (*)</p>
           <p class="mt-1 text-xs text-base-content/60">
             This company sees every discovered project, including projects added later.
             Switch to a selected list to choose roots and child visibility.
@@ -185,7 +185,7 @@ function openMissions(projectId) {
         class="rounded-2xl border border-base-content/10 bg-base-100 p-4 flex flex-col gap-2"
       >
         <div class="flex items-start gap-2">
-          <div class="w-9 h-9 rounded-xl grid place-items-center bg-primary/10 text-primary shrink-0">
+          <div class="w-9 h-9 rounded-xl grid place-items-center bg-primary/10 text-primary-ink shrink-0">
             <i class="fa-solid fa-cube"></i>
           </div>
           <div class="min-w-0 flex-1">
@@ -195,7 +195,7 @@ function openMissions(projectId) {
                 {{ project.available ? 'available' : 'missing' }}
               </span>
             </div>
-            <p class="text-[10px] text-base-content/40 font-mono truncate">{{ project.project_id }}</p>
+            <p class="text-xs text-base-content/40 font-mono truncate">{{ project.project_id }}</p>
           </div>
           <div class="dropdown dropdown-end">
             <button tabindex="0" class="btn btn-ghost btn-xs btn-square" aria-label="Project actions">
@@ -208,28 +208,28 @@ function openMissions(projectId) {
                   <i class="fa-solid fa-arrow-up-right-from-square w-4"></i> Open project
                 </a>
               </li>
-              <li><a class="text-error" @click="remove(project)"><i class="fa-solid fa-link-slash w-4"></i> Unlink</a></li>
+              <li><a class="text-error-ink" @click="remove(project)"><i class="fa-solid fa-link-slash w-4"></i> Unlink</a></li>
             </ul>
           </div>
         </div>
 
         <p v-if="project.description" class="text-xs text-base-content/60 line-clamp-2">{{ project.description }}</p>
-        <p v-else-if="project.discovered_path" class="text-[10px] text-base-content/40 font-mono truncate">{{ project.discovered_path }}</p>
+        <p v-else-if="project.discovered_path" class="text-xs text-base-content/40 font-mono truncate">{{ project.discovered_path }}</p>
 
-        <div class="flex flex-wrap items-center gap-1.5 text-[10px]">
+        <div class="flex flex-wrap items-center gap-1.5 text-xs">
           <span v-if="project.role" class="badge badge-xs badge-outline">{{ project.role }}</span>
           <span class="badge badge-xs" :class="priorityMeta(project.priority).badge">{{ project.priority }}</span>
           <span class="badge badge-xs badge-ghost">{{ project.status }}</span>
           <span v-if="project.team_id" class="badge badge-xs badge-secondary">
-            <i class="fa-solid fa-people-group text-[8px] mr-1"></i>{{ teamName(project.team_id) }}
+            <i class="fa-solid fa-people-group text-[10px] mr-1"></i>{{ teamName(project.team_id) }}
           </span>
           <span v-if="project.include_children" class="badge badge-xs badge-info">
-            <i class="fa-solid fa-sitemap text-[8px] mr-1"></i>{{ (project.children || []).length }} children seen
+            <i class="fa-solid fa-sitemap text-[10px] mr-1"></i>{{ (project.children || []).length }} children seen
           </span>
           <span v-else class="badge badge-xs badge-ghost">children not included</span>
         </div>
 
-        <div class="mt-auto flex items-center justify-between border-t border-base-content/5 pt-2 text-[10px] text-base-content/40">
+        <div class="mt-auto flex items-center justify-between border-t border-base-content/5 pt-2 text-xs text-base-content/40">
           <span>{{ openMissions(project.project_id).filter(m => ['ready', 'running', 'review', 'blocked'].includes(m.status)).length }} open missions</span>
           <span v-if="project.budget_cxjcoins">{{ project.budget_cxjcoins }} cxj budget</span>
         </div>
@@ -256,7 +256,7 @@ function openMissions(projectId) {
                 {{ project.project_name }} ({{ project.project_id }})
               </option>
             </select>
-            <span v-if="!availableProjects.length" class="text-[10px] text-base-content/40 mt-1">
+            <span v-if="!availableProjects.length" class="text-xs text-base-content/40 mt-1">
               Every discovered project is already linked.
             </span>
           </label>
@@ -304,7 +304,7 @@ function openMissions(projectId) {
             <input v-model="form.include_children" type="checkbox" class="checkbox checkbox-sm mt-0.5" />
             <span>
               <span class="block text-xs font-semibold">Include its child projects</span>
-              <span class="block text-[10px] text-base-content/50">
+              <span class="block text-xs text-base-content/50">
                 Child projects discovered under this project are seen by the company by default.
                 Turn this off to add them manually.
               </span>
@@ -312,7 +312,7 @@ function openMissions(projectId) {
           </label>
         </div>
 
-        <p v-if="formError" class="text-error text-xs mt-3">{{ formError }}</p>
+        <p v-if="formError" class="text-error-ink text-xs mt-3">{{ formError }}</p>
 
         <div class="modal-action">
           <button class="btn btn-sm btn-ghost" @click="close">Cancel</button>

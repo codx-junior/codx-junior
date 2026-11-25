@@ -104,8 +104,7 @@ def _conversation_response(chat):
 
 
 def _draft_response(chat_id: Optional[str], message) -> dict:
-    """
-    Serialize the unsent draft of a chat for the client composer.
+    """Serialize the unsent draft of a chat for the client composer.
 
     :param chat_id: Chat the draft belongs to.
     :param message: The stored draft message, or ``None`` when there is none.
@@ -125,6 +124,39 @@ def _draft_response(chat_id: Optional[str], message) -> dict:
         "content": message.content or "",
         "author": message.user,
         "updated_at": message.updated_at,
+    }
+
+
+def _compact_chat_response(chat, messages=None, removed_message_ids=None) -> dict:
+    """Return only the DELTA of a message/metadata write.
+
+    Message endpoints used to answer with the WHOLE conversation. On a large
+    card that is megabytes per keystroke-level edit, all of it re-serialised by
+    the API and re-parsed by the client. ``?compact=1`` answers with the chat
+    metadata plus only the messages that actually changed, which the client
+    patches in place (``applyMessagePatches`` in ``store/chats.js``).
+
+    :param chat: The persisted chat.
+    :param messages: Messages created/updated by the call (defaults to none).
+    :param removed_message_ids: ``doc_id`` values deleted by the call.
+    :return: ``{"chat_id", "chat", "messages", "removed_message_ids"}``.
+    """
+    if hasattr(chat, "model_dump"):
+        payload = chat.model_dump()
+    elif isinstance(chat, dict):
+        payload = dict(chat)
+    else:
+        payload = {}
+    payload.pop("messages", None)
+    changed = messages or []
+    return {
+        "chat_id": payload.get("id"),
+        "chat": payload,
+        "messages": [
+            message.model_dump() if hasattr(message, "model_dump") else dict(message)
+            for message in changed
+        ],
+        "removed_message_ids": list(removed_message_ids or []),
     }
 
 
@@ -787,6 +819,15 @@ def api_chat_index_health(
             return {"enabled": False, "reason": "index disabled"}
         health = store.health()
         health["mode"] = chat_manager._chat_index_mode()
+        # Document cache: the in-process accelerator that keeps read/write of a
+        # chat O(changed) instead of O(conversation). Useful to see whether a
+        # process is warm after a restart.
+        try:
+            from codx.junior.chat.chat_document import DOCUMENT_CACHE
+
+            health["document_cache"] = DOCUMENT_CACHE.stats()
+        except Exception:  # pragma: no cover - diagnostics only
+            pass
         return health
     except Exception as ex:
         logger.error("api_chat_index_health: %s", ex)
@@ -1455,6 +1496,8 @@ async def api_add_message(request: Request):
                 )
 
         # The client merges the messages of this payload: never send the draft.
+        if _query_flag(request, "compact"):
+            return _compact_chat_response(updated_chat, messages=[message])
         return _conversation_response(updated_chat)
     except HTTPException:
         raise
@@ -1482,10 +1525,11 @@ async def api_update_message(request: Request):
         }
 
     Returns:
-        The updated Chat object with merged messages.
+        The updated Chat object with merged messages. With ``?compact=1``:
+        ``{"chat_id", "chat", "messages": [changed], "removed_message_ids"}``.
     """
     from codx.junior.db import Message
-    
+
     try:
         data = await request.json()
         codx_junior_session = request.state.codx_junior_session
@@ -1497,16 +1541,19 @@ async def api_update_message(request: Request):
 
         chat_id = data.get("chat_id")
         message_data = data.get("message")
-        
+
         if not chat_id or not message_data:
             logger.error("api_update_message: missing chat_id or message")
             return {"error": "missing chat_id or message"}
-        
-        chat = chat_manager.find_by_id(chat_id=chat_id)
+
+        # Reading the chat and rewriting it are file operations: run them in the
+        # worker pool. They used to run ON the event loop, so persisting a big
+        # card stalled every other request for the whole save (measured >1 s).
+        chat = await run_in_threadpool(chat_manager.find_by_id, chat_id=chat_id)
         if not chat:
             logger.error("api_update_message: chat not found: %s", chat_id)
             return {"error": f"chat '{chat_id}' not found"}
-        
+
         if _is_harness_chat(chat):
             raise HTTPException(
                 status_code=409,
@@ -1514,16 +1561,78 @@ async def api_update_message(request: Request):
             )
 
         message = Message(**message_data)
-        updated_chat = _conversation_response(
-            chat_manager.update_message(chat=chat, message=message)
+        updated_chat = await run_in_threadpool(
+            chat_manager.update_message, chat=chat, message=message
         )
-        
-        return updated_chat
+
+        if _query_flag(request, "compact"):
+            return _compact_chat_response(updated_chat, messages=[message])
+        return _conversation_response(updated_chat)
     except HTTPException:
         raise
     except Exception as ex:
         logger.error("api_update_message: unexpected error: %s", ex)
         return {"error": f"Failed to update message: {str(ex)}"}
+
+
+@router.put("/chats/messages")
+async def api_update_messages(request: Request):
+    """
+    Add/update SEVERAL messages of one chat with a single write.
+
+    Batch counterpart of ``PUT /api/chats/message``. The client used to loop
+    over the messages and PATCH them one by one, which re-read and re-wrote the
+    whole conversation once per message. Here the chat is loaded once, merged
+    in memory and persisted once.
+
+    Expected JSON payload:
+        {
+            "chat_id": "<chat UUID>",
+            "messages": [ { "doc_id": "...", "content": "..." }, ... ]
+        }
+
+    Returns:
+        The updated Chat object with merged messages. With ``?compact=1``:
+        ``{"chat_id", "chat", "messages": [changed], "removed_message_ids"}``.
+    """
+    from codx.junior.db import Message
+
+    try:
+        data = await request.json()
+        codx_junior_session = request.state.codx_junior_session
+        chat_manager = await run_in_threadpool(
+            codx_junior_session.get_chat_manager
+        )
+
+        chat_id = data.get("chat_id")
+        messages_data = data.get("messages")
+        if not chat_id or not isinstance(messages_data, list) or not messages_data:
+            logger.error("api_update_messages: missing chat_id or messages")
+            return {"error": "missing chat_id or messages"}
+
+        chat = await run_in_threadpool(chat_manager.find_by_id, chat_id=chat_id)
+        if not chat:
+            logger.error("api_update_messages: chat not found: %s", chat_id)
+            return {"error": f"chat '{chat_id}' not found"}
+        if _is_harness_chat(chat):
+            raise HTTPException(
+                status_code=409,
+                detail="Messages of a live external harness task are read-only.",
+            )
+
+        messages = [Message(**item) for item in messages_data if item]
+        updated_chat = await run_in_threadpool(
+            chat_manager.apply_messages, chat=chat, messages=messages
+        )
+
+        if _query_flag(request, "compact"):
+            return _compact_chat_response(updated_chat, messages=messages)
+        return _conversation_response(updated_chat)
+    except HTTPException:
+        raise
+    except Exception as ex:
+        logger.error("api_update_messages: unexpected error: %s", ex)
+        return {"error": f"Failed to update messages: {str(ex)}"}
 
 
 @router.delete("/chats/message")
@@ -1554,9 +1663,14 @@ def api_remove_message(request: Request):
             logger.error("api_remove_message: chat not found: %s", chat_id)
             return {"error": f"chat '{chat_id}' not found"}
         
-        updated_chat = _conversation_response(
-            chat_manager.remove_message(chat=chat, message_doc_id=message_doc_id)
+        removed = chat_manager.remove_message(
+            chat=chat, message_doc_id=message_doc_id
         )
+        if _query_flag(request, "compact"):
+            return _compact_chat_response(
+                removed, removed_message_ids=[message_doc_id]
+            )
+        updated_chat = _conversation_response(removed)
         
         return updated_chat
     except Exception as ex:
@@ -1601,17 +1715,18 @@ async def api_update_chat_metadata(request: Request):
             logger.error("api_update_chat_metadata: missing chat_id")
             return {"error": "missing chat_id"}
         
-        chat = chat_manager.find_by_id(chat_id=chat_id)
+        chat = await run_in_threadpool(chat_manager.find_by_id, chat_id=chat_id)
         if not chat:
             logger.error("api_update_chat_metadata: chat not found: %s", chat_id)
             return {"error": f"chat '{chat_id}' not found"}
         
-        # Delegate metadata update to chat_manager
-        updated_chat = _conversation_response(
-            chat_manager.update_chat_metadata(chat=chat, metadata=metadata)
+        # Delegate metadata update to chat_manager (a file write: worker pool)
+        updated_chat = await run_in_threadpool(
+            chat_manager.update_chat_metadata, chat=chat, metadata=metadata
         )
-        
-        return updated_chat
+        if _query_flag(request, "compact"):
+            return _compact_chat_response(updated_chat)
+        return _conversation_response(updated_chat)
     except Exception as ex:
         logger.error("api_update_chat_metadata: unexpected error: %s", ex)
         return {"error": f"Failed to update chat metadata: {str(ex)}"}
@@ -2197,7 +2312,11 @@ async def api_save_chat(request: Request):
         chat_manager = codx_junior_session.get_chat_manager()
         
         chat_only = request.query_params.get("chat_only") == "1"
-        existing = chat_manager.find_by_id(chat.id) if chat.id else None
+        existing = (
+            await asyncio.to_thread(chat_manager.find_by_id, chat.id)
+            if chat.id
+            else None
+        )
         if _is_harness_chat(existing):
             # The mirror must never persist a conversation copy: keep the
             # stored (empty) message list and only accept metadata edits.
@@ -2216,9 +2335,14 @@ async def api_save_chat(request: Request):
         # The chat store is rewritten as a whole JSON document: off-load it so
         # the single uvicorn worker keeps serving other clients.
         saved_chat = await asyncio.to_thread(
-            chat_manager.save_chat, chat=chat, chat_only=chat_only
+            chat_manager.save_chat,
+            chat=chat,
+            chat_only=chat_only,
+            stored_chat=existing,
         )
-        
+
+        if _query_flag(request, "compact"):
+            return _compact_chat_response(saved_chat)
         return saved_chat
     except Exception as ex:
         logger.error("api_save_chat: unexpected error: %s", ex)

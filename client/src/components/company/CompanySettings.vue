@@ -11,7 +11,7 @@ import { useCompanyI18n } from './i18n'
  *
  * Company context, one AI provider/model/key and the autonomy envelope. The
  * rest of codx-junior (advanced models, users, infrastructure) stays in Global
- * Settings. The layout follows the company workspace design (cp-*).
+ * Settings. The layout follows the app theme (Tailwind utilities and daisyUI tokens).
  */
 const props = defineProps({
   companyId: { type: String, required: true },
@@ -239,9 +239,12 @@ async function saveAI() {
 }
 
 function openAdvancedSettings(tab = '') {
+  // Advanced settings are project-hosted, but the project must be one the
+  // company links. Never leak the globally active project of another company.
   const linked = (props.snapshot?.projects || []).find(project => project.available)
-  const project = $storex.projects.activeProject ||
-    ($storex.projects.allProjects || []).find(item => item.project_id === linked?.project_id)
+  const project = ($storex.projects.allProjects || []).find(item =>
+    String(item.project_id) === String(linked?.project_id)
+  )
   const projectName = project?.project_name || linked?.discovered_name || linked?.project_id
   if (!projectName) {
     notify('Create or link a project before opening advanced settings.', 'error')
@@ -256,8 +259,9 @@ function openAdvancedSettings(tab = '') {
 
 function openAdvancedAI() {
   const linked = (props.snapshot?.projects || []).find(project => project.available)
-  const project = $storex.projects.activeProject ||
-    ($storex.projects.allProjects || []).find(item => item.project_id === linked?.project_id)
+  const project = ($storex.projects.allProjects || []).find(item =>
+    String(item.project_id) === String(linked?.project_id)
+  )
   const projectName = project?.project_name || linked?.discovered_name || linked?.project_id
   if (!projectName) {
     notify('Open a project before changing advanced AI settings.', 'error')
@@ -484,18 +488,18 @@ function ask(prompt) {
   <div class="space-y-4">
     <header class="flex flex-wrap items-end justify-between gap-3">
       <div>
-        <p class="cp-eyebrow">Administration</p>
+        <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">Administration</p>
         <h1 class="mt-1 text-xl font-extrabold tracking-tight md:text-2xl">{{ t('settings.title') }}</h1>
-        <p class="mt-1 text-[11px] leading-relaxed cp-muted">
+        <p class="mt-1 text-xs leading-relaxed text-base-content/60">
           {{ t('settings.subtitle') }}
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-2">
-        <button class="cp-chip" @click="openAdvancedSettings()">
-          <i class="fa-solid fa-sliders text-[9px]"></i> Advanced settings
+        <button class="btn btn-xs" @click="openAdvancedSettings()">
+          <i class="fa-solid fa-sliders text-[11px]"></i> Advanced settings
         </button>
-        <button class="cp-chip" @click="ask('Review my company settings and tell me what is missing')">
-          <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i> Ask AI
+        <button class="btn btn-xs" @click="ask('Review my company settings and tell me what is missing')">
+          <i class="fa-solid fa-wand-magic-sparkles text-[11px]"></i> Ask AI
         </button>
       </div>
     </header>
@@ -503,86 +507,86 @@ function ask(prompt) {
     <div class="grid gap-4 xl:grid-cols-12">
       <div class="space-y-4 xl:col-span-7">
         <!-- Company context -->
-        <section class="cp-card cp-card-pad">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">{{ t('settings.companyContext') }}</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.companyHint') }}</p>
+              <h2 class="text-base font-bold tracking-tight">{{ t('settings.companyContext') }}</h2>
+              <p class="mt-0.5 text-xs text-base-content/60">{{ t('settings.companyHint') }}</p>
             </div>
-            <span class="cp-icon-tile cp-icon-tile--lime !h-7 !w-7"><i class="fa-solid fa-building text-[10px]"></i></span>
+            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 bg-accent/10 text-accent-ink !h-7 !w-7"><i class="fa-solid fa-building text-xs"></i></span>
           </div>
 
           <!-- Logo: the mark the shell shows for this company -->
-          <div class="mt-3 flex items-center gap-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-2.5">
-            <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[13px] border border-[var(--cp-border)] bg-[var(--cp-surface)] text-[15px] font-black">
+          <div class="mt-3 flex items-center gap-3 rounded-xl border border-base-300 bg-base-200 p-2.5">
+            <span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-[13px] border border-base-300 bg-base-100 text-lg font-black">
               <img v-if="logoIsImageSource(logoDraft)" :src="logoDraft" :alt="company.name || 'Company logo'" class="h-full w-full object-cover" />
-              <i v-else-if="logoDraft" :class="logoDraft" class="text-[16px]"></i>
-              <i v-else class="fa-solid fa-image text-[14px] text-[var(--cp-muted-soft)]"></i>
+              <i v-else-if="logoDraft" :class="logoDraft" class="text-lg"></i>
+              <i v-else class="fa-solid fa-image text-base text-base-content/40"></i>
             </span>
             <div class="min-w-0 flex-1">
-              <p class="text-[10.5px] font-bold">Company logo</p>
-              <p class="mt-0.5 text-[9px] leading-relaxed cp-muted">
+              <p class="text-xs font-bold">Company logo</p>
+              <p class="mt-0.5 text-[11px] leading-relaxed text-base-content/60">
                 PNG, JPEG, WebP or SVG. Shown in the left bar, the home view and the company switcher.
               </p>
-              <p v-if="logoError" class="mt-1 text-[9px] text-[var(--cp-error-ink)]">{{ logoError }}</p>
+              <p v-if="logoError" class="mt-1 text-[11px] text-error-ink">{{ logoError }}</p>
             </div>
             <div class="flex shrink-0 items-center gap-1.5">
-              <label class="cp-chip !h-7 cursor-pointer !text-[8.5px]" :class="(!canManage || logoSaving) ? 'pointer-events-none opacity-50' : ''">
+              <label class="btn btn-xs !h-7 cursor-pointer !text-[10px]" :class="(!canManage || logoSaving) ? 'pointer-events-none opacity-50' : ''">
                 <span v-if="logoSaving" class="loading loading-spinner loading-xs"></span>
-                <i v-else class="fa-solid fa-upload text-[8px]"></i>
+                <i v-else class="fa-solid fa-upload text-[10px]"></i>
                 Upload
                 <input type="file" accept="image/*" class="hidden" :disabled="!canManage || logoSaving" @change="pickLogo" />
               </label>
               <button
                 v-if="logoDraft"
-                class="cp-chip !h-7 !text-[8.5px]"
+                class="btn btn-xs !h-7 !text-[10px]"
                 :disabled="!canManage || logoSaving"
                 title="Remove the logo"
                 aria-label="Remove the logo"
                 @click="saveLogo(null)"
               >
-                <i class="fa-solid fa-trash-can text-[8px]"></i>
+                <i class="fa-solid fa-trash-can text-[10px]"></i>
               </button>
             </div>
           </div>
 
           <div class="mt-3 grid gap-2.5 sm:grid-cols-2">
-            <label class="cp-field sm:col-span-2">
-              <span>{{ t('settings.name') }}</span>
-              <input v-model="profile.name" class="cp-input" :disabled="!canManage" />
+            <label class="flex min-w-0 flex-col gap-1 sm:col-span-2">
+              <span class="text-xs font-semibold text-base-content/60">{{ t('settings.name') }}</span>
+              <input v-model="profile.name" class="input input-sm input-bordered w-full" :disabled="!canManage" />
             </label>
-            <label class="cp-field sm:col-span-2">
-              <span>{{ t('settings.description') }}</span>
-              <textarea v-model="profile.description" class="cp-textarea" rows="2" :disabled="!canManage" placeholder="One paragraph a new teammate would understand."></textarea>
+            <label class="flex min-w-0 flex-col gap-1 sm:col-span-2">
+              <span class="text-xs font-semibold text-base-content/60">{{ t('settings.description') }}</span>
+              <textarea v-model="profile.description" class="textarea textarea-sm textarea-bordered w-full" rows="2" :disabled="!canManage" placeholder="One paragraph a new teammate would understand."></textarea>
             </label>
-            <label class="cp-field sm:col-span-2">
-              <span>{{ t('settings.mission') }}</span>
-              <textarea v-model="profile.mission" class="cp-textarea" rows="2" :disabled="!canManage" placeholder="Why the company exists and what winning looks like."></textarea>
+            <label class="flex min-w-0 flex-col gap-1 sm:col-span-2">
+              <span class="text-xs font-semibold text-base-content/60">{{ t('settings.mission') }}</span>
+              <textarea v-model="profile.mission" class="textarea textarea-sm textarea-bordered w-full" rows="2" :disabled="!canManage" placeholder="Why the company exists and what winning looks like."></textarea>
             </label>
           </div>
 
-          <details class="mt-3 border-t border-[var(--cp-border)] pt-2">
-            <summary class="cursor-pointer list-none text-[9px] font-semibold cp-muted transition hover:text-[var(--cp-text)]">
+          <details class="mt-3 border-t border-base-300 pt-2">
+            <summary class="cursor-pointer list-none text-[11px] font-semibold text-base-content/60 transition hover:text-base-content">
               {{ t('settings.moreContext') }}
             </summary>
             <div class="mt-2 grid gap-2.5 sm:grid-cols-2">
-              <label class="cp-field sm:col-span-2">
-                <span>{{ t('settings.vision') }}</span>
-                <textarea v-model="profile.vision" class="cp-textarea" rows="2" :disabled="!canManage"></textarea>
+              <label class="flex min-w-0 flex-col gap-1 sm:col-span-2">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.vision') }}</span>
+                <textarea v-model="profile.vision" class="textarea textarea-sm textarea-bordered w-full" rows="2" :disabled="!canManage"></textarea>
               </label>
-              <label class="cp-field">
-                <span>{{ t('settings.values') }}</span>
-                <input v-model="profile.values" class="cp-input" :disabled="!canManage" />
+              <label class="flex min-w-0 flex-col gap-1">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.values') }}</span>
+                <input v-model="profile.values" class="input input-sm input-bordered w-full" :disabled="!canManage" />
               </label>
-              <label class="cp-field">
-                <span>{{ t('settings.website') }}</span>
-                <input v-model="profile.website" class="cp-input" :disabled="!canManage" placeholder="https://" />
+              <label class="flex min-w-0 flex-col gap-1">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.website') }}</span>
+                <input v-model="profile.website" class="input input-sm input-bordered w-full" :disabled="!canManage" placeholder="https://" />
               </label>
             </div>
           </details>
 
           <div class="mt-3 flex justify-end">
-            <button class="cp-cta" :disabled="!canManage || savingProfile" @click="saveProfile">
+            <button class="btn btn-sm btn-primary" :disabled="!canManage || savingProfile" @click="saveProfile">
               <span v-if="savingProfile" class="loading loading-spinner loading-xs"></span>
               {{ t('settings.saveContext') }}
             </button>
@@ -590,132 +594,132 @@ function ask(prompt) {
         </section>
 
         <!-- AI provider, key and default model -->
-        <section class="cp-card cp-card-pad">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">{{ t('settings.aiConnection') }}</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.aiHint') }}</p>
+              <h2 class="text-base font-bold tracking-tight">{{ t('settings.aiConnection') }}</h2>
+              <p class="mt-0.5 text-xs text-base-content/60">{{ t('settings.aiHint') }}</p>
             </div>
-            <button class="cp-chip !h-7 !text-[8.5px]" @click="openAdvancedAI">
-              <i class="fa-solid fa-sliders text-[8px]"></i> {{ t('settings.advanced') }}
+            <button class="btn btn-xs !h-7 !text-[10px]" @click="openAdvancedAI">
+              <i class="fa-solid fa-sliders text-[10px]"></i> {{ t('settings.advanced') }}
             </button>
           </div>
 
-          <div v-if="!canAdmin" class="mt-3 rounded-xl border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] p-3">
-            <p class="text-[10px] font-semibold">{{ t('settings.adminOnly') }}</p>
-            <p class="mt-0.5 text-[9px] cp-muted">Ask an admin to update them in Global Settings → AI Providers.</p>
+          <div v-if="!canAdmin" class="mt-3 rounded-xl border border-base-300 bg-base-200 p-3">
+            <p class="text-xs font-semibold">{{ t('settings.adminOnly') }}</p>
+            <p class="mt-0.5 text-[11px] text-base-content/60">Ask an admin to update them in Global Settings → AI Providers.</p>
           </div>
 
-          <div v-else-if="ai.loading" class="mt-4 flex items-center gap-2 text-[10px] cp-muted">
+          <div v-else-if="ai.loading" class="mt-4 flex items-center gap-2 text-xs text-base-content/60">
             <span class="loading loading-spinner loading-xs"></span> {{ t('settings.loading') }}
           </div>
 
           <div v-else class="mt-3 space-y-2.5">
-            <div v-if="ai.error" class="rounded-lg border border-[var(--cp-red)]/30 bg-[var(--cp-red-soft)] p-2 text-[9px] text-[var(--cp-error-ink)]">
+            <div v-if="ai.error" class="rounded-lg border border-error/30 bg-error/10 p-2 text-[11px] text-error-ink">
               {{ ai.error }}
             </div>
 
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="text-[9px] font-bold">Current global model roles</p>
+            <div class="rounded-xl bg-base-200 p-2.5">
+              <p class="text-[11px] font-bold">Current global model roles</p>
               <div class="mt-1.5 flex flex-wrap gap-1">
                 <span
                   v-for="role in roleRows"
                   :key="role.id"
-                  class="rounded-full border border-[var(--cp-border)] bg-[var(--cp-surface)] px-1.5 py-0.5 text-[8px] cp-muted"
+                  class="rounded-full border border-base-300 bg-base-100 px-1.5 py-0.5 text-[10px] text-base-content/60"
                   :title="role.value || 'Not set'"
                 >
-                  {{ role.label }}: <strong class="text-[var(--cp-text)]">{{ role.value || '—' }}</strong>
+                  {{ role.label }}: <strong class="text-base-content">{{ role.value || '—' }}</strong>
                 </span>
               </div>
             </div>
 
-            <label class="cp-field">
-              <span>{{ t('settings.provider') }}</span>
-              <select class="cp-select" :value="ai.selectedProvider" :disabled="ai.saving" @change="chooseProvider($event.target.value)">
+            <label class="flex min-w-0 flex-col gap-1">
+              <span class="text-xs font-semibold text-base-content/60">{{ t('settings.provider') }}</span>
+              <select class="select select-sm select-bordered w-full" :value="ai.selectedProvider" :disabled="ai.saving" @change="chooseProvider($event.target.value)">
                 <option v-for="provider in ai.providers" :key="provider.name" :value="provider.name">{{ provider.name }}</option>
                 <option value="__new__">+ Add provider</option>
               </select>
             </label>
 
             <div class="grid gap-2.5 sm:grid-cols-2">
-              <label class="cp-field">
-                <span>{{ t('settings.providerName') }}</span>
-                <input v-model="ai.providerName" class="cp-input" :disabled="ai.saving || !ai.newProvider" placeholder="e.g. OpenAI" />
-                <span v-if="!ai.newProvider" class="cp-help">Existing provider names are fixed. Choose “+ Add provider” to create one.</span>
+              <label class="flex min-w-0 flex-col gap-1">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.providerName') }}</span>
+                <input v-model="ai.providerName" class="input input-sm input-bordered w-full" :disabled="ai.saving || !ai.newProvider" placeholder="e.g. OpenAI" />
+                <span v-if="!ai.newProvider" class="text-xs leading-snug text-base-content/40">Existing provider names are fixed. Choose “+ Add provider” to create one.</span>
               </label>
-              <label class="cp-field">
-                <span>{{ t('settings.protocol') }}</span>
-                <input v-model="ai.providerType" class="cp-input" :disabled="ai.saving" list="cp-ai-protocols" placeholder="openai" />
-                <datalist id="cp-ai-protocols">
+              <label class="flex min-w-0 flex-col gap-1">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.protocol') }}</span>
+                <input v-model="ai.providerType" class="input input-sm input-bordered w-full" :disabled="ai.saving" list="company-ai-protocols" placeholder="openai" />
+                <datalist id="company-ai-protocols">
                   <option value="openai"></option>
                   <option value="anthropic"></option>
                   <option value="ollama"></option>
                   <option value="llmfactory"></option>
                 </datalist>
               </label>
-              <label class="cp-field sm:col-span-2">
-                <span>{{ t('settings.apiUrl') }}</span>
-                <input v-model="ai.apiUrl" class="cp-input font-mono" :disabled="ai.saving" placeholder="https://api.openai.com/v1" />
+              <label class="flex min-w-0 flex-col gap-1 sm:col-span-2">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.apiUrl') }}</span>
+                <input v-model="ai.apiUrl" class="input input-sm input-bordered w-full font-mono" :disabled="ai.saving" placeholder="https://api.openai.com/v1" />
               </label>
-              <label class="cp-field sm:col-span-2">
-                <span>{{ t('settings.apiKey') }}</span>
+              <label class="flex min-w-0 flex-col gap-1 sm:col-span-2">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.apiKey') }}</span>
                 <div class="relative">
-                  <input v-model="ai.apiKey" class="cp-input pr-16 font-mono" :type="ai.showKey ? 'text' : 'password'" :disabled="ai.saving" autocomplete="off" placeholder="sk-…" />
-                  <button type="button" class="absolute right-1 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-[8px] font-bold cp-muted hover:text-[var(--cp-text)]" @click="ai.showKey = !ai.showKey">
+                  <input v-model="ai.apiKey" class="input input-sm input-bordered w-full pr-16 font-mono" :type="ai.showKey ? 'text' : 'password'" :disabled="ai.saving" autocomplete="off" placeholder="sk-…" />
+                  <button type="button" class="absolute right-1 top-1/2 -translate-y-1/2 rounded-md px-2 py-1 text-[10px] font-bold text-base-content/60 hover:text-base-content" @click="ai.showKey = !ai.showKey">
                     {{ ai.showKey ? t('settings.hide') : t('settings.show') }}
                   </button>
                 </div>
-                <span class="cp-help">{{ t('settings.storedGlobally') }}</span>
+                <span class="text-xs leading-snug text-base-content/40">{{ t('settings.storedGlobally') }}</span>
               </label>
             </div>
 
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
+            <div class="rounded-xl bg-base-200 p-2.5">
               <div class="flex items-center justify-between gap-2">
                 <div>
-                  <p class="text-[10px] font-bold">{{ t('settings.model') }}</p>
-                  <p class="mt-0.5 text-[8.5px] cp-muted">{{ t('settings.modelHint') }}</p>
+                  <p class="text-xs font-bold">{{ t('settings.model') }}</p>
+                  <p class="mt-0.5 text-[10px] text-base-content/60">{{ t('settings.modelHint') }}</p>
                 </div>
-                <span class="cp-chip !h-6 !text-[8px]">{{ defaultModelOptions.length }} available</span>
+                <span class="btn btn-xs !h-6 !text-[10px]">{{ defaultModelOptions.length }} available</span>
               </div>
-              <label class="cp-field mt-2">
-                <span>Model</span>
-                <select v-model="ai.defaultModel" class="cp-select" :disabled="ai.saving || !defaultModelOptions.length">
+              <label class="flex min-w-0 flex-col gap-1 mt-2">
+                <span class="text-xs font-semibold text-base-content/60">Model</span>
+                <select v-model="ai.defaultModel" class="select select-sm select-bordered w-full" :disabled="ai.saving || !defaultModelOptions.length">
                   <option value="">{{ defaultModelOptions.length ? 'Choose a model…' : 'No model yet' }}</option>
                   <option v-for="name in defaultModelOptions" :key="name" :value="name">{{ name }}</option>
                 </select>
               </label>
 
               <div class="mt-2 grid gap-2 sm:grid-cols-2">
-                <label class="cp-field">
-                  <span>{{ t('settings.displayName') }}</span>
-                  <input v-model="ai.newModelName" class="cp-input" :disabled="ai.saving" placeholder="e.g. GPT-4o" />
+                <label class="flex min-w-0 flex-col gap-1">
+                  <span class="text-xs font-semibold text-base-content/60">{{ t('settings.displayName') }}</span>
+                  <input v-model="ai.newModelName" class="input input-sm input-bordered w-full" :disabled="ai.saving" placeholder="e.g. GPT-4o" />
                 </label>
-                <label class="cp-field">
-                  <span>{{ t('settings.modelId') }}</span>
-                  <input v-model="ai.newModelId" class="cp-input font-mono" :disabled="ai.saving" placeholder="gpt-4o" />
+                <label class="flex min-w-0 flex-col gap-1">
+                  <span class="text-xs font-semibold text-base-content/60">{{ t('settings.modelId') }}</span>
+                  <input v-model="ai.newModelId" class="input input-sm input-bordered w-full font-mono" :disabled="ai.saving" placeholder="gpt-4o" />
                 </label>
               </div>
               <div class="mt-1.5 flex flex-wrap items-center justify-between gap-2">
-                <p v-if="ai.newModelError" class="text-[8.5px] text-[var(--cp-error-ink)]">{{ ai.newModelError }}</p>
-                <p v-else class="text-[8.5px] cp-muted">{{ t('settings.modelHelp') }}</p>
-                <button type="button" class="cp-chip !h-7 !text-[8.5px]" :disabled="ai.saving" @click="addModelToDraft">
-                  <i class="fa-solid fa-plus text-[7px]"></i> {{ t('settings.addModelBtn') }}
+                <p v-if="ai.newModelError" class="text-[10px] text-error-ink">{{ ai.newModelError }}</p>
+                <p v-else class="text-[10px] text-base-content/60">{{ t('settings.modelHelp') }}</p>
+                <button type="button" class="btn btn-xs !h-7 !text-[10px]" :disabled="ai.saving" @click="addModelToDraft">
+                  <i class="fa-solid fa-plus text-[10px]"></i> {{ t('settings.addModelBtn') }}
                 </button>
               </div>
             </div>
 
-            <label class="flex items-start gap-2 rounded-xl border border-[var(--cp-border)] p-2.5 text-[9px] leading-relaxed">
-              <input v-model="ai.applyAll" type="checkbox" class="mt-0.5 accent-[var(--cp-lime)]" />
+            <label class="flex items-start gap-2 rounded-xl border border-base-300 p-2.5 text-[11px] leading-relaxed">
+              <input v-model="ai.applyAll" type="checkbox" class="mt-0.5 accent-accent" />
               <span>
-                <strong class="block text-[10px]">{{ t('settings.applyAll') }}</strong>
+                <strong class="block text-xs">{{ t('settings.applyAll') }}</strong>
                 {{ t('settings.applyAllHint') }}
-                Use <button type="button" class="font-bold text-[var(--cp-accent-ink)]" @click="openAdvancedAI">Advanced</button> for separate models.
+                Use <button type="button" class="font-bold text-accent-ink" @click="openAdvancedAI">Advanced</button> for separate models.
               </span>
             </label>
 
             <div class="flex items-center justify-between gap-2 pt-0.5">
-              <p class="text-[8.5px] cp-muted">{{ t('settings.advancedHint') }}</p>
-              <button class="cp-cta" :disabled="ai.saving" @click="saveAI">
+              <p class="text-[10px] text-base-content/60">{{ t('settings.advancedHint') }}</p>
+              <button class="btn btn-sm btn-primary" :disabled="ai.saving" @click="saveAI">
                 <span v-if="ai.saving" class="loading loading-spinner loading-xs"></span>
                 {{ t('settings.saveAI') }}
               </button>
@@ -726,15 +730,15 @@ function ask(prompt) {
 
       <div class="space-y-4 xl:col-span-5">
         <!-- Autonomy -->
-        <section class="cp-card cp-card-pad">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">{{ t('settings.autonomy') }}</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">{{ t('settings.autonomyHint') }}</p>
+              <h2 class="text-base font-bold tracking-tight">{{ t('settings.autonomy') }}</h2>
+              <p class="mt-0.5 text-xs text-base-content/60">{{ t('settings.autonomyHint') }}</p>
             </div>
             <button
               class="relative h-5 w-9 shrink-0 rounded-full border transition-colors"
-              :class="policy.enabled ? 'border-transparent bg-[var(--cp-lime)]' : 'border-[var(--cp-border-strong)] bg-[var(--cp-surface-strong)]'"
+              :class="policy.enabled ? 'border-transparent bg-accent' : 'border-base-content/20 bg-base-300'"
               role="switch"
               :aria-checked="policy.enabled"
               aria-label="Enable company autopilot"
@@ -745,43 +749,43 @@ function ask(prompt) {
           </div>
 
           <div class="mt-3 grid gap-2.5">
-            <label class="cp-field">
-              <span>{{ t('settings.level') }}</span>
-              <select v-model="policy.level" class="cp-select" :disabled="!canManage">
+            <label class="flex min-w-0 flex-col gap-1">
+              <span class="text-xs font-semibold text-base-content/60">{{ t('settings.level') }}</span>
+              <select v-model="policy.level" class="select select-sm select-bordered w-full" :disabled="!canManage">
                 <option v-for="level in AUTONOMY_LEVELS" :key="level.id" :value="level.id">{{ level.label }} — {{ level.hint }}</option>
               </select>
             </label>
-            <label class="cp-field">
-              <span>{{ t('settings.dailyBudget') }}</span>
-              <input v-model.number="policy.daily_budget_cxjcoins" type="number" min="0" step="1" class="cp-input" :disabled="!canManage" />
-              <span class="cp-help">{{ t('settings.noLimit') }}</span>
+            <label class="flex min-w-0 flex-col gap-1">
+              <span class="text-xs font-semibold text-base-content/60">{{ t('settings.dailyBudget') }}</span>
+              <input v-model.number="policy.daily_budget_cxjcoins" type="number" min="0" step="1" class="input input-sm input-bordered w-full" :disabled="!canManage" />
+              <span class="text-xs leading-snug text-base-content/40">{{ t('settings.noLimit') }}</span>
             </label>
-            <label class="flex items-start gap-2 text-[9.5px] leading-relaxed">
-              <input v-model="policy.require_human_acceptance" type="checkbox" class="mt-0.5 accent-[var(--cp-lime)]" :disabled="!canManage" />
+            <label class="flex items-start gap-2 text-[11px] leading-relaxed">
+              <input v-model="policy.require_human_acceptance" type="checkbox" class="mt-0.5 accent-accent" :disabled="!canManage" />
               <span>{{ t('settings.acceptance') }}</span>
             </label>
           </div>
 
-          <details class="mt-2 border-t border-[var(--cp-border)] pt-2">
-            <summary class="cursor-pointer list-none text-[9px] font-semibold cp-muted hover:text-[var(--cp-text)]">{{ t('settings.advancedCycle') }}</summary>
+          <details class="mt-2 border-t border-base-300 pt-2">
+            <summary class="cursor-pointer list-none text-[11px] font-semibold text-base-content/60 hover:text-base-content">{{ t('settings.advancedCycle') }}</summary>
             <div class="mt-2 grid grid-cols-2 gap-2">
-              <label class="cp-field">
-                <span>{{ t('settings.interval') }}</span>
-                <input v-model.number="policy.interval_minutes" type="number" min="5" class="cp-input" :disabled="!canManage" />
+              <label class="flex min-w-0 flex-col gap-1">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.interval') }}</span>
+                <input v-model.number="policy.interval_minutes" type="number" min="5" class="input input-sm input-bordered w-full" :disabled="!canManage" />
               </label>
-              <label class="cp-field">
-                <span>{{ t('settings.concurrent') }}</span>
-                <input v-model.number="policy.max_concurrent_missions" type="number" min="1" class="cp-input" :disabled="!canManage" />
+              <label class="flex min-w-0 flex-col gap-1">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.concurrent') }}</span>
+                <input v-model.number="policy.max_concurrent_missions" type="number" min="1" class="input input-sm input-bordered w-full" :disabled="!canManage" />
               </label>
-              <label class="cp-field col-span-2">
-                <span>{{ t('settings.perCycle') }}</span>
-                <input v-model.number="policy.max_missions_per_cycle" type="number" min="1" class="cp-input" :disabled="!canManage" />
+              <label class="flex min-w-0 flex-col gap-1 col-span-2">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('settings.perCycle') }}</span>
+                <input v-model.number="policy.max_missions_per_cycle" type="number" min="1" class="input input-sm input-bordered w-full" :disabled="!canManage" />
               </label>
             </div>
           </details>
 
           <div class="mt-3 flex justify-end">
-            <button class="cp-cta" :disabled="!canManage || savingAutonomy" @click="saveAutonomy">
+            <button class="btn btn-sm btn-primary" :disabled="!canManage || savingAutonomy" @click="saveAutonomy">
               <span v-if="savingAutonomy" class="loading loading-spinner loading-xs"></span>
               {{ t('settings.saveAutonomy') }}
             </button>
@@ -789,79 +793,79 @@ function ask(prompt) {
         </section>
 
         <!-- People -->
-        <section class="cp-card cp-card-pad">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
           <div class="flex items-start justify-between gap-2">
             <div>
-              <h2 class="cp-title">People</h2>
-              <p class="mt-0.5 text-[10px] cp-muted">Owners, managers and members.</p>
+              <h2 class="text-base font-bold tracking-tight">People</h2>
+              <p class="mt-0.5 text-xs text-base-content/60">Owners, managers and members.</p>
             </div>
-            <button class="cp-chip" :disabled="!canAdmin" @click="ask('Add a person to my company')">
-              <i class="fa-solid fa-user-plus text-[9px]"></i> Add person
+            <button class="btn btn-xs" :disabled="!canAdmin" @click="ask('Add a person to my company')">
+              <i class="fa-solid fa-user-plus text-[11px]"></i> Add person
             </button>
           </div>
           <div v-if="members.length" class="mt-2 space-y-1.5">
-            <div v-for="member in members" :key="member.username" class="flex items-center gap-2 rounded-lg bg-[var(--cp-surface-soft)] px-2.5 py-1.5">
-              <span class="min-w-0 flex-1 truncate text-[10px] font-semibold">{{ member.title || member.username }}</span>
-              <span class="text-[8px] uppercase tracking-wide cp-muted">{{ member.company_role || 'member' }}</span>
+            <div v-for="member in members" :key="member.username" class="flex items-center gap-2 rounded-lg bg-base-200 px-2.5 py-1.5">
+              <span class="min-w-0 flex-1 truncate text-xs font-semibold">{{ member.title || member.username }}</span>
+              <span class="text-[10px] uppercase tracking-wide text-base-content/60">{{ member.company_role || 'member' }}</span>
             </div>
           </div>
-          <p v-else class="mt-2 text-[10px] cp-muted">No people yet.</p>
+          <p v-else class="mt-2 text-xs text-base-content/60">No people yet.</p>
         </section>
 
         <!-- Plan -->
-        <section class="cp-card cp-card-pad">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
           <div class="flex items-start justify-between gap-2">
-            <h2 class="cp-title">{{ t('settings.plan') }}</h2>
-            <button class="cp-chip" @click="emit('open-projects')" :disabled="!canManage">
-              <i class="fa-solid fa-cubes text-[9px]"></i> Manage projects
+            <h2 class="text-base font-bold tracking-tight">{{ t('settings.plan') }}</h2>
+            <button class="btn btn-xs" @click="emit('open-projects')" :disabled="!canManage">
+              <i class="fa-solid fa-cubes text-[11px]"></i> Manage projects
             </button>
           </div>
           <div class="mt-2.5 grid grid-cols-2 gap-2">
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.teams') }}</p>
+            <div class="rounded-xl bg-base-200 p-2.5">
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('settings.teams') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.teams || 0 }}</p>
             </div>
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.people') }}</p>
+            <div class="rounded-xl bg-base-200 p-2.5">
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('settings.people') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ (counts.human || counts.humans || 0) + (counts.ai || 0) }}</p>
             </div>
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.projects') }}</p>
+            <div class="rounded-xl bg-base-200 p-2.5">
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('settings.projects') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.projects || 0 }}</p>
             </div>
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2.5">
-              <p class="cp-eyebrow !text-[7.5px]">{{ t('settings.aiTeammates') }}</p>
+            <div class="rounded-xl bg-base-200 p-2.5">
+              <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('settings.aiTeammates') }}</p>
               <p class="mt-0.5 text-lg font-extrabold leading-none">{{ counts.ai || 0 }}</p>
             </div>
           </div>
         </section>
 
-        <section class="cp-card cp-card-pad">
-          <h2 class="cp-title">Companies</h2>
-          <p class="mt-0.5 text-[9.5px] leading-relaxed cp-muted">
+        <section class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4">
+          <h2 class="text-base font-bold tracking-tight">Companies</h2>
+          <p class="mt-0.5 text-[11px] leading-relaxed text-base-content/60">
             The default company covers every project. Create another company when the
             business, teams or project list must stay separate.
           </p>
-          <button class="cp-chip mt-2.5" @click="emit('new-company')">
-            <i class="fa-solid fa-plus text-[9px]"></i> New company
+          <button class="btn btn-xs mt-2.5" @click="emit('new-company')">
+            <i class="fa-solid fa-plus text-[11px]"></i> New company
           </button>
         </section>
 
-        <section v-if="canAdmin" class="cp-card cp-card-pad border-[var(--cp-red)]/25">
-          <h2 class="cp-title text-error">{{ t('settings.danger') }}</h2>
-          <p class="mt-0.5 text-[9.5px] leading-relaxed cp-muted">{{ t('settings.dangerHint') }}</p>
-          <button class="cp-chip mt-2.5 !border-error/30 !text-error" @click="confirmDelete = true">{{ t('settings.delete') }}</button>
+        <section v-if="canAdmin" class="rounded-box border border-base-300 bg-base-100 shadow-sm p-4 border-error/25">
+          <h2 class="text-base font-bold tracking-tight text-error-ink">{{ t('settings.danger') }}</h2>
+          <p class="mt-0.5 text-[11px] leading-relaxed text-base-content/60">{{ t('settings.dangerHint') }}</p>
+          <button class="btn btn-xs mt-2.5 !border-error/30 !text-error-ink" @click="confirmDelete = true">{{ t('settings.delete') }}</button>
         </section>
       </div>
     </div>
 
     <div v-if="confirmDelete" class="fixed inset-0 z-[95] grid place-items-center bg-black/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true">
-      <div class="cp-card w-full max-w-sm p-4">
+      <div class="rounded-box border border-base-300 bg-base-100 shadow-sm w-full max-w-sm p-4">
         <h3 class="text-base font-extrabold">{{ t('settings.deleteConfirm') }} · {{ company.name }}</h3>
-        <p class="mt-1 text-[10px] leading-relaxed cp-muted">This removes the company document and its journal. Project files, boards and chats are kept.</p>
+        <p class="mt-1 text-xs leading-relaxed text-base-content/60">This removes the company document and its journal. Project files, boards and chats are kept.</p>
         <div class="mt-3 flex justify-end gap-2">
-          <button class="cp-chip" @click="confirmDelete = false">{{ t('settings.cancel') }}</button>
-          <button class="cp-chip !border-transparent !bg-[var(--cp-red)] !text-white" @click="deleteCompany(); confirmDelete = false">{{ t('settings.delete') }}</button>
+          <button class="btn btn-xs" @click="confirmDelete = false">{{ t('settings.cancel') }}</button>
+          <button class="btn btn-xs !border-transparent !bg-error !text-error-content" @click="deleteCompany(); confirmDelete = false">{{ t('settings.delete') }}</button>
         </div>
       </div>
     </div>

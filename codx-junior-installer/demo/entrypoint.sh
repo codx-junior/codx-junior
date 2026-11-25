@@ -27,6 +27,12 @@ mkdir -p \
     "${CODX_JUNIOR_STATIC_FOLDER}/uploads" \
     "${HOME}/.config"
 
+if command -v docker >/dev/null 2>&1; then
+    echo "Docker CLI: $(docker --version)"
+else
+    echo "WARNING: Docker CLI not found in PATH; container shells and stacks will fail." >&2
+fi
+
 cat <<BANNER
 =============================================================================
  codx-junior  -  http://localhost:${CODX_JUNIOR_WEB_PORT:-19981}

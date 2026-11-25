@@ -2,7 +2,7 @@
   <div class="flex flex-wrap items-center gap-2">
     <div class="join">
       <button
-        v-for="range in ranges"
+        v-for="range in rangeOptions"
         :key="range.value"
         @click="setRange(range.value)"
         class="btn btn-sm join-item"
@@ -47,12 +47,15 @@ export default {
     local: { type: Boolean, default: false },
     range: { type: String, default: 'month' },
     fromDate: { type: String, default: null },
-    toDate: { type: String, default: null }
+    toDate: { type: String, default: null },
+    // Optional override of the visible ranges. Callers that need the exact
+    // same set as the Follow-up review pass `TASK_RANGE_OPTIONS`.
+    ranges: { type: Array, default: null }
   },
   emits: ['update:range', 'update:from-date', 'update:to-date'],
   data() {
     return {
-      ranges: [
+      defaultRanges: [
         { label: 'Today', value: 'today' },
         { label: 'Last 7 days', value: 'week' },
         { label: 'Last 30 days', value: 'month' },
@@ -61,6 +64,11 @@ export default {
     }
   },
   computed: {
+    // A parent may pass its own range list; without it the selector keeps the
+    // historical four options.
+    rangeOptions() {
+      return (this.ranges && this.ranges.length) ? this.ranges : this.defaultRanges
+    },
     rangeFilter() {
       return this.local ? this.range : this.$storex.planning.rangeFilter
     },

@@ -1095,6 +1095,7 @@ def repair_incomplete_messages(
     skip = set(skip_turn_ids or ())
     superseded = set(superseded_turn_ids or ())
     repaired = 0
+    repaired_messages = []
     for message in list(getattr(chat, "messages", []) or []):
         if getattr(message, "role", "") != "assistant":
             continue
@@ -1127,19 +1128,30 @@ def repair_incomplete_messages(
         }
         _mark_interrupted_events(message, error=error)
         message.hide = bool(hide)
+        repaired_messages.append(message)
+        repaired += 1
 
-
+    if repaired_messages:
+        # ONE save for every repaired response: a chat interrupted several times
+        # carries one placeholder per attempt, and saving per message rewrote
+        # the whole conversation once per placeholder.
         try:
-            update = getattr(chat_manager, "update_message", None)
-            if callable(update):
-                update(chat=chat, message=message)
+            apply = getattr(chat_manager, "apply_messages", None)
+            if callable(apply):
+                apply(chat=chat, messages=repaired_messages)
             else:  # pragma: no cover - defensive fallback
-                chat_manager.save_chat(chat=chat)
-            repaired += 1
+                update = getattr(chat_manager, "update_message", None)
+                if callable(update):
+                    for message in repaired_messages:
+                        update(chat=chat, message=message)
+                else:
+                    chat_manager.save_chat(chat=chat)
         except Exception as ex:  # pragma: no cover - defensive
             logger.warning(
-                "ChatTurnStore: could not persist repaired message '%s': %s",
-                getattr(message, "doc_id", ""),
+                "ChatTurnStore: could not persist %d repaired message(s) of "
+                "chat '%s': %s",
+                len(repaired_messages),
+                getattr(chat, "id", ""),
                 ex,
             )
     if repaired:

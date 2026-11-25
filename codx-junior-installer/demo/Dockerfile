@@ -7,6 +7,7 @@
 #   client    -> compiled in a `node` builder stage (never shipped)
 #   api       -> FastAPI + background worker + embedded LanceDB
 #   tools     -> pandoc, TeX Live, tesseract, ffmpeg, Playwright/Chromium
+#   docker    -> Docker CLI + compose/buildx plugins (stacks, builds, shells)
 #   embeddings-> torch (CPU) + sentence-transformers
 #   web       -> nginx serving the compiled SPA and proxying /api
 #   process   -> supervisord (api + background worker + nginx)
@@ -23,11 +24,13 @@ ARG NODE_VERSION=22
 # -----------------------------------------------------------------------------
 # 1. Web client (Node only lives in this stage)
 # -----------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-bookworm-slim AS client
+FROM node:${NODE_VERSION}-bookworm-slim AS client-deps
 
 WORKDIR /build/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci --no-audit --no-fund --prefer-offline
+
+FROM client-deps AS client
 
 COPY client ./
 # `build-only` = `vite build`. `npm run build` would also run `vue-tsc`, which
@@ -39,6 +42,9 @@ RUN npm run build-only
 # -----------------------------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
+# CODX_BROWSER_USE_PYTHON: browser-use runs in its own venv (it pins
+# pydantic/pydantic-ai/mcp) and must never constrain the API dependencies; see
+# codx.junior.browser.use_agent and api/scripts/browser_use_worker.py.
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -49,6 +55,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CODX_JUNIOR_PROJECTS_PATH=/home/codx-junior-projects \
     CODX_JUNIOR_CONFIG_FOLDER=/home/codx-junior/.codx-junior \
     CODX_JUNIOR_API_VENV=/home/codx-junior/.venv \
+    CODX_BROWSER_USE_PYTHON=/opt/browser-use/bin/python \
     CODX_JUNIOR_API_ANALYTICS_DATA_PATH=/home/codx-junior/analytics \
     CODX_JUNIOR_AI_RAW_LOG_PATH=/home/codx-junior/analytics/chats \
     CODX_JUNIOR_STATIC_FOLDER=/home/codx-junior/static \
@@ -80,6 +87,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
                /home/codx-junior/analytics /home/codx-junior/static \
                ${CODX_SUPERVISOR_LOG_FOLDER}
 
+# Docker CLI + the two plugins the product shells out to. The API does NOT run
+# a daemon: it talks to the host socket (or a --dind daemon) through the CLI.
+#
+#   docker exec -it   container web shell (api/codx/junior/infra/shell.py)
+#   docker compose    stack up/stop/logs (api/codx/junior/infra/compose.py)
+#   docker build      project Dockerfiles (api/codx/junior/infra/dockerfiles.py)
+#
+# Interactive exec is a hijacked, bidirectional stream that httpx cannot drive,
+# so those features REQUIRE this binary in the image. A missing CLI is not a
+# degraded mode: the Infrastructure panel, stacks and builds all fail. Keep the
+# install and the final `--version` assertions in one layer so a silent package
+# rename cannot ship an image without it.
+#
+# The plugins come from Docker's repository (Debian's `docker.io` has neither
+# `docker compose ls --format json` nor buildx). VERSION_CODENAME keeps the
+# suite aligned with the base image when python:3.11-slim moves to a new Debian.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && . /etc/os-release \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-buildx-plugin \
+        docker-compose-plugin \
+    && rm -rf /var/lib/apt/lists/* \
+    && docker --version \
+    && docker compose version \
+    && docker buildx version
+
 WORKDIR ${CODX_JUNIOR_PATH}
 
 COPY api ./api
@@ -98,7 +138,10 @@ RUN python -m venv "${CODX_JUNIOR_API_VENV}" \
     && "${CODX_JUNIOR_API_VENV}/bin/pip" install \
         --index-url https://download.pytorch.org/whl/cpu torch \
     && "${CODX_JUNIOR_API_VENV}/bin/pip" install "./api[local-models,browser]" \
-    && "${CODX_JUNIOR_API_VENV}/bin/python" -m playwright install --with-deps chromium
+    && "${CODX_JUNIOR_API_VENV}/bin/python" -m playwright install --with-deps chromium \
+    && python -m venv /opt/browser-use \
+    && /opt/browser-use/bin/pip install --upgrade pip \
+    && /opt/browser-use/bin/pip install "browser-use==1.0.8"
 
 # -----------------------------------------------------------------------------
 # Build provenance, declared LAST on purpose. Declared before the apt-get and

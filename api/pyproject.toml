@@ -77,12 +77,26 @@ local-models = [
 # this is only the Python client used by the fetch/browser tools)
 browser = [
     "playwright",
+    # Encrypted-at-rest stores (the secrets vault and the browser login store
+    # under .codx/browser_store): without this the API refuses to save
+    # passwords/cookies rather than writing them in plaintext.
+    "cryptography>=41.0",
+]
+# browser-use brings its own agent loop (its model writes Python against raw
+# CDP). It pins exact pydantic / pydantic-ai / mcp versions, so it is NOT a
+# runtime dependency of the API: the released image installs it into a separate
+# venv (`/opt/browser-use`, see CODX_BROWSER_USE_PYTHON) and the API talks to
+# `api/scripts/browser_use_worker.py` over a JSON pipe. This extra is for local
+# development, where the same worker can run on the API interpreter.
+browser-use = [
+    "browser-use==1.0.8",
 ]
 # Everything a full deployment needs
 full = [
     "sentence-transformers>=6.2.0",
     "torch>=2.4.0",
     "playwright",
+    "cryptography>=41.0",
 ]
 [project.scripts]
 codx-junior = 'codx.app:app'

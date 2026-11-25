@@ -67,6 +67,7 @@ from typing import Any, Optional, List, Tuple
 from urllib.parse import urlparse
 
 from codx.junior.browser.model import BrowserSession, SharedFolder, normalize_size
+from codx.junior.computer.images import browser_image_profile
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,10 @@ MAX_SHARED_FOLDERS = 20
 #: advanced settings cannot override them: they carry the live-view routing and
 #: the AI control channel.
 RESERVED_BROWSER_ENV = {
-    "PUID", "PGID", "TZ", "SUBFOLDER", "TITLE", "CHROME_CLI",
+    "PUID", "PGID", "TZ", "SUBFOLDER", "TITLE",
+    # The browser CLI is owned by codx-junior (CDP + start URL): one per image.
+    "CHROME_CLI", "BRAVE_CLI", "EDGE_CLI", "OPERA_CLI", "VIVALDI_CLI",
+    "FIREFOX_CLI", "LIBREWOLF_CLI",
 }
 RESERVED_LINUX_ENV = {
     "PUID", "PGID", "TZ", "SUBFOLDER", "TITLE", "DISPLAY", "START_DOCKER",
@@ -744,12 +748,25 @@ class DockerBrowserManager:
             session.browser_profile_path = profile_path
             session.profile_path = profile_path
             session.image = image
-            session.engine = "chromium" if is_browser else "desktop"
+            if is_browser:
+                browser_profile = browser_image_profile(image)
+                supports_cdp = browser_profile.supports_cdp if browser_profile else True
+                session.engine = browser_profile.engine if browser_profile else "chromium"
+                # A Firefox-based image has no CDP: the session is live-view
+                # only and the AI must hand the page to the human.
+                session.control = "cdp" if supports_cdp else "none"
+                if not supports_cdp:
+                    session.capabilities = [
+                        capability for capability in (session.capabilities or [])
+                        if capability not in ("browser", "mouse", "keyboard")
+                    ] or ["screenshot", "files"]
+            else:
+                session.engine = "desktop"
+                session.control = session.control or (
+                    "docker" if session.kind == "linux" else "vnc"
+                )
             session.traefik_domain = self.traefik_domain
             session.traefik_path_prefix = path_prefix
-            session.control = session.control or (
-                "cdp" if is_browser else ("docker" if session.kind == "linux" else "vnc")
-            )
             if session.kind == "linux":
                 session.display = self.display
                 if (session.live_view or "selkies") in ("selkies", "kasmvnc"):
@@ -1160,32 +1177,43 @@ class DockerBrowserManager:
         path_prefix: str,
         router_name: str,
     ) -> List[str]:
-        """Build the ``docker run`` command for a Chromium session."""
+        """Build the ``docker run`` command for the selected browser image."""
         proxy_script = self._prepare_cdp_proxy(session.id)
         url = (session.current_url or os.environ.get("CODX_BROWSER_START_URL") or "about:blank").strip()
         width = int(session.desktop_width or 1920)
         height = int(session.desktop_height or 1080)
-        chrome_args = " ".join(
-            arg for arg in [
-                "--remote-debugging-port=9222",
-                "--remote-allow-origins=*",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-session-crashed-bubble",
-                "--disable-restore-session-state",
-                # Keep the 100+ MB persistent profile for identity only: the
-                # HTTP/media caches are rewritten constantly and belong in the
-                # container's ephemeral /tmp.
-                "--disk-cache-dir=/tmp/codx-chromium-cache",
-                "--media-cache-dir=/tmp/codx-chromium-media",
-                "--disable-background-networking",
-                "--start-maximized",
-                f"--window-size={width},{height}",
-                url,
-            ] if arg
-        )
+        profile = browser_image_profile(self.image_for(session))
+        supports_cdp = profile.supports_cdp if profile else True
+        cli_env = (profile.cli_env if profile else None) or "CHROME_CLI"
+
+        if supports_cdp:
+            # Chromium family: debug port + a shared page, driven by Playwright
+            # and browser-use over CDP.
+            browser_args = " ".join(
+                arg for arg in [
+                    "--remote-debugging-port=9222",
+                    "--remote-allow-origins=*",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-session-crashed-bubble",
+                    "--disable-restore-session-state",
+                    # Keep the 100+ MB persistent profile for identity only: the
+                    # HTTP/media caches are rewritten constantly and belong in
+                    # the container's ephemeral /tmp.
+                    "--disk-cache-dir=/tmp/codx-chromium-cache",
+                    "--media-cache-dir=/tmp/codx-chromium-media",
+                    "--disable-background-networking",
+                    "--start-maximized",
+                    f"--window-size={width},{height}",
+                    url,
+                ] if arg
+            )
+        else:
+            # Firefox family: no CDP (live-view only). The CLI still receives
+            # the start URL; no debug flags are passed.
+            browser_args = url or ""
 
         cmd = [
             "docker",
@@ -1201,7 +1229,7 @@ class DockerBrowserManager:
             "-e", "TZ=Etc/UTC",
             "-e", f"SUBFOLDER={path_prefix}",
             "-e", f"TITLE={self._container_title(session)}",
-            "-e", f"CHROME_CLI={chrome_args}",
+            *(["-e", f"{cli_env}={browser_args}"] if cli_env and browser_args else []),
             *self._extra_env_args(session, RESERVED_BROWSER_ENV),
             "-v", f"{profile_path}:/config",
             "-v", f"{proxy_script}:/cdp_proxy.py:ro",

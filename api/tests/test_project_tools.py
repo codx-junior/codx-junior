@@ -537,6 +537,31 @@ def test_project_changes_invalid_scope(git_project):
     assert "Invalid scope" in response.user_response
 
 
+def test_project_changes_unresolvable_path_filter_is_loud(git_project):
+    """A filter outside the project root must not read as "nothing changed".
+
+    ``git diff`` prints nothing for a path it cannot match, so a wrong root was
+    indistinguishable from a clean tree: a direct route to a false green.
+    """
+    missing = project_changes(paths="nowhere/absent.txt", settings=git_project)
+    assert "do not resolve under the project root" in missing.user_response
+    assert "No changes found" not in missing.user_response
+
+    escaping = project_changes(paths="../outside.txt", settings=git_project)
+    assert "do not resolve under the project root" in escaping.user_response
+
+
+def test_project_changes_resolved_filter_states_root_and_scope(git_project):
+    target = os.path.join(git_project.abs_project_path, "sample.txt")
+    assert os.path.exists(target)
+
+    response = project_changes(paths="sample.txt", settings=git_project)
+
+    assert response.user_response.startswith("No changes found for")
+    assert "sample.txt" in response.user_response
+    assert git_project.abs_project_path in response.user_response
+
+
 # ---------------------------------------------------------------------------
 # Edit application
 # ---------------------------------------------------------------------------

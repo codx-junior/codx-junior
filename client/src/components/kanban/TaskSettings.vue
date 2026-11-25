@@ -180,9 +180,6 @@ import ProfileSelector from '../profile/ProfileSelector.vue'
               When the agent picks this task up on its own. Use an after-hours time (e.g. 01:00) so it can change code while nobody is working.
             </p>
 
-            <!-- Repeat: a recurrence turns the task into a series. The rule is
-                 stored canonical and `wake_at` is armed to the next occurrence;
-                 the autonomy runtime re-arms it after every run. -->
             <div class="mt-3 rounded-lg border border-base-300/60 bg-base-200/30 p-2 space-y-2">
               <div class="flex items-center gap-2">
                 <span class="text-[11px] font-medium text-base-content/60">Repeat</span>
@@ -580,9 +577,9 @@ export default {
     },
 
     // ── Repeat (recurrence) ──────────────────────────────────────────────
-    // A recurrence is NOT part of the metadata save: it must arm `wake_at` and
-    // remember the home column, so it goes through /api/chats/schedule, which
-    // returns the canonical rule and the next run.
+    // A recurrence is NOT part of the metadata save: arming `wake_at` and
+    // remembering the home column is the scheduler's job, so it goes through
+    // /api/chats/schedule, which returns the canonical rule and the next run.
     applyRepeat(text) {
       const value = String(text === undefined ? this.repeatText : text || '').trim()
       if (!value) return

@@ -46,7 +46,12 @@ DISCOVERY_WAIT_SECONDS = float(
 
 # Bounded filesystem scan used instead of ``find /``.
 MAX_SCAN_DEPTH = int(os.environ.get("CODX_JUNIOR_PROJECT_SCAN_DEPTH", "6"))
-MAX_SCAN_DIRS = int(os.environ.get("CODX_JUNIOR_PROJECT_SCAN_DIRS", "20000"))
+# Per-root directory budget (see :func:`_scan_codx_paths_roots`). A real
+# installation with ~280 discovered projects walks ~28k directories, so the
+# old 20k default truncated the projects root and silently dropped the projects
+# found after the cut. 100k keeps a wide margin (~1000 projects) while still
+# bounding a pathological tree.
+MAX_SCAN_DIRS = int(os.environ.get("CODX_JUNIOR_PROJECT_SCAN_DIRS", "100000"))
 SCAN_SKIP_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules",
     "__pycache__", "site-packages", "dist", "build", "target", "vendor",
@@ -64,9 +69,22 @@ GIT_WORKTREE_GITDIR_MARKER = "/worktrees/"
 WORKTREE_FOLDER_NAME = ".worktrees"
 
 def is_project_visible(settings: CODXJuniorSettings) -> bool:
-    project_is_visible = not CODX_JUNIOR_HIDDEN or \
-        "/codx-junior/" not in settings.codx_path
-    return project_is_visible
+    """Return False for the codx-junior checkout and every child project.
+
+    CODX_JUNIOR_HIDDEN is the installer's --hidden flag. The old check only
+    matched "/codx-junior/" with a trailing slash, so the codx-junior project
+    root itself (for example ".../codx-junior") stayed visible.
+    """
+    if not CODX_JUNIOR_HIDDEN:
+        return True
+    path = (settings.codx_path or "").replace("\\", "/").rstrip("/")
+    if not path:
+        return True
+    return not (
+        path == "codx-junior"
+        or path.endswith("/codx-junior")
+        or "/codx-junior/" in path
+    )
 
 def get_projects_root_path() -> str:
     """
@@ -517,24 +535,39 @@ def _scan_codx_paths_roots() -> List[str]:
     Depth and directory count are bounded and heavy folders (``node_modules``,
     VCS metadata, virtualenvs, dot-directories) are pruned, so the scan costs a
     few milliseconds instead of the 10.7 s measured for ``find /``.
+
+    The directory budget (``CODX_JUNIOR_PROJECT_SCAN_DIRS``) applies to **each
+    root**, not to the scan as a whole. With a single shared budget a projects
+    root holding hundreds of checkouts consumed it in one go and the walk
+    returned before reaching the remaining roots, so a project living outside
+    that root (the codx-junior checkout under ``$HOME``, or a project stored in
+    a sibling folder) silently disappeared from discovery. Every caller that
+    resolves it by id then failed with "Project '...' is not available (not
+    discovered)", even though the project was still linked to a company.
     """
     roots = get_project_scan_roots()
     found: List[str] = []
     seen = set()
     visited = 0
+    truncated: List[str] = []
 
     for root in roots:
         root_depth = root.rstrip(os.sep).count(os.sep)
+        root_visited = 0
         for dir_path, dir_names, _file_names in os.walk(root, followlinks=False):
             visited += 1
-            if visited > MAX_SCAN_DIRS:
+            root_visited += 1
+            if root_visited > MAX_SCAN_DIRS:
+                truncated.append(root)
                 logger.warning(
-                    "Project discovery stopped after %d directories "
-                    "(CODX_JUNIOR_PROJECT_SCAN_DIRS); configure "
+                    "Project discovery stopped after %d directories in %s "
+                    "(CODX_JUNIOR_PROJECT_SCAN_DIRS); continuing with the "
+                    "remaining roots. Configure "
                     "CODX_JUNIOR_PROJECT_SCAN_ROOTS to narrow the scan.",
                     MAX_SCAN_DIRS,
+                    root,
                 )
-                return found
+                break
 
             if ".codx" in dir_names:
                 codx_path = os.path.join(dir_path, ".codx")
@@ -556,10 +589,11 @@ def _scan_codx_paths_roots() -> List[str]:
             ]
 
     logger.info(
-        "Project discovery: %d project files under %d roots (%d directories walked)",
+        "Project discovery: %d project files under %d roots (%d directories walked%s)",
         len(found),
         len(roots),
         visited,
+        f", {len(truncated)} truncated" if truncated else "",
     )
     return found
 

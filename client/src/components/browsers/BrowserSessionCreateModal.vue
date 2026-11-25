@@ -142,11 +142,11 @@ import {
         </p>
       </section>
 
-      <!-- ── Desktop image ───────────────────────────────────────────── -->
-      <section v-if="isLinux" class="flex flex-col gap-2">
+      <!-- ── Image (desktop, browser) ───────────────────────────────── -->
+      <section v-if="isLinux || isBrowser" class="flex flex-col gap-2">
         <div class="flex items-center gap-2">
           <h3 class="flex-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/40">
-            Desktop image
+            {{ isBrowser ? 'Browser image' : 'Desktop image' }}
           </h3>
           <button
             v-if="form.image"
@@ -214,22 +214,13 @@ import {
           @click="view = 'library'"
         >
           <i class="fa-solid fa-images"></i>
-          <span class="flex-1 text-left">Browse the image library</span>
-          <span class="hidden text-[10px] opacity-60 sm:inline">Kasmweb · LinuxServer · Saved</span>
+          <span class="flex-1 text-left">Browse the catalog</span>
+          <span class="hidden text-[10px] opacity-60 sm:inline">
+            {{ isBrowser ? 'Chromium · Chrome · Brave · Firefox…' : 'Desktops · apps · custom' }}
+          </span>
           <i class="fa-solid fa-chevron-right text-[9px] opacity-40"></i>
         </button>
 
-        <!-- Custom image: the escape hatch for anything not catalogued -->
-        <label class="flex flex-col gap-1">
-          <span class="text-[11px] font-semibold text-base-content/60">Or a custom image</span>
-          <input
-            v-model="form.image"
-            type="text"
-            class="input input-sm input-bordered w-full font-mono text-[11px]"
-            :placeholder="defaultImage"
-            spellcheck="false"
-          />
-        </label>
       </section>
 
       <p
@@ -963,14 +954,14 @@ export default {
       if (kind === 'macos') this.form.osVersion = '15'
       if (oldKind && oldKind !== kind) {
         // An image selected for one machine kind must never leak into another
-        // (e.g. a VM image into a Linux desktop). Advanced users can still type
-        // a custom image after switching.
+        // (e.g. a VM image into a Linux desktop): the catalog is filtered by
+        // kind, so switching kinds starts from that kind's default.
         this.selectedLibraryImage = null
         this.form.image = ''
       }
     },
     'form.image'(value) {
-      // A manual edit in Advanced settings invalidates the library selection.
+      // A new reference (catalog selection or restore) invalidates the old card.
       if (this.selectedLibraryImage && value !== this.selectedLibraryImage.image) {
         this.selectedLibraryImage = null
       }
@@ -1021,7 +1012,7 @@ export default {
     imageSelectionTitle() {
       if (this.selectedLibraryImage) return this.selectedLibraryImage.name
       if (this.form.image.trim()) return 'Custom image'
-      return 'Default LinuxServer webtop'
+      return this.isBrowser ? 'Default Chromium' : 'Default LinuxServer webtop'
     },
     imageSelectionMeta() {
       if (this.selectedLibraryImage) {
@@ -1059,7 +1050,7 @@ export default {
     },
     /** One line with the current choices, shown in the wizard header. */
     stepSummary() {
-      if (!this.isLinux) return this.kindLabel
+      if (!this.isLinux && !this.isBrowser) return this.kindLabel
       return `${this.kindLabel} · ${this.imageSelectionTitle}`
     },
     /**

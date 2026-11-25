@@ -3,6 +3,7 @@ import { $storex } from '.'
 import { API } from '../api/api'
 import moment from 'moment'
 import { APPS, isMultiInstance } from '../config/apps'
+import { DEFAULT_THEME, normalizeTheme } from '../utils/theme'
 
 export const namespaced = true
 
@@ -38,7 +39,7 @@ export const state = () => ({
   noVNCSettings: {
     resize: 'remote',
   },
-  theme: 'dark',
+  theme: DEFAULT_THEME,
   activeTab: 'home',
   newProject: false,
   // One-shot request that opens the global "New task" dialog (see
@@ -339,7 +340,7 @@ export const mutations = mutationTree(state, {
     state.noVNCSettings = { ...state.noVNCSettings, ...settings }
   },
   setTheme(state, theme) {
-    state.theme = theme
+    state.theme = normalizeTheme(theme)
   },
   showNewProject(state, show) {
     state.newProject = show
@@ -642,7 +643,9 @@ export const actions = actionTree(
         $storex.ui.persistState()
       })
       if (API.user?.theme) {
-        state.theme = API.user.theme
+        state.theme = normalizeTheme(API.user.theme)
+      } else {
+        state.theme = normalizeTheme(state.theme)
       }
       state.coderProjectCodxPath = null
     },
@@ -688,6 +691,7 @@ export const actions = actionTree(
       } catch (error) {
         console.error('Failed to parse saved UI state:', error)
       }
+      state.theme = normalizeTheme(state.theme)
       state.mobileMenuOpen = false
       state.newAssistantChat = false
       state.meetingSetup = null

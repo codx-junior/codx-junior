@@ -133,7 +133,7 @@ async function save() {
           </div>
           <div class="min-w-0 flex-1">
             <h3 class="text-base font-black">{{ editing ? 'Refine this goal' : 'Set a goal' }}</h3>
-            <p class="text-[11px] text-base-content/50">
+            <p class="text-xs text-base-content/50">
               A clear outcome, an owner and a deadline. The team turns it into work.
             </p>
           </div>
@@ -145,26 +145,26 @@ async function save() {
 
       <div class="max-h-[70vh] overflow-y-auto p-5">
         <label class="form-control">
-          <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">Goal name</span>
+          <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">Goal name</span>
           <input v-model="form.title" class="input input-bordered mt-1" autofocus
                  placeholder="For example: Close 10 new customers this quarter" @keyup.enter="save" />
         </label>
 
         <label class="form-control mt-3">
-          <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">What outcome do we want?</span>
+          <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">What outcome do we want?</span>
           <textarea v-model="form.objective" class="textarea textarea-bordered mt-1" rows="3"
                     placeholder="Describe the result in business language: who benefits, what changes, why it matters."></textarea>
         </label>
 
         <label class="form-control mt-3">
-          <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">How will we know it is done?</span>
+          <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">How will we know it is done?</span>
           <textarea v-model="form.acceptance" class="textarea textarea-bordered mt-1" rows="2"
                     placeholder="A number, a deliverable, a customer outcome or a demo. This is what the team will be judged on."></textarea>
         </label>
 
         <div class="mt-3 grid gap-3 md:grid-cols-2">
           <label class="form-control">
-            <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">Owning team</span>
+            <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">Owning team</span>
             <select v-model="form.team_id" class="select select-bordered mt-1">
               <option value="">Choose a team…</option>
               <option v-for="team in teams" :key="team.id" :value="team.id">
@@ -173,7 +173,7 @@ async function save() {
             </select>
           </label>
           <label class="form-control">
-            <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">Where the work happens</span>
+            <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">Where the work happens</span>
             <select v-model="form.project_id" class="select select-bordered mt-1">
               <option value="">No project yet (draft)</option>
               <option v-for="project in projects" :key="project.project_id" :value="project.project_id">
@@ -182,7 +182,7 @@ async function save() {
             </select>
           </label>
           <label class="form-control">
-            <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">Priority</span>
+            <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">Priority</span>
             <select v-model="form.priority" class="select select-bordered mt-1">
               <option value="low">Low — when there is room</option>
               <option value="medium">Medium — normal</option>
@@ -191,22 +191,22 @@ async function save() {
             </select>
           </label>
           <label class="form-control">
-            <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">Deadline</span>
+            <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">Deadline</span>
             <input v-model="form.due_date" type="date" class="input input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">AI budget (cxj)</span>
+            <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">AI budget (cxj)</span>
             <input v-model.number="form.budget_cxjcoins" type="number" min="0" step="0.5" class="input input-bordered mt-1" />
           </label>
           <label class="form-control">
-            <span class="label-text text-[11px] font-bold uppercase tracking-wide text-base-content/50">Start mode</span>
+            <span class="label-text text-xs font-bold uppercase tracking-wide text-base-content/50">Start mode</span>
             <select v-model="form.dispatch_mode" class="select select-bordered mt-1">
               <option value="manual">I will start it</option>
               <option value="auto">Start automatically when ready</option>
             </select>
             <span
               v-if="form.dispatch_mode === 'auto' && !autonomy.enabled"
-              class="mt-1 block text-[10px] text-warning"
+              class="mt-1 block text-xs text-warning-ink"
             >
               Autopilot is off: the goal waits in the queue. Enable autonomy in
               Company settings to let it start by itself.
@@ -218,18 +218,18 @@ async function save() {
           <input v-model="form.requires_approval" type="checkbox" class="checkbox checkbox-sm checkbox-primary mt-0.5" />
           <span>
             <span class="block text-xs font-bold">I want to approve this before work starts</span>
-            <span class="block text-[10px] text-base-content/45">A manager can still dispatch it, but only after an explicit approval.</span>
+            <span class="block text-xs text-base-content/45">A manager can still dispatch it, but only after an explicit approval.</span>
           </span>
         </label>
 
-        <p v-if="!teams.length" class="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-[11px] text-warning">
+        <p v-if="!teams.length" class="mt-3 rounded-xl border border-warning/30 bg-warning/10 p-3 text-xs text-warning-ink">
           You need a team before setting a goal. Ask the assistant to “build my team” first.
         </p>
-        <p v-if="error" class="mt-3 rounded-xl border border-error/30 bg-error/10 p-2.5 text-[11px] text-error">{{ error }}</p>
+        <p v-if="error" class="mt-3 rounded-xl border border-error/30 bg-error/10 p-2.5 text-xs text-error-ink">{{ error }}</p>
       </div>
 
       <div class="flex items-center justify-between gap-2 border-t border-base-content/10 bg-base-200/30 px-5 py-3">
-        <p class="text-[10px] text-base-content/40">
+        <p class="text-xs text-base-content/40">
           <i class="fa-solid fa-lock mr-1"></i>Only managers can create goals.
         </p>
         <div class="flex gap-2">

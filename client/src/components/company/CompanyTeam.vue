@@ -30,26 +30,26 @@ watch(() => props.focusId, value => {
 
 <template>
   <div class="space-y-3">
-    <div class="cp-card inline-flex items-center gap-0.5 p-0.5" role="tablist" aria-label="Team views">
+    <div class="rounded-box border border-base-300 bg-base-100 shadow-sm inline-flex items-center gap-0.5 p-0.5" role="tablist" aria-label="Team views">
       <button
         type="button"
         role="tab"
-        class="cp-chip !h-8 !border-transparent !px-3"
-        :class="tab === 'teams' ? '!bg-[var(--cp-lime)] !text-[var(--cp-lime-ink)]' : ''"
+        class="btn btn-xs !h-8 !border-transparent !px-3"
+        :class="tab === 'teams' ? '!bg-accent !text-accent-content' : ''"
         :aria-selected="tab === 'teams'"
         @click="tab = 'teams'"
       >
-        <i class="fa-solid fa-people-group text-[9px]"></i> {{ t('team.tabTeams') }}
+        <i class="fa-solid fa-people-group text-[11px]"></i> {{ t('team.tabTeams') }}
       </button>
       <button
         type="button"
         role="tab"
-        class="cp-chip !h-8 !border-transparent !px-3"
-        :class="tab === 'people' ? '!bg-[var(--cp-lime)] !text-[var(--cp-lime-ink)]' : ''"
+        class="btn btn-xs !h-8 !border-transparent !px-3"
+        :class="tab === 'people' ? '!bg-accent !text-accent-content' : ''"
         :aria-selected="tab === 'people'"
         @click="tab = 'people'"
       >
-        <i class="fa-solid fa-user-group text-[9px]"></i> {{ t('team.tabPeople') }}
+        <i class="fa-solid fa-user-group text-[11px]"></i> {{ t('team.tabPeople') }}
       </button>
     </div>
 

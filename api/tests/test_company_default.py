@@ -39,8 +39,8 @@ def test_fresh_installation_gets_a_default_company_with_every_project(manager):
     company = manager.ensure_default_company(actor="alice")
 
     assert company.is_default is True
-    assert company.slug == "acme"
-    assert company.name == "ACME"
+    assert company.slug == "codx-junior"
+    assert company.name == "codx-junior"
     assert [project.project_id for project in company.projects] == ["p-api", "p-web"]
     assert company.auto_sync_projects is True
     assert company.all_projects is True
@@ -233,6 +233,7 @@ def test_selected_company_sees_children_only_when_the_link_allows_it(tmp_path):
     )
     assert manager.visible_project_ids(company) == ["p-root"]
     assert manager.root_project_ids(company) == ["p-root"]
+    assert manager.company_project_ids(company) == ["p-root"]
     assert manager.child_projects(company) == []
 
     company = manager.link_project(
@@ -246,6 +247,7 @@ def test_selected_company_sees_children_only_when_the_link_allows_it(tmp_path):
         company.id, "p-child", actor="alice", include_children=False
     )
     assert manager.root_project_ids(company) == ["p-root", "p-child"]
+    assert manager.company_project_ids(company) == ["p-root", "p-child"]
 
 
 def test_all_projects_mode_sees_the_catalog_and_roots_are_top_level(tmp_path):
@@ -264,3 +266,4 @@ def test_all_projects_mode_sees_the_catalog_and_roots_are_top_level(tmp_path):
 
     assert manager.visible_project_ids(company) == ["p-root", "p-child", "p-other"]
     assert manager.root_project_ids(company) == ["p-root", "p-other"]
+    assert manager.company_project_ids(company) == ["p-root", "p-child", "p-other"]

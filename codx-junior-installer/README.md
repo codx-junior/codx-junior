@@ -6,9 +6,10 @@ One installer, one application image, four deployment modes.
 |---|---|---|
 | try it on a laptop / CI | `local` | `./install.sh --mode local --provider deepseek --key sk-...` |
 | a public server with Traefik + ACME | `server` | `sudo ./install.sh --mode server --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
-| sit behind an existing master proxy | `slave` | `sudo ./install.sh --mode slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
-| one isolated nested instance per container | `dind` | `sudo ./install.sh --mode dind --dind-mode server --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
-| DIND with local access **and** a slave proxy | `dind` + `local` + `slave` | `sudo ./install.sh --mode dind --dind-mode local --traefik slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
+| sit behind an existing primary proxy | `server` + `--traefik slave` | `sudo ./install.sh --mode server --traefik slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
+| one isolated nested instance per container | `dind` | `sudo ./install.sh --mode dind --traefik primary --domain x.example.com --acme-email ops@example.com --provider deepseek --key sk-...` |
+| DIND behind an existing primary | `dind` + `--traefik slave` | `sudo ./install.sh --mode dind --traefik slave --domain x.example.com --proxy-network traefik --provider deepseek --key sk-...` |
+| hack on codx-junior itself, live | host mode + `--dev` | `./install.sh --mode local --dev --provider deepseek --key sk-...` |
 
 Design, module audit and known issues:
 [`docs/installer-refactor.md`](../docs/installer-refactor.md).
@@ -18,7 +19,8 @@ Design, module audit and known issues:
 One container:
 
 * FastAPI API + background worker (supervisord);
-* nginx serving the compiled SPA and proxying `/api` to the API process;
+* nginx serving the compiled SPA and proxying `/api` to the API process
+  (`--dev` replaces nginx with the Vite dev server);
 * embedded LanceDB for knowledge/RAG.
 
 There is **no Milvus, LocalAI, LiteLLM, vLLM, Coolify, Prometheus, Caddy or
@@ -26,8 +28,10 @@ default workspace**. Coworking/browser/desktop sessions are optional and use the
 Docker socket; the installer enables them with `--coworking`.
 
 Every released image is **complete**: it includes the document/OCR tools
-(pandoc, TeX Live, tesseract), ffmpeg, Playwright/Chromium and the local
-embeddings stack. There is no slim variant.
+(pandoc, TeX Live, tesseract), ffmpeg, Playwright/Chromium, the local
+embeddings stack, and the Docker CLI with the compose and buildx plugins
+(stack actions, image builds and the admin container web shell all shell out to
+`docker`). There is no slim variant.
 
 ## Interactive setup
 
@@ -38,14 +42,62 @@ deployment setting, showing the current value as the default:
 sudo ./install.sh
 ```
 
-It always asks for the **Traefik setup** (`none` / `master` / `slave`) in
-addition to the mode (`local` / `server` / `slave` / `dind`), domain, DIND inner
-mode, master proxy network/resolver/entrypoint, instance, installation root,
-projects folder, port, AI provider and key, coworking and Sysbox. Press Enter to
-accept a default. This is what allows combinations such as **dind + local +
-slave**: local access on `127.0.0.1:19981` plus a slave Traefik for a master.
+It first asks for the **target folder** (default: the current directory), then
+the **deployment mode** (`local` / `server` / `dind`), then whether
+to enable the **development option** (`--dev`: `DEBUG=1`, live checkout, Vite
+HMR), and then for an optional **domain**. A blank domain means localhost/plain
+HTTP and no Traefik; a domain asks for the **Traefik mode** (`primary` / `slave`)
+and the matching proxy/ACME settings. It also asks for the instance,
+installation root, projects folder, port, AI provider/key, coworking and Sysbox. Press Enter to accept a default. This is what allows combinations
+such as **dind + local + slave**: local access on `127.0.0.1:19981` plus a slave
+Traefik behind an existing primary.
 `--interactive` forces the wizard even when other flags are present;
 `--non-interactive` (or `--yes`) always disables it.
+
+## Development option
+
+`--dev` is an option, not a deployment mode.
+
+On a host install it runs the checkout you are editing:
+
+```bash
+cd ~/codx-junior
+./install.sh --mode local --dev --provider deepseek --key-file ~/.config/codx-junior/deepseek.key
+```
+
+* the whole checkout is bind-mounted at `/home/codx-junior/codx-junior`;
+* Python changes reload the API (`uvicorn --reload`);
+* the SPA is served by the Vite dev server with HMR, not nginx;
+* `/api` and Socket.IO are proxied to the API;
+* `http://localhost:19981` is ready without rebuilding the image.
+
+The first run builds `codxjuniorai/codx-junior:dev` from the published complete
+image plus the client dependencies. Source edits need no rebuild. After changing
+`api/pyproject.toml` or `client/package.json`, rerun with `--build`.
+
+On DIND the source is baked into the image, so `--dev` only sets `DEBUG=1` for
+the inner scripts/app; there is no live checkout or Vite HMR inside DIND.
+
+API reload on a host restarts `uvicorn` on edits, which can interrupt an
+in-flight agent turn; that is expected in development.
+
+## Reusing the last selections
+
+The installer saves the resolved selections before it builds or pulls the image:
+
+```
+<target>/installation.env
+```
+
+The target defaults to `$PWD`. The file is mode `600` because it may contain the
+provider key. On the next run from the same target its values are used as the
+wizard defaults, even if the previous install was interrupted before the
+instance settings file was written. The instance settings file still wins over
+this state file, and CLI flags win over both.
+
+Override the location with `CODX_JUNIOR_INSTALLER_STATE=/path/to/file`; delete
+the file to start from clean defaults. The old global
+`~/.config/codx-junior/installer.env` is no longer read.
 
 ## One line: install or update
 
@@ -58,12 +110,20 @@ Without `--domain` this serves plain HTTP on the published port. Add
 `--domain x.example.com --acme-email ops@example.com` for Traefik + ACME.
 Re-running is the upgrade path; projects and settings are kept.
 
+The web UI has the same operation: **Settings → Updates** (admin) pulls the
+image and runs `codx-junior upgrade` from a helper container, so nobody has to
+copy the installer to the host. The installer publishes
+`<home>/data/settings/installer.json` for that; instances created before it are
+discovered from their compose labels. See `api/docs/system-update.md`.
+
 | Situation | Command |
 |---|---|
 | server with TLS | add `--domain x.example.com --acme-email ops@example.com` |
 | localhost / CI | add `--mode local` |
-| behind a master proxy | `--mode slave --domain x.example.com --proxy-network traefik` |
-| several instances on one host | `--mode dind --dind-mode server\|slave --instance <name>` |
+| live codx-junior development | add `--dev` (host); DIND gets `DEBUG=1` only |
+| hide codx-junior and its child projects | add `--hidden` (`--no-hidden` shows them) |
+| behind an existing primary proxy | `--mode server --traefik slave --domain x.example.com --proxy-network traefik` |
+| several instances on one host | `--mode dind --traefik primary\|slave --instance <name>` |
 | branch or tag | add `--branch my-feature` |
 | see before acting | add `--dry-run` |
 | no internet | `git clone`, then `./install.sh --provider … --key …` |
@@ -127,13 +187,45 @@ supports `--reload`, `--build`, `--logs`, `--down` and `--purge`.
 
 ## DIND
 
-The wrapper runs its own dockerd and the same runtime compose. Data on the host
-lives under `<home>/data` plus `<instance>-dind` (nested image layers). Only one
-instance per host can use `--traefik master`; the rest use `--traefik slave`.
+Every DIND install/upgrade pulls the latest
+`codxjuniorai/codx-junior:dind` tag and fails instead of silently using a stale
+local image. Use `--no-pull` only when you intentionally run a local image, or
+`--build-dind` to build it. If the pulled digest changes, the wrapper is
+force-recreated.
 
-`--dind-mode local --traefik slave` is the hybrid: the app is published on
-`127.0.0.1:<port>` for local access and the same stack joins the master network
-through a slave Traefik.
+`--update` (or the `upgrade` command) **always** recreates the DIND wrapper,
+even when the DIND digest did not change: the wrapper entrypoint is what pulls
+the inner app image and recreates the nested stack, and the app image is
+published independently of the DIND image. `--update --image TAG` also rewrites
+`CODX_JUNIOR_IMAGE` in the generated wrapper compose so the new tag reaches the
+inner installer. The nested install log is in `docker logs <instance>` (and
+`/var/log/inner-install.log` inside the wrapper).
+
+The wrapper runs its own dockerd and the same runtime compose. Its inner
+installation is always `--mode server`. Data on the host lives under
+`<home>/data` plus `<instance>-dind` (nested image layers).
+
+* `--traefik primary`: the nested Traefik terminates TLS and publishes `:80`/`:443`.
+* `--traefik slave`: the outer DIND container joins the existing Traefik network
+  and carries the edge labels; no host port is published. The nested Traefik
+  runs normally as a slave and forwards to the inner server.
+
+Before the wizard asks for final confirmation it creates editable files in the
+target folder:
+
+```text
+<home>/docker-compose.yaml   # add services.dind.volumes mappings here
+<home>/.env                  # instance settings; extra keys are preserved
+```
+
+Add host folders under `/data/projects/<name>` so the inner app sees them as
+projects. The installer uses these files as-is, so edits made at the
+confirmation prompt are applied. If either file already exists, the wizard asks
+whether to overwrite it; answering no keeps the existing files and your edits.
+
+`--proxy-network` is only used by the **outer** container in the slave case.
+Inside DIND the stack uses its own Compose-managed `codx-proxy` network; the
+inner installer never requires the host network.
 
 ## Operations
 
@@ -142,6 +234,7 @@ through a slave Traefik.
 /opt/codx-junior/bin/codx-junior-compose logs -f
 /opt/codx-junior/bin/codx-junior-compose down
 
+sudo /opt/codx-junior/bin/codx-junior upgrade        # same, from the installed CLI
 sudo ./install.sh --upgrade
 sudo ./install.sh status|logs|down|restart|doctor|config|url|env|version
 ```
@@ -149,12 +242,57 @@ sudo ./install.sh status|logs|down|restart|doctor|config|url|env|version
 On systemd hosts the installer registers `codx-junior.service` (or
 `codx-junior-<instance>.service`), and installs a `codx-junior` CLI.
 
+### Whole-repo security scans
+
+Whole-repo scans: run them with `docker exec` into `codx-junior-api`; the repo
+root is mounted at `/home/codx-junior-projects/codx-junior/codx-junior-platform`.
+Fallback container: none verified — the api container is the only place that
+root is mounted.
+
+```bash
+docker exec codx-junior-api bash -lc 'cd /home/codx-junior-projects/codx-junior/codx-junior-platform && git ls-files | grep -Ei "(^|/)\.env|\.pem$|\.key$|acme|secret"'
+```
+
+`git` walks up to the repository root, so the same command also works from
+the `codx-junior-installer/` checkout. If `codx-junior-api` is down, start it
+with `/opt/codx-junior/bin/codx-junior-compose up -d api` and repeat the scan;
+there is no second container with the root mounted. The `project_*` file tools
+are rooted at `codx-junior-installer/` and cannot read the parent tree — use the
+command above instead of widening the index.
+
+## Tests
+
+One gate, one source of truth: [`.codx/qa_policy.json`](.codx/qa_policy.json)
+declares every suite as an argv array, and `tests/qa_suite.sh` executes it.
+
+```bash
+npm test                                 # the "shell" suite (bash -n + shellcheck)
+npm run test:check                       # parse the policy, verify every runner
+npm run test:all                         # every declared suite, stop at first failure
+bash tests/qa_suite.sh --list            # suites declared in the policy
+bash tests/qa_suite.sh shell --json      # one suite, machine-readable verdict
+```
+
+Declared suites: `shell` (`tests/test_shell.sh` — `bash -n`, `shellcheck` and
+`docker compose config` over the tracked shell files), `unit`
+(`tests/test_install.sh`), `demo` (`demo/tests/test_up.sh`). The dispatcher runs
+from the repository root, so it behaves the same from any directory. Exit codes:
+`0` pass, `1` suite failed, `2` usage or policy error, `3` runner missing.
+It needs `python3` to read the policy and `shellcheck` to run the `shell` suite;
+`npm run test:check` reports a missing one as `runner-missing` or a policy error
+instead of passing silently.
+
+It exists because the platform QA engine does not read `qa_policy.suites`:
+`qa_run_tests` answers a declared suite with `no-suite` and reports
+`changed_files: 0` on a real diff. That defect is tracked on card `de08e8d9` and
+lives outside this repository, so the gate here is invoked directly.
+
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
 | HTTPS never becomes ready | DNS A record must point at the host; port 80 must be reachable. Check `docker logs -f <instance>-traefik`. |
-| port 80/443 already in use | stop the other proxy, or use `--mode slave` |
+| port 80/443 already in use | stop the other proxy, or use `--traefik slave` |
 | UI opens, API disconnected | `bin/codx-junior-compose logs`; check the `api`/`api-background` programs |
 | knowledge search is lexical only | configure an embeddings model |
 | coworking sessions fail | reinstall with `--coworking --allow-privileged`; VMs also need `/dev/kvm` |

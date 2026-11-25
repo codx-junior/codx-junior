@@ -475,6 +475,39 @@ class CompanyStore:
                 finally:
                     handle.close()
 
+    @contextmanager
+    def installation_lock(self, name: str = "bootstrap") -> Iterator[None]:
+        """
+        Serialize an installation-wide operation across processes.
+
+        Used by the default-company bootstrap: two API workers that both see an
+        empty store must not each create a default company. The lock lives at
+        the companies root (not inside a company), so it also covers the
+        "no company exists yet" window.
+
+        Args:
+            name: Logical lock name (``default-company``).
+
+        Yields:
+            Nothing; the lock is held while the context is active.
+        """
+        thread_lock = self._thread_lock(f"__installation__:{name}")
+        with thread_lock:
+            if fcntl is None:
+                yield
+                return
+            os.makedirs(self.root_path, exist_ok=True)
+            lock_path = os.path.join(self.root_path, f".{name}.lock")
+            handle = open(lock_path, "a+", encoding="utf-8")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                yield
+            finally:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                finally:
+                    handle.close()
+
     # -- helpers -----------------------------------------------------------
 
     def snapshot_paths(self) -> List[str]:

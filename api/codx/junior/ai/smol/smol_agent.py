@@ -3974,6 +3974,29 @@ class SmolAgent:
                         params["chat_id"] = chat_id
                 except (ValueError, TypeError):
                     pass
+            # Tools that run their own model loop (delegated browser-use agent)
+            # declare ``llm_model``: they must use the model this turn resolved
+            # (chat ``llm_model`` > profile model > project default), exactly
+            # like this agent does. The model cannot override it from the
+            # arguments: the schema does not expose the parameter.
+            if tool_settings.get("inject_llm_model"):
+                try:
+                    sig = inspect.signature(tool["tool_call"])
+                    if "llm_model" in sig.parameters:
+                        params["llm_model"] = self.model
+                except (ValueError, TypeError):
+                    pass
+            # Tools that spend money on the user's behalf (delegated browser-use
+            # runs) declare ``user``: the LLM gateway checks that user's wallet
+            # and records the usage under their name. The authenticated user
+            # always wins over anything the model put in the arguments.
+            if tool_settings.get("inject_user"):
+                try:
+                    sig = inspect.signature(tool["tool_call"])
+                    if "user" in sig.parameters:
+                        params["user"] = self.user
+                except (ValueError, TypeError):
+                    pass
 
             logger.info(
                 "SmolAgent: executing tool '%s' with params %s",

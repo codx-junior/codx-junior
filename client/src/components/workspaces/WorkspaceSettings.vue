@@ -227,12 +227,12 @@ import WorkspaceLogs from './WorkspaceLogs.vue'
           <!-- All Projects toggle -->
           <label class="label cursor-pointer justify-start gap-3 mb-3">
             <input type="checkbox" :checked="workspace.project_ids?.includes('*')" class="checkbox checkbox-sm" @change="toggleAllProjects" />
-            <span class="label-text font-medium">Mount all projects</span>
+            <span class="label-text font-medium">Mount all company projects</span>
           </label>
 
           <div v-if="workspace.project_ids?.includes('*')" class="alert alert-info mb-3">
             <i class="fa-solid fa-star"></i>
-            <span>All projects are mounted (identity-mounted at same host path)</span>
+            <span>All company projects are mounted (identity-mounted at same host path)</span>
           </div>
 
           <div v-else class="flex flex-col gap-1 mb-4">
@@ -472,9 +472,17 @@ export default {
     availableUsersToAdd() {
       return this.availableUsers.filter(u => !this.workspaceUserIds.includes(u.username))
     },
+    // The company is the scope, so read its live linked-project list when one
+    // is loaded; the prop is the fallback for standalone project workspaces.
+    projectOptions() {
+      if (this.$storex.company?.loaded) {
+        return this.$storex.company.linkedProjects || []
+      }
+      return this.availableProjects
+    },
     availableProjectsToAdd() {
       const linked = this.workspace.project_ids || []
-      return this.availableProjects.filter(p => !linked.includes(p.project_id))
+      return this.projectOptions.filter(p => !linked.includes(p.project_id))
     },
     workspaceFolderPath() {
       return this.workspace.folder_path
@@ -576,8 +584,8 @@ export default {
       if (idx > -1) this.workspace.project_ids.splice(idx, 1)
     },
     getProjectName(projectId) {
-      if (projectId === '*') return 'All Projects'
-      return this.availableProjects.find(p => p.project_id === projectId)?.project_name || projectId
+      if (projectId === '*') return 'All company projects'
+      return this.projectOptions.find(p => p.project_id === projectId)?.project_name || projectId
     },
 
     // ── Users ─────────────────────────────────────────────────────────────────

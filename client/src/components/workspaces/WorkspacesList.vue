@@ -182,6 +182,12 @@ export default {
     },
     async loadProjects() {
       try {
+        if (this.$storex.company?.loaded) {
+          // Only the projects the active company links can be mounted into a
+          // workspace. Unrelated projects are not visible from the company.
+          this.allProjects = this.$storex.company.linkedProjects || []
+          return
+        }
         this.allProjects = await this.theProject.$api.projects.list()
       } catch (error) {
         console.error('Failed to load projects', error)

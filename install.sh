@@ -16,7 +16,7 @@
 #   sudo ./install.sh --mode local --provider deepseek --key sk-...
 #   sudo ./install.sh --mode slave --domain team.example.com \
 #        --proxy-network traefik --provider openai --key sk-...
-#   sudo ./install.sh --mode dind --dind-mode server --domain acme.example.com \
+#   sudo ./install.sh --mode dind --traefik primary --domain acme.example.com \
 #        --acme-email ops@example.com --provider deepseek --key sk-...
 #
 # Every flag of the real installer works here; see:
@@ -42,10 +42,11 @@ Usage: install.sh [options]          install or update
        install.sh status|logs|down|upgrade|doctor|config
 
 Modes:
-  --mode local     laptop/CI: loopback port, no TLS, no proxy
-  --mode server    public server: Traefik master :80/:443 + ACME
-  --mode slave     behind a master proxy: Traefik slave :80 only
-  --mode dind      Docker-in-Docker instance (--dind-mode local|server|slave)
+  --mode local     full machine dedicated to codx-junior (localhost by default)
+  --mode server    public server: domain + Traefik primary :80/:443 + ACME
+  --mode dind      isolate codx-junior in a Docker-in-Docker container
+  --dev            development option: DEBUG=1, live checkout, Vite HMR
+  --traefik MODE   none|primary|slave (asked when a domain is set)
   Default: server as root, local otherwise.
 
 Common settings:
@@ -55,12 +56,14 @@ Common settings:
   --url URL                  OpenAI-compatible endpoint (custom provider)
   --no-ai                    configure the provider in the UI instead
   --domain DOMAIN            public domain (server/slave/dind)
-  --acme-email EMAIL         Let's Encrypt account (server/master)
-  --proxy-network NAME       master network (slave)
+  --acme-email EMAIL         Let's Encrypt account (server/primary)
+  --proxy-network NAME       primary network (slave)
   --projects PATH            host projects folder
   --home PATH                installation root
   --instance NAME            instance slug
   --coworking                mount the Docker socket (browser/desktops)
+  --hidden                   hide codx-junior + child projects from the selector
+  --no-hidden                show them (default)
   --build | --build-dind     build the app / DIND image from this checkout
   --systemd | --no-systemd   register a systemd unit
   --dry-run                  print what would run; change nothing

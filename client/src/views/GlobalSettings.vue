@@ -13,6 +13,7 @@ import EffortsSettings from '@/components/global_settings/EffortsSettings.vue'
 import TraefikRulesPanel from '@/components/traefik/TraefikRulesPanel.vue'
 import SecretsEditor from '@/components/secrets/SecretsEditor.vue'
 import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPanel.vue'
+import UpdatePanel from '@/components/global_settings/UpdatePanel.vue'
 </script>
 
 <template>
@@ -130,6 +131,7 @@ import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPane
             v-model:rules="settings.traefik_rules"
           />
           <DshIntegrationPanel v-if="activeTab === 'dsh'" :settings="settings" />
+          <UpdatePanel v-if="activeTab === 'update'" />
         </div>
       </main>
     </div>
@@ -149,6 +151,7 @@ export default {
       collapsed: false,
       navItems: [
         { id: 'general', label: 'General', icon: 'fa-sliders' },
+        { id: 'update', label: 'Updates', icon: 'fa-cloud-arrow-down' },
         { id: 'ai', label: 'AI Models', icon: 'fa-brain' },
         { id: 'agents', label: 'Agents', icon: 'fa-robot' },
         { id: 'chat', label: 'Chat Prompts', icon: 'fa-comments' },
@@ -260,6 +263,7 @@ export default {
     getActiveDescription() {
       const descriptions = {
         general: 'Configure basic settings and preferences',
+        update: 'Update this installation: pull the latest image and recreate the container',
         ai: 'Manage AI models and LLM configurations',
         agents: 'Define and configure AI agents',
         chat: 'Set global prompts for all chat interactions',

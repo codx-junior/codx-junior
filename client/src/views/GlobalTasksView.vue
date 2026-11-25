@@ -6,6 +6,12 @@ import VerticalSplitter from '@/components/layout/VerticalSplitter.vue'
 import ProjectMultiSelect from '@/components/common/ProjectMultiSelect.vue'
 import MultiSelectFilter from '@/components/common/MultiSelectFilter.vue'
 import ChatView from '@/views/ChatView.vue'
+import PlanningRangeFilter from '@/components/kanban/board/PlanningRangeFilter.vue'
+import {
+  DEFAULT_TASK_RANGE,
+  TASK_RANGE_OPTIONS,
+  taskDateRange
+} from '@/utils/taskDateRange'
 
 /**
  * Tasks — the main follow-up style task list.
@@ -18,9 +24,11 @@ import ChatView from '@/views/ChatView.vue'
  *
  * Scope
  * -----
- * The default project filter is the ACTIVE project **and its children**, so a
- * parent project's task list includes every sub-project. The user can switch
- * to "All projects" without leaving the screen.
+ * Inside the company shell the default project filter is every project the
+ * company defines (its direct links, or the whole catalogue in `*` mode), so
+ * the Follow-up review is always company-wide instead of following one active
+ * project. In the standalone project workspace it stays the active project and
+ * its children. The user can still narrow the multi-select.
  *
  * Scheduling
  * ----------
@@ -28,6 +36,15 @@ import ChatView from '@/views/ChatView.vue'
  * autonomy worker wakes them later. The New chat modal is the entry point to
  * create one of those tasks.
  */
+
+const props = defineProps({
+  /**
+   * Show the rolling date filter (Today / Last 7 days / Last 30 days / Custom)
+   * and default it to the last 7 days. The company Activity embed turns this
+   * on; the workspace Tasks screen keeps its all-time list.
+   */
+  showDateFilter: { type: Boolean, default: false }
+})
 
 const PAGE_SIZE = 25
 
@@ -81,6 +98,12 @@ const page = ref(1)
 const pageSize = ref(PAGE_SIZE)
 const sort = ref('updated_at')
 const direction = ref('desc')
+// The Follow-up review opens on the rolling last 7 days. Kept local so the
+// workspace Tasks screen (no date filter) is unaffected.
+const rangeFilter = ref(DEFAULT_TASK_RANGE)
+const customFromDate = ref(null)
+const customToDate = ref(null)
+const rangeOptions = TASK_RANGE_OPTIONS
 
 const selectedTaskId = ref(null)
 const sideTask = ref(null)
@@ -90,13 +113,12 @@ let searchTimer = null
 
 // ── Project scope ──────────────────────────────────────────────────────────
 const activeProject = computed(() => $storex.projects.activeProject || null)
-const childProjects = computed(() => $storex.projects.childProjects || [])
 
-// Follow-up is company-scoped and lists only the company's ROOT projects.
-// Child projects are never selected here (by design), even when the company
-// sees them in other views.
+// Follow-up is company-scoped and defaults to every project the company
+// defines: its direct links, or the whole catalogue in `all_projects` mode.
+// Unrelated projects of another company are never in this list.
 function defaultProjectIds() {
-  if ($storex.company?.loaded) return ($storex.company.rootProjectIds || []).map(String)
+  if ($storex.company?.loaded) return ($storex.company.linkedProjectIds || []).map(String)
   const ids = []
   if (activeProject.value?.project_id) ids.push(activeProject.value.project_id)
   return ids
@@ -120,8 +142,8 @@ const metrics = computed(() => result.value.metrics || {})
 const projects = computed(() => {
   const all = result.value.projects || []
   if (!$storex.company?.loaded) return all
-  const roots = new Set(($storex.company.rootProjectIds || []).map(String))
-  return all.filter(project => roots.has(String(project.id)))
+  const companyProjects = new Set(($storex.company.linkedProjectIds || []).map(String))
+  return all.filter(project => companyProjects.has(String(project.id)))
 })
 const allBoards = computed(() => result.value.boards || [])
 const boards = computed(() => {
@@ -156,11 +178,21 @@ const rangeLabel = computed(() => {
   const last = Math.min(result.value.page * result.value.page_size, result.value.total)
   return `Showing ${first}–${last} of ${result.value.total}`
 })
+const dateRange = computed(() => (
+  props.showDateFilter
+    ? taskDateRange(rangeFilter.value, {
+        from: customFromDate.value,
+        to: customToDate.value
+      })
+    : { from_date: '', to_date: '' }
+))
+
 const hasFilters = computed(() =>
   Boolean(
     filters.q || filters.board_ids.length || filters.columns.length ||
     filters.statuses.length || filters.priorities.length ||
     filters.assignees.length || !filters.include_done ||
+    (props.showDateFilter && rangeFilter.value !== DEFAULT_TASK_RANGE) ||
     scopeProjectIds.value.join(',') !== defaultScopeIds.value.join(',')
   )
 )
@@ -176,6 +208,8 @@ function queryParams() {
     priorities: filters.priorities.join(','),
     assignees: filters.assignees.join(','),
     include_done: filters.include_done,
+    from_date: dateRange.value.from_date,
+    to_date: dateRange.value.to_date,
     page: page.value,
     page_size: pageSize.value,
     sort: sort.value,
@@ -227,6 +261,33 @@ function clearFilters() {
     assignees: [],
     include_done: true
   })
+  rangeFilter.value = DEFAULT_TASK_RANGE
+  customFromDate.value = null
+  customToDate.value = null
+  load({ resetPage: true })
+}
+
+// The date buttons own the request: changing one reloads the first page.
+function setRangeFilter(range) {
+  rangeFilter.value = TASK_RANGE_OPTIONS.some(option => option.value === range)
+    ? range
+    : DEFAULT_TASK_RANGE
+  if (rangeFilter.value === 'custom') {
+    if (!customFromDate.value) customFromDate.value = taskDateRange('month').from_date
+    if (!customToDate.value) customToDate.value = taskDateRange('today').to_date
+  }
+  load({ resetPage: true })
+}
+
+function setCustomFrom(value) {
+  customFromDate.value = value || null
+  rangeFilter.value = 'custom'
+  load({ resetPage: true })
+}
+
+function setCustomTo(value) {
+  customToDate.value = value || null
+  rangeFilter.value = 'custom'
   load({ resetPage: true })
 }
 
@@ -418,6 +479,29 @@ watch(
   }
 )
 
+// The owner can link a project at any time: the company project list is the
+// scope of this table, so reload it and include the new project in the default
+// selection (unless the user had already narrowed the multi-select).
+const companyScopeKey = computed(() =>
+  $storex.company?.loaded ? defaultScopeIds.value.join(',') : ''
+)
+watch(companyScopeKey, (now, before) => {
+  if (now === before) return
+  if (!now) {
+    // The company no longer links any project: clear the table instead of
+    // keeping the previous company's rows.
+    closeSideTask()
+    filters.project_ids = []
+    load({ resetPage: true })
+    return
+  }
+  const current = filters.project_ids.join(',')
+  if (!current || current === before) {
+    filters.project_ids = defaultScopeIds.value
+  }
+  load({ resetPage: true })
+})
+
 // ── Live updates ───────────────────────────────────────────────────────────
 // There is no manual sync any more: the list loads on mount and then follows
 // the project's socket events. Every card here is a projection of the chat /
@@ -523,6 +607,19 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+              <PlanningRangeFilter
+                v-if="showDateFilter"
+                :local="true"
+                :ranges="rangeOptions"
+                :range="rangeFilter"
+                :from-date="customFromDate"
+                :to-date="customToDate"
+                class="shrink-0"
+                @update:range="setRangeFilter"
+                @update:from-date="setCustomFrom"
+                @update:to-date="setCustomTo"
+              />
+
               <label class="input input-sm input-bordered flex min-w-52 shrink-0 items-center gap-2">
                 <i class="fa-solid fa-magnifying-glass text-xs opacity-40"></i>
                 <input

@@ -6,12 +6,14 @@ import { $storex } from '@/store'
 
 import CompanyHome from '@/components/company/CompanyHome.vue'
 import CompanyWork from '@/components/company/CompanyWork.vue'
+import CompanyTickets from '@/components/company/CompanyTickets.vue'
 import CompanyTeam from '@/components/company/CompanyTeam.vue'
 import CompanyBusiness from '@/components/company/CompanyBusiness.vue'
 import CompanyActivity from '@/components/company/CompanyActivity.vue'
 import CompanySecurity from '@/components/company/CompanySecurity.vue'
 import CompanySettings from '@/components/company/CompanySettings.vue'
 import CompanyProjectsPanel from '@/components/company/CompanyProjectsPanel.vue'
+import CompanyFiles from '@/components/company/CompanyFiles.vue'
 import CompanyAssistant from '@/components/company/CompanyAssistant.vue'
 import CompanyWorkplace from '@/components/company/CompanyWorkplace.vue'
 import CompanyChatPanel from '@/components/company/CompanyChatPanel.vue'
@@ -19,7 +21,6 @@ import CompanyGoalDialog from '@/components/company/CompanyGoalDialog.vue'
 import CompanyWizard from '@/components/company/CompanyWizard.vue'
 import GenerateTeamDialog from '@/components/teams/GenerateTeamDialog.vue'
 import { useCompanyI18n, setCompanyLanguage } from '@/components/company/i18n'
-import '@/assets/company.css'
 
 /**
  * Company shell — the AI company operating system.
@@ -29,15 +30,14 @@ import '@/assets/company.css'
  * one click away and every number is live.
  *
  * Presentation only: the data flow, routing and actions are unchanged. The
- * shell owns a small design system (see assets/company.css) with its own
- * light/dark palette so the company workspace keeps its identity even when the
- * rest of the app uses another daisyUI theme.
+ * shell is styled with the app's Tailwind/daisyUI theme (semantic tokens and
+ * utilities), so the company workspace and the project workspace always share
+ * one palette and follow the user's theme.
  */
 const route = useRoute()
 const router = useRouter()
 const api = API.companies
 
-const THEME_KEY = 'codx.company.theme'
 const SIDEBAR_KEY = 'codx.company.sidebar'
 
 const loading = ref(true)
@@ -54,13 +54,16 @@ const section = ref('home')
 const navOpen = ref(false)
 const exitOpen = ref(false)
 const userMenuOpen = ref(false)
+// Company switcher of the left bar: the company name is the dropdown.
+const companyMenuOpen = ref(false)
 const askText = ref('')
 const newCompanyOpen = ref(false)
 const newCompanySaving = ref(false)
 const newCompanyError = ref('')
 const newCompanyForm = ref({ name: '', description: '' })
-// Setup assistant (the "New company" wizard). It opens by itself while the
-// installation onboarding is still pending and can be re-run from the user menu.
+// Setup assistant (the "New company" wizard). The first-run gate lives in
+// App.vue; this modal is the optional re-run entry point from the user menu (and
+// the assistant of a company that was just created).
 const wizardOpen = ref(false)
 // Company the wizard configures. Empty runs the installation onboarding (new
 // company); set when a company was just created, so its own wizard opens.
@@ -77,28 +80,21 @@ const workFocusId = ref('')
 const teamFocusId = ref('')
 
 // ── Workspace chrome ───────────────────────────────────────────────────────
-// The company workspace is a dedicated surface with its own palette (see
-// assets/company.css). It defaults to the design's dark theme and remembers
-// the user's explicit light/dark choice locally; it deliberately does not follow
-// the app-wide daisyUI theme, which would flip the design mid-session.
-
-function initialTheme() {
-  try {
-    const stored = localStorage.getItem(THEME_KEY)
-    if (stored === 'light' || stored === 'dark') return stored
-  } catch { /* storage may be unavailable */ }
-  return 'dark'
-}
-
-const companyTheme = ref(initialTheme())
-const isDarkTheme = computed(() => companyTheme.value === 'dark')
+// The company shell is not a separate visual universe: it consumes the same
+// daisyUI theme as the project workspace. The quick toggle writes the app-wide
+// theme instead of a local one, so switching views never changes the palette.
+const DARK_THEMES = new Set([
+  'dark', 'codx-junior-dark', 'synthwave', 'halloween', 'forest', 'black',
+  'luxury', 'dracula', 'night', 'coffee', 'dim', 'sunset', 'abyss'
+])
+const isDarkTheme = computed(() => DARK_THEMES.has($storex.ui.theme))
 const { t, locale, languages, setLanguage } = useCompanyI18n()
 const sidebarCollapsed = ref(false)
 try { sidebarCollapsed.value = localStorage.getItem(SIDEBAR_KEY) === '1' } catch { /* noop */ }
 
 function toggleCompanyTheme() {
-  companyTheme.value = isDarkTheme.value ? 'light' : 'dark'
-  try { localStorage.setItem(THEME_KEY, companyTheme.value) } catch { /* noop */ }
+  $storex.ui.setTheme(isDarkTheme.value ? 'codx-junior-light' : 'codx-junior-dark')
+  $storex.ui.saveState()
 }
 
 function toggleSidebar() {
@@ -122,8 +118,10 @@ const aiCount = computed(() => counts.value.ai || 0)
 const SECTIONS = [
   { id: 'home', labelKey: 'nav.overview', icon: 'fa-solid fa-border-all', hintKey: 'The state of the company' },
   { id: 'work', labelKey: 'nav.work', icon: 'fa-solid fa-flag', hintKey: 'Goals, delivery, review' },
+  { id: 'tickets', labelKey: 'nav.tickets', icon: 'fa-solid fa-ticket', hintKey: 'Project tickets, unattended runs and delivery review' },
   { id: 'team', labelKey: 'nav.team', icon: 'fa-solid fa-people-group', hintKey: 'Teams and people' },
   { id: 'projects', labelKey: 'nav.projects', icon: 'fa-solid fa-cubes', hintKey: 'Projects this company runs' },
+  { id: 'files', labelKey: 'nav.files', icon: 'fa-solid fa-folder-tree', hintKey: 'Company files and project folders' },
   { id: 'business', labelKey: 'nav.business', icon: 'fa-solid fa-chart-line', hintKey: 'Revenue, margin, pipeline' },
   { id: 'activity', labelKey: 'nav.activity', icon: 'fa-solid fa-wave-square', hintKey: 'What happened' },
   { id: 'security', labelKey: 'nav.security', icon: 'fa-solid fa-shield-halved', hintKey: 'CISO posture' },
@@ -134,7 +132,7 @@ const SECTIONS = [
 ]
 
 const NAV_GROUPS = [
-  { id: 'workspace', labelKey: 'group.workspace', ids: ['home', 'work', 'team', 'projects'] },
+  { id: 'workspace', labelKey: 'group.workspace', ids: ['home', 'work', 'tickets', 'team', 'projects', 'files'] },
   { id: 'business', labelKey: 'group.business', ids: ['business', 'activity'] },
   { id: 'governance', labelKey: 'group.governance', ids: ['security', 'settings'] }
 ]
@@ -163,35 +161,26 @@ const roleLabel = computed(() => {
   return t('shell.member')
 })
 const workingProject = computed(() => $storex.projects.activeProject || null)
-// A company owns MANY projects. The selector in the top bar lists the ones
-// linked to this company and switches the active project without leaving the
-// current company section, so every company screen follows the same context.
-const companyProjectOptions = computed(() =>
-  ($storex.company.companyProjects || [])
-    .filter(item => item && item.project_id)
-    .map(item => ({
-      project_id: item.project_id,
-      project_name: item.project_name || item.project_id
-    }))
-)
-const activeProjectId = computed(() => {
-  const active = workingProject.value?.project_id
-  if (active && companyProjectOptions.value.some(option => option.project_id === active)) return active
-  return companyProjectOptions.value[0]?.project_id || ''
+// A company owns MANY projects. Every company surface works with the projects
+// the company actually links — the same list the Projects section shows — and
+// never with an "active project" or with a child project inherited from a
+// linked root. The store getter also falls back cleanly while the snapshot is
+// still loading, and updates as soon as a project is linked.
+const companyProjects = computed(() => $storex.company.linkedProjects || [])
+const companyProjectIds = computed(() => $storex.company.linkedProjectIds || [])
+// Full discovered project of the first available company project. Company
+// components that need a project API client use this instead of the globally
+// active project, which may belong to another company after a switch.
+const primaryCompanyProject = computed(() => {
+  const linked = companyProjects.value.find(item => item.available !== false) || companyProjects.value[0]
+  if (!linked?.project_id) return null
+  return ($storex.projects.allProjects || []).find(item => String(item.project_id) === linked.project_id) || null
 })
-
-async function onSelectProject(event) {
-  const projectId = event?.target?.value
-  if (!projectId || projectId === workingProject.value?.project_id) return
-  const project = ($storex.projects.allProjects || []).find(item => item.project_id === projectId)
-  if (!project) return
-  try {
-    await $storex.projects.activeProjectChanged(project)
-    await refreshSnapshot()
-  } catch (error) {
-    notifyError(error)
-  }
-}
+const workingProjectInCompany = computed(() => {
+  const active = workingProject.value
+  if (!active) return null
+  return companyProjectIds.value.includes(String(active.project_id)) ? active : null
+})
 const companyInitials = computed(() => initials(company.value?.name || 'Company'))
 // The logo is stored as an image source (an http(s) URL or an inline data URL).
 // Older documents keep a FontAwesome class there, so only real image sources are
@@ -277,14 +266,9 @@ async function loadActiveCompany() {
     if ($storex.company.activeId !== company.id || !$storex.company.snapshot) {
       await $storex.company.select({ companyId: company.id, skipList: true })
     }
-    // Never keep a project from another company active in the company shell.
-    const active = $storex.projects.activeProject
-    if (active && !$storex.company.hasProject(active.project_id)) {
-      const first = $storex.company.companyProjects[0]
-      if (first) {
-        await $storex.projects.activeProjectChanged(first).catch(() => {})
-      }
-    }
+    // The company shell is project-independent: it aggregates every project the
+    // company links. Never change the global active project just by opening a
+    // company; only an explicit "open project/workspace" action does that.
     await loadCompanyActors(company.id)
     await loadCompanyChats()
     await loadCompanyReferences()
@@ -311,11 +295,11 @@ async function loadCompanyActors(companyId) {
 
 async function loadCompanyReferences() {
   try {
-    companyReferences.value = await api.references({
-      projectId: workingProject.value?.project_id || ''
-    })
+    // No project scope: the pickers must offer the profiles of every project
+    // the company runs, not only the one that happened to be active.
+    companyReferences.value = await api.references()
   } catch (error) {
-    // The project picker is optional context; the rest of the shell keeps working.
+    // Pickers are optional context; the rest of the shell keeps working.
     console.warn('[CompanyView] cannot load company references', error)
   }
 }
@@ -395,36 +379,98 @@ function companySlug() {
 
 async function openProjectByName(projectName) {
   if (!projectName) return
-  const project = ($storex.projects.allProjects || []).find(item =>
-    item.project_name === projectName || item.project_id === projectName
+  const catalog = $storex.projects.allProjects || []
+  const owned = companyProjects.value.find(item =>
+    item.project_name === projectName
+    || item.discovered_name === projectName
+    || item.project_id === projectName
   )
+  // A ticket can target a child project that the company sees through an
+  // inherited link. It is not a company link of its own, so fall back to the
+  // discovered catalog instead of refusing to open a ticket's project.
+  const project = owned
+    ? catalog.find(item => String(item.project_id) === owned.project_id)
+    : catalog.find(item => String(item.project_id) === String(projectName)
+      || item.project_name === projectName)
+  if (!owned && !project) {
+    notify('That project is not linked to this company.', 'error')
+    return
+  }
   const slug = companySlug()
   if (!slug) return
   if (project) {
     await $storex.projects.activeProjectChanged(project).catch(() => {})
   }
+  const discoveredName = owned?.discovered_name
+    || project?.project_name
+    || projectName
   router.push({
     name: 'home',
-    params: { companySlug: slug, projectName }
+    params: { companySlug: slug, projectName: discoveredName }
   }).catch(() => {})
 }
 
-function openAdvancedView() {
+async function openAdvancedView() {
   const slug = companySlug()
   if (!slug) return
   exitOpen.value = false
-  const selected = ($storex.projects.activeProject &&
-    $storex.company.hasProject($storex.projects.activeProject.project_id))
-    ? $storex.projects.activeProject
-    : $storex.company.companyProjects[0]
+
+  // Resolve the target from the company's linked projects only. The advanced
+  // workspace may open any of them (a manually added child is a company project
+  // too), but never a project that belongs to another company.
+  const allProjects = $storex.projects.allProjects || []
+  const owned = companyProjects.value
+    .map(option => allProjects.find(project =>
+      String(project.project_id) === String(option.project_id)
+    ) || option)
+    .filter(project => project?.project_id && project?.project_name)
+  const activeOwned = workingProjectInCompany.value
+  const selected = (activeOwned && owned.find(project =>
+    String(project.project_id) === String(activeOwned.project_id)
+  )) || owned[0]
   if (!selected) {
     setSection('projects')
-    notify('Link or create a project before opening the advanced view.', 'error')
+    notify('Link or create a project before switching to the workspace view.', 'error')
     return
   }
-  router.push(
-    `/${encodeURIComponent(slug)}/workspace/${encodeURIComponent(selected.project_name)}/desktop`
-  ).catch(() => {})
+
+  // Make the workspace project the active one BEFORE navigating: the route
+  // guard, the desktop shell and every panel read the project from the store.
+  if (String(workingProject.value?.project_id || '') !== String(selected.project_id)) {
+    try {
+      await $storex.projects.activeProjectChanged(selected)
+    } catch (error) {
+      notifyError(error)
+      return
+    }
+  }
+
+  // Phones cannot render the dockview desktop (the router keeps sending that
+  // route back to the company). Open the project home instead: it is the same
+  // workspace on a mobile-safe screen, so the switch is never a no-op.
+  const routeName = $storex.ui.isMobile ? 'home' : 'codx-junior-split'
+  try {
+    await router.push({
+      name: routeName,
+      params: {
+        companySlug: slug,
+        projectName: selected.project_name
+      }
+    })
+  } catch (error) {
+    notify(`Could not switch to the workspace view: ${errorMessage(error)}`, 'error')
+  }
+}
+
+function onSelectCompany(companyId) {
+  companyMenuOpen.value = false
+  if (!companyId || companyId === activeId.value) return
+  selectCompany(companyId)
+}
+
+function onOpenNewCompany() {
+  companyMenuOpen.value = false
+  openNewCompany()
 }
 
 function openNewCompany() {
@@ -465,9 +511,9 @@ async function createCompany() {
 }
 
 // ── Setup assistant (New company wizard) ──────────────────────────────────
-// The wizard is the first thing a fresh installation runs. The state lives on
-// the server (`/api/companies/onboarding`), so it is offered once per install,
-// never re-opened after a decision, and re-runnable at any time from the menu.
+// The wizard state lives on the server (`/api/companies/onboarding`). The shell
+// only renders after the first-run gate in App.vue is satisfied; from here the
+// assistant is re-runnable at any time (and configures a newly created company).
 async function maybeOpenWizard({ force = false } = {}) {
   try {
     const onboarding = await api.onboarding()
@@ -595,11 +641,15 @@ function openWorkplace(kind) {
 }
 
 async function openNewTask() {
-  const linked = (snapshot.value?.projects || []).find(project => project.available)
-  let project = $storex.projects.activeProject
-  if (!project && linked) {
-    project = ($storex.projects.allProjects || []).find(item => item.project_id === linked.project_id)
-  }
+  // The destination project must be one the company links. Prefer the active
+  // project when it is part of the company, otherwise fall back to the first
+  // available linked project; the task dialog itself lists every company
+  // project so the owner can change it.
+  const available = companyProjects.value.find(project => project.available !== false)
+  const linked = workingProjectInCompany.value || available || companyProjects.value[0]
+  const project = linked?.project_id
+    ? ($storex.projects.allProjects || []).find(item => String(item.project_id) === linked.project_id)
+    : null
   if (!project) {
     notify('Link a project to the company before creating a task.', 'error')
     return
@@ -707,6 +757,7 @@ function legacySection(value) {
     people: 'team',
     organization: 'team',
     projects: 'projects',
+    files: 'files',
     activity: 'activity',
     missions: 'work',
     overview: 'home',
@@ -737,18 +788,29 @@ watch(() => route.query.assistant, value => {
 </script>
 
 <template>
-  <div class="company-shell flex h-full w-full overflow-hidden" :data-company-theme="companyTheme">
+  <div class="flex h-full w-full overflow-hidden bg-base-100 text-base-content">
     <div class="flex h-full w-full gap-0 p-0 md:gap-3 md:p-3 xl:gap-4 xl:p-4">
       <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
       <aside
         v-if="!isMobile"
-        class="cp-sidebar cp-scroll flex shrink-0 flex-col overflow-y-auto overflow-x-hidden transition-[width] duration-200 ease-out"
+        class="rounded-box border border-base-300 bg-base-100 flex shrink-0 flex-col overflow-y-auto overflow-x-hidden transition-[width] duration-200 ease-out"
         :style="{ width: sidebarCollapsed ? '76px' : '236px' }"
         aria-label="Company navigation"
       >
-        <div class="flex items-center gap-2.5 px-3.5 pb-2 pt-4">
-          <button type="button" class="shrink-0 transition hover:scale-[1.03]" title="Company overview" @click="setSection('home')">
-            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-[11px] bg-[var(--cp-lime)] text-[13px] font-black text-[var(--cp-lime-ink)] shadow-sm">
+        <!-- Company switcher: the name itself is the dropdown. It lists every
+             company the user can open and offers creating a new one, so
+             switching context never needs a second control. -->
+        <div class="relative px-3.5 pb-2 pt-4">
+          <button
+            type="button"
+            class="flex w-full items-center gap-2.5 rounded-[11px] px-1 py-0.5 text-left transition hover:bg-base-200"
+            :class="sidebarCollapsed ? 'justify-center' : ''"
+            :title="company?.name || 'Select company'"
+            aria-haspopup="listbox"
+            :aria-expanded="companyMenuOpen"
+            @click="companyMenuOpen = !companyMenuOpen"
+          >
+            <span class="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-[11px] bg-accent text-base font-black text-accent-content shadow-sm">
               <img
                 v-if="companyLogoIsImage"
                 :src="companyLogo"
@@ -759,63 +821,78 @@ watch(() => route.query.assistant, value => {
               <i v-else-if="companyLogo" :class="companyLogo"></i>
               <span v-else>{{ companyInitials }}</span>
             </span>
+            <template v-if="!sidebarCollapsed">
+              <div class="min-w-0 flex-1">
+                <p class="truncate text-base font-extrabold leading-tight tracking-tight">{{ company?.name || 'Your company' }}</p>
+                <p class="mt-0.5 truncate text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40">AI company OS</p>
+              </div>
+              <i
+                class="fa-solid fa-chevron-down shrink-0 text-[11px] text-base-content/40 transition-transform"
+                :class="companyMenuOpen ? 'rotate-180' : ''"
+              ></i>
+            </template>
+            <i v-else class="fa-solid fa-chevron-down text-[10px] text-base-content/40"></i>
           </button>
-          <div v-if="!sidebarCollapsed" class="min-w-0 flex-1">
-            <p class="truncate text-[13px] font-extrabold leading-tight tracking-tight">{{ company?.name || 'Your company' }}</p>
-            <p class="mt-0.5 truncate text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">AI company OS</p>
+
+          <div v-if="companyMenuOpen" class="fixed inset-0 z-[70]" @click="companyMenuOpen = false"></div>
+          <div
+            v-if="companyMenuOpen"
+            class="absolute left-2 right-2 top-[calc(100%-0.25rem)] z-[71] overflow-hidden rounded-[12px] border border-base-300 bg-base-100 p-1 shadow-2xl"
+            role="listbox"
+            aria-label="Companies"
+          >
+            <button
+              v-for="item in companies"
+              :key="item.id"
+              type="button"
+              class="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-xs font-semibold transition hover:bg-base-200"
+              :class="item.id === activeId ? 'text-base-content' : 'text-base-content/60'"
+              role="option"
+              :aria-selected="item.id === activeId"
+              @click="onSelectCompany(item.id)"
+            >
+              <i class="fa-solid w-3 text-center text-[10px]" :class="item.id === activeId ? 'fa-circle-check text-accent-ink' : 'fa-circle opacity-30'"></i>
+              <span class="min-w-0 flex-1 truncate">{{ item.name }}</span>
+            </button>
+            <div class="my-1 border-t border-base-300"></div>
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left text-xs font-semibold text-base-content transition hover:bg-base-200"
+              @click="onOpenNewCompany"
+            >
+              <i class="fa-solid fa-plus w-3 text-center text-[11px]"></i>
+              <span class="min-w-0 flex-1 truncate">New company</span>
+            </button>
           </div>
         </div>
 
-        <div v-if="!sidebarCollapsed" class="flex items-center gap-1 px-3 pb-1.5">
-          <label v-if="companies.length" class="relative block min-w-0 flex-1">
-            <select
-              class="w-full appearance-none rounded-[9px] border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] py-1.5 pl-2.5 pr-7 text-[10.5px] font-semibold text-[var(--cp-text)] outline-none transition hover:border-[var(--cp-border-strong)]"
-              :value="activeId"
-              aria-label="Select company"
-              @change="selectCompany($event.target.value)"
-            >
-              <option v-for="item in companies" :key="item.id" :value="item.id">{{ item.name }}</option>
-            </select>
-            <i class="fa-solid fa-chevron-down pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[8px] text-[var(--cp-muted-soft)]"></i>
-          </label>
-          <button
-            type="button"
-            class="ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-[8px] border border-[var(--cp-border)] text-[10px] text-[var(--cp-muted)] transition hover:border-[var(--cp-border-strong)] hover:text-[var(--cp-text)]"
-            title="Create a new company"
-            aria-label="Create a new company"
-            @click="openNewCompany"
-          >
-            <i class="fa-solid fa-plus"></i>
-          </button>
-        </div>
-
-        <nav class="cp-scroll flex-1 overflow-y-auto px-2.5 pb-1 pt-1">
+        <nav class="flex-1 overflow-y-auto px-2.5 pb-1 pt-1">
           <template v-for="group in navGroups" :key="group.id">
             <p
               v-if="!sidebarCollapsed"
-              class="px-2 pb-1.5 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]"
+              class="px-2 pb-1.5 pt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40"
             >
               {{ group.label }}
             </p>
-            <div v-else class="mx-2 my-2 border-t border-[var(--cp-border)] first:mt-1"></div>
+            <div v-else class="mx-2 my-2 border-t border-base-300 first:mt-1"></div>
             <button
               v-for="item in group.items"
               :key="item.id"
               type="button"
-              class="cp-nav-item mb-0.5"
-              :class="[section === item.id ? 'is-active' : '', sidebarCollapsed ? 'justify-center' : '']"
+              class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5"
+              :class="[section === item.id ? 'bg-primary/10 font-bold text-primary-ink' : '', sidebarCollapsed ? 'justify-center' : '']"
               :title="sidebarCollapsed ? item.label : item.hint"
               :aria-current="section === item.id ? 'page' : undefined"
               @click="setSection(item.id)"
             >
-              <span class="cp-nav-icon"><i :class="item.icon" class="text-[11px]"></i></span>
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition" :class="section === item.id ? 'border-transparent bg-accent text-accent-content' : ''"><i :class="item.icon" class="text-xs"></i></span>
               <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate">{{ item.label }}</span>
               <span
                 v-if="item.badge"
-                class="cp-nav-badge"
+                class="inline-grid h-5 min-w-5 place-items-center rounded-full bg-base-300 px-1.5 text-xs font-bold text-base-content/60"
                 :class="[
-                  item.id === 'work' && attention.length ? '!bg-[var(--cp-yellow-soft)] !text-[var(--cp-secondary-ink)]' : '',
-                  sidebarCollapsed ? '!absolute !right-0.5 !top-0.5 !h-4 !min-w-4 !px-1 !text-[7px]' : ''
+                  item.id === 'work' && attention.length ? '!bg-warning/10 !text-primary-ink' : '',
+                  sidebarCollapsed ? '!absolute !right-0.5 !top-0.5 !h-4 !min-w-4 !px-1 !text-[10px]' : ''
                 ]"
               >
                 {{ item.badge }}
@@ -825,99 +902,121 @@ watch(() => route.query.assistant, value => {
 
           <p
             v-if="!sidebarCollapsed"
-            class="px-2 pb-1.5 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]"
+            class="px-2 pb-1.5 pt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40"
           >{{ t('group.workplace') }}</p>
-          <div v-else class="mx-2 my-2 border-t border-[var(--cp-border)]"></div>
+          <div v-else class="mx-2 my-2 border-t border-base-300"></div>
           <button
             v-for="link in workplaceLinks"
             :key="link.id"
             type="button"
-            class="cp-nav-item mb-0.5"
-            :class="[section === link.id ? 'is-active' : '', sidebarCollapsed ? 'justify-center' : '']"
+            class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5"
+            :class="[section === link.id ? 'bg-primary/10 font-bold text-primary-ink' : '', sidebarCollapsed ? 'justify-center' : '']"
             :title="link.label"
             @click="openWorkplace(link.id)"
           >
-            <span class="cp-nav-icon"><i :class="link.icon" class="text-[11px]"></i></span>
+            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition" :class="section === link.id ? 'border-transparent bg-accent text-accent-content' : ''"><i :class="link.icon" class="text-xs"></i></span>
             <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate">{{ link.label }}</span>
+          </button>
+
+          <!-- Messenger: the rail reaches the company conversations in one
+               click. It opens the same chats panel as the top bar, so there is
+               one source of truth for channels. -->
+          <button
+            type="button"
+            class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5"
+            :class="[chatsOpen ? 'bg-primary/10 font-bold text-primary-ink' : '', sidebarCollapsed ? 'justify-center' : '']"
+            :title="t('nav.messenger')"
+            @click="openChat()"
+          >
+            <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition" :class="chatsOpen ? 'border-transparent bg-accent text-accent-content' : ''"><i class="fa-regular fa-comments text-xs"></i></span>
+            <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate">{{ t('nav.messenger') }}</span>
+            <span
+              v-if="counts.chats"
+              class="inline-grid h-5 min-w-5 place-items-center rounded-full bg-base-300 px-1.5 text-xs font-bold text-base-content/60"
+              :class="sidebarCollapsed ? '!absolute !right-0.5 !top-0.5 !h-4 !min-w-4 !px-1 !text-[10px]' : ''"
+            >
+              {{ counts.chats }}
+            </span>
           </button>
 
           <template v-if="recentChats.length">
             <p
               v-if="!sidebarCollapsed"
-              class="px-2 pb-1.5 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]"
+              class="px-2 pb-1.5 pt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40"
             >{{ t('group.channels') }}</p>
-            <div v-else class="mx-2 my-2 border-t border-[var(--cp-border)]"></div>
+            <div v-else class="mx-2 my-2 border-t border-base-300"></div>
             <button
               v-for="chat in recentChats"
               :key="chat.chat_id"
               type="button"
-              class="cp-nav-item mb-0.5"
+              class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5"
               :class="sidebarCollapsed ? 'justify-center' : ''"
               :title="chatName(chat)"
               @click="openChatChannel(chat)"
             >
-              <span class="cp-nav-icon"><i class="fa-solid fa-hashtag text-[10px]"></i></span>
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition"><i class="fa-solid fa-hashtag text-xs"></i></span>
               <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate">{{ chatName(chat) }}</span>
             </button>
             <button
               type="button"
-              class="cp-nav-item mb-0.5"
+              class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5"
               :class="sidebarCollapsed ? 'justify-center' : ''"
               :title="t('nav.allChannels')"
               @click="openChat()"
             >
-              <span class="cp-nav-icon"><i class="fa-solid fa-ellipsis text-[10px]"></i></span>
-              <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate text-[10px]">{{ t('nav.allChannels') }}</span>
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition"><i class="fa-solid fa-ellipsis text-xs"></i></span>
+              <span v-if="!sidebarCollapsed" class="min-w-0 flex-1 truncate text-xs">{{ t('nav.allChannels') }}</span>
             </button>
           </template>
         </nav>
 
         <div class="mt-auto space-y-2 px-2.5 pb-3 pt-2">
-          <div v-if="!sidebarCollapsed" class="cp-promo">
+          <div v-if="!sidebarCollapsed" class="relative overflow-hidden rounded-box border border-white/10 bg-neutral p-3.5 text-neutral-content">
             <div class="flex items-start justify-between">
-              <span class="cp-promo-badge"><i class="fa-solid fa-bolt text-[9px]"></i></span>
-              <span class="rounded-full border border-white/10 px-1.5 py-0.5 text-[7.5px] font-bold uppercase tracking-[0.14em] text-white/45">Company AI</span>
+              <span class="grid h-6 w-6 place-items-center rounded-field bg-accent text-accent-content"><i class="fa-solid fa-bolt text-[11px]"></i></span>
+              <span class="rounded-full border border-neutral-content/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] text-neutral-content/50">Company AI</span>
             </div>
-            <p class="mt-2.5 text-[12px] font-bold leading-snug">Put your AI team to work</p>
-            <p class="mt-1 text-[9.5px] leading-relaxed text-white/45">
+            <p class="mt-2.5 text-sm font-bold leading-snug">Put your AI team to work</p>
+            <p class="mt-1 text-[11px] leading-relaxed text-neutral-content/60">
               {{ activeActors.length }} teammate{{ activeActors.length === 1 ? '' : 's' }} on duty · {{ counts.teams || 0 }} teams
             </p>
-            <button type="button" class="cp-promo-action mt-2.5" @click="askAssistant('Give me today\'s executive brief')">
-              <i class="fa-solid fa-wand-magic-sparkles text-[9px]"></i>
+            <button type="button" class="flex h-8 w-full items-center justify-center gap-1.5 rounded-field bg-accent text-xs font-bold text-accent-content transition hover:bg-accent/85 mt-2.5" @click="askAssistant('Give me today\'s executive brief')">
+              <i class="fa-solid fa-wand-magic-sparkles text-[11px]"></i>
               Ask codx-junior
             </button>
           </div>
           <button
             v-else
             type="button"
-            class="cp-promo-badge mx-auto !h-8 !w-8"
+            class="grid h-6 w-6 place-items-center rounded-field bg-accent text-accent-content mx-auto !h-8 !w-8"
             title="Ask codx-junior"
             aria-label="Ask codx-junior"
             @click="askAssistant('Give me today\'s executive brief')"
           >
-            <i class="fa-solid fa-bolt text-[10px]"></i>
+            <i class="fa-solid fa-bolt text-xs"></i>
           </button>
 
           <button
             type="button"
-            class="cp-nav-item !py-1.5"
+            class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content !py-1.5"
             :class="sidebarCollapsed ? 'justify-center' : ''"
-            :title="'Advanced view'"
+            :title="'Switch to workspace view'"
+            aria-label="Switch to workspace view"
             @click="exitOpen = true"
           >
-            <i class="fa-solid fa-desktop w-4 text-center text-[10px]"></i>
-            <span v-if="!sidebarCollapsed" class="text-[10px]">Advanced view</span>
+            <i class="fa-solid fa-desktop w-4 text-center text-xs"></i>
+            <span v-if="!sidebarCollapsed" class="text-xs">Workspace view</span>
           </button>
 
           <button
             type="button"
-            class="cp-nav-item !py-1.5"
+            class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content !py-1.5"
             :class="sidebarCollapsed ? 'justify-center' : ''"
             :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
             @click="toggleSidebar"
           >
-            <i :class="sidebarCollapsed ? 'fa-solid fa-angles-right' : 'fa-solid fa-angles-left'" class="w-4 text-center text-[10px]"></i>
-            <span v-if="!sidebarCollapsed" class="text-[10px]">Collapse sidebar</span>
+            <i :class="sidebarCollapsed ? 'fa-solid fa-angles-right' : 'fa-solid fa-angles-left'" class="w-4 text-center text-xs"></i>
+            <span v-if="!sidebarCollapsed" class="text-xs">Collapse sidebar</span>
           </button>
         </div>
       </aside>
@@ -925,9 +1024,9 @@ watch(() => route.query.assistant, value => {
       <!-- Mobile nav overlay -->
       <div v-if="navOpen && isMobile" class="fixed inset-0 z-[60]">
         <div class="absolute inset-0 bg-black/45 backdrop-blur-sm" @click="navOpen = false"></div>
-        <aside class="relative flex h-full w-[86%] max-w-[310px] flex-col border-r border-[var(--cp-border)] bg-[var(--cp-sidebar)] p-3 shadow-2xl">
+        <aside class="relative flex h-full w-[86%] max-w-[310px] flex-col border-r border-base-300 bg-base-100 p-3 shadow-2xl">
           <div class="flex items-center gap-2.5 pb-2">
-            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-[11px] bg-[var(--cp-lime)] text-[13px] font-black text-[var(--cp-lime-ink)]">
+            <span class="grid h-9 w-9 place-items-center overflow-hidden rounded-[11px] bg-accent text-base font-black text-accent-content">
               <img
                 v-if="companyLogoIsImage"
                 :src="companyLogo"
@@ -939,14 +1038,14 @@ watch(() => route.query.assistant, value => {
               <span v-else>{{ companyInitials }}</span>
             </span>
             <div class="min-w-0 flex-1">
-              <p class="truncate text-[13px] font-extrabold">{{ company?.name || 'Company' }}</p>
-              <p class="text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">AI company OS</p>
+              <p class="truncate text-base font-extrabold">{{ company?.name || 'Company' }}</p>
+              <p class="text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40">AI company OS</p>
             </div>
-            <button class="cp-icon-btn" aria-label="Close menu" @click="navOpen = false"><i class="fa-solid fa-xmark text-[13px]"></i></button>
+            <button class="btn btn-ghost btn-sm btn-square" aria-label="Close menu" @click="navOpen = false"><i class="fa-solid fa-xmark text-base"></i></button>
           </div>
           <div v-if="companies.length" class="pb-2">
             <select
-              class="w-full rounded-[9px] border border-[var(--cp-border)] bg-[var(--cp-surface-soft)] px-2.5 py-1.5 text-[11px] font-semibold outline-none"
+              class="select select-sm select-bordered w-full"
               :value="activeId"
               aria-label="Select company"
               @change="selectCompany($event.target.value)"
@@ -954,217 +1053,203 @@ watch(() => route.query.assistant, value => {
               <option v-for="item in companies" :key="item.id" :value="item.id">{{ item.name }}</option>
             </select>
           </div>
-          <nav class="cp-scroll flex-1 overflow-y-auto">
+          <nav class="flex-1 overflow-y-auto">
             <template v-for="group in navGroups" :key="group.id">
-              <p class="px-2 pb-1 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">{{ group.label }}</p>
+              <p class="px-2 pb-1 pt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40">{{ group.label }}</p>
               <button
                 v-for="item in group.items"
                 :key="item.id"
                 type="button"
-                class="cp-nav-item mb-0.5"
-                :class="section === item.id ? 'is-active' : ''"
+                class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5"
+                :class="section === item.id ? 'bg-primary/10 font-bold text-primary-ink' : ''"
                 @click="setSection(item.id)"
               >
-                <span class="cp-nav-icon"><i :class="item.icon" class="text-[11px]"></i></span>
-                <span class="flex-1 text-[12px]">{{ item.label }}</span>
-                <span v-if="item.badge" class="cp-nav-badge">{{ item.badge }}</span>
+                <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition" :class="section === item.id ? 'border-transparent bg-accent text-accent-content' : ''"><i :class="item.icon" class="text-xs"></i></span>
+                <span class="flex-1 text-sm">{{ item.label }}</span>
+                <span v-if="item.badge" class="inline-grid h-5 min-w-5 place-items-center rounded-full bg-base-300 px-1.5 text-xs font-bold text-base-content/60">{{ item.badge }}</span>
               </button>
             </template>
-            <p class="px-2 pb-1 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">{{ t('group.workplace') }}</p>
+            <p class="px-2 pb-1 pt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40">{{ t('group.workplace') }}</p>
             <div class="grid grid-cols-3 gap-1 px-1">
-              <button v-for="link in workplaceLinks" :key="link.id" type="button" class="cp-chip !h-8 justify-center !px-1 !text-[8.5px]" :class="section === link.id ? '!border-transparent !bg-[var(--cp-lime)] !text-[var(--cp-lime-ink)]' : ''" @click="openWorkplace(link.id); navOpen = false">
-                <i :class="link.icon" class="text-[8px]"></i>
+              <button v-for="link in workplaceLinks" :key="link.id" type="button" class="btn btn-xs !h-8 justify-center !px-1 !text-[10px]" :class="section === link.id ? '!border-transparent !bg-accent !text-accent-content' : ''" @click="openWorkplace(link.id); navOpen = false">
+                <i :class="link.icon" class="text-[10px]"></i>
                 <span class="truncate">{{ link.label }}</span>
               </button>
             </div>
+            <button type="button" class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5 mt-1" @click="openChat(); navOpen = false">
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition" :class="chatsOpen ? 'border-transparent bg-accent text-accent-content' : ''"><i class="fa-regular fa-comments text-xs"></i></span>
+              <span class="flex-1 text-sm">{{ t('nav.messenger') }}</span>
+              <span v-if="counts.chats" class="inline-grid h-5 min-w-5 place-items-center rounded-full bg-base-300 px-1.5 text-xs font-bold text-base-content/60">{{ counts.chats }}</span>
+            </button>
             <template v-if="recentChats.length">
-              <p class="px-2 pb-1 pt-3 text-[8px] font-bold uppercase tracking-[0.18em] text-[var(--cp-muted-soft)]">{{ t('group.channels') }}</p>
-              <button v-for="chat in recentChats" :key="chat.chat_id" type="button" class="cp-nav-item mb-0.5" @click="openChatChannel(chat); navOpen = false">
-                <span class="cp-nav-icon"><i class="fa-solid fa-hashtag text-[10px]"></i></span>
-                <span class="flex-1 truncate text-[12px]">{{ chatName(chat) }}</span>
+              <p class="px-2 pb-1 pt-3 text-[10px] font-bold uppercase tracking-[0.18em] text-base-content/40">{{ t('group.channels') }}</p>
+              <button v-for="chat in recentChats" :key="chat.chat_id" type="button" class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content mb-0.5" @click="openChatChannel(chat); navOpen = false">
+                <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition"><i class="fa-solid fa-hashtag text-xs"></i></span>
+                <span class="flex-1 truncate text-sm">{{ chatName(chat) }}</span>
               </button>
             </template>
           </nav>
-          <div class="mt-2 space-y-1 border-t border-[var(--cp-border)] pt-3">
-            <div class="rounded-xl bg-[var(--cp-surface-soft)] p-2">
+          <div class="mt-2 space-y-1 border-t border-base-300 pt-3">
+            <div class="rounded-xl bg-base-200 p-2">
               <div class="flex items-center gap-2">
-                <span class="relative grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)]">
-                  <span class="absolute inset-0 grid place-items-center text-[8px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
+                <span class="relative grid h-7 w-7 shrink-0 place-items-center overflow-hidden rounded-full bg-accent/10">
+                  <span class="absolute inset-0 grid place-items-center text-[10px] font-extrabold text-accent-ink">{{ userInitials }}</span>
                   <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
                 </span>
                 <div class="min-w-0 flex-1">
-                  <p class="truncate text-[10.5px] font-bold">{{ userLabel }}</p>
-                  <p class="truncate text-[8px] cp-muted-soft">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
+                  <p class="truncate text-xs font-bold">{{ userLabel }}</p>
+                  <p class="truncate text-[10px] text-base-content/40">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
                 </div>
-                <button class="cp-icon-btn !h-7 !w-7" :aria-label="isDarkTheme ? 'Light mode' : 'Dark mode'" @click="toggleCompanyTheme">
-                  <i :class="isDarkTheme ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-[10px]"></i>
+                <button class="btn btn-ghost btn-sm btn-square !h-7 !w-7" :aria-label="isDarkTheme ? 'Light mode' : 'Dark mode'" @click="toggleCompanyTheme">
+                  <i :class="isDarkTheme ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-xs"></i>
                 </button>
               </div>
-              <label class="cp-field mt-2">
-                <span>{{ t('shell.language') }}</span>
-                <select class="cp-select" :value="locale" @change="changeLanguage($event.target.value)">
+              <label class="flex min-w-0 flex-col gap-1 mt-2">
+                <span class="text-xs font-semibold text-base-content/60">{{ t('shell.language') }}</span>
+                <select class="select select-sm select-bordered w-full" :value="locale" @change="changeLanguage($event.target.value)">
                   <option v-for="language in languages" :key="language.code" :value="language.code">{{ language.label }}</option>
                 </select>
               </label>
               <div class="mt-1.5 flex gap-1.5">
-                <button class="cp-chip flex-1 justify-center !h-7 !text-[8.5px]" @click="openUserSettings">{{ t('shell.settings') }}</button>
-                <button class="cp-chip flex-1 justify-center !h-7 !text-[8.5px] !text-[var(--cp-error-ink)]" @click="logoutCompany">{{ t('shell.logout') }}</button>
+                <button class="btn btn-xs flex-1 justify-center !h-7 !text-[10px]" @click="openUserSettings">{{ t('shell.settings') }}</button>
+                <button class="btn btn-xs flex-1 justify-center !h-7 !text-[10px] !text-error-ink" @click="logoutCompany">{{ t('shell.logout') }}</button>
               </div>
             </div>
-            <button type="button" class="cp-nav-item" @click="exitOpen = true; navOpen = false">
-              <span class="cp-nav-icon"><i class="fa-solid fa-arrow-right-from-bracket text-[11px]"></i></span>
-              <span class="flex-1 text-[12px]">Advanced view</span>
+            <button type="button" class="relative flex w-full items-center gap-2.5 rounded-selector px-2.5 py-2 text-left text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content" @click="exitOpen = true; navOpen = false">
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector border border-base-300 bg-base-100 text-base-content/60 transition"><i class="fa-solid fa-arrow-right-from-bracket text-xs"></i></span>
+              <span class="flex-1 text-sm">Switch to workspace view</span>
             </button>
           </div>
         </aside>
       </div>
 
       <!-- ── Main column ──────────────────────────────────────────────────── -->
-      <div class="cp-canvas flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header class="cp-topbar shrink-0">
+      <div class="bg-base-100 flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header class="border-b border-base-300 shrink-0">
           <div class="flex h-[60px] items-center gap-2 px-3 md:h-[64px] md:px-5">
-            <button v-if="isMobile" class="cp-icon-btn" aria-label="Open menu" @click="navOpen = true">
-              <i class="fa-solid fa-bars-staggered text-[13px]"></i>
+            <button v-if="isMobile" class="btn btn-ghost btn-sm btn-square" aria-label="Open menu" @click="navOpen = true">
+              <i class="fa-solid fa-bars-staggered text-base"></i>
             </button>
             <div class="flex min-w-0 flex-1 items-center">
-              <label class="cp-search w-full" :class="isMobile ? 'max-w-none' : 'max-w-[360px]'">
-                <i class="fa-solid fa-wand-magic-sparkles text-[10px] text-[var(--cp-accent-ink)]"></i>
+              <label class="flex h-10 w-full items-center gap-2 rounded-field border border-base-300 bg-base-200 px-3" :class="isMobile ? 'max-w-none' : 'max-w-[360px]'">
+                <i class="fa-solid fa-wand-magic-sparkles text-xs text-accent-ink"></i>
                 <input
                   v-model="askText"
                   type="text"
+                  class="min-w-0 flex-1 border-0 bg-transparent text-sm outline-none placeholder:text-base-content/40"
                   :placeholder="t('shell.ask')"
                   aria-label="Ask codx-junior"
                   @click="askAssistant()"
                   @keydown.enter="sendAsk"
                 />
-                <span v-if="!isMobile" class="cp-kbd">⌘K</span>
+                <span v-if="!isMobile" class="kbd kbd-sm">⌘K</span>
               </label>
             </div>
 
             <div class="flex shrink-0 items-center gap-0.5 md:gap-1">
-              <!-- Project selector: the company runs several projects and every
-                   company screen reads the active one. Hidden when the company
-                   has a single project (nothing to choose). -->
-              <label
-                v-if="!isMobile && companyProjectOptions.length > 1"
-                class="cp-project-select"
-                title="Active project"
-              >
-                <i class="fa-solid fa-cube text-[10px] text-[var(--cp-accent-ink)]"></i>
-                <select
-                  :value="activeProjectId"
-                  aria-label="Active project"
-                  @change="onSelectProject"
-                >
-                  <option
-                    v-for="option in companyProjectOptions"
-                    :key="option.project_id"
-                    :value="option.project_id"
-                  >
-                    {{ option.project_name }}
-                  </option>
-                </select>
-              </label>
+              <!-- No active-project selector: the company shell aggregates every
+                   project linked to the company. Project choice belongs to the
+                   action that needs it (goal, task, advanced workspace). -->
               <button
                 v-if="!isMobile"
-                class="cp-icon-btn"
+                class="btn btn-ghost btn-sm btn-square"
                 :title="isDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'"
                 :aria-label="isDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'"
                 :aria-pressed="isDarkTheme"
                 @click="toggleCompanyTheme"
               >
-                <i :class="isDarkTheme ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-[12px]"></i>
+                <i :class="isDarkTheme ? 'fa-solid fa-sun' : 'fa-solid fa-moon'" class="text-sm"></i>
               </button>
               <span v-if="!isMobile">
-                <button class="cp-icon-btn" :disabled="busy" title="Refresh company data" aria-label="Refresh company data" @click="selectCompany(activeId)">
-                  <i class="fa-solid fa-rotate text-[11px]" :class="busy ? 'animate-spin' : ''"></i>
+                <button class="btn btn-ghost btn-sm btn-square" :disabled="busy" title="Refresh company data" aria-label="Refresh company data" @click="selectCompany(activeId)">
+                  <i class="fa-solid fa-rotate text-xs" :class="busy ? 'animate-spin' : ''"></i>
                 </button>
               </span>
               <span v-if="!isMobile">
-                <button class="cp-icon-btn" title="Company chats" aria-label="Company chats" @click="openChat()">
+                <button class="btn btn-ghost btn-sm btn-square" title="Company chats" aria-label="Company chats" @click="openChat()">
                   <span class="relative">
-                    <i class="fa-regular fa-comments text-[13px]"></i>
-                    <span v-if="counts.chats" class="absolute -right-1.5 -top-1.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-[var(--cp-lime)] px-0.5 text-[7px] font-bold text-[var(--cp-lime-ink)]">{{ counts.chats }}</span>
+                    <i class="fa-regular fa-comments text-base"></i>
+                    <span v-if="counts.chats" class="absolute -right-1.5 -top-1.5 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-accent px-0.5 text-[10px] font-bold text-accent-content">{{ counts.chats }}</span>
                   </span>
                 </button>
               </span>
-              <button class="cp-icon-btn relative" title="Needs your attention" aria-label="Needs your attention" @click="setSection('work')">
-                <i class="fa-regular fa-bell text-[13px]"></i>
-                <span v-if="attention.length" class="absolute right-1 top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-[var(--cp-yellow)] px-0.5 text-[7px] font-bold text-[#201b04]">{{ attention.length }}</span>
+              <button class="btn btn-ghost btn-sm btn-square relative" title="Needs your attention" aria-label="Needs your attention" @click="setSection('work')">
+                <i class="fa-regular fa-bell text-base"></i>
+                <span v-if="attention.length" class="absolute right-1 top-1 grid h-3.5 min-w-3.5 place-items-center rounded-full bg-warning px-0.5 text-[10px] font-bold text-warning-content">{{ attention.length }}</span>
               </button>
               <span v-if="!isMobile">
-                <button class="cp-icon-btn" title="Company settings" aria-label="Company settings" @click="setSection('settings')">
-                  <i class="fa-solid fa-gear text-[12px]"></i>
+                <button class="btn btn-ghost btn-sm btn-square" title="Company settings" aria-label="Company settings" @click="setSection('settings')">
+                  <i class="fa-solid fa-gear text-sm"></i>
                 </button>
               </span>
 
               <div v-if="!isMobile" class="relative ml-0.5">
                 <button
                   type="button"
-                  class="flex items-center gap-1 rounded-full p-0.5 transition hover:bg-[var(--cp-surface-soft)]"
+                  class="flex items-center gap-1 rounded-full p-0.5 transition hover:bg-base-200"
                   :title="userLabel"
                   aria-label="User menu"
                   :aria-expanded="userMenuOpen"
                   @click.stop="userMenuOpen = !userMenuOpen"
                 >
-                  <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)] ring-2 ring-[var(--cp-surface)]">
-                    <span class="absolute inset-0 grid place-items-center text-[9px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
+                  <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-accent/10 ring-2 ring-base-100">
+                    <span class="absolute inset-0 grid place-items-center text-[11px] font-extrabold text-accent-ink">{{ userInitials }}</span>
                     <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
                   </span>
-                  <i class="fa-solid fa-chevron-down pr-1 text-[7px] cp-muted-soft"></i>
+                  <i class="fa-solid fa-chevron-down pr-1 text-[10px] text-base-content/40"></i>
                 </button>
                 <div v-if="userMenuOpen" class="fixed inset-0 z-40" @click="userMenuOpen = false"></div>
-                <div v-if="userMenuOpen" class="absolute right-0 top-full z-50 mt-2 w-[242px] rounded-2xl border border-[var(--cp-border)] bg-[var(--cp-surface)] p-1.5 shadow-2xl" role="menu">
-                  <div class="flex items-center gap-2 rounded-xl bg-[var(--cp-surface-soft)] p-2">
-                    <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--cp-lime-soft)]">
-                      <span class="absolute inset-0 grid place-items-center text-[9px] font-extrabold text-[var(--cp-accent-ink)]">{{ userInitials }}</span>
+                <div v-if="userMenuOpen" class="absolute right-0 top-full z-50 mt-2 w-[242px] rounded-2xl border border-base-300 bg-base-100 p-1.5 shadow-2xl" role="menu">
+                  <div class="flex items-center gap-2 rounded-xl bg-base-200 p-2">
+                    <span class="relative grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-accent/10">
+                      <span class="absolute inset-0 grid place-items-center text-[11px] font-extrabold text-accent-ink">{{ userInitials }}</span>
                       <img v-if="userAvatar" :src="userAvatar" :alt="userLabel" class="relative h-full w-full object-cover" @error="hideBrokenImage" />
                     </span>
                     <div class="min-w-0">
-                      <p class="truncate text-[11px] font-bold">{{ userLabel }}</p>
-                      <p class="truncate text-[8.5px] cp-muted-soft">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
+                      <p class="truncate text-xs font-bold">{{ userLabel }}</p>
+                      <p class="truncate text-[10px] text-base-content/40">{{ roleLabel }} · {{ company?.name || 'Company' }}</p>
                     </div>
                   </div>
-                  <p class="px-2 pb-1 pt-2 cp-eyebrow !text-[7.5px]">{{ t('shell.language') }}</p>
+                  <p class="px-2 pb-1 pt-2 text-xs font-bold uppercase tracking-[0.14em] text-base-content/40 !text-[10px]">{{ t('shell.language') }}</p>
                   <div class="grid grid-cols-2 gap-1">
                     <button
                       v-for="language in languages"
                       :key="language.code"
-                      class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-[10px] transition hover:bg-[var(--cp-surface-soft)]"
-                      :class="locale === language.code ? 'bg-[var(--cp-lime-soft)] font-bold text-[var(--cp-accent-ink)]' : 'text-[var(--cp-text)]'"
+                      class="flex items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-base-200"
+                      :class="locale === language.code ? 'bg-accent/10 font-bold text-accent-ink' : 'text-base-content'"
                       @click="changeLanguage(language.code)"
                     >
                       {{ language.label }}
-                      <i v-if="locale === language.code" class="fa-solid fa-check text-[8px]"></i>
+                      <i v-if="locale === language.code" class="fa-solid fa-check text-[10px]"></i>
                     </button>
                   </div>
-                  <div class="my-1 border-t border-[var(--cp-border)]"></div>
-                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold transition hover:bg-[var(--cp-surface-soft)]" @click="openUserSettings">
-                    <i class="fa-solid fa-sliders w-4 text-center text-[10px] cp-muted"></i>{{ t('shell.settings') }}
+                  <div class="my-1 border-t border-base-300"></div>
+                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold transition hover:bg-base-200" @click="openUserSettings">
+                    <i class="fa-solid fa-sliders w-4 text-center text-xs text-base-content/60"></i>{{ t('shell.settings') }}
                   </button>
-                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold transition hover:bg-[var(--cp-surface-soft)]" @click="openSetupAssistant">
-                    <i class="fa-solid fa-wand-magic-sparkles w-4 text-center text-[10px] cp-muted"></i>Setup assistant
+                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold transition hover:bg-base-200" @click="openSetupAssistant">
+                    <i class="fa-solid fa-wand-magic-sparkles w-4 text-center text-xs text-base-content/60"></i>Setup assistant
                   </button>
-                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[10.5px] font-semibold text-[var(--cp-error-ink)] transition hover:bg-[var(--cp-red-soft)]" @click="logoutCompany">
-                    <i class="fa-solid fa-arrow-right-from-bracket w-4 text-center text-[10px]"></i>{{ t('shell.logout') }}
+                  <button class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-semibold text-error-ink transition hover:bg-error/10" @click="logoutCompany">
+                    <i class="fa-solid fa-arrow-right-from-bracket w-4 text-center text-xs"></i>{{ t('shell.logout') }}
                   </button>
                 </div>
               </div>
 
-              <button v-if="canManage" class="cp-cta-dark ml-1" aria-label="New goal" @click="openGoal()">
-                <i class="fa-solid fa-plus text-[10px]"></i>
+              <button v-if="canManage" class="btn btn-sm btn-secondary ml-1" aria-label="New goal" @click="openGoal()">
+                <i class="fa-solid fa-plus text-xs"></i>
                 <span v-if="!isMobile">{{ t('shell.newGoal') }}</span>
               </button>
             </div>
           </div>
 
           <!-- Mobile section pills -->
-          <div v-if="isMobile" class="cp-scroll flex gap-1 overflow-x-auto border-t border-[var(--cp-border)] px-2 py-2">
+          <div v-if="isMobile" class="flex gap-1 overflow-x-auto border-t border-base-300 px-2 py-2">
             <button
               v-for="item in navItems"
               :key="item.id"
-              class="cp-chip shrink-0"
-              :class="section === item.id ? '!border-transparent !bg-[var(--cp-lime)] !text-[var(--cp-lime-ink)]' : ''"
+              class="btn btn-xs shrink-0"
+              :class="section === item.id ? '!border-transparent !bg-accent !text-accent-content' : ''"
               @click="setSection(item.id)"
             >
               {{ item.label }}<span v-if="item.badge" class="opacity-60">{{ item.badge }}</span>
@@ -1172,33 +1257,32 @@ watch(() => route.query.assistant, value => {
           </div>
         </header>
 
-        <main class="cp-scroll min-h-0 flex-1 overflow-y-auto">
+        <main class="min-h-0 flex-1 overflow-y-auto">
           <div class="w-full px-3 py-3 md:px-5 md:py-5">
             <div v-if="loading" class="grid h-[60vh] place-items-center">
-              <div class="text-center text-[var(--cp-muted)]">
-                <span class="loading loading-spinner loading-lg text-primary"></span>
+              <div class="text-center text-base-content/60">
+                <span class="loading loading-spinner loading-lg text-primary-ink"></span>
                 <p class="mt-2 text-sm">Opening your company…</p>
               </div>
             </div>
 
             <div v-else-if="!companies.length" class="grid min-h-[70vh] place-items-center">
-              <div class="cp-card w-full max-w-md p-6 text-center md:p-8">
-                <div class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-[var(--cp-lime)] text-[var(--cp-lime-ink)] shadow-lg shadow-[0_12px_28px_rgba(204,0,153,0.30)]">
+              <div class="rounded-box border border-base-300 bg-base-100 shadow-sm w-full max-w-md p-6 text-center md:p-8">
+                <div class="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-accent text-accent-content shadow-lg shadow-primary/25">
                   <i class="fa-solid fa-building-columns text-xl"></i>
                 </div>
                 <h2 class="mt-4 text-xl font-extrabold tracking-tight">{{ t('shell.noCompany') }}</h2>
-                <p class="mx-auto mt-2 max-w-sm text-[12px] leading-relaxed text-[var(--cp-muted)]">
+                <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-base-content/60">
                   {{ t('shell.createWorkspace') }}
                 </p>
-                <button class="cp-cta mx-auto mt-5 h-10 px-4" @click="exitOpen = true">
-                  <i class="fa-solid fa-desktop text-[10px]"></i> Advanced view
+                <button class="btn btn-sm btn-primary mx-auto mt-5 h-10 px-4" @click="exitOpen = true">
+                  <i class="fa-solid fa-desktop text-xs"></i> Workspace view
                 </button>
               </div>
             </div>
 
             <template v-else-if="company">
-              <Transition name="cp-fade" mode="out-in">
-                <div :key="section">
+              <div :key="section">
                   <CompanyHome
                     v-if="section === 'home'"
                     :snapshot="snapshot"
@@ -1207,6 +1291,7 @@ watch(() => route.query.assistant, value => {
                     :can-admin="canAdmin"
                     @assistant="openAssistantFor"
                     @open-work="onWorkFocus"
+                    @open-tickets="setSection('tickets')"
                     @open-team="onTeamFocus"
                     @open-business="setSection('business')"
                     @open-activity="setSection('activity')"
@@ -1225,6 +1310,15 @@ watch(() => route.query.assistant, value => {
                     @new-goal="openGoal()"
                     @edit-goal="(mission) => openGoal('', mission)"
                     @refresh="refreshSnapshot"
+                  />
+                  <CompanyTickets
+                    v-else-if="section === 'tickets'"
+                    :company-id="activeId"
+                    :snapshot="snapshot"
+                    :can-manage="canManage"
+                    @assistant="openAssistantFor"
+                    @refresh="refreshSnapshot"
+                    @open-project="openProjectByName"
                   />
                   <CompanyTeam
                     v-else-if="section === 'team'"
@@ -1248,6 +1342,12 @@ watch(() => route.query.assistant, value => {
                     @open-project="openProjectByName"
                     @set-all-projects="setAllCompanyProjects"
                   />
+                  <CompanyFiles
+                    v-else-if="section === 'files'"
+                    :company-id="activeId"
+                    :snapshot="snapshot"
+                    :can-manage="canManage"
+                  />
                   <CompanyBusiness
                     v-else-if="section === 'business'"
                     :company-id="activeId"
@@ -1267,12 +1367,16 @@ watch(() => route.query.assistant, value => {
                   <CompanyWorkplace
                     v-else-if="['meet', 'coworking', 'calendar'].includes(section)"
                     :kind="section"
+                    :company-id="activeId"
+                    :snapshot="snapshot"
+                    :project-ids="companyProjectIds"
+                    :can-manage="canManage"
                     @close="setSection('home')"
                   />
                   <CompanySecurity
                     v-else-if="section === 'security'"
                     :company-id="activeId"
-                    :project-id="workingProject?.project_id || snapshot?.projects?.find(project => project.available)?.project_id || ''"
+                    :project-ids="companyProjectIds"
                   />
                   <CompanySettings
                     v-else-if="section === 'settings'"
@@ -1286,8 +1390,7 @@ watch(() => route.query.assistant, value => {
                     @open-projects="setSection('projects')"
                     @new-company="openNewCompany"
                   />
-                </div>
-              </Transition>
+              </div>
             </template>
           </div>
         </main>
@@ -1307,16 +1410,16 @@ watch(() => route.query.assistant, value => {
           A company owns projects, teams and boards. The default company already covers every project;
           create another one to separate another business.
         </p>
-        <label class="form-control mb-2">
-          <span class="label-text text-xs">Company name</span>
-          <input v-model="newCompanyForm.name" class="input input-sm input-bordered" placeholder="Acme Studio"
+        <label class="mb-2 flex flex-col gap-1">
+          <span class="text-xs font-semibold text-base-content/60">Company name</span>
+          <input v-model="newCompanyForm.name" class="input input-sm input-bordered w-full" placeholder="Acme Studio"
                  autofocus @keydown.enter="createCompany" />
         </label>
-        <label class="form-control mb-2">
-          <span class="label-text text-xs">Description <span class="opacity-50">(optional)</span></span>
-          <input v-model="newCompanyForm.description" class="input input-sm input-bordered" placeholder="What does it do?" />
+        <label class="mb-2 flex flex-col gap-1">
+          <span class="text-xs font-semibold text-base-content/60">Description <span class="opacity-50">(optional)</span></span>
+          <input v-model="newCompanyForm.description" class="input input-sm input-bordered w-full" placeholder="What does it do?" />
         </label>
-        <p v-if="newCompanyError" class="mb-2 text-xs text-error">{{ newCompanyError }}</p>
+        <p v-if="newCompanyError" class="mb-2 text-xs text-error-ink">{{ newCompanyError }}</p>
         <div class="flex justify-end gap-2">
           <button class="btn btn-ghost btn-sm" @click="newCompanyOpen = false">Cancel</button>
           <button class="btn btn-primary btn-sm" :disabled="newCompanySaving || !newCompanyForm.name.trim()" @click="createCompany">
@@ -1358,7 +1461,7 @@ watch(() => route.query.assistant, value => {
     <GenerateTeamDialog
       v-if="generateOpen && company"
       :company-id="activeId"
-      :project="$storex.projects.activeProject"
+      :project="primaryCompanyProject"
       @created="refreshSnapshot"
       @close="generateOpen = false"
     />
@@ -1377,27 +1480,27 @@ watch(() => route.query.assistant, value => {
 
     <!-- ── Advanced view ────────────────────────────────────────────────── -->
     <div v-if="exitOpen" class="fixed inset-0 z-[95] grid place-items-center bg-black/45 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Open advanced view">
-      <div class="cp-card w-full max-w-[390px] p-4 md:p-5">
+      <div class="rounded-box border border-base-300 bg-base-100 shadow-sm w-full max-w-[390px] p-4 md:p-5">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <p class="cp-eyebrow">Advanced view</p>
-            <h2 class="mt-1 text-base font-extrabold">Open the project workspace</h2>
-            <p class="mt-1 text-[10px] leading-relaxed cp-muted">
-              The company keeps running. Use the advanced view for projects, files,
+            <p class="text-xs font-bold uppercase tracking-[0.14em] text-base-content/40">Workspace view</p>
+            <h2 class="mt-1 text-base font-extrabold">Switch to the project workspace</h2>
+            <p class="mt-1 text-xs leading-relaxed text-base-content/60">
+              The company keeps running. Use the workspace view for projects, files,
               boards and technical settings; come back here any time.
             </p>
           </div>
-          <button class="cp-icon-btn !h-7 !w-7" aria-label="Close" @click="exitOpen = false"><i class="fa-solid fa-xmark text-[11px]"></i></button>
+          <button class="btn btn-ghost btn-sm btn-square !h-7 !w-7" aria-label="Close" @click="exitOpen = false"><i class="fa-solid fa-xmark text-xs"></i></button>
         </div>
-        <button class="mt-3 flex w-full items-start gap-3 rounded-xl border border-[var(--cp-border)] p-3 text-left transition hover:border-[var(--cp-border-strong)] hover:bg-[var(--cp-surface-soft)]" @click="openAdvancedView">
-          <span class="cp-icon-tile !h-8 !w-8"><i class="fa-solid fa-desktop text-[10px]"></i></span>
+        <button class="mt-3 flex w-full items-start gap-3 rounded-xl border border-base-300 p-3 text-left transition hover:border-base-content/20 hover:bg-base-200" @click="openAdvancedView">
+          <span class="grid h-8 w-8 shrink-0 place-items-center rounded-selector bg-base-300 text-base-content/60 !h-8 !w-8"><i class="fa-solid fa-desktop text-xs"></i></span>
           <span class="min-w-0">
-            <span class="block text-[11px] font-bold">Advanced view</span>
-            <span class="mt-0.5 block text-[9px] cp-muted">Projects, files, boards and tools.</span>
+            <span class="block text-xs font-bold">Switch to workspace view</span>
+            <span class="mt-0.5 block text-[11px] text-base-content/60">Projects, files, boards and tools.</span>
           </span>
-          <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[9px] cp-muted-soft"></i>
+          <i class="fa-solid fa-arrow-right ml-auto mt-1 text-[11px] text-base-content/40"></i>
         </button>
-        <button class="cp-chip mt-3 w-full justify-center" @click="exitOpen = false">Stay in the company</button>
+        <button class="btn btn-xs mt-3 w-full justify-center" @click="exitOpen = false">Stay in the company</button>
       </div>
     </div>
 
@@ -1415,22 +1518,3 @@ watch(() => route.query.assistant, value => {
 </template>
 
 <!-- Made with ❤️ by codx-junior -->
-
-<style scoped>
-/* Company forms are labelled above their control, everywhere. DaisyUI 5's
-   form-control is not a column by default in this theme, so every company
-   workspace gets the same predictable field rhythm. */
-:deep(.form-control) {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-}
-:deep(.form-control > .label-text) {
-  margin-bottom: 0.25rem;
-}
-:deep(.form-control > input),
-:deep(.form-control > textarea),
-:deep(.form-control > select) {
-  width: 100%;
-}
-</style>

@@ -1,0 +1,55 @@
+##################################################
+## codx-junior:client
+##
+## Production web tier of the split (multi-container) deployment: nginx serves
+## the SPA built in the checkout (`client/dist`) on 19981 and nothing else.
+##
+## Why nginx and not `vite preview`:
+##   * `vite preview` is a Node process that needs tens of seconds to bind the
+##     port on a loaded host, and the old entrypoint ran `nvm install` (a
+##     network round-trip) before it. Traefik publishes the container as soon
+##     as it starts and does not wait for a listener, so every restart was a
+##     502 `dial tcp ...: connect: connection refused` for minutes.
+##   * nginx binds in milliseconds, keeps gzip and immutable asset caching and
+##     uses a few MB of RSS instead of a full Node/Vite runtime.
+##
+## The deployment bind-mounts the checkout (see the legacy compose stack), so
+## the container always serves the `dist` produced on the host. Rebuild it with
+## `(cd client && npm run build-only)`; restarting the container then takes
+## about a second instead of minutes.
+##
+## Build from the repository root:
+##   docker build -t codxjunior/codx-junior:client \
+##     -f codx-junior-installer/codx-junior/client/Dockerfile.client .
+##################################################
+FROM codxjunior/codx-junior:debian
+
+USER root
+# nginx is the only extra package: the SPA is prebuilt, no Node lives here.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nginx \
+    && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default
+
+USER ${USER}
+WORKDIR ${HOME}/codx-junior
+
+# Source and scripts, not the build output: `client/dist` and
+# `client/node_modules` are excluded by .dockerignore, and the deployment
+# mounts the checkout over this directory anyway. The image only needs the
+# entrypoint and a working checkout path.
+COPY --chown=${USER} client ./client
+COPY --chown=${USER} scripts ./scripts
+COPY --chown=${USER} codx-junior ./codx-junior
+COPY --chown=${USER} set_env.sh .
+
+ENV CODX_JUNIOR_APPS="client"
+
+# 19981: web UI (nginx), the port Traefik points at.
+EXPOSE 19981
+
+# nginx answers as soon as the container starts, so a 5 s start period is
+# generous. It is here so `docker ps` reports the real health of the web tier.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${CODX_JUNIOR_WEB_PORT:-19981}/" >/dev/null || exit 1
+
+CMD [ "bash", "-c", "${HOME}/codx-junior/scripts/run_client.sh" ]

@@ -58,6 +58,31 @@ matched by a `{}` in the table, so `/api/computers/{id}/recording` is never abso
 `97583327` through the same extractor and asserts it is reported, so the guard cannot rot into
 a no-op.
 
+## Posting a verdict from `Review` — two calls, never `request_changes`
+
+A reviewer that has finished a card sitting in `Review` posts its verdict with **two** calls
+and nothing else:
+
+```text
+1. project_manager(action="request_help", chat_id="<card>", comment="<the verdict>")
+   -> adds the comment, returns processed: false, starts no run and does not move the card
+2. project_manager(action="update_task", chat_id="<card>", status="done"|"onhold", ...)
+   -> the column move is the reviewer's own decision, not a side effect of the comment
+```
+
+**Never** post a verdict with `request_changes` on a card that sits in `Review`. That call
+queues an engine run, and the run re-applies the column the card was enqueued from: the card
+bounces back into `Review` with an engine-authored message, so the reviewer ends up re-gating
+work it has just rejected. `request_help` is a naming problem only — it adds a comment without
+processing, which is exactly what a verdict is.
+
+Measured 2026-11-25, 3/3 clean with the two-call sequence (`0bfc01cd`, `6e29792a`, `e27a5d03`:
+`processed: false`, no run, no bounce); both 2026-11-23 reproductions with
+`request_changes(wait=False)` from `Review` bounced the card back. The platform fix — the verdict
+call must not re-enqueue the card — is card `35a21c13`; this sequence is the workaround until it
+lands, and `delivery-contract.md` (section *Posting a reviewer verdict*) points here so the
+contract and this runbook cannot drift. Documenting it: card `106eef6b`.
+
 ## Current state — expected green: verified statically, not yet by a run
 
 The suite declares twelve `it()` cases — the four groups below plus the canary assertions that

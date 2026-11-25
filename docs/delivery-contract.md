@@ -95,6 +95,22 @@ accepted, `qa_plan()` keeps returning `suites: none` and deliveries keep using t
 manual reproduction described above. This schema question is tracked as its own task and
 does not block this contract.
 
+### Posting a reviewer verdict
+
+A card that sits in `Review` is gated with **two** calls, never one:
+`project_manager(action="request_help", comment=…)` posts the verdict as a comment without
+processing it (`processed: false`, no run, no column move), and
+`project_manager(action="update_task", …)` then performs the move the reviewer decided.
+`request_help` here is a *naming* problem only — it is the call that adds a comment without
+triggering the engine, which is exactly what a verdict is. `request_changes` must **never** be the
+verdict call on a card in `Review`: it queues an engine run that re-applies the column the card
+was enqueued from, so the card bounces back into `Review` and the reviewer re-gates the work it
+has just rejected. The exact sequence, the rule and the measured evidence (3/3 clean on
+2026-11-25; both 2026-11-23 reproductions bounced) live in the docs QA runbook,
+[`qa/README.md`](./qa/README.md), section *Posting a verdict from `Review`* — this contract links
+to it so the two cannot drift. Documented under card `106eef6b`; the platform fix that makes the workaround
+unnecessary is card `35a21c13`.
+
 ### PDF render availability
 
 `markdown -> pdf` is **not available** in this environment, and not because of the

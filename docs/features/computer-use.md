@@ -295,6 +295,7 @@ expose `/dev/kvm` (and `/dev/net/tun`). VMs are heavy: at least 2 GB RAM and
 | `POST` | `/api/computers/{id}/restart` / `stop` | Lifecycle. |
 | `GET` | `/api/computers/images` | Browse Kasmweb/LinuxServer images (`provider`, `q`, `category`, `kind`). |
 | `GET` | `/api/computers/images/tags` | Tags for one repository (`provider`, `repository`). |
+| `GET` | `/api/computers/images/catalog` | Merged image catalog for a `kind` — one grid, one search, one tag filter (browser images, desktops, applications, saved computers, custom images). |
 | `POST` | `/api/computers/{id}/viewer-credentials` | KasmVNC login for the embedded viewer. |
 | `POST` | `/api/computers/{id}/save` | Commit a running Linux/Kasmweb desktop into the project library. |
 | `GET` | `/api/computers/library` | List reusable saved computers. |

@@ -23,6 +23,7 @@ export default defineConfig({
     // https://vitepress.dev/reference/default-theme-config
     nav: [
       { text: '0.0.1', link: '/0.0.1' },
+      { text: 'Advanced (dev)', link: '/advanced' },
       { text: 'Guide', link: '/guide/introduction' },
       { text: 'Features', link: '/features/' },
       { text: 'Getting started', link: '/getting-started' },
@@ -92,6 +93,7 @@ export default defineConfig({
           text: '0.0.1 release',
           items: [
             { text: 'What ships in 0.0.1', link: '/0.0.1' },
+            { text: 'Advanced platform (in development)', link: '/advanced' },
             { text: 'Feature matrix (GitHub)', link: 'https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md' }
           ]
         },

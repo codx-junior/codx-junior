@@ -184,6 +184,17 @@ The release keeps the code and the data model, so 0.1 can turn these on without
 forking the product. See [the feature matrix](docs/product/v0.0.1-feature-matrix.md)
 for the per-feature decision and the work required before each is enabled.
 
+## The platform behind 0.0.1 (in development)
+
+0.0.1 is the sharp edge. The wider platform is already running in development:
+autonomous shifts, the CISO gate, infrastructure, the file explorer and the team
+panel in one desktop. This is the roadmap, made concrete.
+
+![The advanced platform under development](docs/public/images/advanced/advanced-platform.png)
+
+*Development instance, not part of 0.0.1. The CISO gate is blocked at 27/100 —
+the gate doing its job. [See the advanced preview →](docs/advanced.md)*
+
 ## Quick start
 
 **Requirements:** Linux with Docker 20.10+ and the Compose v2 plugin, 4 GB RAM

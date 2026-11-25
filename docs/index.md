@@ -98,6 +98,17 @@ features:
 | **ciso** | Secrets, dependencies and the security gate | Findings and a pass/block verdict |
 | **human (you)** | Direction, trade-offs and the merge | The final commit |
 
+## The platform behind 0.0.1 (in development)
+
+0.0.1 is the sharp edge. The wider platform is already running in development:
+autonomous shifts, the CISO gate, infrastructure, the file explorer and the team
+panel in one desktop.
+
+![The advanced platform under development](/images/advanced/advanced-platform.png)
+
+*Development instance, not part of 0.0.1. The CISO gate is blocked at 27/100 —
+the gate doing its job. [See the advanced preview →](/advanced)*
+
 <section class="pt-2">
   <div class="bg-gradient-to-br from-sky-800 via-sky-900 to-violet-400 p-6 sm:p-10 rounded-2xl w-full text-white flex items-center justify-between mx-auto my-10">
     <div class="flex flex-col gap-6">

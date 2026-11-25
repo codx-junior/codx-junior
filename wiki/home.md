@@ -107,6 +107,8 @@ desktops, the company assistant/business dashboard/CISO, budget and analytics,
 MCP, plugins, voice, multi-user and the in-app updater. They remain in the tree
 behind the install-time feature list; 0.1 turns them on feature by feature.
 
+[See the advanced platform preview →](/advanced)
+
 ## Documentation map
 
 * [What ships in 0.0.1](/0.0.1) — the release definition.

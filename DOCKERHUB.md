@@ -80,6 +80,14 @@ the image behind the install-time feature list.
 Full release scope and per-feature fixes:
 [0.0.1 feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md).
 
+## The platform behind 0.0.1 (in development)
+
+![The advanced platform under development](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/advanced/advanced-platform.png)
+
+The advanced build runs autonomous shifts, the CISO gate, infrastructure and the
+team panel in one desktop. It is **not** part of 0.0.1; it is the roadmap made
+concrete. [See the advanced preview](https://github.com/codx-junior/codx-junior/blob/main/docs/advanced.md).
+
 ### Requirements
 
 | | |

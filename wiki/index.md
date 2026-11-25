@@ -69,6 +69,10 @@ features:
     a human review before the merge. One assistant loses the thread; the board
     keeps it.
   </p>
+  <p class="mt-4 text-lg">
+    The advanced platform is already in the tree:
+    <a href="/advanced">see the development preview</a>.
+  </p>
 
   <div align="center">
 

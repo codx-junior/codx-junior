@@ -471,6 +471,7 @@ describe('T5 — the Docker Hub image stays documented', () => {
   it('the page names the exact repository published by CI', () => {
     const page = readFileSync(join(ROOT, DOCKER_HUB_PAGE), 'utf8')
     expect(page).toContain(releaseImage())
+    expect(page).toContain('DOCKERHUB.md')
   })
 
   it('the installer and publish script default to the same repository', () => {
@@ -490,5 +491,27 @@ describe('T5 — the Docker Hub image stays documented', () => {
     for (const tag of ['latest', 'vX.Y.Z', 'dind', 'dev']) {
       expect(page, `tag ${tag} is no longer documented in docs/${DOCKER_HUB_PAGE}`).toContain(tag)
     }
+  })
+
+  it('the Docker Hub listing source exists and describes the image', () => {
+    const listing = readFileSync(join(REPO_ROOT, 'DOCKERHUB.md'), 'utf8')
+    expect(listing).toContain(releaseImage())
+    expect(listing).toContain('Quick start')
+    for (const tag of ['latest', 'vX.Y.Z', 'dind']) {
+      expect(listing, `tag ${tag} is missing from DOCKERHUB.md`).toContain(tag)
+    }
+  })
+
+  it('the release workflow syncs that listing to Docker Hub', () => {
+    const workflow = readFileSync(join(REPO_ROOT, '.github', 'workflows', 'release.yml'), 'utf8')
+    expect(workflow).toContain('DOCKERHUB.md')
+    expect(workflow).toContain('scripts/dockerhub_description.sh')
+
+    const image = releaseImage()
+    const [namespace, repository] = image.split('/')
+    if (!namespace || !repository) throw new Error(`invalid image coordinate: ${image}`)
+    const script = readFileSync(join(REPO_ROOT, 'scripts', 'dockerhub_description.sh'), 'utf8')
+    expect(script).toContain(`DOCKERHUB_NAMESPACE:-${namespace}`)
+    expect(script).toContain(`IMAGE_NAME:-${repository}`)
   })
 })

@@ -436,7 +436,10 @@ router.beforeEach(async (to, _from) => {
       const project = ($storex.projects.allProjects || []).find(item =>
         item.project_name === projectName || item.project_id === projectName
       )
-      if (!project) {
+      const visible = new Set(
+        ($storex.company.visibleProjectIds || []).map((id: any) => String(id))
+      )
+      if (!project || !visible.has(String(project.project_id))) {
         $storex.ui?.addNotification?.({
           text: `Project "${projectName}" is not available in this company`,
           type: 'error'

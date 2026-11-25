@@ -14,17 +14,24 @@
  * What it guards
  *  1. `.vitepress/config.json` is valid JSON — a stray comma takes the docs
  *     build down, and that file is rewritten by generators.
- *  2. The sidebar keeps the shape VitePress expects:
+ *  2. The published sidebar keeps the shape VitePress expects:
  *     groups -> non-empty `items` -> items with `text` and `link`.
- *  3. No sidebar `link` is absolute/protocol-relative or escapes the site root
+ *  3. No published `link` is absolute/protocol-relative or escapes the site root
  *     with `..` (the classic way a generated sidebar breaks the build).
  *  4. `docs.json` is valid JSON with the metadata the theme reads.
- *  5. The public sidebar publishes no internal engineering artefact — defect
- *     write-ups, runbooks, repo test config and captured runtime logs are not
- *     product documentation (curation rule of the docs navigation).
+ *  5. The published sidebar publishes no internal engineering artefact — after
+ *     the curation rule of `scripts/sidebar-curation.mjs` is applied, which is
+ *     the same module `.vitepress/config.mts` applies at build time, so this
+ *     guard and the rendered site cannot disagree about what is internal.
  *
- * Reported, deliberately not fatal (both files are generator output, so a
- * finding here is a curation decision for the owner, not a broken build):
+ * "Published" throughout means `curateSidebar(config.sidebar)`: the generated
+ * navigation is the builder's output and the site only ever renders the curated
+ * view, so checking the raw generated sidebar would bless a navigation no
+ * visitor sees.
+ *
+ * Reported, deliberately not fatal (the first two files are generator output, so
+ * a finding there is a curation decision for the owner, not a broken build):
+ *  - the curation report: how many internal entries were hidden, and why;
  *  - sidebar links that are duplicated;
  *  - sidebar links with no markdown page (link-integrity evidence without a
  *    VitePress build);
@@ -34,6 +41,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { collectInternal, curateSidebar } from './sidebar-curation.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_FILE = join(ROOT, '.vitepress', 'config.json');
@@ -105,7 +113,12 @@ check('.vitepress/config.json is valid JSON', () => {
 
 const sidebar = config && Array.isArray(config.sidebar) ? config.sidebar : null;
 
-/** Flatten every item of the sidebar (groups may nest `items` arbitrarily). */
+/* ------------------------------------------------------- what the site shows */
+
+/** The navigation the site actually renders (see `.vitepress/config.mts`). */
+const published = curateSidebar(sidebar);
+
+/** Flatten every item of a sidebar (groups may nest `items` arbitrarily). */
 function collectItems(items, out) {
   for (const item of items) {
     if (!item || typeof item !== 'object') continue;
@@ -115,22 +128,29 @@ function collectItems(items, out) {
   return out;
 }
 
-const items = sidebar ? collectItems(sidebar, []) : [];
+/** Count only entries that point somewhere — groups are containers, not items. */
+function countLinks(list) {
+  return collectItems(Array.isArray(list) ? list : [], []).filter(
+    (item) => typeof item.link === 'string',
+  ).length;
+}
+
+const items = collectItems(published, []);
 const links = items.filter((item) => typeof item.link === 'string').map((item) => item.link);
 
 /* ------------------------------------------------------------------- checks */
 
 check('sidebar is a non-empty list of groups with items', () => {
   assert(sidebar !== null, '`sidebar` is missing or is not an array');
-  assert(sidebar.length > 0, '`sidebar` is empty');
-  for (const [index, group] of sidebar.entries()) {
+  assert(published.length > 0, '`sidebar` is empty after curation');
+  for (const [index, group] of published.entries()) {
     assert(group && typeof group === 'object', `sidebar[${index}] is not an object`);
     assert(typeof group.text === 'string' && group.text.trim(), `sidebar[${index}] has no text`);
     assert(Array.isArray(group.items) && group.items.length > 0, `group "${group.text}" has no items`);
   }
 });
 
-check('every sidebar item has a text label and a link', () => {
+check('every published sidebar item has a text label and a link', () => {
   assert(items.length > 0, 'sidebar contains no items');
   for (const [index, item] of items.entries()) {
     if (Array.isArray(item.items) && typeof item.link !== 'string') continue; // pure sub-group
@@ -149,7 +169,7 @@ const duplicateLinks = (() => {
   return [...duplicates];
 })();
 
-check('sidebar links are root-relative and stay inside the site', () => {
+check('published sidebar links are root-relative and stay inside the site', () => {
   const offenders = [];
   for (const link of links) {
     if (!link.startsWith('/')) offenders.push(`${link} (not root-relative)`);
@@ -185,48 +205,41 @@ const missingDocsPages = (() => {
   return [...missing];
 })();
 
-/* --------------------------------------------------- non-fatal link report */
-
 /**
- * Fragments that identify internal engineering artefacts. Their targets are
- * generated from defect notes, runbooks, repo config and captured logs, so they
- * change on every regeneration; the fragment is matched against both `text` and
- * `link` of every sidebar item. Keep the reason beside the rule.
+ * Check 5 — the curation must actually hold.
+ *
+ * This is the check that was missing when the sidebar shipped `pytest.ini`, a
+ * security scan log and our own defect write-ups to the public site. The rule is
+ * not restated here: it is imported from `scripts/sidebar-curation.mjs`, so the
+ * guard tests the very rule the build applies, against the curated view and its
+ * nested groups.
  */
-const INTERNAL_NAV_PATTERNS = [
-  { needle: '/development-and-testing/pytest-ini', reason: 'repo test-runner config, not product docs' },
-  {
-    needle: '/development-and-testing/qa-gate-scope-defect',
-    reason: 'internal QA defect write-up',
-  },
-  {
-    needle: '/development-and-testing/untrack-wiki-codx-runbook',
-    reason: 'internal index-surgery runbook',
-  },
-  {
-    needle: '/deployment-and-operations/ciso-scripts-scanwatch',
-    reason: 'captured runtime log',
-  },
-  { needle: '-scan-events-', reason: 'captured scan-event log' },
-  { needle: '.codx/', reason: 'control plane path leaked into the navigation' },
-];
-
-check('public sidebar publishes no internal engineering artefact', () => {
+check('published sidebar carries no internal engineering artefact', () => {
   assert(sidebar !== null, '`sidebar` is missing or is not an array');
-  const violations = [];
-  for (const item of items) {
-    const haystack = `${item.text || ''} ${item.link || ''}`;
-    for (const { needle, reason } of INTERNAL_NAV_PATTERNS) {
-      if (!haystack.includes(needle)) continue;
-      violations.push(`${item.link || item.text} — ${reason}`);
-    }
-  }
+  const leaked = collectInternal(published);
   assert(
-    violations.length === 0,
-    `the public sidebar still publishes ${violations.length} internal artefact(s):\n     ` +
-      violations.join('\n     '),
+    leaked.length === 0,
+    `after curation the published sidebar still contains ${leaked.length} internal artefact(s):\n     ` +
+      leaked.map((entry) => `${entry.link || entry.text} — ${entry.reason}`).join('\n     '),
   );
 });
+
+/* ----------------------------------------------------- informational reports */
+
+const removed = collectInternal(sidebar);
+const beforeLinks = countLinks(sidebar);
+const afterLinks = countLinks(published);
+const droppedGroups = (Array.isArray(sidebar) ? sidebar.length : 0) - published.length;
+
+console.log('');
+console.log(
+  `curation report: ${removed.length} internal item(s) removed from the generated sidebar ` +
+    `(${beforeLinks} before → ${afterLinks} after), ${droppedGroups} group(s) dropped`,
+);
+for (const entry of removed.slice(0, 10)) {
+  console.log(`  - hidden ${entry.link || entry.text} — ${entry.reason}`);
+}
+if (removed.length > 10) console.log(`  … and ${removed.length - 10} more`);
 
 const unresolved = links
   .filter((link) => link.startsWith('/') && !link.split('/').includes('..'))
@@ -234,7 +247,7 @@ const unresolved = links
 
 console.log('');
 console.log(
-  `sidebar: ${sidebar ? sidebar.length : 0} group(s), ${links.length} link(s) | ` +
+  `sidebar: ${published.length} group(s), ${links.length} link(s) | ` +
     `markdown pages: ${mdPages.size}`,
 );
 if (unresolved.length === 0) {
@@ -244,18 +257,24 @@ if (unresolved.length === 0) {
   for (const link of unresolved) console.log(`  - ${link}`);
 }
 
-/** The five links a reviewer clicks after a navigation curation change. */
+/**
+ * The five links a reviewer clicks after a navigation curation change.
+ *
+ * `/deployment-and-operations/codx-junior` replaced the former
+ * `/deployment-and-operations/installer-sh` spot check because every `-sh` page
+ * is curated OUT of the public navigation by `scripts/sidebar-curation.mjs`.
+ */
 const SPOT_CHECK_LINKS = [
   '/home',
   '/setup-and-installation',
-  '/deployment-and-operations/installer-sh',
+  '/deployment-and-operations/codx-junior',
   '/integrations/dsh-harness',
   '/project-overview/license-md',
 ];
 
 console.log('');
 console.log('sidebar groups:');
-for (const group of sidebar || []) {
+for (const group of published) {
   const count = Array.isArray(group.items) ? collectItems(group.items, []).length : 0;
   console.log(`  - ${group.text} (${count} item(s))`);
 }

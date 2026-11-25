@@ -12,12 +12,39 @@ wins — and this page is the bug.
 | Concern | File |
 |---|---|
 | Registry, tags, build args, smoke test | [`.github/workflows/release.yml`](https://github.com/codx-junior/codx-junior/blob/main/.github/workflows/release.yml) |
+| Docker Hub listing (description and README) | [`DOCKERHUB.md`](https://github.com/codx-junior/codx-junior/blob/main/DOCKERHUB.md), synced by the workflow |
 | Manual / multi-arch publish | [`scripts/dockerhub_publish.sh`](https://github.com/codx-junior/codx-junior/blob/main/scripts/dockerhub_publish.sh) |
 | Image contents | [`codx-junior-installer/demo/Dockerfile`](https://github.com/codx-junior/codx-junior/blob/main/codx-junior-installer/demo/Dockerfile) |
 | Ref → image tag mapping | [`codx-junior-installer/install.sh`](https://github.com/codx-junior/codx-junior/blob/main/codx-junior-installer/install.sh) |
 | Build provenance reported by the API | [`api/codx/junior/version.py`](https://github.com/codx-junior/codx-junior/blob/main/api/codx/junior/version.py) |
 | Deployment contract | [`codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md`](https://github.com/codx-junior/codx-junior/blob/main/codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md) |
 :::
+
+## The Docker Hub page
+
+The listing on [Docker Hub](https://hub.docker.com/r/codxjuniorai/codx-junior)
+is not edited in the web UI. Its short description and full README come from
+[`DOCKERHUB.md`](https://github.com/codx-junior/codx-junior/blob/main/DOCKERHUB.md)
+in this repository. The release workflow's `document` job runs after the image
+has been built and smoke-tested (or alone for a `description_only` dispatch),
+and PATCHes the Docker Hub API with that file. A change to the listing is
+therefore reviewed like any other documentation change and cannot drift from
+the image documentation.
+
+To update it immediately (for example after editing `DOCKERHUB.md` without
+cutting a release), either run the `release` workflow manually with
+`description_only` checked — that skips the image build — or run the script
+locally:
+
+```bash
+DOCKERHUB_TOKEN=... bash scripts/dockerhub_description.sh --readme DOCKERHUB.md
+# dry run, no token needed:
+bash scripts/dockerhub_description.sh --dry-run
+```
+
+The script validates the short description (100 characters) and full README
+(25,000 characters) limits before sending anything. It uses
+`DOCKERHUB_NAMESPACE`/`IMAGE_NAME`, or the image coordinate in `IMAGE`.
 
 ## Repository and tags
 
@@ -31,7 +58,7 @@ docker.io/codxjuniorai/codx-junior:<tag>
 | Tag | What it is | Published by | Mutable |
 |---|---|---|---|
 | `latest` | complete app image built from `main` | release workflow on every push to `main` | **yes** — rolling |
-| `vX.Y.Z` | pinned release (`v` prefix, e.g. `v0.0.1`) | release workflow on a `v*.*.*` tag | no — treat as immutable |
+| `vX.Y.Z` | pinned release (`v` prefix, for example a published `v1.2.3`) | release workflow on a `v*.*.*` tag | no — treat as immutable |
 | `dind` | Docker-in-Docker wrapper (installer + runtime, not the app) | manual `publish:dind` script | yes |
 | `dev` | local development build | `dev-install.sh`, local only | n/a — not a release |
 
@@ -39,6 +66,13 @@ The `vX.Y.Z` tag is the one to pin in customer infrastructure. `latest` is a
 moving branch: a broken commit on `main` breaks every new workspace that pulls
 it. The installer prints a warning when a non-release ref silently falls back to
 `:latest`.
+
+::: warning A git tag is not an image
+Only tags that actually appear on the Docker Hub tags page exist as images. A
+`git tag` alone publishes nothing: the release workflow has to run successfully
+for that tag. Check the tags page (or `dockerhub_tags`) before pinning a version
+in an install.
+:::
 
 ### Architectures
 
@@ -50,7 +84,7 @@ it. The installer prints a warning when a non-release ref silently falls back to
 Use `docker buildx imagetools inspect` before promising an architecture:
 
 ```bash
-docker buildx imagetools inspect codxjuniorai/codx-junior:v0.0.1
+docker buildx imagetools inspect codxjuniorai/codx-junior:latest
 ```
 
 ### Size
@@ -74,7 +108,8 @@ curl -fsSL https://raw.githubusercontent.com/codx-junior/codx-junior/main/instal
 To pin a release instead of `latest`:
 
 ```bash
-sudo ./install.sh --ref v0.0.1 --non-interactive </dev/null
+sudo ./install.sh --ref vX.Y.Z --non-interactive </dev/null
+# use a tag that exists on Docker Hub
 ```
 
 A direct `docker run` is useful for a smoke test, not for production — it skips
@@ -84,7 +119,7 @@ the projects/settings mounts:
 docker run --rm -p 19981:19981 \
   -e CODX_JUNIOR_AI_PROVIDER=deepseek \
   -e CODX_JUNIOR_AI_API_KEY=sk-xxxxxxxx \
-  codxjuniorai/codx-junior:v0.0.1
+  codxjuniorai/codx-junior:latest
 # -> http://localhost:19981
 ```
 
@@ -100,7 +135,7 @@ the rest of the deployment tooling relies on:
 
 | Requested ref | Image |
 |---|---|
-| `vX.Y.Z` (for example `--ref v0.0.1`) | `codxjuniorai/codx-junior:vX.Y.Z` |
+| `vX.Y.Z` (for example `--ref v1.2.3`) | `codxjuniorai/codx-junior:vX.Y.Z` |
 | `main` | `codxjuniorai/codx-junior:latest` |
 | any other branch or commit | `codxjuniorai/codx-junior:latest` |
 | `--dev` on a host | `codxjuniorai/codx-junior:dev`, built from the checkout |
@@ -121,7 +156,7 @@ Every release build bakes three build arguments into the image:
 | Build arg | Meaning |
 |---|---|
 | `CODX_JUNIOR_BUILD_VERSION` | release version (`0.0.1`) or `0.0.0-main.<commit>` |
-| `CODX_JUNIOR_BUILD_REF` | git ref (`v0.0.1`, `main`) |
+| `CODX_JUNIOR_BUILD_REF` | git ref (`vX.Y.Z`, `main`) |
 | `CODX_JUNIOR_BUILD_COMMIT` | short commit (`12` chars) |
 
 `GET /api/health` reports them, so a deployment can assert that the build it
@@ -129,7 +164,7 @@ asked for is the build that answered:
 
 ```bash
 curl -fsS http://127.0.0.1:19981/api/health
-# {"status":"ok","version":"0.0.1","ref":"v0.0.1","commit":"..."}
+# {"status":"ok","version":"...","ref":"vX.Y.Z","commit":"..."}
 ```
 
 The release workflow runs the same assertion against the freshly pushed image
@@ -278,9 +313,9 @@ to `docker login --password-stdin` and never appear on the command line.
 
 | Secret | Where | Used by |
 |---|---|---|
-| `DOCKERHUB_USERNAME` | GitHub repository secret | release workflow login |
-| `DOCKERHUB_TOKEN` | GitHub repository secret | release workflow login |
-| `DOCKERHUB_TOKEN` | environment or project secret vault (`Settings → Secrets`) | manual script, AI tools |
+| `DOCKERHUB_USERNAME` | GitHub repository secret | release workflow login and listing sync |
+| `DOCKERHUB_TOKEN` | GitHub repository secret | release workflow login and listing sync |
+| `DOCKERHUB_TOKEN` | environment or project secret vault (`Settings → Secrets`) | manual publish, description sync, AI tools |
 
 The token needs read/write access to the `codxjuniorai` organisation. Never
 commit it. The AI tools redact it from every response and only report whether a
@@ -308,27 +343,31 @@ followed after the tool call returns.
 ## Keeping this page true
 
 The image is easy to change and easy to stop documenting. Any change to the
-pipeline must update the matching row here, in the same pull request:
+pipeline must update the matching row here, in the same pull request. The
+Docker Hub listing itself is source-controlled in `DOCKERHUB.md` and synced by
+the release workflow's `document` job.
 
 | If you change… | Also update |
 |---|---|
-| image name, namespace or tag scheme | this page, `codx-junior-installer/README.md`, the installer defaults |
+| image name, namespace or tag scheme | this page, `DOCKERHUB.md`, `codx-junior-installer/README.md`, the installer defaults |
 | `install.sh` ref → tag mapping | this page, `cloud/DEPLOYMENT-CONTRACT.md`, installer tests |
 | Dockerfile path or build context | `release.yml`, `codx-junior-installer/package.json`, this page |
 | platforms | this page (`Architectures`) and `PLATFORMS` in the script |
-| published tags (add/remove) | this page, Docker Hub repository description |
+| published tags (add/remove) | this page and the tag table in `DOCKERHUB.md` |
+| Docker Hub listing copy | `DOCKERHUB.md`; the `document` job publishes it |
 | `dind` wrapper | this page (`DIND` section) and `codx-junior-installer/README.md` |
 | token or secret names | this page (`Credentials`) and the workflow comments |
 
 Release checklist:
 
 1. `main` is green and the docs build passes.
-2. The image change (if any) is reflected in this page.
+2. The image change (if any) is reflected in this page and in `DOCKERHUB.md`.
 3. Tag and push; watch the release workflow finish.
 4. Verify the published tag: `docker manifest inspect` (or
    `docker buildx imagetools inspect`) and `/api/health` ref/commit.
 5. Confirm the workflow created the GitHub release for the tag.
-6. Update the Docker Hub repository description if the tag list changed.
+6. Confirm the `document` job updated the Docker Hub page; if it failed, run
+   `bash scripts/dockerhub_description.sh` with a token.
 
 ## Troubleshooting
 
@@ -340,6 +379,7 @@ Release checklist:
 | `/api/health` reports the wrong `ref` | A stale container or a different tag is running. Compare `ref`/`commit` with the tag you asked for; recreate the container. |
 | A DIND instance keeps an old inner image | `dind` pins nothing: the wrapper pulls `latest` for the inner install. Re-run `install.sh --update`; see [Getting started](/getting-started). |
 | `unauthorized: authentication required` | The token is missing, expired or read-only. Run `dockerhub_whoami`, rotate the token, and re-store the secret. |
+| The Docker Hub page shows old copy | The `document` job failed or has not run since the edit. Check the Actions run, then run `bash scripts/dockerhub_description.sh` with a token. |
 
 ## Related
 

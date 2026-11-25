@@ -440,6 +440,12 @@ that is where you actually open a project.
   sidebar footer, and mobile menu). It opens
   `/<companySlug>/workspace/<project>/desktop` for the company’s
   current/last/first visible project.
+- The **active project is company-scoped**. When the company changes, the
+  current project is kept only if the new company sees it; otherwise the
+  company’s remembered project, its default/first linked project, or no project
+  is selected. The installation-wide “last project” is never used across
+  company boundaries. Workspace routes also reject a project the company does
+  not see.
 - A persistent **“Back to company”** action in the advanced sidebar/header
   (also in the mobile menu). It returns to the company section you left
   (`/<companySlug>/<section>`).

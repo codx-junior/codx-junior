@@ -266,9 +266,17 @@ async function loadActiveCompany() {
     if ($storex.company.activeId !== company.id || !$storex.company.snapshot) {
       await $storex.company.select({ companyId: company.id, skipList: true })
     }
-    // The company shell is project-independent: it aggregates every project the
-    // company links. Never change the global active project just by opening a
-    // company; only an explicit "open project/workspace" action does that.
+    // The company shell aggregates every linked project, but workspace mode
+    // still needs one ACTIVE project. Reconcile it against this company: keep
+    // it when the company sees it, otherwise switch to this company's
+    // remembered/first linked project (or clear it when there is none). This is
+    // what prevents a project of the previous company leaking into workspace
+    // mode after a company switch.
+    try {
+      await $storex.projects.reconcileActiveCompanyProject({ company })
+    } catch (error) {
+      console.warn('[CompanyView] cannot reconcile the active project', error)
+    }
     await loadCompanyActors(company.id)
     await loadCompanyChats()
     await loadCompanyReferences()
@@ -308,6 +316,16 @@ async function refreshSnapshot() {
   if (!activeId.value) return
   try {
     await $storex.company.refresh()
+    // Linking/unlinking a project changes the company scope: make sure the
+    // active project still belongs to the company (or clear it when no project
+    // is left) before any workspace surface reads it.
+    try {
+      await $storex.projects.reconcileActiveCompanyProject({
+        company: $storex.company.activeCompany
+      })
+    } catch (error) {
+      console.warn('[CompanyView] cannot reconcile the active project', error)
+    }
     await loadCompanyActors(activeId.value)
     await loadCompanyChats()
     await loadCompanyReferences()
@@ -320,10 +338,13 @@ async function refreshSnapshot() {
 // is only linkable once the company references are recomputed from the
 // discovered projects. The project store is the signal: as soon as it grows,
 // the picker and the snapshot are refreshed — no reload of the page.
-watch(() => ($storex.projects?.allProjects || []).length, (now, before) => {
+watch(() => ($storex.projects?.allProjects || []).length, async (now, before) => {
   if (now > before && activeId.value) {
-    loadCompanyReferences()
-    refreshSnapshot()
+    // On a cold load the company shell can mount before the project catalogue
+    // is ready. `refreshSnapshot` reloads the company scope and revalidates the
+    // restored active project once the catalogue arrives.
+    await loadCompanyReferences()
+    await refreshSnapshot()
   }
 })
 

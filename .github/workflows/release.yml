@@ -12,6 +12,10 @@
 # instead of a silent build on the customer's machine. That is why the tag push
 # and the image publish must never drift apart: both live here.
 #
+# The Docker Hub *page* is part of the artifact too: it is what a user reads
+# before pulling. DOCKERHUB.md is its single source of truth, and the `document`
+# job below syncs it on every main/tag build so it cannot go stale.
+#
 # Secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
 # =============================================================================
 
@@ -24,6 +28,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      description_only:
+        description: "Only sync DOCKERHUB.md to the Docker Hub page (skip build and publish)"
+        required: false
+        type: boolean
+        default: false
 
 # Two releases never publish concurrently; a tag push is never cancelled by a
 # newer main build (that would leave the tag without its artifact).
@@ -37,6 +47,9 @@ env:
 jobs:
   publish:
     name: build, smoke test and publish
+    # The manual `description_only` run exists to refresh the Hub listing without
+    # publishing a new image (for example after a docs-only edit).
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.description_only != true }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -153,3 +166,26 @@ jobs:
 
             Readiness probe: `GET /api/health` -> `{status, version, ref, commit}`.
             The contract is `codx-junior-installer/cloud/DEPLOYMENT-CONTRACT.md`.
+
+  # A user who pulls the image lands on the Docker Hub page first. That page is
+  # a release artifact, not a separate document: it is published from
+  # DOCKERHUB.md in this commit, so every tag/main build refreshes it.
+  #
+  # This job runs after `publish`, so a failed build never rewrites the listing.
+  # A Hub/API failure is visible as a red `document` job, but it cannot
+  # invalidate an image that already passed the build and smoke test.
+  document:
+    name: sync Docker Hub description
+    needs: publish
+    # Runs after a successful publish, or alone when `description_only` is set.
+    if: ${{ always() && (inputs.description_only == true || needs.publish.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync DOCKERHUB.md to the repository page
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: bash scripts/dockerhub_description.sh --readme DOCKERHUB.md

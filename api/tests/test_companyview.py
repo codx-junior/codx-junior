@@ -41,7 +41,7 @@ def test_the_shell_has_no_active_project_selector():
         "the company shell does not scope every screen to one active project"
     )
     assert "onSelectProject" not in source, (
-        "the shell never switches the global active project behind the owner's back"
+        "no selector scopes every company screen to one project"
     )
     assert "companyProjectOptions" not in source, (
         "the removed selector no longer leaks inherited child projects as options"

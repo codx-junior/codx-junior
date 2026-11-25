@@ -4,6 +4,10 @@ import { API } from '../api/api'
 import { v4 as uuidv4 } from 'uuid'
 import Fuse from 'fuse.js'
 import { ENTITY_STATUS } from './entityStatuses'
+import {
+  companyActiveProjectKey,
+  resolveCompanyActiveProject
+} from '@/utils/companyActiveProject'
 
 export const namespaced = true
 
@@ -684,11 +688,27 @@ export const actions = actionTree(
       }
     },
     /**
-     * Activate a sensible fallback project when the URL does not resolve to one:
-     * the last project used on this browser, then the default "codx-junior",
-     * then the first available project.
+     * Activate a sensible fallback project when the URL does not resolve to one.
+     *
+     * With a company loaded the fallback is scoped to that company: a project
+     * of another company must never become the active project. Without a
+     * company (login/bootstrap) it keeps the historical installation-wide
+     * order: last project, `codx-junior`, first project.
      */
     async activateFallbackProject({ state }) {
+      const company = $storex.company
+      if (company?.loaded) {
+        // Once a company is known, never fall back to an installation-wide
+        // project: it may belong to the company we are not in.
+        if (!company.snapshot) return state.activeProject || null
+        return $storex.projects.reconcileActiveCompanyProject({
+          company: company.activeCompany,
+          // Restoring after a reload should honour this company's own memory,
+          // not whichever project the API left active.
+          preferRemembered: true
+        })
+      }
+
       const lastProjectId = localStorage.getItem('lastActiveProject')
       const project =
         state.allProjects?.find(p => p.project_id === lastProjectId) ||
@@ -699,6 +719,108 @@ export const actions = actionTree(
         await $storex.projects.activeProjectChanged(project)
       }
       return project || null
+    },
+    /**
+     * Keep the active project aligned with the active company.
+     *
+     * Called whenever the company shell opens or changes company. It is a
+     * no-op while the current active project is visible to the company, so
+     * navigating between company sections does not reload anything. When the
+     * project belongs to the previous company (the bug this fixes) it switches
+     * to this company's remembered/first linked project, or clears the active
+     * project when the company links none.
+     */
+    async reconcileActiveCompanyProject({ state }, payload = {}) {
+      const companyStore = $storex.company
+      const company = payload.company || companyStore?.activeCompany
+      if (!company?.id || !companyStore?.snapshot || !state.allProjects?.length) {
+        return state.activeProject || null
+      }
+      // The snapshot must belong to the company we are reconciling for. This
+      // also protects against a failed company select that left the previous
+      // company's snapshot in place.
+      if (
+        companyStore.activeId
+        && String(companyStore.activeId) !== String(company.id)
+      ) {
+        return state.activeProject || null
+      }
+      const snapshotCompanyId =
+        companyStore.snapshot?.company?.id || companyStore.snapshot?.company_id || ''
+      if (
+        snapshotCompanyId
+        && String(snapshotCompanyId) !== String(company.id)
+      ) {
+        return state.activeProject || null
+      }
+
+      const rememberedProjectId = (() => {
+        try {
+          return localStorage.getItem(companyActiveProjectKey(company.id)) || ''
+        } catch {
+          return ''
+        }
+      })()
+      const lastProjectId = (() => {
+        try {
+          return localStorage.getItem('lastActiveProject') || ''
+        } catch {
+          return ''
+        }
+      })()
+
+      const { project, changed } = resolveCompanyActiveProject(state.allProjects, {
+        activeProjectId: state.activeProject?.project_id || '',
+        visibleProjectIds: companyStore.visibleProjectIds || [],
+        linkedProjectIds: companyStore.linkedProjectIds || [],
+        rememberedProjectId,
+        lastProjectId,
+        preferRemembered: Boolean(payload.preferRemembered)
+      })
+
+      if (!changed) {
+        // Current project is valid; remember it for this company so switching
+        // away and back restores it instead of the previous company's project.
+        $storex.projects.saveCompanyActiveProject({
+          companyId: company.id,
+          projectId: state.activeProject?.project_id
+        })
+        return state.activeProject
+      }
+
+      if (!project) {
+        $storex.projects.clearActiveProject()
+        return null
+      }
+
+      await $storex.projects.activeProjectChanged(project)
+      if (String(state.activeProject?.project_id || '') !== String(project.project_id)) {
+        // Activation failed (settings/chats unavailable). Never leave the
+        // previous company's project active after a company switch.
+        $storex.projects.clearActiveProject()
+        return null
+      }
+      return state.activeProject
+    },
+    /**
+     * Drop the active project without selecting another one. Used when the
+     * company links no project at all, so no previous company's project can
+     * leak into workspace mode.
+     */
+    clearActiveProject({ state }) {
+      state.activeProject = null
+      state.workspaces = []
+      state.project_branches = {}
+      try {
+        API.activeProject = null
+      } catch {
+        // API may not be initialized during bootstrap.
+      }
+      try {
+        $storex.chats?.clearChats?.()
+      } catch {
+        // The company shell must still open if chat state is unavailable.
+      }
     },
     async activeProjectChanged ({ state }, project) {
       const { project_id, project_name, codx_path } = project
@@ -1253,9 +1375,33 @@ export const actions = actionTree(
         const projectId = $storex.projects?.activeProject?.project_id
         if (projectId) {
           localStorage.setItem('lastActiveProject', projectId)
+          const companyId = $storex.company?.activeId
+          if (companyId) {
+            localStorage.setItem(
+              companyActiveProjectKey(companyId),
+              String(projectId)
+            )
+          }
         }
       } catch (error) {
         console.error('Failed to save last active project:', error)
+      }
+    },
+
+    /**
+     * Remember the active project of one company, so switching companies and
+     * coming back restores that company's own project instead of a project
+     * belonging to the company left behind.
+     */
+    async saveCompanyActiveProject(_, { companyId, projectId } = {}) {
+      if (!companyId || !projectId) return
+      try {
+        localStorage.setItem(
+          companyActiveProjectKey(companyId),
+          String(projectId)
+        )
+      } catch (error) {
+        console.error('Failed to save company active project:', error)
       }
     },
 

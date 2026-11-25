@@ -37,29 +37,35 @@ AI coding tools are good at producing code. codx-junior is built around what
 happens **after** the model has an idea: the context it needs, the review you
 keep, and the workspace where the change becomes a commit.
 
-Five concrete differences:
+Six concrete differences:
 
 1. **You own the whole loop.**
    One Docker container on your server, one OpenAI-compatible model, one project
    folder. Your code, prompts, keys and knowledge index never leave the machine.
    No seat subscription, no vendor model lock-in.
 
-2. **The project is the context, not the open file.**
+2. **A team, not a single assistant.**
+   PM, developer, QA and security profiles each carry their own instructions,
+   tools and model. A task picks the role; the shared board carries the handoff;
+   you review the diff. A fullstack change is a vertical slice worked by a team,
+   not one mega-prompt.
+
+3. **The project is the context, not the open file.**
    Every chat is bound to a repository and a knowledge index built from it.
    Profiles carry your standards, stack and review rules into every turn, so you
    stop pasting files and re-explaining your architecture.
 
-3. **The agent shows its work.**
+4. **The agent shows its work.**
    Tool calls, file edits, test runs and diffs are visible in the workspace. The
    agent proposes; you review the diff and make the commit. There is no black-box
    pull request to trust.
 
-4. **One workspace, not another editor tab.**
+5. **One workspace, not another editor tab.**
    Chat, tasks, file explorer, knowledge search and Git review live in the same
    browser workspace, with the repository as the unit of work. Keep your editor
    for editing; use codx-junior for the change.
 
-5. **Open source, inspectable, extensible.**
+6. **Open source, inspectable, extensible.**
    AGPL-3.0, Python/FastAPI + Vue, a real REST API and a local-first knowledge
    store. Self-host it for free, read every line, and bring the model you already
    pay for.
@@ -71,10 +77,16 @@ Five concrete differences:
 | Where it runs | vendor cloud | vendor cloud + local CLI | **your server, one container** |
 | Model | vendor's | vendor's | **any OpenAI-compatible** |
 | Context | open files | terminal session | **repo index + reusable profiles** |
+| Team model | one assistant | one assistant | **role-specific agents + shared board + human review** |
 | Review | inline suggestions | diffs in the terminal | **tool log + diff + commit in the browser** |
 | Work queue | — | — | **tasks and a Kanban board** |
 | Source | closed | closed | **AGPL-3.0** |
 | Cost model | per seat | per token | **self-host free + your token cost** |
+
+Terminal agents such as **Claude Code** and **Codex** are excellent at what one
+agent can do in a terminal. codx-junior adds the roles, the shared board and the
+human review gate around that work — so a fullstack slice can move between
+specialists instead of living in one long prompt.
 
 If you already love your editor's autocomplete, keep it. codx-junior is the
 workspace around the change, not a faster Tab key.
@@ -84,6 +96,9 @@ workspace around the change, not a faster Tab key.
 * **A bug fix starts with a sentence, not a search.** You describe the outcome;
   the agent reads the repository, finds the files, patches them and runs the
   tests. You spend the time reviewing, not locating.
+* **The work is handed off, not re-prompted.** A vertical slice gets a PM task,
+  a developer profile for the API and UI, a QA pass and a security check. The
+  board keeps the state; each role keeps its own instructions and model.
 * **Your standards travel with the task.** Profiles encode the stack, the test
   command and the review rules once; every chat and task starts from them.
   Knowledge search brings the relevant files before the model asks for them.
@@ -107,6 +122,26 @@ button in one screen.**
 
 ![Review every change before it lands](docs/public/images/0.0.1/git-review.png)
 
+## Meet the team
+
+Fifteen built-in profiles ship with 0.0.1. You do not need to hire or configure
+an agent orchestration platform; you pick a role when you create the work.
+
+| Profile | What it owns | What it hands back |
+| --- | --- | --- |
+| **project / PM** | Scope, acceptance criteria and the task breakdown. | A board card the team can work. |
+| **software_developer** | The implementation across backend and frontend. | A diff and the tests that prove it. |
+| **qa / qa_automation** | The verification plan and the regression suite. | A test run and a list of what still fails. |
+| **ciso** | Secrets, dependencies and the security gate. | Findings and a pass/block verdict. |
+| **analyst** | Requirements and architecture context. | A sharper task, less rework. |
+| **human (you)** | Direction, trade-offs and the merge. | The final commit. |
+
+**Why this matters for fullstack developers:** a vertical slice is not one
+prompt. It is a schema change, an API, a UI, a test pass and a security check.
+A single generalist assistant loses the thread between them. codx-junior keeps
+the slice on one board and gives each step a role with the right standards — then
+puts a human diff in front of the merge.
+
 ## What ships in 0.0.1
 
 | Area | What you get |
@@ -115,7 +150,7 @@ button in one screen.**
 | **First run** | Admin access, workspace setup, project discovery, model connection. |
 | **Projects** | Import a folder or clone a repo, switch projects, per-project settings. |
 | **Chat & agent** | Project-aware chat with a tool loop: read, search, patch, run commands and tests. |
-| **Profiles** | Reusable instructions that pin the model, tools, knowledge and standards. |
+| **Agent team** | Role-specific profiles (PM, developer, QA, security) with their own instructions, tools and model; the shared board carries the handoff. |
 | **Knowledge** | Embedded LanceDB index over the project, searched before the agent acts. |
 | **File explorer** | Browse the repo and open files without leaving the workspace. |
 | **Vibe coding** | Conversation and live file changes side by side. |
@@ -135,11 +170,10 @@ These features exist in the codebase but are hidden by the install-time feature
 profile. They are the roadmap, not the promise:
 
 * autonomous agents, autonomous tickets and the company ticket workbench;
-* teams, messenger, meetings and the company assistant;
+* **human** multi-user teams, invitations, messenger, meetings and the company assistant (the AI agent team ships now; human accounts are 0.1);
 * dev containers, browser/desktop sessions, computer use and the infrastructure panel;
 * the company business dashboard, CISO, budget, analytics and the in-app updater;
 * MCP connections, plugins, voice, channel content and external actors;
-* multi-user roles and invitations.
 
 The release keeps the code and the data model, so 0.1 can turn these on without
 forking the product. See [the feature matrix](docs/product/v0.0.1-feature-matrix.md)

@@ -23,6 +23,9 @@ features:
   - icon: 🔑
     title: "Own the whole loop"
     details: "One Docker container on your server, one OpenAI-compatible model, one project folder. Code, prompts, keys and the knowledge index stay with you."
+  - icon: 👥
+    title: "A team, not a chat"
+    details: "PM, developer, QA and security profiles each own their instructions, tools and model. A task picks the role; the shared board carries the handoff; you review the diff."
   - icon: 🧭
     title: "Project-aware, not file-aware"
     details: "Every chat is bound to a repository and a knowledge index built from it. Profiles carry your standards into every turn."
@@ -57,6 +60,12 @@ features:
     model, add one repository, and ship a reviewed change. Everything else is
     still in the tree, hidden behind the install-time feature list, and will come
     back feature by feature when it is ready.
+  </p>
+  <p class="mt-4 text-lg">
+    The differentiator is the <strong>team</strong>: a fullstack slice gets a PM
+    task, a developer pass across API and UI, a QA run and a security check, with
+    a human review before the merge. One assistant loses the thread; the board
+    keeps it.
   </p>
 
   <div align="center">

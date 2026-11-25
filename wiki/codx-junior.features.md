@@ -19,8 +19,10 @@ product features, the platform and infrastructure, and the development tooling.
 ::: warning 0.0.1 scope
 **The public release enables 17 features, not all 18 groups below.** The catalogue is the
 long reference: features marked **No** in the matrix at the end are hidden by the
-install-time feature profile and are roadmap, not the 0.0.1 promise. See
-[What ships in 0.0.1](/0.0.1) for the release definition and the
+install-time feature profile and are roadmap, not the 0.0.1 promise. The **AI agent team**
+(profiles + the shared board) **is** part of 0.0.1; the human multi-user team (invitations,
+messenger, meetings) is roadmap. See [What ships in 0.0.1](/0.0.1) for the release
+definition and the
 [feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md)
 for the per-feature decision.
 :::
@@ -308,7 +310,12 @@ knowledge for the project.
 
 ---
 
-## 8. Profiles
+## 8. Profiles — the agent team
+
+> **0.0.1:** profiles are the team mechanism. PM, developer, QA and security
+> roles each carry their own instructions, tools and model; the shared board
+> carries the handoff and the human reviews the diff. The human multi-user team
+> (invitations, channels) is 0.1.
 
 Profiles are reusable instructions that tell the AI how to behave. They encode your coding
 standards, your architecture and your preferences.
@@ -816,7 +823,7 @@ routes are:
 | 5 | Workspaces (dev containers) | ❌ | — | ✅ | — |
 | 6 | Teams and messenger | ❌ | ✅ | — | — |
 | 7 | Knowledge (RAG) | ✅ | ✅ | — | — |
-| 8 | Profiles | ✅ | ✅ | — | — |
+| 8 | Agent team & profiles | ✅ | ✅ | — | — |
 | 9 | @codx mentions | ❌ | — | — | — |
 | 10 | Wiki | ❌ | ✅ | — | — |
 | 11 | Git and code review | ✅ | ✅ | — | — |

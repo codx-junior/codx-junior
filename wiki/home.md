@@ -38,6 +38,25 @@ keep, and the workspace where the change becomes a commit.
 * **Open source.** AGPL-3.0, Python/FastAPI + Vue, a real REST API and a
   local-first knowledge store. Bring the model you already pay for.
 
+## A team, not a single assistant
+
+A fullstack slice is not one prompt: it is a schema change, an API, a UI, a test
+pass and a security check. A single generalist assistant loses the thread between
+them. codx-junior gives each step a role with its own instructions, tools and
+model, keeps the slice on one board, and puts a human diff in front of the merge.
+
+| Profile | What it owns | What it hands back |
+| --- | --- | --- |
+| **project / PM** | Scope, acceptance criteria and the task breakdown. | A board card the team can work. |
+| **software_developer** | The implementation across backend and frontend. | A diff and the tests that prove it. |
+| **qa / qa_automation** | The verification plan and the regression suite. | A test run and a list of what still fails. |
+| **ciso** | Secrets, dependencies and the security gate. | Findings and a pass/block verdict. |
+| **analyst** | Requirements and architecture context. | A sharper task, less rework. |
+| **human (you)** | Direction, trade-offs and the merge. | The final commit. |
+
+Fifteen profiles ship by default. The **human** multi-user team (invitations,
+shared channels, messenger) is 0.1; the AI team works today.
+
 ## The 0.0.1 loop
 
 ```

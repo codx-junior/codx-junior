@@ -32,10 +32,28 @@ feature needs — is in the
 | Feature | Summary |
 | --- | --- |
 | [Chats and agents](/features/chats-and-agents) | Project-aware chats with modes, attachments and a tool-using agent loop. |
-| [Profiles](/features/profiles) | Reusable instructions that pin the model, tools, knowledge and coding standards. |
+| [Agent team & profiles](/features/profiles) | Role-specific agents (PM, developer, QA, security) with their own instructions, tools and model; a task picks the role. |
 | [Knowledge (RAG)](/features/knowledge) | Projects indexed into embedded LanceDB so the agent finds the right context first. |
 | [Vibe coding](/features/vibe-coding) | The conversation and the live file changes side by side. |
 | [File explorer](/features/development-tools) | Browse the repository and open files without leaving the workspace. |
+
+### The agent team
+
+The team is the differentiator, not a feature buried in settings. A fullstack
+slice gets a scope, an implementation, a verification and a security check; the
+board carries the handoff and the human reviews the diff.
+
+| Profile | What it owns | What it hands back |
+| --- | --- | --- |
+| **project / PM** | Scope, acceptance criteria and the task breakdown. | A board card the team can work. |
+| **software_developer** | The implementation across backend and frontend. | A diff and the tests that prove it. |
+| **qa / qa_automation** | The verification plan and the regression suite. | A test run and a list of what still fails. |
+| **ciso** | Secrets, dependencies and the security gate. | Findings and a pass/block verdict. |
+| **analyst** | Requirements and architecture context. | A sharper task, less rework. |
+| **human (you)** | Direction, trade-offs and the merge. | The final commit. |
+
+Fifteen profiles ship by default. **Human** multi-user teams, invitations and
+the messenger are roadmap; the AI team works today.
 
 ### Plan and ship
 
@@ -64,7 +82,7 @@ product; each one has a "before enabling" note in the
 | Feature | Why it is hidden |
 | --- | --- |
 | [Users, roles and invitations](/features/users-and-security) | User creation and project grants need a tested admin flow; 0.0.1 is single-developer. |
-| [Teams and messenger](/features/teams) | Needs multi-user and moderation before a team can rely on it. |
+| [Teams and messenger](/features/teams) | This is the human team: it needs multi-user and moderation. The AI team ships in 0.0.1 through profiles and the board. |
 | [Company assistant](/features/company-assistant) | A second assistant next to the project chat adds confusion until the core chat is proven. |
 | [Company meetings](/features/company-meetings) | Live calls, recording and transcription are a separate product surface. |
 | [Calendar and scheduling](/features/company-meetings) | Supports meetings and autonomous runs; both hidden. |

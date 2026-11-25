@@ -23,6 +23,7 @@ keep, and the workspace where the change becomes a commit.
 | Difference | What it means for you |
 | --- | --- |
 | **You own the whole loop** | One Docker container on your server, one model, one project folder. Code, prompts, keys and knowledge stay yours. No seat subscription, no model lock-in. |
+| **A team, not a single assistant** | PM, developer, QA and security profiles carry their own instructions, tools and model. A task picks the role; the shared board carries the handoff. |
 | **Project-aware, not file-aware** | Every chat is bound to a repository and a knowledge index built from it. Profiles carry your standards into every turn. |
 | **The agent shows its work** | Tool calls, file edits, test runs and diffs are visible. The agent proposes; you review and commit. |
 | **One workspace** | Chat, tasks, file explorer, knowledge search and Git review in one browser workspace, with the repo as the unit of work. |
@@ -30,6 +31,25 @@ keep, and the workspace where the change becomes a commit.
 
 If you already love your editor's autocomplete, keep it. codx-junior is the
 workspace around the change, not a faster Tab key.
+
+### A team, not a single assistant
+
+A fullstack slice is not one prompt: it is a schema change, an API, a UI, a test
+pass and a security check. A single generalist assistant loses the thread between
+them. codx-junior gives each step a role with its own instructions, tools and
+model, keeps the slice on one board, and puts a human diff in front of the merge.
+
+| Profile | What it owns | What it hands back |
+| --- | --- | --- |
+| **project / PM** | Scope, acceptance criteria and the task breakdown. | A board card the team can work. |
+| **software_developer** | The implementation across backend and frontend. | A diff and the tests that prove it. |
+| **qa / qa_automation** | The verification plan and the regression suite. | A test run and a list of what still fails. |
+| **ciso** | Secrets, dependencies and the security gate. | Findings and a pass/block verdict. |
+| **analyst** | Requirements and architecture context. | A sharper task, less rework. |
+| **human (you)** | Direction, trade-offs and the merge. | The final commit. |
+
+Fifteen profiles ship by default. The **human** multi-user team (invitations,
+shared channels, messenger) is 0.1; the AI team works today on your instance.
 
 ## The 0.0.1 loop
 

@@ -17,6 +17,9 @@ platform you have to learn.
   Mistral, Groq, or a self-hosted gateway. Your key, your cost.
 * **A real workspace** — project-aware chat, agent tools, profiles, knowledge,
   files, tasks and Git review in one browser tab.
+* **A team, not one assistant** — PM, developer, QA and security profiles with
+  their own instructions, tools and model; the shared board carries the handoff
+  and you review the diff.
 * **Review-first** — every tool call and file change is visible; the agent
   proposes, you commit.
 * **Self-hosted** — projects, settings, code and prompts stay on your machine.
@@ -64,10 +67,10 @@ Re-running the installer is the update path: projects and settings are kept.
 ### What ships in 0.0.1
 
 Install and first run · project import · project-aware chat and agent tools ·
-profiles · knowledge index · file explorer · vibe coding · tasks/Kanban · Git and
+the agent team (profiles) · knowledge index · file explorer · vibe coding · tasks/Kanban · Git and
 code review · settings · REST/Socket.IO API · responsive shell.
 
-Hidden in 0.0.1: autonomous agents and tickets, teams and meetings, workspaces
+Hidden in 0.0.1: autonomous agents and tickets, human teams and meetings, workspaces
 and browser desktops, the company assistant/business dashboard/CISO, budget and
 analytics, MCP, plugins, voice, multi-user and the in-app updater. They remain in
 the image behind the install-time feature list.

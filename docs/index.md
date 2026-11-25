@@ -23,6 +23,9 @@ features:
   - icon: 🔑
     title: "Own the whole loop"
     details: "One Docker container on your server, one OpenAI-compatible model, one project folder. Code, prompts, keys and the knowledge index stay with you. No seat subscription, no vendor model lock-in."
+  - icon: 👥
+    title: "A team, not a chat"
+    details: "PM, developer, QA and security profiles each own their instructions, tools and model. A task picks the role; the shared board carries the handoff; you review the diff."
   - icon: 🧭
     title: "Project-aware, not file-aware"
     details: "Every chat is bound to a repository and a knowledge index built from it. Profiles carry your standards into every turn, so you stop pasting files and re-explaining the architecture."
@@ -41,10 +44,10 @@ features:
 ---
 
 <div class="mt-8">
-<img class="rounded-xl border border-base-300" src="/images/0.0.1/workspace.png" alt="codx-junior project workspace with tasks" />
+<img class="rounded-xl border border-slate-300" src="/images/0.0.1/workspace.png" alt="codx-junior project workspace with tasks" />
 
 <div class="mt-4">
-<img class="rounded-xl border border-base-300" src="/images/0.0.1/git-review.png" alt="Review a change before committing" />
+<img class="rounded-xl border border-slate-300" src="/images/0.0.1/git-review.png" alt="Review a change before committing" />
 </div>
 
 <section class="mt-12 mx-auto max-w-4xl">
@@ -60,6 +63,31 @@ features:
     still in the tree, hidden behind the install-time feature list, and will come
     back feature by feature when it is ready to be demoed.
   </p>
+  <p class="mt-4 text-lg">
+    The differentiator is the <strong>team</strong>: a fullstack slice gets a PM
+    task, a developer pass across API and UI, a QA run and a security check, with
+    a human review before the merge. One assistant loses the thread; the board
+    keeps it.
+  </p>
+
+  <div class="mt-8 overflow-x-auto">
+    <table class="w-full text-left text-sm">
+      <thead>
+        <tr class="border-b border-slate-300">
+          <th class="py-2 pr-4">Profile</th>
+          <th class="py-2 pr-4">Owns</th>
+          <th class="py-2">Hands back</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>project / PM</strong></td><td class="py-2 pr-4">Scope, acceptance criteria, task breakdown</td><td class="py-2">A board card the team can work</td></tr>
+        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>software_developer</strong></td><td class="py-2 pr-4">Backend and frontend implementation</td><td class="py-2">A diff and the tests that prove it</td></tr>
+        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>qa / qa_automation</strong></td><td class="py-2 pr-4">Verification plan and regression suite</td><td class="py-2">A test run and remaining failures</td></tr>
+        <tr class="border-b border-slate-200"><td class="py-2 pr-4"><strong>ciso</strong></td><td class="py-2 pr-4">Secrets, dependencies and the security gate</td><td class="py-2">Findings and a pass/block verdict</td></tr>
+        <tr><td class="py-2 pr-4"><strong>human (you)</strong></td><td class="py-2 pr-4">Direction, trade-offs and the merge</td><td class="py-2">The final commit</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   <div class="mt-8 grid grid-cols-2 sm:grid-cols-3 gap-3">
     <div class="rounded-xl border p-4 text-center">🔑 <strong>Self-hosted</strong></div>

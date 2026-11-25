@@ -47,7 +47,7 @@ export default defineConfig({
           items: [
             { text: 'Overview', link: '/features/' },
             { text: 'Chats and agents', link: '/features/chats-and-agents' },
-            { text: 'Profiles', link: '/features/profiles' },
+            { text: 'Agent team & profiles', link: '/features/profiles' },
             { text: 'Knowledge (RAG)', link: '/features/knowledge' },
             { text: 'Vibe coding', link: '/features/vibe-coding' },
             { text: 'Kanban and tasks', link: '/features/kanban' },

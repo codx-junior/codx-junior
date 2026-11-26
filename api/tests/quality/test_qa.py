@@ -129,6 +129,21 @@ def test_run_suite_reports_failures():
     assert run.failed == 1 and run.failures[0].id == "t.py::test_x"
 
 
+def test_run_suite_reports_the_reason_when_nothing_ran():
+    """A suite that dies before pytest starts echoes stderr, not a bare exit code."""
+    code = (
+        "import sys\n"
+        "print(\"No module named 'pytest'\", file=sys.stderr)\n"
+        "raise SystemExit(1)\n"
+    )
+    suite = QaSuite(name="unit", kind="pytest", command=[sys.executable, "-c", code])
+    run = run_suite(suite, os.getcwd())
+    assert run.ok is False
+    assert run.total == 0
+    assert "exited with code 1" in run.error
+    assert "No module named 'pytest'" in run.error
+
+
 # -----------------------------------------------------------------------------
 # Mapping and coverage
 # -----------------------------------------------------------------------------
@@ -168,6 +183,17 @@ def test_detect_suites_finds_pytest_and_npm(tmp_path):
     # folder must not fall through to a `tests.no-suite` block.
     assert select_suite(suites, "api").cwd == "api"
     assert select_suite(suites, "client").cwd == "client"
+
+
+def test_detect_suites_uses_an_interpreter_that_exists(tmp_path):
+    """Without a project virtualenv the suite runs with this very interpreter."""
+    api = tmp_path / "api"
+    (api / "tests").mkdir(parents=True)
+    (api / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+
+    suite = select_suite(detect_suites(str(tmp_path)), "pytest")
+    assert suite.available is True
+    assert suite.command[0] == sys.executable
 
 
 # -----------------------------------------------------------------------------

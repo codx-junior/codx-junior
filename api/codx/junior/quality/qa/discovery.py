@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 from typing import Any, Dict, List, Optional
 
 from codx.junior.quality.qa.models import QaPolicy, QaSuite
@@ -63,8 +64,9 @@ def _python_interpreter(project_path: str, directory: str) -> str:
         directory: Absolute directory of the suite.
 
     Returns:
-        str: Path of a virtualenv interpreter when one exists, else
-        ``python3``.
+        str: Path of a virtualenv interpreter when one exists; otherwise the
+        interpreter running codx-junior, and only as a last resort ``python3``
+        from ``PATH``.
     """
     for candidate in (
         os.path.join(directory, ".venv", "bin", "python"),
@@ -73,6 +75,13 @@ def _python_interpreter(project_path: str, directory: str) -> str:
     ):
         if os.path.isfile(candidate):
             return candidate
+    # No project virtualenv: the interpreter that runs codx-junior is the one
+    # that actually has the project dependencies (pytest included) installed.
+    # A bare ``python3`` from ``PATH`` is often a different, dependency-less
+    # interpreter, and ``python3 -m pytest`` then fails before collecting a
+    # single test.
+    if sys.executable and os.path.isfile(sys.executable):
+        return sys.executable
     return "python3"
 
 

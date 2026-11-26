@@ -44,6 +44,13 @@ _NPM_SUMMARY = re.compile(r"Tests:\s*(.*)", re.IGNORECASE)
 _NPM_COUNT = re.compile(r"(\d+)\s+(failed|passed|pending|skipped|todo)", re.IGNORECASE)
 _NPM_FAILURE = re.compile(r"^\s*(?:✕|×|FAIL)\s+(.+)$", re.MULTILINE)
 
+#: Lines that explain why a suite died before executing a single test.
+_ERROR_HINT = re.compile(
+    r"(no module named|command not found|not found|not available|permission denied|"
+    r"error:|syntaxerror|traceback)",
+    re.IGNORECASE,
+)
+
 
 # -----------------------------------------------------------------------------
 # Command composition
@@ -150,6 +157,31 @@ def _output_of(stdout: str, stderr: str) -> str:
     if len(merged) > MAX_OUTPUT_CHARS:
         merged = "…\n" + merged[-MAX_OUTPUT_CHARS:]
     return merged
+
+
+def _error_detail(output: str, limit: int = 300) -> str:
+    """Return the line of *output* that explains a run that never started.
+
+    When a suite dies before pytest prints its summary (missing module, wrong
+    interpreter, unreadable file) the exit code alone says nothing: the reason
+    is in stderr. Keep the most relevant line so the verdict is actionable.
+
+    Args:
+        output: Combined stdout/stderr of the run.
+        limit: Maximum length of the returned line.
+
+    Returns:
+        str: The explaining line, or ``""`` when the output is empty.
+
+    Example:
+        >>> _error_detail("/usr/bin/python3: No module named pytest")
+        '/usr/bin/python3: No module named pytest'
+    """
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    detail = next((line for line in reversed(lines) if _ERROR_HINT.search(line)), lines[-1])
+    return detail[:limit]
 
 
 def parse_pytest(output: str) -> Dict[str, Any]:
@@ -301,5 +333,6 @@ def run_suite(
     run.total = run.passed + run.failed + run.errors + run.skipped
     run.ok = code == 0 and run.failed == 0 and run.errors == 0
     if not run.ok and not run.failures and not run.total:
-        run.error = f"exited with code {code}"
+        detail = _error_detail(run.output_tail)
+        run.error = f"exited with code {code}" + (f": {detail}" if detail else "")
     return run

@@ -526,6 +526,10 @@ class HarnessSessionService:
                 }
             },
             messages=[message],
+            # Harness chats are flagged for auto-initialization so the chat
+            # engine derives the name (and the organizer the board/column) on
+            # the first turn, exactly like a chat created from the chat UI.
+            auto_initialize=True,
             created_at=now,
             updated_at=now,
         )

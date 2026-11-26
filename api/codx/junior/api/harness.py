@@ -52,6 +52,13 @@ class HarnessSessionCreateRequest(BaseModel):
     budget_cxjcoins: float = Field(
         default=0.0, description="Optional chat budget in cxjcoins (0 = no limit)."
     )
+    attachments: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Files/images pasted or uploaded in the composer. They are stored on "
+            "the first user message so the turn sees them like a chat attachment."
+        ),
+    )
     start: bool = Field(
         default=True,
         description=(
@@ -67,6 +74,10 @@ class HarnessSessionPromptRequest(BaseModel):
     content: str = Field(description="Follow-up message.")
     profiles: List[str] = Field(default_factory=list)
     model: Optional[str] = Field(default=None)
+    attachments: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Files/images attached to this follow-up message.",
+    )
     start: bool = Field(default=True, description="Start the turn in the background.")
 
 
@@ -304,6 +315,7 @@ async def harness_session_create(
             profiles=payload.profiles,
             model=payload.model,
             budget_cxjcoins=payload.budget_cxjcoins,
+            attachments=payload.attachments,
         )
         summary["started"] = bool(payload.start and _schedule_session_turn(request, summary["session_id"]))
         return summary
@@ -353,6 +365,7 @@ async def harness_session_prompt(
             payload.content,
             profiles=payload.profiles,
             model=payload.model,
+            attachments=payload.attachments,
         )
         detail["started"] = bool(
             payload.start and _schedule_session_turn(request, session_id)

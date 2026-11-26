@@ -6,9 +6,16 @@
  * selectors and attachment handling) and adds only what harness mode needs:
  * a workspace picker and the two execution tiers (Standard / Deep).
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import ChatInputBox from '@/components/chat/ChatInputBox.vue'
 import ProjectDetailt from '@/components/ProjectDetailt.vue'
+import { $storex } from '@/store'
+import {
+  attachmentFromPaste,
+  attachmentPayload,
+  attachmentPayloads,
+  attachmentsFromFiles
+} from '@/utils/composerAttachments'
 
 const props = defineProps({
   project: { type: Object, default: null },
@@ -48,12 +55,43 @@ const TIERS = [
 
 function onSend() {
   const text = String(composer.value?.getEditorText?.() || '').trim()
-  if (!text || props.creating) return
-  emit('submit', text)
+  const attachments = attachmentPayloads(pendingAttachments.value)
+  if ((!text && !attachments.length) || props.creating) return
+  emit('submit', { text, attachments })
+  pendingAttachments.value = []
 }
 
 function clear() {
   composer.value?.setEditorText?.('')
+  pendingAttachments.value = []
+}
+
+// Pending attachments of the ticket (pasted screenshot / uploaded file).
+// `ChatInputBox` only EMITS `paste` and `upload-files`; converting them into
+// chat attachments is the host's job, like Chat.vue does for a full chat.
+const pendingAttachments = ref([])
+const attachmentPreviews = computed(() => pendingAttachments.value.map(attachmentPayload))
+
+function notifyError(text) {
+  $storex.ui?.addNotification?.({ text, type: 'error' })
+}
+
+async function onUploadFiles(files) {
+  const prepared = await attachmentsFromFiles(files, notifyError)
+  if (!prepared.length) return
+  pendingAttachments.value = [...pendingAttachments.value, ...prepared]
+}
+
+async function onPaste(event) {
+  const attachment = await attachmentFromPaste(event, notifyError)
+  if (!attachment) return
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  pendingAttachments.value = [...pendingAttachments.value, attachment]
+}
+
+function removeAttachment(index) {
+  pendingAttachments.value = pendingAttachments.value.filter((_, ix) => ix !== index)
 }
 
 // Enter sends, Shift+Enter adds a newline (the chat composer convention).
@@ -96,8 +134,11 @@ function tierHint() {
           :project="null"
           :chat-project="null"
           placeholder="Describe the ticket — what is broken, expected behaviour, acceptance…"
+          :attachment-count="pendingAttachments.length"
           @send="onSend"
           @keydown="onKeyDown"
+          @paste="onPaste"
+          @upload-files="onUploadFiles"
           @model-changed="emit('update:model', $event)"
           @profiles-selected="emit('update:profiles', $event)"
         >
@@ -135,6 +176,31 @@ function tierHint() {
             </div>
           </template>
         </ChatInputBox>
+
+        <!-- Pasted / uploaded attachments of the ticket -->
+        <div v-if="attachmentPreviews.length" class="flex flex-wrap gap-1.5 justify-center px-1">
+          <div
+            v-for="(item, index) in attachmentPreviews"
+            :key="`${item.name}-${index}`"
+            class="flex items-center gap-1.5 rounded-lg border border-base-content/15 bg-base-200/60 px-2 py-1 text-[11px]"
+          >
+            <img
+              v-if="String(item.type).startsWith('image/')"
+              :src="item.data"
+              class="h-6 w-6 rounded object-cover"
+              alt=""
+            />
+            <i v-else class="fa-solid fa-paperclip text-base-content/50"></i>
+            <span class="max-w-32 truncate">{{ item.name }}</span>
+            <button
+              class="btn btn-ghost btn-xs px-1"
+              title="Remove attachment"
+              @click="removeAttachment(index)"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+        </div>
 
         <div v-if="error" class="alert alert-error text-xs py-2">
           <i class="fa-solid fa-triangle-exclamation"></i>

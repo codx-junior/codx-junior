@@ -196,10 +196,18 @@ export const actions = actionTree(
      *
      * @returns {Promise<object| null>} The updated detail.
      */
-    async promptSession({ commit }, { id, content, profiles = [], model = null } = {}) {
+    async promptSession(
+      { commit },
+      { id, content, profiles = [], model = null, attachments = [] } = {}
+    ) {
       const api = harnessApi()
       if (!api?.harness?.promptSession) throw new Error('Harness API is not available')
-      const detail = await api.harness.promptSession(id, { content, profiles, model })
+      const detail = await api.harness.promptSession(id, {
+        content,
+        profiles,
+        model,
+        attachments
+      })
       commit('setError', null)
       commit('setDetail', detail)
       if (detail?.chat?.id && $storex.chats?.registerChatDocument) {

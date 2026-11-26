@@ -1029,6 +1029,10 @@ class ChatEngine:
         chat_profile_names: List[str] = []
         chat_team_names: List[str] = []
         chat_model: Optional[str] = chat.llm_model
+        # Where the model came from, reported to the user when the profiles do
+        # not pin one and the turn falls back to the project default.
+        chat_model_source: str = "chat" if chat_model else ""
+        model_warning: Optional[Dict[str, Any]] = None
         chat_tools: List[str] = []
         chat_effort: Dict[str, Any] = {}
 
@@ -1108,6 +1112,7 @@ class ChatEngine:
                 if profile_models:
                     profile_model = profile_models[0]
                     chat_model = profile_model.llm_model
+                    chat_model_source = f"profile:{profile_model.name}"
                     logger.info(
                         "chat_model '%s' from profile: '%s'",
                         profile_model.llm_model,
@@ -1122,6 +1127,48 @@ class ChatEngine:
                 "Focus on the changes required by the task "
                 "and keep all other content as it is."
             )
+
+        # ------------------------------------------------------------------
+        # Model fallback: a profile with an empty ``llm_model`` inherits the
+        # model configured for the project (which itself inherits the global
+        # default). This is the documented contract, but it used to be silent
+        # and, more importantly, some code paths kept ``chat_model`` empty and
+        # left the AI instance on whatever provider the *default* model used.
+        # Resolve it explicitly here, then surface a warning so the user can
+        # review the profiles that do not pin a model of their own.
+        # ------------------------------------------------------------------
+        if not chat_model:
+            try:
+                default_settings = self.settings.get_llm_settings()
+                chat_model = default_settings.model
+                chat_model_source = "project_default"
+            except Exception as ex:
+                logger.warning(
+                    "Could not resolve the project default model for chat "
+                    "'%s': %s",
+                    getattr(chat, "id", "?"),
+                    ex,
+                )
+        if chat_model and chat_model_source == "project_default" and all_profiles:
+            profiles_without_model = [
+                profile.name
+                for profile in sorted(
+                    all_profiles, key=lambda p: getattr(p, "name", "")
+                )
+                if not str(getattr(profile, "llm_model", "") or "").strip()
+            ]
+            if profiles_without_model:
+                names = ", ".join(f"'{name}'" for name in profiles_without_model)
+                model_warning = {
+                    "profiles": profiles_without_model,
+                    "fallback_model": chat_model,
+                    "source": chat_model_source,
+                    "message": (
+                        f"Profile(s) {names} have no model configured; using the "
+                        f"project default model '{chat_model}'. Set a model on "
+                        "the profile to pin it."
+                    ),
+                }
 
         # Company assistant chats (provisioned by
         # codx.junior.company.assistant_chat) get the live company catalog and a
@@ -1162,6 +1209,8 @@ class ChatEngine:
             "chat_profile_names": chat_profile_names,
             "chat_team_names": chat_team_names,
             "chat_model": chat_model,
+            "chat_model_source": chat_model_source,
+            "model_warning": model_warning,
             "chat_tools": chat_tools,
             "chat_effort": chat_effort,
             "is_refine": is_refine,
@@ -3337,6 +3386,38 @@ class ChatEngine:
                     message=f"Team profiles: {chat_team_names}"
                 )
 
+            # Profiles that do not pin a model inherit the project default. The
+            # fallback is automatic, but it must never be silent: stamp it on
+            # the response (the client renders it as a warning banner) and log
+            # it as a chat event so the user can review the profile.
+            model_warning = profile_result.get("model_warning")
+            chat_metadata = (
+                dict(chat.meta_data)
+                if isinstance(getattr(chat, "meta_data", None), dict)
+                else {}
+            )
+            # Warn ONCE per chat: the profiles inherit the project default on
+            # every turn, and repeating the same notice in each response would
+            # turn a useful review prompt into noise.
+            if model_warning and not chat_metadata.get("model_fallback_warned"):
+                chat.meta_data = {
+                    **chat_metadata,
+                    "model_fallback_warned": True,
+                }
+                response_message.meta_data = {
+                    **(response_message.meta_data or {}),
+                    "model_warning": model_warning,
+                }
+                self.event_manager.chat_event(
+                    chat=chat,
+                    message=model_warning["message"],
+                )
+                logger.warning(
+                    "Chat '%s' model fallback: %s",
+                    getattr(chat, "id", "?"),
+                    model_warning["message"],
+                )
+
             # ------------------------------------------------------------------
             # 9.4 ADDED: register harness requests in the audit journal.
             #      When the `codx-junior` harness profile takes part in a
@@ -3524,10 +3605,21 @@ class ChatEngine:
             # ------------------------------------------------------------------
             # 14. Prepare AI instance with merged system prompt
             # ------------------------------------------------------------------
-            ai_settings = self.settings.get_llm_settings()
-            logger.info("[chat_model] %s", chat_model)
+            # Resolve the provider, endpoint and credential of the model the
+            # turn will actually use. Mutating ``ai_settings.model`` kept the
+            # provider of the *default* model, so a profile that pins a model
+            # from another provider reported (and authenticated with) the
+            # wrong provider until SmolAgent resolved it again.
             if chat_model:
-                ai_settings.model = chat_model
+                ai_settings = self.settings.get_llm_settings(llm_model=chat_model)
+            else:
+                ai_settings = self.settings.get_llm_settings()
+            logger.info(
+                "[chat_model] %s (source=%s, provider=%s)",
+                ai_settings.model,
+                profile_result.get("chat_model_source") or "default",
+                ai_settings.provider or "?",
+            )
             
             # Merge profile system content with any provided system prompt
             final_system_prompt = ""

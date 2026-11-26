@@ -1,6 +1,9 @@
 import inspect
+import ipaddress
 import re
 from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
 
 #: Markers a model uses when it emits a tool call INSIDE its text because the
 #: provider (or the gateway) did not translate it into structured ``tool_calls``
@@ -86,3 +89,40 @@ def extract_blocks(content):
       if add_line:
           content_lines.append(line)
           continue
+
+def is_local_endpoint(api_url: Optional[str]) -> bool:
+    """
+    Tell whether an OpenAI-compatible endpoint is local/in-cluster.
+
+    Local servers (LocalAI, Ollama, llama.cpp, vLLM...) do not require an API
+    key, so an empty key is legitimate there; a public endpoint always needs
+    one. The check is intentionally permissive for Docker Compose service
+    names, which are single-label (``localai``, ``ollama``).
+
+    :param api_url: Provider base URL.
+    :return: True for loopback, private, link-local or single-label hosts.
+    """
+    raw = str(api_url or "").strip()
+    if not raw:
+        return False
+    try:
+        host = (urlparse(raw).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal", "gateway.docker.internal"}:
+        return True
+    if host.endswith(".local") or host.endswith(".internal"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return "." not in host
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+    )
+

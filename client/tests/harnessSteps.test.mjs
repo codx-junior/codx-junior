@@ -195,3 +195,25 @@ test('renders phase rows as thinking activity', () => {
   assert.deepEqual(view.steps.map(step => step.label), ['Thinking', 'Notice'])
   assert.equal(view.activity, 'Worked') // 'think' has no category label
 })
+
+test('surfaces the model fallback warning of the assistant response', () => {
+  const warning = {
+    profiles: ['project'],
+    fallback_model: 'deepseek-flash',
+    source: 'project_default',
+    message: "Profile(s) 'project' have no model configured; using the project default model 'deepseek-flash'."
+  }
+  const view = buildHarnessView([
+    userMessage('Fix it'),
+    assistantMessage({ meta_data: { model_warning: warning } })
+  ])
+  assert.deepEqual(view.modelWarning, warning)
+})
+
+test('has no model warning when a model is pinned', () => {
+  const view = buildHarnessView([
+    userMessage('Fix it'),
+    assistantMessage({ meta_data: { model: 'deepseek-flash' } })
+  ])
+  assert.equal(view.modelWarning, null)
+})

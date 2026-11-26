@@ -192,13 +192,24 @@ from codx.junior.tools import (
     expand_tool_allowlist,
 )
 from codx.junior.atlas.constants import apply_atlas_policy
-from codx.junior.ai.utils import strip_tool_call_markup
+from codx.junior.ai.utils import is_local_endpoint, strip_tool_call_markup
 from codx.junior.utils.utils import clean_string
 
 logger = logging.getLogger(__name__)
 
 # Module-level analytics singleton
 _analytics_instance: Optional[Analytics] = None
+
+
+class AIConfigurationError(RuntimeError):
+    """The provider/model is not usable, so no HTTP request must be sent.
+
+    This is raised *before* the OpenAI client is created when the key is a
+    placeholder or missing for a remote endpoint. Without it the request went
+    out with an empty ``Authorization`` header and the provider answered with
+    the opaque ``401 - Your api key: none is invalid``.
+    """
+
 
 # Message used whenever the run is cancelled by the caller.
 CANCELLED_MESSAGE: str = "Chat was cancelled by the caller."
@@ -769,10 +780,45 @@ class SmolAgent:
         self.llm_settings = settings.get_llm_settings(llm_model=llm_model)
         self.model: str = self.llm_settings.model
         self.user = user
-        self.api_key: str = (
-            user.api_key if user and user.api_key else self.llm_settings.api_key
+        # Resolve the credential defensively. A placeholder ("none", "null",
+        # "sk-REPLACE-ME"...) is worse than an empty value: it is sent as a real
+        # bearer token and the provider answers an opaque 401 that names the
+        # key, while the real problem is that the provider was never
+        # configured. Treat it as missing, fall back to the environment, and
+        # fail with an actionable message instead of calling the provider.
+        from codx.junior.global_settings import (
+            resolve_api_key_from_env,
+            is_placeholder_api_key,
         )
+
+        api_key = str(
+            (user.api_key if user and user.api_key else self.llm_settings.api_key)
+            or ""
+        ).strip()
+        if is_placeholder_api_key(api_key):
+            logger.warning(
+                "SmolAgent: provider '%s' (model '%s') has a placeholder API "
+                "key (%r); ignoring it and looking for an environment key",
+                self.llm_settings.provider or "?",
+                self.model,
+                api_key,
+            )
+            api_key = ""
+        if not api_key:
+            # ``get_provider_settings`` already tried the environment; this
+            # covers providers built from a caller-supplied AISettings.
+            api_key = resolve_api_key_from_env(self.llm_settings)
+        self.api_key: str = api_key
         self.base_url: str = self.llm_settings.api_url
+        if not self.api_key and not is_local_endpoint(self.base_url):
+            provider = self.llm_settings.provider or "the configured provider"
+            raise AIConfigurationError(
+                f"No API key is configured for provider '{provider}' "
+                f"(model '{self.model}', endpoint '{self.base_url or 'default'}'). "
+                "Add the provider's API key in Settings > AI Models, or set the "
+                f"provider's *_API_KEY / CODX_JUNIOR_AI_API_KEY environment variable."
+            )
+
         # Store extra system instructions; global instructions will be loaded
         # dynamically on each chat to ensure freshness
         self.extra_system: str = (system or "").strip()

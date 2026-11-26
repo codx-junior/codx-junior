@@ -11,11 +11,12 @@ import os
 import json
 import logging
 import pathlib
+import re
 import threading
 import time
 import traceback
 from datetime import datetime
-from typing import Optional
+from typing import Any, List, Optional
 
 from codx.junior.utils.utils import exec_command
 from codx.junior.model.model import (
@@ -359,9 +360,97 @@ def get_global_settings() -> Optional[GlobalSettings]:
 # AI provider / model helpers
 # ---------------------------------------------------------------------------
 
+#: Values that look like an API key but never are. They used to be sent to the
+#: provider verbatim, producing DeepSeek's confusing
+#: ``Authentication Fails, Your api key: none is invalid`` 401. Treating them as
+#: "not configured" turns that opaque provider error into an actionable
+#: configuration problem.
+PLACEHOLDER_API_KEYS = {
+    "none",
+    "null",
+    "nil",
+    "undefined",
+    "false",
+    "changeme",
+    "change_me",
+    "replace_me",
+    "replace-me",
+    "your-api-key",
+    "api-key",
+    "apikey",
+}
+
+
+_UNRESOLVED_ENV_REFERENCE = re.compile(
+    r"^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$"
+)
+
+
+def is_placeholder_api_key(value: Optional[str]) -> bool:
+    """Tell whether *value* is a placeholder instead of a real API key."""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered in PLACEHOLDER_API_KEYS:
+        return True
+    # ``${DEEPSEEK_API_KEY}`` whose environment variable is not set: the
+    # expansion leaves the reference untouched, and sending it as a bearer
+    # token can only fail.
+    if _UNRESOLVED_ENV_REFERENCE.match(text):
+        return True
+    # Installer/cloud-init placeholders such as ``sk-REPLACE-ME``.
+    return "replace" in lowered and ("me" in lowered or "with" in lowered)
+
+
+def _provider_api_key_env_candidates(provider: Any) -> List[str]:
+    """Return the environment variables that may hold *provider*'s API key.
+
+    ``provider`` may be an :class:`AIProvider` (``name``) or the resolved
+    :class:`AISettings` (``provider``).
+    """
+    names: List[str] = []
+    provider_name = str(
+        getattr(provider, "name", "") or getattr(provider, "provider", "") or ""
+    ).strip()
+    if provider_name:
+        normalized = re.sub(r"[^A-Za-z0-9]+", "_", provider_name).strip("_").upper()
+        if normalized:
+            names.append(f"{normalized}_API_KEY")
+    haystack = f"{provider_name} {getattr(provider, 'api_url', '') or ''}".lower()
+    for hint in ("deepseek", "openai", "gemini", "openrouter", "mistral", "groq"):
+        if hint in haystack:
+            names.append(f"{hint.upper()}_API_KEY")
+    names.append("CODX_JUNIOR_AI_API_KEY")
+    # Preserve order and drop duplicates.
+    return list(dict.fromkeys(names))
+
+
+def resolve_api_key_from_env(provider: AIProvider) -> str:
+    """Return the first non-placeholder API key found in the environment."""
+    for env_name in _provider_api_key_env_candidates(provider):
+        value = os.environ.get(env_name, "").strip()
+        if value and not is_placeholder_api_key(value):
+            logger.info(
+                "Provider '%s' has no API key configured; using environment "
+                "variable %s",
+                getattr(provider, "name", "?"),
+                env_name,
+            )
+            return value
+    return ""
+
+
 def get_provider_settings(ai_provider: str, global_settings: Optional[GlobalSettings] = None) -> AIProvider:
     """
     Retrieve AIProvider settings by provider name.
+
+    The API key is normalised before it reaches an HTTP client:
+
+    * a placeholder (``none``, ``null``, ``sk-REPLACE-ME``...) is treated as
+      *not configured* and logged, never sent to the provider;
+    * when the stored key is empty, the provider's ``*_API_KEY`` /
+      ``CODX_JUNIOR_AI_API_KEY`` environment variable is used as a fallback.
 
     Args:
         ai_provider: Name of the AI provider.
@@ -380,7 +469,19 @@ def get_provider_settings(ai_provider: str, global_settings: Optional[GlobalSett
 
     provider = matching[0]
     provider.api_url = os.path.expandvars(provider.api_url or "")
-    provider.api_key = os.path.expandvars(provider.api_key or "")
+    api_key = os.path.expandvars(provider.api_key or "").strip()
+    if is_placeholder_api_key(api_key):
+        logger.warning(
+            "Provider '%s' has a placeholder API key (%r). Configure a real key "
+            "in Settings > AI Models (or set %s); the placeholder is ignored.",
+            provider.name,
+            api_key,
+            " or ".join(_provider_api_key_env_candidates(provider)[:2]),
+        )
+        api_key = ""
+    if not api_key:
+        api_key = resolve_api_key_from_env(provider)
+    provider.api_key = api_key
     return provider
 
 

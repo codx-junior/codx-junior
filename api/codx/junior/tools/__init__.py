@@ -276,6 +276,10 @@ from .ciso_tools import (
     SECRETS_LIST_TOOL_JSON,
     SECRETS_REQUEST_TOOL_JSON,
 )
+from .command_tools import (
+    run_command,
+    RUN_COMMAND_TOOL_JSON,
+)
 from .qa_tools import (
     qa_plan,
     qa_run_tests,
@@ -460,6 +464,7 @@ __all__ = [
     "security_scan_content",
     "security_review_changes",
     "security_check_command",
+    "run_command",
     "security_redact",
     "security_policy",
     "qa_plan",
@@ -2037,6 +2042,12 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
         "tags": ["security", "ciso", "command", "shell", "guard"],
         "tool_call": security_check_command
+    },
+    {
+        "tool_json": RUN_COMMAND_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["command", "shell", "exec", "git", "tests"],
+        "tool_call": run_command
     },
     {
         "tool_json": SECURITY_REDACT_TOOL_JSON,

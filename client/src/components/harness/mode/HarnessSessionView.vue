@@ -295,6 +295,14 @@ function copyReport(text) {
           {{ error }}
         </div>
 
+        <div v-if="view.modelWarning?.message" class="alert alert-warning text-xs py-2 items-start">
+          <i class="fa-solid fa-triangle-exclamation mt-0.5"></i>
+          <div class="min-w-0">
+            <div class="font-semibold">Using the default model</div>
+            <div class="opacity-80 break-words">{{ view.modelWarning.message }}</div>
+          </div>
+        </div>
+
         <div v-if="loading && !messages.length" class="flex items-center gap-2 text-xs text-base-content/40 py-10 justify-center">
           <span class="loading loading-spinner loading-sm"></span>
           Loading session…

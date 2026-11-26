@@ -41,7 +41,7 @@ def make_agent(parallelism: int = 8) -> SmolAgent:
     """Build a real SmolAgent over mocked settings (no provider call)."""
     llm_settings = Mock()
     llm_settings.model = "gpt-4"
-    llm_settings.api_key = ""
+    llm_settings.api_key = "sk-test"
     llm_settings.api_url = "https://api.openai.com/v1"
     llm_settings.system = None
     llm_settings.provider = "openai"

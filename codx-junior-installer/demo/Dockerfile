@@ -33,8 +33,9 @@ RUN npm ci --no-audit --no-fund --prefer-offline
 FROM client-deps AS client
 
 COPY client ./
-# `build-only` = `vite build`. `npm run build` would also run `vue-tsc`, which
-# is a type check: slow and useless in a release image.
+# `build-only` builds the SPA into `dist.stage` and publishes it to `dist`
+# (see client/scripts/publish-dist.sh). `npm run build` would also run
+# `vue-tsc`, which is a type check: slow and useless in a release image.
 RUN npm run build-only
 
 # -----------------------------------------------------------------------------

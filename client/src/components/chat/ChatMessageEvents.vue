@@ -675,7 +675,22 @@ export default {
         }
       }
 
-      // 2. The turn is over: report HOW it ended, errors first.
+      // 2. Model fallback: the active profiles did not pin a model, so the
+      //    turn used the project default. The server records it on the
+      //    message (meta_data.model_warning) with the profile names, so the
+      //    user can review and pin a model instead of the fallback being
+      //    silent.
+      const modelWarning = message?.meta_data?.model_warning
+      if (modelWarning?.message) {
+        return {
+          class: 'bg-warning/10 text-warning',
+          icon: 'fa-solid fa-triangle-exclamation',
+          title: 'Using the default model',
+          detail: modelWarning.message
+        }
+      }
+
+      // 3. The turn is over: report HOW it ended, errors first.
       if (message.done) {
         if (message.error || this.errorCount) {
           const facts = []
@@ -704,7 +719,7 @@ export default {
         }
       }
 
-      // 3. Agile target: the turn is NEVER stopped by the clock, so the user is
+      // 4. Agile target: the turn is NEVER stopped by the clock, so the user is
       // the one who decides whether to stop it or split the task. The warning
       // text is rendered by the server (meta_data.agile.warning).
       const agile = message?.meta_data?.agile

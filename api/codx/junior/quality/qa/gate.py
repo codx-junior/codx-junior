@@ -383,6 +383,97 @@ def guard_flaky(
         return _fail(policy, QaDomain.FLAKY_CHECK, ex)
 
 
+def _matches_filters(path: str, filters: List[str]) -> bool:
+    """Return True when *path* is one of *filters* or lives under one of them."""
+    return any(path == item or path.startswith(item.rstrip("/") + "/") for item in filters)
+
+
+def _filter_variants(item: str) -> List[str]:
+    """Return the readings of *item* with its leading segments dropped.
+
+    A caller may address the diff from one directory above (or below) the root the
+    diff is relative to, so the same file arrives as ``api/codx/app.py`` or as
+    ``codx/app.py``. Dropping leading segments in turn maps one onto the other.
+    """
+    parts = item.strip("/").split("/")
+    return ["/".join(parts[index:]) for index in range(1, len(parts))]
+
+
+def _resolve_filter(item: str, changed: List[str]) -> tuple:
+    """Return ``(paths, effective_filter)`` addressed by *item*.
+
+    The filter is used as given first. When it addresses nothing it is retried with
+    its leading segments dropped and, failing that, as the tail of a deeper changed
+    path. Only an unambiguous translation is accepted: two possible readings leave
+    the filter unmatched, so the caller fixes the filter instead of the gate
+    reviewing files nobody asked about.
+    """
+    direct = [path for path in changed if _matches_filters(path, [item])]
+    if direct:
+        return direct, item
+    candidates = []
+    for variant in _filter_variants(item):
+        hits = [path for path in changed if _matches_filters(path, [variant])]
+        if hits:
+            candidates.append((variant, hits))
+    if not candidates:
+        tail = item.strip("/")
+        hits = [path for path in changed if path.endswith("/" + tail)]
+        if hits:
+            candidates.append((hits[0] if len(hits) == 1 else item, hits))
+    if len(candidates) == 1:
+        return candidates[0][1], candidates[0][0]
+    return [], item
+
+
+def _unmatched_filter_verdict(
+    settings: Any,
+    scope: str,
+    base: str,
+    filters: List[str],
+    resolved: List[str],
+    all_changed: List[str],
+    policy: QaPolicy,
+    metrics: Dict[str, Any],
+) -> QaVerdict:
+    """Return the verdict of a ``paths`` filter that matched no changed file.
+
+    An empty change set produced by an explicit filter is not a clean change: the
+    filter does not address the diff about to be merged (usually because it is
+    rooted somewhere else), so reporting ``allow`` would be a false green. The
+    verdict names the filter, shows what it could have matched and asks for a
+    human instead of allowing.
+    """
+    sample = ", ".join(f"`{path}`" for path in all_changed[:5]) or "none"
+    finding = QaFinding(
+        rule_id="paths.matched-nothing",
+        title="The path filter matched no changed file: nothing was reviewed",
+        severity=QaSeverity.MEDIUM,
+        category=QaCategory.CHANGE,
+        path=", ".join(filters),
+        evidence=(
+            f"filter: {', '.join(filters)} | resolved: {', '.join(resolved) or 'none'} | "
+            f"changed files: {len(all_changed)} | first changed paths: {sample}"
+        ),
+        remediation=(
+            "Pass the paths as the git diff reports them (project relative, e.g. "
+            "`codx/junior/quality/qa/gate.py`) or omit `paths` to review the whole change."
+        ),
+    )
+    verdict = qa_policy.evaluate(QaDomain.CHANGE_REVIEW, [finding], policy, metrics=metrics)
+    verdict.summary = (
+        f"{verdict.action.value}: path filter ({', '.join(filters)}) matched none of the "
+        f"{len(all_changed)} changed file(s) - nothing was reviewed"
+    )
+    _audit(
+        settings,
+        verdict,
+        f"change:{scope}:{base}",
+        extra={"changed_files": 0, "paths": filters, "total_changed_files": len(all_changed)},
+    )
+    return verdict
+
+
 def guard_change(
     settings: Any,
     base: str = "HEAD",
@@ -410,16 +501,43 @@ def guard_change(
 
     project_path = _project_path(settings)
     try:
-        changed = mapping.changed_files(settings, base=base, scope=scope)
+        all_changed = mapping.changed_files(settings, base=base, scope=scope)
+        filters: List[str] = []
+        resolved: List[str] = []
+        unmatched: List[str] = []
         if paths:
-            filters = [mapping.normalize(item) for item in paths]
-            changed = [
-                path for path in changed if any(path == f or path.startswith(f.rstrip("/") + "/") for f in filters)
-            ]
+            filters = [item for item in (mapping.normalize(path) for path in paths) if item]
+            changed: List[str] = []
+            for item in filters:
+                hits, effective = _resolve_filter(item, all_changed)
+                if not hits:
+                    unmatched.append(item)
+                    continue
+                resolved.append(effective)
+                for path in hits:
+                    if path not in changed:
+                        changed.append(path)
+        else:
+            changed = list(all_changed)
         changed = [path for path in changed if not mapping.is_ignored(path, policy.ignore_paths)]
 
         metrics: Dict[str, Any] = {"changed_files": len(changed)}
+        if filters:
+            metrics.update(
+                {
+                    "paths": filters,
+                    "resolved_paths": resolved,
+                    "unmatched_paths": unmatched,
+                    "total_changed_files": len(all_changed),
+                }
+            )
         if not changed:
+            if filters:
+                # An explicit filter that matches nothing is never "clean": the
+                # review would cover an empty change set and read as a false green.
+                return _unmatched_filter_verdict(
+                    settings, scope, base, unmatched or filters, resolved, all_changed, policy, metrics
+                )
             verdict = qa_policy.evaluate(QaDomain.CHANGE_REVIEW, [], policy, metrics=metrics)
             verdict.summary = "clean: no pending change to review"
             return verdict

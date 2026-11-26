@@ -45,6 +45,12 @@ analyst), status, priority and project.*
 | Autonomy | Turn the profile into an [autonomous agent](/features/autonomous-agents) that takes its own shifts. |
 | Voice | How the profile sounds when it narrates in the Project's Channel. |
 
+An empty **Model** means the profile inherits the project's default model (and
+the global default when the project has none). The turn resolves that fallback
+explicitly and marks the response with a warning naming every profile that did
+not pin a model, so inheriting is never silent; pin a model on the profile when
+it must use a specific one.
+
 ## Built-in profiles
 
 codx-junior ships with 15 profiles, including **project** (PM), **software_developer**, **qa**, **qa_automation**, **ciso**, **analyst**, **orchestrator** and **wiki**. Use them as they are, edit them, or add your own.

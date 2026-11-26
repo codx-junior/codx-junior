@@ -394,6 +394,14 @@ export function buildHarnessView(messages, { diff = null, session = null } = {})
 
   const assistants = visible.filter(message => message.role === 'assistant')
   const steps = assistants.flatMap(message => messageSteps(message))
+  // The model fallback warning is stamped on the assistant response by the
+  // turn engine when the active profiles do not pin a model and the project
+  // default is used. Surface it once per session so it is not lost in the
+  // transcript.
+  const modelWarning = [...assistants]
+    .reverse()
+    .map(message => message?.meta_data?.model_warning)
+    .find(warning => warning && warning.message) || null
   const reportMessage = deliveryReport(assistants)
   const report = reportMessage
     ? {
@@ -422,6 +430,7 @@ export function buildHarnessView(messages, { diff = null, session = null } = {})
     steps,
     report,
     files,
+    modelWarning,
     activity: activitySummary(steps),
     toolCount: steps.filter(step => step.kind === 'tool').length,
     failedCount: failedSteps(steps),

@@ -73,7 +73,7 @@ def settings():
     settings.project_name = "Test Project"
     settings.get_llm_settings.return_value = Mock(
         model="deepseek-flash",
-        api_key="",
+        api_key="sk-test",
         api_url="https://api.deepseek.com/v1",
         system="You are a helpful assistant.",
         provider="deepseek",

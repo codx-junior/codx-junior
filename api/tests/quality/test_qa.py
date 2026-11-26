@@ -261,3 +261,99 @@ def test_guard_change_passes_when_the_mapped_test_runs(git_project):
     assert verdict.blocked is False
     assert verdict.runs and verdict.runs[0].suite == "unit"
     assert verdict.runs[0].passed == 1
+
+
+def test_guard_change_never_allows_a_filter_that_matches_nothing(git_project):
+    """A ``paths`` filter matching no changed file is a false green, not a clean change."""
+    settings = _settings(str(git_project))
+    (git_project / "wallet.py").write_text("def pay():\n    return 4\n", encoding="utf-8")
+
+    verdict = guard_change(settings, paths=["api/ledger.py"], run_tests=False)
+
+    assert "paths.matched-nothing" in verdict.rule_ids, verdict.summary
+    assert verdict.action.value in ("require_approval", "block"), verdict.summary
+    assert verdict.passed is False
+    assert "nothing was reviewed" in verdict.summary
+    assert verdict.metrics["changed_files"] == 0
+    assert verdict.metrics["total_changed_files"] == 1
+    assert verdict.metrics["unmatched_paths"] == ["api/ledger.py"]
+    assert verdict.metrics["resolved_paths"] == []
+
+
+def test_guard_change_resolves_a_filter_rooted_above_the_project(git_project):
+    """``api/wallet.py`` and ``wallet.py`` review the same diff instead of one a false green."""
+    settings = _settings(str(git_project))
+    (git_project / "wallet.py").write_text("def pay():\n    return 6\n", encoding="utf-8")
+
+    above = guard_change(settings, paths=["api/wallet.py"], run_tests=False)
+    rooted = guard_change(settings, paths=["wallet.py"], run_tests=False)
+
+    assert "paths.matched-nothing" not in above.rule_ids, above.summary
+    assert above.metrics["changed_files"] == rooted.metrics["changed_files"] == 1
+    assert above.metrics["resolved_paths"] == ["wallet.py"]
+    assert above.metrics["unmatched_paths"] == []
+
+
+def test_guard_change_reviews_a_filter_that_matches(git_project):
+    """The same file is reviewed when the filter is rooted like the diff."""
+    settings = _settings(str(git_project))
+    (git_project / "wallet.py").write_text("def pay():\n    return 5\n", encoding="utf-8")
+
+    verdict = guard_change(settings, paths=["wallet.py"], run_tests=False)
+
+    assert "paths.matched-nothing" not in verdict.rule_ids, verdict.summary
+    assert verdict.metrics["changed_files"] == 1
+    assert verdict.metrics["unmatched_paths"] == []
+
+
+def test_guard_change_reports_clean_when_no_filter_matches_an_empty_tree(git_project):
+    """Without a filter an untouched tree is still a clean, allowed verdict."""
+    settings = _settings(str(git_project))
+
+    verdict = guard_change(settings, run_tests=False)
+
+    assert verdict.action.value == "allow", verdict.summary
+    assert verdict.summary == "clean: no pending change to review"
+    assert "paths" not in verdict.metrics
+
+
+def test_qa_policy_printed_keys_cover_the_documented_changes_schema(tmp_path):
+    """Every field the ``changes`` schema documents must be printed by ``qa_policy``.
+
+    A field that the tool schema advertises but the report never prints is a silent
+    no-op: the caller sets it, the tool accepts it and the verdict says nothing
+    about it.
+    """
+    from pathlib import Path
+
+    from codx.junior.quality.qa.policy import POLICY_FIELDS, policy_markdown
+
+    labels = {
+        "enabled": "Enabled",
+        "min_coverage": "Min coverage",
+        "block_above": "Block above",
+        "approval_above": "Approval above",
+        "warn_above": "Warn above",
+        "require_tests_for_changes": "Require tests for changes",
+        "block_on_failures": "Block on test failures",
+        "block_missing_tests": "Block missing tests",
+        "fail_closed": "Fail closed",
+        "max_test_seconds": "Max test seconds",
+        "flaky_repeats": "Flaky repeats",
+        "ignore_paths": "Ignored paths",
+        "suites": "Custom suites",
+    }
+
+    unlabelled = sorted(set(POLICY_FIELDS) - set(labels))
+    assert not unlabelled, f"add a printed label for {unlabelled}"
+
+    printed = policy_markdown(resolve_policy(_settings(str(tmp_path))), {})
+    unprinted = [field for field in POLICY_FIELDS if labels[field] not in printed]
+    assert not unprinted, f"qa_policy does not print {unprinted}:\n{printed}"
+
+    tools_source = (
+        Path(__file__).resolve().parents[2] / "codx" / "junior" / "tools" / "qa_tools.py"
+    ).read_text(encoding="utf-8")
+    schema = tools_source.split("QA_POLICY_TOOL_JSON", 1)[-1]
+    undocumented = [field for field in POLICY_FIELDS if field not in schema]
+    assert not undocumented, f"the `changes` schema does not document {undocumented}"

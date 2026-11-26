@@ -89,6 +89,7 @@ from slugify import slugify
 from langchain_core.documents import Document
 
 from codx.junior.settings import CODXJuniorSettings
+from codx.junior.ai.utils import is_local_endpoint
 from codx.junior.knowledge.ciso_gate import screen_documents
 from codx.junior.knowledge.embeddings import (
     DEFAULT_EMBEDDINGS_MODEL,
@@ -183,8 +184,23 @@ class ProviderEmbeddingsModel:
 
     @property
     def is_configured(self) -> bool:
-        """Whether enough settings are present to call the endpoint."""
-        return bool(self.api_url and self.model_name)
+        """Whether enough settings are present to call the endpoint.
+
+        A remote embeddings endpoint also needs a credential: calling it with
+        an empty key used to send the literal bearer token ``none`` and the
+        provider answered ``401 - Your api key: none is invalid``. Knowledge is
+        disabled until the key is configured instead of failing every query.
+        """
+        if not (self.api_url and self.model_name):
+            return False
+        if not self.api_key and not is_local_endpoint(self.api_url):
+            logger.warning(
+                "Embeddings provider '%s' has no API key; knowledge search is "
+                "disabled until it is configured in Settings > AI Models",
+                self.api_url,
+            )
+            return False
+        return True
 
     @property
     def client(self):
@@ -194,7 +210,7 @@ class ProviderEmbeddingsModel:
 
             self._client = OpenAI(
                 base_url=self.api_url,
-                api_key=self.api_key or "none",
+                api_key=self.api_key or "",
                 timeout=60.0,
             )
         return self._client

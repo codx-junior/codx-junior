@@ -196,6 +196,42 @@ def test_detect_suites_uses_an_interpreter_that_exists(tmp_path):
     assert suite.command[0] == sys.executable
 
 
+def test_detect_suites_skips_a_venv_without_pytest(tmp_path):
+    """A project virtualenv only wins when it can really import pytest."""
+    api = tmp_path / "api"
+    (api / "tests").mkdir(parents=True)
+    (api / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+
+    venv_bin = api / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    fake_python = venv_bin / "python"
+    fake_python.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+
+    suite = select_suite(detect_suites(str(tmp_path)), "pytest")
+    assert str(fake_python) not in suite.command
+    assert suite.available is True
+    assert suite.command[0] == sys.executable
+
+
+def test_pytest_suite_is_unavailable_when_nothing_has_pytest(tmp_path, monkeypatch):
+    """No candidate can import pytest -> the suite explains why instead of dying."""
+    from codx.junior.quality.qa import discovery
+
+    api = tmp_path / "api"
+    (api / "tests").mkdir(parents=True)
+    (api / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        discovery, "_can_import_pytest", lambda interpreter: (False, f"{interpreter}: boom")
+    )
+
+    suite = select_suite(detect_suites(str(tmp_path)), "pytest")
+    assert suite.available is False
+    assert "pytest is not available" in suite.reason
+    assert "boom" in suite.reason
+
+
 # -----------------------------------------------------------------------------
 # Gate
 # -----------------------------------------------------------------------------

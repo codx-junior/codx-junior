@@ -36,6 +36,7 @@ import HarnessRunDetail from '@/components/harness/HarnessRunDetail.vue'
 import HarnessAuditJournal from '@/components/harness/HarnessAuditJournal.vue'
 import VerticalSplitter from '@/components/layout/VerticalSplitter.vue'
 import ChatView from '@/views/ChatView.vue'
+import ChatMessageEvents from '@/components/chat/ChatMessageEvents.vue'
 
 const route = useRoute()
 
@@ -71,6 +72,42 @@ const openedChatId = ref('')
 const taskChat = computed(() =>
   openedChatId.value ? ($storex.chats.chats?.[openedChatId.value] || null) : null
 )
+
+// ── Chat events and tools of the open task ────────────────────────────────
+// The harness opened a task with its conversation only. The chat events and
+// tools component (the same one the chat screen renders under the turn
+// timeline, components/chat/ChatMessageEvents.vue) carries the whole story of
+// a turn — lifecycle events, tool calls and their payloads — so the harness
+// reuses it instead of a bespoke summary.
+const showTaskEvents = ref(false)
+
+/** Last turn of the task that actually produced events or tool calls. */
+const taskEventsMessage = computed(() => {
+  const messages = taskChat.value?.messages || []
+  for (let ix = messages.length - 1; ix >= 0; ix -= 1) {
+    const message = messages[ix]
+    if (!message || message.role === 'user') continue
+    if ((message.tool_events?.length || 0) > 0) return message
+    if ((message.lifecycle_events?.length || 0) > 0) return message
+  }
+  return null
+})
+
+const taskEventsCount = computed(() => {
+  const message = taskEventsMessage.value
+  if (!message) return 0
+  return (message.tool_events?.length || 0) + (message.lifecycle_events?.length || 0)
+})
+
+const eventsButtonTitle = computed(() =>
+  taskEventsCount.value
+    ? `Show the ${taskEventsCount.value} event(s) and tool call(s) of this task`
+    : 'No events or tool calls recorded for this task yet'
+)
+
+function toggleTaskEvents() {
+  showTaskEvents.value = !showTaskEvents.value
+}
 
 // Mobile drill-down level: 'list' (the runs), 'detail' (the diagnosis of the
 // selected run) or 'task' (the conversation of a card). Ignored on desktop,
@@ -235,6 +272,8 @@ async function selectRun(runId) {
 async function openTask(chatId) {
   if (!chatId) return
   openedChatId.value = chatId
+  // The events panel belongs to the previous task.
+  showTaskEvents.value = false
   // Mobile: the conversation takes the whole screen, over the diagnosis.
   if (isMobile.value) mobilePane.value = 'task'
   if ($storex.chats.chats?.[chatId]) return
@@ -247,6 +286,7 @@ async function openTask(chatId) {
 
 function closeTask() {
   openedChatId.value = ''
+  showTaskEvents.value = false
   // Mobile: closing the task goes back to the diagnosis of the run.
   if (isMobile.value) mobilePane.value = 'detail'
 }
@@ -479,11 +519,42 @@ onUnmounted(() => {
                 <span class="text-xs font-semibold truncate">{{ taskChat?.name || 'Task' }}</span>
                 <button
                   class="btn btn-ghost btn-xs ml-auto"
+                  :class="showTaskEvents && 'btn-active text-warning'"
+                  :title="eventsButtonTitle"
+                  :aria-expanded="showTaskEvents ? 'true' : 'false'"
+                  aria-controls="harness-task-events"
+                  @click="toggleTaskEvents"
+                >
+                  <i
+                    class="fa-solid fa-wrench"
+                    :class="taskEventsCount ? 'text-info' : 'text-base-content/40'"
+                  ></i>
+                  <span v-if="taskEventsCount" class="text-[10px]">{{ taskEventsCount }}</span>
+                </button>
+                <button
+                  class="btn btn-ghost btn-xs"
                   title="Open the task in the full chat screen"
                   @click="openFullTask"
                 >
                   <i class="fa-solid fa-up-right-from-square"></i>
                 </button>
+              </div>
+              <!-- Events and tools of the task, straight from the chat UI: the
+                   same component the conversation renders under the turn
+                   timeline, so the harness does not reimplement it. -->
+              <div
+                v-if="showTaskEvents"
+                class="shrink-0 max-h-[45%] overflow-y-auto border-b border-base-100 bg-base-200/40"
+              >
+                <ChatMessageEvents
+                  v-if="taskEventsMessage"
+                  :message="taskEventsMessage"
+                  panelId="harness-task-events"
+                  class="p-2"
+                />
+                <div v-else class="p-3 text-xs text-base-content/50">
+                  This task has no events or tool calls yet — they appear while the turn runs.
+                </div>
               </div>
               <ChatView v-if="taskChat" :chat="taskChat" class="flex-1 min-h-0" />
               <div v-else class="flex-1 flex items-center justify-center gap-2 text-sm text-base-content/50">

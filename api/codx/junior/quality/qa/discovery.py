@@ -12,7 +12,10 @@ import json
 import logging
 import os
 import shutil
-from typing import Any, Dict, List, Optional
+import subprocess
+import sys
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
 from codx.junior.quality.qa.models import QaPolicy, QaSuite
 
@@ -55,25 +58,88 @@ def _which(command: str) -> bool:
     return shutil.which(command) is not None
 
 
-def _python_interpreter(project_path: str, directory: str) -> str:
-    """Return the interpreter used to run pytest for *directory*.
+#: Seconds allowed to ask one interpreter whether it can import pytest.
+PROBE_TIMEOUT_SECONDS = 10
+
+
+def _candidates(project_path: str, directory: str) -> List[str]:
+    """Return the interpreters worth probing, best guess first."""
+    candidates = [
+        os.path.join(directory, ".venv", "bin", "python"),
+        os.path.join(directory, ".venv", "bin", "python3"),
+        os.path.join(project_path, ".venv", "bin", "python"),
+        os.path.join(project_path, ".venv", "bin", "python3"),
+        sys.executable,
+        "python3",
+    ]
+    ordered: List[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
+@lru_cache(maxsize=32)
+def _can_import_pytest(interpreter: str) -> Tuple[bool, str]:
+    """Return ``(ok, diagnostic)``: can *interpreter* actually import pytest?
+
+    Example:
+        >>> ok, _ = _can_import_pytest(sys.executable)
+        >>> isinstance(ok, bool)
+        True
+    """
+    if not _which(interpreter):
+        return False, f"interpreter not found: {interpreter}"
+    try:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, shell disabled
+            [interpreter, "-m", "pytest", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_SECONDS,
+            shell=False,
+            check=False,
+        )
+    except Exception as ex:
+        return False, f"{interpreter}: {type(ex).__name__}: {ex}"
+    if completed.returncode == 0:
+        return True, ""
+    output = (completed.stderr or completed.stdout or "").strip()
+    line = output.splitlines()[-1].strip() if output else f"exit code {completed.returncode}"
+    return False, f"{interpreter}: {line}"
+
+
+def _python_interpreter(project_path: str, directory: str) -> Tuple[str, Optional[str]]:
+    """Return ``(interpreter, reason)`` used to run pytest for *directory*.
+
+    The interpreter is chosen by **probing** ``<candidate> -m pytest --version``:
+    a virtualenv is only useful when it really has pytest installed, and a bare
+    ``python3`` from ``PATH`` often has it missing, which is why a suite used to
+    die with a bare ``exited with code 1`` before collecting a single test.
 
     Args:
         project_path: Absolute project path.
         directory: Absolute directory of the suite.
 
     Returns:
-        str: Path of a virtualenv interpreter when one exists, else
-        ``python3``.
+        tuple: ``(interpreter, reason)``; ``reason`` is ``None`` when the
+        interpreter can import pytest, otherwise the message explaining that no
+        candidate can (the suite is then reported as not available).
     """
-    for candidate in (
-        os.path.join(directory, ".venv", "bin", "python"),
-        os.path.join(project_path, ".venv", "bin", "python"),
-        os.path.join(directory, ".venv", "bin", "python3"),
-    ):
-        if os.path.isfile(candidate):
-            return candidate
-    return "python3"
+    candidates = _candidates(project_path, directory)
+    diagnostics: List[str] = []
+    for candidate in candidates:
+        ok, diagnostic = _can_import_pytest(candidate)
+        if ok:
+            return candidate, None
+        if diagnostic:
+            diagnostics.append(diagnostic)
+    fallback = next((item for item in candidates if _which(item)), "python3")
+    detail = diagnostics[0] if diagnostics else f"no interpreter found: {fallback}"
+    return fallback, (
+        "pytest is not available: no interpreter can import it "
+        f"({detail}). Install the test extra (pip install '.[test]') "
+        "or create a project .venv with pytest installed."
+    )
 
 
 def _scan_dirs(project_path: str, max_depth: int = 1) -> List[str]:
@@ -109,8 +175,8 @@ def _pytest_suite(project_path: str, directory: str) -> Optional[QaSuite]:
 
     relative = os.path.relpath(directory, project_path).replace(os.sep, "/")
     name = "pytest" if relative == "." else f"pytest:{relative}"
-    interpreter = _python_interpreter(project_path, directory)
-    available = _which(interpreter)
+    interpreter, reason = _python_interpreter(project_path, directory)
+    available = reason is None
     return QaSuite(
         name=name,
         kind="pytest",
@@ -118,7 +184,7 @@ def _pytest_suite(project_path: str, directory: str) -> Optional[QaSuite]:
         cwd="" if relative == "." else relative,
         description=f"pytest suite of `{relative}`",
         available=available,
-        reason="" if available else f"interpreter not found: {interpreter}",
+        reason="" if available else str(reason),
     )
 
 

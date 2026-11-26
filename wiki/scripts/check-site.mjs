@@ -45,6 +45,7 @@ import { collectInternal, curateSidebar } from './sidebar-curation.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_FILE = join(ROOT, '.vitepress', 'config.json');
+const CONFIG_MTS_FILE = join(ROOT, '.vitepress', 'config.mts');
 const DOCS_FILE = join(ROOT, 'docs.json');
 
 /* ------------------------------------------------------------------ helpers */
@@ -221,6 +222,23 @@ check('published sidebar carries no internal engineering artefact', () => {
     leaked.length === 0,
     `after curation the published sidebar still contains ${leaked.length} internal artefact(s):\n     ` +
       leaked.map((entry) => `${entry.link || entry.text} — ${entry.reason}`).join('\n     '),
+  );
+});
+
+/**
+ * Check 6 — the build must actually apply the rule.
+ *
+ * Check 5 proves the RULE is correct, not that the site uses it. The defect this
+ * guards: `.vitepress/config.mts` passed the raw generated `sidebar` straight
+ * into `themeConfig`, so the deployed navigation published every artefact the
+ * rule hides while check 5 still printed PASS.
+ */
+check('build applies the curation rule', () => {
+  const source = readFileSync(CONFIG_MTS_FILE, 'utf8');
+  assert(
+    /sidebar:\s*curateSidebar\s*\(/.test(source),
+    '`.vitepress/config.mts` does not wire `sidebar: curateSidebar(sidebar)` into `themeConfig`: ' +
+      'the site would publish the raw generated sidebar while this guard reports PASS',
   );
 });
 

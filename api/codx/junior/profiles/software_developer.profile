@@ -11,6 +11,8 @@
     "apply_file_changes",
     "qa_run_tests",
     "qa_review_changes",
+    "quality_review",
+    "quality_fix",
     "security_review_changes",
     "project_search",
     "project_structure",

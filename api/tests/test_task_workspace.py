@@ -242,3 +242,94 @@ def test_registry_is_valid_json(project, tmp_path):
         payload = json.load(handle)
     assert payload["version"] == 1
     assert len(payload["workspaces"]) == 1
+
+
+def test_actor_workspace_is_stable_merged_and_reused(project, tmp_path):
+    """Every shift of one actor reuses one branch and merges into the base."""
+    settings = FakeSettings(project, str(tmp_path / "worktrees"))
+    manager = TaskWorkspaceManager(settings)
+    first = FakeChat("shift-1", "root-1", "Shift · 2026-11-26 01:00")
+    second = FakeChat("shift-2", "root-2", "Shift · 2026-11-26 05:00")
+
+    workspace = manager.ensure(first, scope="actor", actor="ProjectManager")
+    assert workspace is not None
+    assert workspace.scope == "actor"
+    assert workspace.branch == "agent/shift/ProjectManager"
+    assert workspace.path.endswith("/tasks/shifts/ProjectManager")
+
+    write(os.path.join(workspace.path, "shift_fix.py"), "VALUE = 1\n")
+    committed = manager.commit(first, scope="actor", actor="ProjectManager")
+    assert committed["committed"] is True, committed
+
+    # A new shift card must resolve to the same branch/checkout, not a new one.
+    again = manager.ensure(second, scope="actor", actor="ProjectManager")
+    assert again is not None
+    assert (again.branch, again.path) == (workspace.branch, workspace.path)
+
+    # ``merge=False`` keeps the branch for manual review.
+    paused = manager.finalize_actor("ProjectManager", chat=second, merge=False)
+    assert paused["merged"] is False
+    assert paused["ahead"] == 1
+
+    final = manager.finalize_actor("ProjectManager", chat=second)
+    assert final["merged"] is True, final
+    assert final["reset"] is True, final
+    assert git(project, "show", "HEAD:shift_fix.py").stdout == "VALUE = 1\n"
+    assert git(project, "status", "--porcelain").stdout.strip() == ""
+    # The reusable branch now points at the merged base.
+    assert git(workspace.path, "rev-parse", "HEAD").stdout.strip() == git(
+        project, "rev-parse", "main"
+    ).stdout.strip()
+
+    # A different actor gets a different, equally stable workspace.
+    other = manager.ensure(first, scope="actor", actor="qa")
+    assert other is not None
+    assert other.branch == "agent/shift/qa"
+    assert other.path != workspace.path
+
+
+def test_actor_finalize_keeps_the_branch_when_merge_conflicts(project, tmp_path):
+    """A conflicting or dirty base must never be merged over or discarded."""
+    settings = FakeSettings(project, str(tmp_path / "worktrees"))
+    manager = TaskWorkspaceManager(settings)
+    chat = FakeChat("shift-1", "root-1", "Shift · 2026-11-26 01:00")
+    workspace = manager.ensure(chat, scope="actor", actor="ProjectManager")
+    write(os.path.join(workspace.path, "app.py"), "print('from shift')\n")
+    manager.commit(chat, scope="actor", actor="ProjectManager")
+
+    # The shift and the main checkout both changed app.py: git must refuse.
+    write(os.path.join(project, "app.py"), "print('dirty')\n")
+    result = manager.finalize_actor("ProjectManager", chat=chat)
+    assert result["merged"] is False
+    assert result["error"]
+    assert git(project, "show", "HEAD:app.py").stdout == "print('hello')\n"
+    # The single actor branch survives with the work; the next shift can retry.
+    assert git(project, "rev-list", "--count", "main..agent/shift/ProjectManager").stdout.strip() == "1"
+
+
+def test_workspace_commit_never_stages_generated_caches(project, tmp_path):
+    """Caches created by a test run are not part of an agent commit."""
+    os.makedirs(os.path.join(project, ".pytest_cache"), exist_ok=True)
+    write(os.path.join(project, ".pytest_cache", "CACHEDIR.TAG"), "cache\n")
+
+    settings = FakeSettings(project, str(tmp_path / "worktrees"))
+    manager = TaskWorkspaceManager(settings)
+    chat = FakeChat("chat-cache", "root-cache", "Run tests")
+    workspace = manager.ensure(chat)
+
+    # The old implementation linked .pytest_cache from the main checkout.
+    assert not os.path.islink(os.path.join(workspace.path, ".pytest_cache"))
+    write(os.path.join(workspace.path, ".pytest_cache", "CACHEDIR.TAG"), "cache\n")
+    write(os.path.join(workspace.path, "real_fix.py"), "VALUE = 2\n")
+
+    committed = manager.commit(chat)
+    assert committed["committed"] is True, committed
+    files = git(workspace.path, "show", "--name-only", "--format=", "HEAD").stdout
+    assert "real_fix.py" in files
+    assert ".pytest_cache" not in files
+
+    # A cache-only change must not create a second (empty) commit.
+    write(os.path.join(workspace.path, ".pytest_cache", "new-entry"), "cache\n")
+    again = manager.commit(chat)
+    assert again["committed"] is False, again
+    assert again["error"] == ""

@@ -51,6 +51,14 @@ Notes:
 * A dirty workspace is never removed implicitly: the Git view shows the pending
   files and asks for confirmation.
 
+## Quality guardians
+
+Every changed file can be reviewed against a **guardian**: a profile whose
+`file_match` selects the files it owns, with deterministic checks and an
+evidence-bound AI review. Guardians are created automatically from the detected
+stack, run after a file-change burst and can be reviewed/fixed from the Git
+view → Quality tab. See [Quality guardians](/features/quality-guardians).
+
 ## Branches and pull requests
 
 * Browse branches and their commits in a commit tree.

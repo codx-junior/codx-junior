@@ -41,6 +41,7 @@ export const APP_COMPONENTS_MAP = {
   'board-management': lazy(() => import('../views/BoardManagementView.vue')),
   'calendar': lazy(() => import('../views/CalendarView.vue')),
   'harness': lazy(() => import('../views/HarnessView.vue')),
+  'harness-mode': lazy(() => import('../views/HarnessModeView.vue')),
   'ciso': lazy(() => import('../views/CisoView.vue')),
   'metrics': lazy(() => import('../components/metrics/MetricsViewer.vue')),
   'account': lazy(() => import('../components/security/AccountSettings.vue')),

@@ -290,6 +290,18 @@ from .qa_tools import (
     QA_FLAKY_CHECK_TOOL_JSON,
     QA_POLICY_TOOL_JSON,
 )
+from .quality_tools import (
+    quality_guardians,
+    quality_review,
+    quality_fix,
+    quality_feedback,
+    quality_policy,
+    QUALITY_GUARDIANS_TOOL_JSON,
+    QUALITY_REVIEW_TOOL_JSON,
+    QUALITY_FIX_TOOL_JSON,
+    QUALITY_FEEDBACK_TOOL_JSON,
+    QUALITY_POLICY_TOOL_JSON,
+)
 from .model import ToolResponse, ToolSettings
 
 # Configure logging
@@ -456,6 +468,11 @@ __all__ = [
     "qa_coverage",
     "qa_flaky_check",
     "qa_policy",
+    "quality_guardians",
+    "quality_review",
+    "quality_fix",
+    "quality_feedback",
+    "quality_policy",
     "start_computer",
     "computer_action",
     "computer_screenshot",
@@ -2092,6 +2109,68 @@ TOOLS = [
         "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
         "tags": ["qa", "quality", "policy", "configuration"],
         "tool_call": qa_policy
+    },
+    # -- Quality guardians: fast checks + evidence-bound AI review -----------
+    # Source of truth: codx/junior/tools/quality_tools.py and
+    # codx/junior/quality/guardians/. A guardian is a profile whose file_match
+    # selects its files; these tools manage, run, fix and teach the guardians.
+    {
+        "tool_json": QUALITY_GUARDIANS_TOOL_JSON,
+        "settings": {
+            "async": True,
+            "is_async": True,
+            "session": True,
+            "project_settings": True,
+            "dual_response": True,
+            "scope": "chat",
+            "cache": False,
+        },
+        "tags": ["quality", "guardian", "profiles", "checks", "bootstrap", "learning"],
+        "tool_call": quality_guardians
+    },
+    {
+        "tool_json": QUALITY_REVIEW_TOOL_JSON,
+        "settings": {
+            "async": True,
+            "is_async": True,
+            "session": True,
+            "project_settings": True,
+            "dual_response": True,
+            "scope": "chat",
+            "cache": False,
+            "timeout_seconds": 1800,
+        },
+        "tags": ["quality", "guardian", "review", "diff", "project", "file-type"],
+        "tool_call": quality_review
+    },
+    {
+        "tool_json": QUALITY_FIX_TOOL_JSON,
+        "settings": {
+            "async": True,
+            "is_async": True,
+            "session": True,
+            "project_settings": True,
+            "dual_response": True,
+            "scope": "chat",
+            "cache": False,
+            "timeout_seconds": 1800,
+        },
+        "tags": ["quality", "guardian", "fix", "auto-fix", "verification"],
+        "tool_call": quality_fix
+    },
+    {
+        "tool_json": QUALITY_FEEDBACK_TOOL_JSON,
+        "settings": ToolSettings(
+            project_settings=True, session=True, dual_response=True, scope="chat", cache=False
+        ).dict(),
+        "tags": ["quality", "guardian", "feedback", "suppression", "learning"],
+        "tool_call": quality_feedback
+    },
+    {
+        "tool_json": QUALITY_POLICY_TOOL_JSON,
+        "settings": ToolSettings(project_settings=True, dual_response=True, scope="chat", cache=False).dict(),
+        "tags": ["quality", "guardian", "policy", "configuration", "cost"],
+        "tool_call": quality_policy
     },
     {
         "tool_json": DOCKERHUB_WHOAMI_TOOL_JSON,

@@ -5,6 +5,7 @@ import RepoBranchList from '@/components/repo/RepoBranchList.vue'
 import GitGraph from '@/components/repo/GitGraph.vue'
 import CommitDetail from '@/components/repo/CommitDetail.vue'
 import GitValidator from '@/components/repo/GitValidator.vue'
+import QualityPanel from '@/components/quality/QualityPanel.vue'
 import GitConflictResolver from '@/components/repo/GitConflictResolver.vue'
 import GitContextMenu from '@/components/repo/GitContextMenu.vue'
 import GitCredentialsDialog from '@/components/repo/GitCredentialsDialog.vue'
@@ -27,7 +28,7 @@ const REMOTE_SUCCESS_MESSAGES = {
 
 export default {
   name: 'GitView',
-  components: { ChangesPanel, RepoFileDiff, RepoBranchList, GitGraph, CommitDetail, GitValidator, GitConflictResolver, GitContextMenu, GitCredentialsDialog, ConfirmDialog, VerticalSplitter },
+  components: { ChangesPanel, RepoFileDiff, RepoBranchList, GitGraph, CommitDetail, GitValidator, QualityPanel, GitConflictResolver, GitContextMenu, GitCredentialsDialog, ConfirmDialog, VerticalSplitter },
   mixins: [contextMenuMixin],
   props: {
     params: { type: Object, default: () => ({}) }
@@ -593,6 +594,9 @@ export default {
       if (this.activeTab === 'validator') {
         this.$refs.gitValidator?.refresh()
       }
+      if (this.activeTab === 'quality') {
+        this.$refs.qualityPanel?.refresh()
+      }
     },
 
     // ── Local changes review ────────────────────────────────────────────
@@ -613,6 +617,15 @@ export default {
       }
       // The GitValidator `active` prop loads its context when it becomes visible
       this.activeTab = 'validator'
+    },
+
+    /** Open the Quality guardians tab (checks, AI review, findings, fixes). */
+    openQuality() {
+      if (this.activeTab === 'quality') {
+        this.$refs.qualityPanel?.refresh()
+        return
+      }
+      this.activeTab = 'quality'
     },
 
     // ── Worktrees ───────────────────────────────────────────────────────
@@ -1792,9 +1805,9 @@ export default {
     /**
      * Load the task-ownership registry of the per-task worktrees.
      *
-     * Autonomous runs commit on `codx/task/...` branches; without this map the
-     * worktree list would show an opaque branch. Failures are silent: the
-     * worktrees still render, only the task label is missing.
+     * Autonomous runs commit on `codx/task/...` or `agent/shift/...` branches;
+     * without this map the worktree list would show an opaque branch. Failures
+     * are silent: the worktrees still render, only the task label is missing.
      */
     async loadTaskWorkspaces() {
       if (!this.api?.repo?.taskWorkspaces) return
@@ -2394,6 +2407,14 @@ export default {
         >
           <i class="fa-solid fa-shield-halved"></i> Validator
         </button>
+        <button
+          class="join-item btn btn-xs"
+          :class="activeTab === 'quality' ? 'btn-primary' : 'btn-ghost'"
+          @click="openQuality"
+          title="Quality guardians: fast checks, AI review, findings and fixes"
+        >
+          <i class="fa-solid fa-shield-heart"></i> Quality
+        </button>
       </div>
     </header>
 
@@ -2487,6 +2508,16 @@ export default {
         :branches="branches"
         :current-branch="currentBranch || ''"
         :active="activeTab === 'validator'"
+        class="grow min-h-0 overflow-hidden"
+      />
+
+      <!-- ── Quality guardians: checks + AI review + findings/fixes ─────── -->
+      <QualityPanel
+        v-show="activeTab === 'quality'"
+        ref="qualityPanel"
+        :project="project"
+        :api="api"
+        :active="activeTab === 'quality'"
         class="grow min-h-0 overflow-hidden"
       />
 

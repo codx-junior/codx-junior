@@ -4,7 +4,7 @@
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=qa_automation",
   "description": "Test automation engineer profile. Writes and repairs the automated tests (unit, integration, contract) that prove a change works, keeps them deterministic and fast, and re-runs them until the QA gate is green.",
   "category": "project",
-  "file_match": "(^|/)(tests?|__tests__|spec)/|test_.*\\.py$|.*_test\\.py$|.*\\.(spec|test)\\.(ts|tsx|js|jsx|vue)$",
+  "file_match": "(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*\\.py$|(^|/)[^/]*_test\\.py$|(^|/)[^/]*\\.(spec|test)\\.(ts|tsx|js|jsx|vue)$",
   "content": null,
   "parsed_content": null,
   "path": "",

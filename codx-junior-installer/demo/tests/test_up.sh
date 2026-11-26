@@ -2,9 +2,10 @@
 #
 # demo/tests/test_up.sh -- executable checks for demo/up.sh
 #
-# Runs on a host WITHOUT Docker: a shim `docker` on PATH records every call, and
-# the script under test is exercised through a temporary "demo" directory built
-# from symlinks, so the repository is never touched.
+# Runs on a host WITHOUT Docker: a shim `docker` on PATH records every call and
+# the CODX_JUNIOR_IMAGE it was given, and the script under test is exercised
+# through a temporary "demo" directory built from symlinks, so the repository is
+# never touched.
 #
 #   bash demo/tests/test_up.sh
 #
@@ -27,6 +28,7 @@ DOCKER_LOG="$WORK/docker.log"
 cat > "$SHIM/docker" <<'SHIM_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_SHIM_LOG}"
+printf 'image=%s\n' "${CODX_JUNIOR_IMAGE:-}" >> "${DOCKER_SHIM_LOG}"
 if [ "${1:-}" = "compose" ] && [ "${2:-}" = "port" ]; then
   printf '0.0.0.0:19981\n'
 fi
@@ -62,6 +64,7 @@ check_exit "bash -n accepts demo/up.sh" "$?" "0"
 # 2 -- help documents both flags the README advertises
 out=$(run "$UP" --help)
 check_exit "--help exits 0" "$?" "0"
+check_has "--help prints a Usage line" "$out" "Usage:"
 check_has "--help documents --list-providers" "$out" "--list-providers"
 check_has "--help documents --ref" "$out" "--ref"
 
@@ -87,16 +90,24 @@ out=$(run "$d/up.sh" --ref 1.2.3 --no-wait)
 check_exit "--ref 1.2.3 exits 0" "$?" "0"
 check_has "--ref 1.2.3 pins v1.2.3" "$out" "codxjuniorai/codx-junior:v1.2.3"
 check_has "--ref 1.2.3 starts the stack" "$(cat "$DOCKER_LOG")" "compose -f"
+check_has "--ref 1.2.3 hands v1.2.3 to compose" "$(cat "$DOCKER_LOG")" "image=codxjuniorai/codx-junior:v1.2.3"
 
 # 6 -- a vX.Y.Z ref is accepted as-is
 out=$(run "$d/up.sh" --ref v2.0.1 --no-wait)
 check_exit "--ref v2.0.1 exits 0" "$?" "0"
 check_has "--ref v2.0.1 pins v2.0.1" "$out" "codxjuniorai/codx-junior:v2.0.1"
+check_has "--ref v2.0.1 hands v2.0.1 to compose" "$(cat "$DOCKER_LOG")" "image=codxjuniorai/codx-junior:v2.0.1"
 
 # 7 -- a value that cannot be a tag falls back to the default instead of failing
 out=$(run "$d/up.sh" --ref 'not a tag!' --no-wait)
 check_exit "an unusable --ref still exits 0" "$?" "0"
 check_has "an unusable --ref falls back to :latest" "$out" "codxjuniorai/codx-junior:latest"
+check_has "an unusable --ref hands :latest to compose" "$(cat "$DOCKER_LOG")" "image=codxjuniorai/codx-junior:latest"
+
+# 7b -- a full image reference is refused instead of silently accepted
+out=$(run "$d/up.sh" --ref codxjuniorai/codx-junior:latest --no-wait)
+check_exit "an image reference instead of a tag exits 2" "$?" "2"
+check_has "an image reference is explained" "$out" "--ref takes a tag"
 
 # 8 -- a missing .env is reported instead of started
 d=$(demo_dir noenv)

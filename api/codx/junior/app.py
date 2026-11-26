@@ -814,6 +814,24 @@ def api_list_profile_tools(request: Request):
 @app.post("/api/profiles")
 async def api_create_profile(profile: Profile, request: Request):
     codx_junior_session = request.state.codx_junior_session
+    # A guardian is a profile, but it is also a quality gate: editing one (or
+    # adopting a profile as one) requires the same rights as profile learning.
+    # Without this guard the team view would be a permission bypass around the
+    # /api/quality/guardians endpoints.
+    if profile.guardian is not None or (profile.category or "").lower() == "guardian":
+        from codx.junior.security.user_management import UserSecurityManager
+
+        user = getattr(codx_junior_session, "user", None)
+        if not user or not UserSecurityManager().can_manage_profile_knowledge(
+            user=user, settings=codx_junior_session.settings
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Only a project admin, a project knowledge admin or a "
+                    "codx-junior admin can edit a quality guardian."
+                ),
+            )
     return await codx_junior_session.save_profile(profile=profile)
     
 @app.get("/api/profiles/{profile_name}")

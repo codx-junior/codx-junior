@@ -623,12 +623,12 @@ def api_git_task_workspaces(
     request: Request, user: CodxUser = Depends(get_authenticated_user)
 ):
     """
-    Return the per-task worktrees created for autonomous agent runs.
+    Return the isolated worktrees created for autonomous agent runs.
 
-    Each entry carries the owning task (name and chat id), the branch and the
-    checkout path, so the worktree list can label an otherwise anonymous
-    ``codx/task/...`` branch with the work that produced it. The main checkout
-    is never listed here.
+    Each entry carries the owning task or actor (name, chat id, scope), the
+    branch and the checkout path, so the worktree list can label an otherwise
+    anonymous ``codx/task/...`` or ``agent/shift/...`` branch. The main
+    checkout is never listed here.
 
     This endpoint only reads the registry stored in the project data plane
     (``.codx/task_workspaces``); the checkouts themselves are regular git

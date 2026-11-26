@@ -12,6 +12,19 @@ Each task tree (a chat and its descendants, identified by ``root_id``) gets:
 * a git worktree under ``<git_worktrees_path>/tasks/<slug>-<hash>``,
 * a registry entry in the project data plane (``.codx/task_workspaces``).
 
+Periodic autonomy shifts are **not** task trees. Every shift creates a new card,
+so a card-derived key produced a new branch and a full worktree on every run.
+Actor shifts instead use one stable scope:
+
+* branch ``agent/shift/<actor>``,
+* worktree ``<git_worktrees_path>/tasks/shifts/<actor>``,
+* one registry entry keyed by the actor.
+
+At the end of a successful shift :meth:`TaskWorkspaceManager.finalize_actor`
+commits any remaining work, merges that branch into its base with ``--no-ff``
+and resets the checkout to the merged base. A conflict keeps the single actor
+branch for review; it never creates a second one.
+
 An autonomous turn runs with a *clone* of the project settings whose
 ``abs_project_path`` is the worktree, so every file and git tool sees the
 isolated checkout. The main checkout stays exactly as it was. At the end of the
@@ -65,18 +78,43 @@ LOCK_FILE_NAME = "index.lock"
 #: Branch namespace of the per-task workspaces.
 BRANCH_PREFIX = "codx/task"
 
+#: Branch namespace of the stable per-actor shift workspaces. Every shift of one
+#: actor commits to the same branch instead of creating a branch per shift card.
+ACTOR_BRANCH_PREFIX = "agent/shift"
+
 #: Folder under ``settings.get_worktrees_path()`` holding the checkouts.
 WORKTREES_SUBDIR = "tasks"
 
-#: Ignored dependency folders symlinked into the worktree.
+#: Folder under the worktrees base holding the stable actor checkouts.
+ACTOR_WORKTREES_SUBDIR = "shifts"
+
+#: Workspace scopes. ``task`` keeps the historical per-task-card branch;
+#: ``actor`` is the bounded, reusable branch of a periodic actor shift.
+SCOPE_TASK = "task"
+SCOPE_ACTOR = "actor"
+
+#: Dependency folders that are safe to share through a symlink. Caches are not
+#: linked: they are generated on every test run and used to be committed as
+#: absolute symlinks by ``git add -A``.
 LINKED_DEPENDENCY_DIRS = (
     "node_modules",
     ".venv",
     "venv",
-    ".pnpm-store",
-    ".yarn",
-    ".mypy_cache",
-    ".pytest_cache",
+)
+
+#: Generated paths that are ignored in every workspace checkout. The patterns
+#: are written to the worktree's ``info/exclude`` because a repository cannot
+#: ship a .gitignore for a checkout it does not know about.
+CACHE_EXCLUDES = (
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".pnpm-store/",
+    ".yarn/",
+    ".tox/",
+    "__pycache__/",
+    ".coverage",
+    "htmlcov/",
 )
 
 #: Gitignored runtime configuration copied into the worktree.
@@ -102,6 +140,8 @@ class TaskWorkspace:
     chat_id: str = ""
     root_id: str = ""
     name: str = ""
+    scope: str = SCOPE_TASK
+    actor: str = ""
     branch: str = ""
     path: str = ""
     base_ref: str = ""
@@ -118,6 +158,8 @@ class TaskWorkspace:
             "chat_id": self.chat_id,
             "root_id": self.root_id,
             "name": self.name,
+            "scope": self.scope,
+            "actor": self.actor,
             "branch": self.branch,
             "path": self.path,
             "base_ref": self.base_ref,
@@ -318,6 +360,15 @@ class TaskWorkspaceManager:
         key = root_id or chat_id or str(getattr(chat, "name", "") or "")
         return key or "task"
 
+    @staticmethod
+    def actor_key(actor: str) -> str:
+        """Return the stable workspace key of one actor.
+
+        The key is deliberately **not** derived from the shift card: every
+        shift of an actor must resolve to the same workspace and branch.
+        """
+        return f"{SCOPE_ACTOR}:{_slug(actor or 'shift', 80).replace('..', '-')}"
+
     def _branch_for(self, chat: Any, key: str) -> str:
         """Return the branch name of the task workspace."""
         name = _slug(getattr(chat, "name", "") or "task")
@@ -328,6 +379,34 @@ class TaskWorkspaceManager:
         name = _slug(getattr(chat, "name", "") or "task")
         return os.path.join(self._worktrees_base(), f"{name}-{_hash(key)}")
 
+    def _identity(
+        self, chat: Any, scope: str = SCOPE_TASK, actor: str = ""
+    ) -> tuple:
+        """Return ``(key, branch, path, name)`` for a workspace request.
+
+        Task workspaces keep the historical branch per task tree. Actor
+        workspaces are one stable branch and checkout per actor, so a periodic
+        shift can never add another branch to the repository.
+        """
+        if scope == SCOPE_ACTOR:
+            owner = str(actor or "shift").strip() or "shift"
+            slug = _slug(owner, 80).replace("..", "-") or "actor"
+            return (
+                self.actor_key(owner),
+                f"{ACTOR_BRANCH_PREFIX}/{slug}",
+                os.path.join(
+                    self._worktrees_base(), ACTOR_WORKTREES_SUBDIR, slug
+                ),
+                f"Shift · {owner}",
+            )
+        key = self.key_for(chat)
+        return (
+            key,
+            self._branch_for(chat, key),
+            self._path_for(chat, key),
+            str(getattr(chat, "name", "") or ""),
+        )
+
     # -- base ref ----------------------------------------------------------
     def _base_ref(self, repo_root: str, requested: Optional[str] = None) -> str:
         """Return the ref a new task branch is cut from."""
@@ -335,7 +414,9 @@ class TaskWorkspaceManager:
             return requested
         ok, stdout, _stderr = _run_git(repo_root, ["branch", "--show-current"])
         current = stdout.strip() if ok else ""
-        if current and not current.startswith(f"{BRANCH_PREFIX}/"):
+        if current and not current.startswith(
+            (f"{BRANCH_PREFIX}/", f"{ACTOR_BRANCH_PREFIX}/")
+        ):
             return current
         # The main checkout is already on a task branch: use the repository's
         # default branch rather than stacking one task on another.
@@ -345,6 +426,52 @@ class TaskWorkspaceManager:
         return "HEAD"
 
     # -- checkout preparation ---------------------------------------------
+    def _ignore_worktree_caches(self, worktree_path: str) -> None:
+        """Exclude generated caches from every commit made in *worktree_path*.
+
+        The repository cannot carry an ignore rule for a checkout it did not
+        create, and ``LINKED_DEPENDENCY_DIRS`` used to link ``.pytest_cache``
+        into the worktree. ``git add -A`` then committed that absolute symlink
+        on every shift. The worktree-local exclude makes the rule durable even
+        for caches that a test run creates later.
+        """
+        ok, stdout, _stderr = _run_git(
+            worktree_path, ["rev-parse", "--git-path", "info/exclude"]
+        )
+        relative = stdout.strip() if ok else ""
+        if not relative:
+            return
+        exclude_path = (
+            relative
+            if os.path.isabs(relative)
+            else os.path.join(worktree_path, relative)
+        )
+        header = "# codx-junior task workspace: generated caches are never committed"
+        try:
+            os.makedirs(os.path.dirname(exclude_path), exist_ok=True)
+            existing = ""
+            if os.path.isfile(exclude_path):
+                with open(exclude_path, "r", encoding="utf-8") as handle:
+                    existing = handle.read()
+            missing = [
+                pattern
+                for pattern in CACHE_EXCLUDES
+                if pattern not in existing.splitlines()
+            ]
+            if not missing:
+                return
+            with open(exclude_path, "a", encoding="utf-8") as handle:
+                if header not in existing:
+                    handle.write(f"\n{header}\n")
+                for pattern in missing:
+                    handle.write(f"{pattern}\n")
+        except OSError as ex:  # pragma: no cover - best effort
+            logger.debug(
+                "Task workspaces: cannot write exclude for %s: %s",
+                worktree_path,
+                ex,
+            )
+
     def _prepare_checkout(self, worktree_path: str) -> None:
         """Link dependencies and copy gitignored env files into the worktree.
 
@@ -352,6 +479,20 @@ class TaskWorkspaceManager:
         artefacts that make it runnable. Without this, an agent asked to run the
         tests would have to reinstall the world on every task.
         """
+        # Older workspaces linked .pytest_cache/.mypy_cache into the checkout.
+        # Remove those links so they can never be staged again; the cache is
+        # created locally by the test run and is covered by the exclude below.
+        for name in CACHE_EXCLUDES:
+            target = os.path.join(worktree_path, name.rstrip("/"))
+            if os.path.islink(target):
+                try:
+                    os.unlink(target)
+                except OSError as ex:  # pragma: no cover - best effort
+                    logger.debug(
+                        "Task workspaces: cannot remove stale cache link %s: %s",
+                        target,
+                        ex,
+                    )
         for name in LINKED_DEPENDENCY_DIRS:
             source = os.path.join(self.project_path, name)
             target = os.path.join(worktree_path, name)
@@ -386,15 +527,26 @@ class TaskWorkspaceManager:
                     shutil.copyfileobj(source_handle, target_handle)
             except OSError as ex:
                 logger.debug("Task workspaces: cannot copy %s: %s", name, ex)
+        self._ignore_worktree_caches(worktree_path)
 
     # -- creation ----------------------------------------------------------
-    def ensure(self, chat: Any, base_branch: Optional[str] = None) -> Optional["TaskWorkspace"]:
+    def ensure(
+        self,
+        chat: Any,
+        base_branch: Optional[str] = None,
+        *,
+        scope: str = SCOPE_TASK,
+        actor: str = "",
+    ) -> Optional["TaskWorkspace"]:
         """Return (creating it when needed) the workspace of *chat*.
 
         Args:
             chat: Chat/task card. ``root_id`` identifies the task tree, so every
                 step/delegated card of the same run shares one workspace.
             base_branch: Optional base ref (defaults to the current branch).
+            scope: ``task`` for a per-task-card workspace, ``actor`` for the
+                stable workspace reused by every shift of one actor.
+            actor: Actor/profile name; required for ``scope="actor"``.
 
         Returns:
             TaskWorkspace | None: ``None`` when isolation is disabled, the
@@ -417,7 +569,9 @@ class TaskWorkspaceManager:
                 repo_root,
             )
             return None
-        key = self.key_for(chat)
+        scope = scope if scope in (SCOPE_TASK, SCOPE_ACTOR) else SCOPE_TASK
+        actor = str(actor or "").strip()
+        key, branch, path, name = self._identity(chat, scope, actor)
         with self._registry_lock():
             registry = self._load_registry()
             record = registry.get(key)
@@ -429,6 +583,8 @@ class TaskWorkspaceManager:
                     # The main checkout may have installed dependencies since
                     # the worktree was created: make sure the links exist.
                     self._prepare_checkout(workspace.path)
+                    if workspace.scope == SCOPE_ACTOR:
+                        self._sync_actor_checkout(workspace)
                     workspace.last_used_at = _utcnow()
                     workspace.chat_id = str(getattr(chat, "id", "") or workspace.chat_id)
                     registry[key] = workspace.to_dict()
@@ -438,8 +594,6 @@ class TaskWorkspaceManager:
                 # from the branch when it still exists.
                 registry.pop(key, None)
 
-            branch = self._branch_for(chat, key)
-            path = self._path_for(chat, key)
             base = self._base_ref(repo_root, base_branch)
             if os.path.exists(path):
                 # Never delete an unknown directory: a stale worktree is a
@@ -455,7 +609,11 @@ class TaskWorkspaceManager:
             )
             if branch_exists:
                 ok, _stdout, error = _run_git(repo_root, ["worktree", "add", path, branch])
-                base = branch
+                # A task branch is its own base after a crash (historical
+                # behaviour). An actor branch always keeps the project base so
+                # finalize knows where to merge it.
+                if scope != SCOPE_ACTOR:
+                    base = branch
             else:
                 ok, _stdout, error = _run_git(
                     repo_root, ["worktree", "add", "-b", branch, path, base]
@@ -471,7 +629,9 @@ class TaskWorkspaceManager:
                 key=key,
                 chat_id=str(getattr(chat, "id", "") or ""),
                 root_id=str(getattr(chat, "root_id", "") or key),
-                name=str(getattr(chat, "name", "") or "")[:200],
+                name=str(name or getattr(chat, "name", "") or "")[:200],
+                scope=scope,
+                actor=actor if scope == SCOPE_ACTOR else "",
                 branch=branch,
                 path=path,
                 base_ref=base,
@@ -488,9 +648,46 @@ class TaskWorkspaceManager:
             )
             return workspace
 
-    def find(self, chat: Any) -> Optional["TaskWorkspace"]:
+    def _sync_actor_checkout(self, workspace: "TaskWorkspace") -> None:
+        """Fast-forward an idle actor checkout to its base branch.
+
+        Between two shifts the main checkout advances. When the actor branch
+        holds no unmerged commit (the previous shift was merged and reset), it
+        must start from the current base instead of stale code. A branch with
+        unmerged work is left untouched: that work is still waiting to be
+        finalized or reviewed.
+        """
+        if workspace.scope != SCOPE_ACTOR or not workspace.path:
+            return
+        ok, status, _stderr = _run_git(workspace.path, ["status", "--porcelain"])
+        if not ok or status.strip():
+            return
+        base = workspace.base_ref or "main"
+        ok, ahead, _stderr = _run_git(
+            self.repo_root(), ["rev-list", "--count", f"{base}..{workspace.branch}"]
+        )
+        if not ok or str(ahead).strip() not in ("", "0"):
+            return
+        if _git_ok(workspace.path, ["rev-parse", "--verify", f"{base}^{{commit}}"]):
+            _run_git(workspace.path, ["reset", "--hard", base])
+
+    def find(
+        self,
+        chat: Any,
+        *,
+        scope: str = SCOPE_TASK,
+        actor: str = "",
+    ) -> Optional["TaskWorkspace"]:
         """Return the registered workspace of *chat* without creating it."""
-        key = self.key_for(chat)
+        key = self._identity(chat, scope, actor)[0]
+        return self._find_by_key(key)
+
+    def find_actor(self, actor: str) -> Optional["TaskWorkspace"]:
+        """Return the stable workspace of *actor* without creating it."""
+        return self._find_by_key(self.actor_key(actor))
+
+    def _find_by_key(self, key: str) -> Optional["TaskWorkspace"]:
+        """Return the registered workspace identified by *key*."""
         record = self._load_registry().get(key)
         if not record:
             return None
@@ -631,22 +828,26 @@ class TaskWorkspaceManager:
         message: str = "",
         *,
         allow_empty: bool = False,
+        scope: str = SCOPE_TASK,
+        actor: str = "",
     ) -> Dict[str, Any]:
-        """Commit the current worktree state on the task branch.
+        """Commit the current worktree state on the task or actor branch.
 
         Args:
             chat: Chat/task card that owns the workspace.
             message: Optional extra context appended to the commit body.
             allow_empty: Commit even when there is nothing to stage.
+            scope: ``task`` (default) or ``actor``.
+            actor: Actor/profile name for ``scope="actor"``.
 
         Returns:
             dict: ``{committed, branch, commit, error, workspace}``. Commit
             failures are reported, never raised: the turn already happened and
             a dirty worktree is reviewable in the Git view.
         """
-        workspace = self.find(chat)
+        workspace = self.find(chat, scope=scope, actor=actor)
         if workspace is None:
-            return {"committed": False, "error": "no task workspace registered"}
+            return {"committed": False, "error": "no workspace registered"}
         ok, status, error = _run_git(workspace.path, ["status", "--porcelain"])
         if not ok:
             return {"committed": False, "error": error, "workspace": workspace.to_dict()}
@@ -660,6 +861,25 @@ class TaskWorkspaceManager:
         ok, _stdout, error = _run_git(workspace.path, ["add", "-A"])
         if not ok:
             return {"committed": False, "error": error, "workspace": workspace.to_dict()}
+        # ``git add -A`` is intentionally broad (the agent can create files),
+        # but generated caches are excluded in the worktree. Keep the check as a
+        # second line of defence: a cache-only turn must not create a commit.
+        staged_ok, staged, staged_error = _run_git(
+            workspace.path, ["diff", "--cached", "--name-only"]
+        )
+        if not staged_ok:
+            return {
+                "committed": False,
+                "error": staged_error,
+                "workspace": workspace.to_dict(),
+            }
+        if not staged.strip() and not allow_empty:
+            return {
+                "committed": False,
+                "branch": workspace.branch,
+                "error": "",
+                "workspace": workspace.to_dict(),
+            }
         commit_message = self._commit_message(workspace, chat, message)
         args = [*self._identity_args(), "commit", "-m", commit_message]
         if allow_empty:
@@ -696,16 +916,165 @@ class TaskWorkspaceManager:
             "workspace": workspace.to_dict(),
         }
 
+    # -- actor shift lifecycle ---------------------------------------------
+    def finalize_actor(
+        self,
+        actor: str,
+        chat: Any = None,
+        *,
+        merge: bool = True,
+    ) -> Dict[str, Any]:
+        """Settle the stable branch of *actor* after a successful shift.
+
+        The work is committed (when a dirty checkout is left), merged into the
+        workspace base branch with ``--no-ff`` and the actor checkout is reset to
+        the merged base. That keeps exactly one branch and one worktree per
+        actor, with no per-shift branches and no stranded commits.
+
+        A conflict or a missing workspace is **not** destructive: the branch
+        and worktree are kept and the error is returned so the shift can be
+        reported as failed instead of silently losing work.
+
+        Args:
+            actor: Actor/profile name.
+            chat: Shift card used for the commit message; optional when clean.
+            merge: Merge the branch into its base when it has unique commits.
+
+        Returns:
+            dict: ``{merged, branch, base, commit, ahead, reset, error}``.
+        """
+        workspace = self.find_actor(actor)
+        if workspace is None:
+            return {"merged": False, "error": "", "branch": "", "base": ""}
+        result: Dict[str, Any] = {
+            "merged": False,
+            "branch": workspace.branch,
+            "base": workspace.base_ref,
+            "commit": "",
+            "ahead": 0,
+            "reset": False,
+            "error": "",
+        }
+
+        ok, status, error = _run_git(workspace.path, ["status", "--porcelain"])
+        if not ok:
+            result["error"] = error
+            return result
+        if status.strip():
+            if chat is None:
+                result["error"] = "actor workspace has uncommitted changes"
+                return result
+            committed = self.commit(
+                chat, scope=SCOPE_ACTOR, actor=actor
+            )
+            if committed.get("error"):
+                result["error"] = committed["error"]
+                return result
+
+        base = workspace.base_ref or "main"
+        result["base"] = base
+        ok, ahead_out, error = _run_git(
+            self.repo_root(), ["rev-list", "--count", f"{base}..{workspace.branch}"]
+        )
+        if not ok:
+            result["error"] = error
+            return result
+        try:
+            ahead = int(str(ahead_out).strip() or 0)
+        except ValueError:
+            ahead = 0
+        result["ahead"] = ahead
+
+        if ahead == 0:
+            # The branch is already part of the base (or still unborn): move
+            # the checkout to the base so the next shift starts from current
+            # code. A dirty worktree was committed above, so this is safe.
+            if _git_ok(workspace.path, ["rev-parse", "--verify", f"{base}^{{commit}}"]):
+                reset_ok, _stdout, _stderr = _run_git(
+                    workspace.path, ["reset", "--hard", base]
+                )
+                result["reset"] = reset_ok
+            return result
+
+        if not merge:
+            return result
+
+        repo_root = self.repo_root()
+        ok, current, _stderr = _run_git(repo_root, ["branch", "--show-current"])
+        if not ok or current.strip() != base:
+            result["error"] = (
+                f"base branch '{base}' is not checked out; actor branch kept "
+                "for review"
+            )
+            return result
+
+        message = (
+            f"agent: merge shift {actor} "
+            f"({_utcnow()[:16].replace('T', ' ')})"
+        )
+        ok, _stdout, error = _run_git(
+            repo_root,
+            [
+                *self._identity_args(),
+                "merge",
+                "--no-ff",
+                "-m",
+                message,
+                workspace.branch,
+            ],
+        )
+        if not ok:
+            # Never leave a half-finished merge in the user's checkout.
+            _run_git(repo_root, ["merge", "--abort"])
+            result["error"] = (error or "").strip() or "merge failed"
+            return result
+
+        head_ok, head_out, _stderr = _run_git(repo_root, ["rev-parse", "HEAD"])
+        merge_commit = head_out.strip() if head_ok else ""
+        result.update({"merged": True, "commit": merge_commit})
+
+        # The merge commit makes the actor commits reachable from base. Move
+        # the reusable branch and checkout onto that base so the next shift
+        # starts clean and the branch never accumulates stale history.
+        reset_ok, _stdout, _stderr = _run_git(
+            workspace.path, ["reset", "--hard", base]
+        )
+        result["reset"] = reset_ok
+        if not reset_ok:
+            logger.warning(
+                "Task workspaces: merged %s but could not reset its checkout",
+                workspace.branch,
+            )
+
+        with self._registry_lock():
+            registry = self._load_registry()
+            record = registry.get(workspace.key)
+            if record:
+                current = TaskWorkspace.from_dict(record)
+                current.last_commit = merge_commit
+                current.last_used_at = _utcnow()
+                current.error = ""
+                registry[workspace.key] = current.to_dict()
+                self._save_registry(registry)
+        return result
+
     # -- removal -----------------------------------------------------------
-    def remove(self, chat: Any, *, delete_branch: bool = False) -> Dict[str, Any]:
+    def remove(
+        self,
+        chat: Any,
+        *,
+        delete_branch: bool = False,
+        scope: str = SCOPE_TASK,
+        actor: str = "",
+    ) -> Dict[str, Any]:
         """Remove the workspace checkout (and optionally its branch).
 
         A dirty worktree is never removed implicitly: the caller must go through
         the Git view, which shows the pending files and asks for confirmation.
         """
-        workspace = self.find(chat)
+        workspace = self.find(chat, scope=scope, actor=actor)
         if workspace is None:
-            return {"removed": False, "error": "no task workspace registered"}
+            return {"removed": False, "error": "no workspace registered"}
         ok, status, _error = _run_git(workspace.path, ["status", "--porcelain"])
         if ok and status.strip():
             return {

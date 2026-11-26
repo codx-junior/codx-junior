@@ -4,7 +4,7 @@
   "avatar": "https://api.dicebear.com/10.x/glyphs/svg?seed=qa",
   "description": "QA Lead profile. Owns the quality gate of every change: plans the verification, runs the suites mapped to the diff, checks coverage, classifies flaky tests and returns an evidenced verdict (allow / warn / require_approval / block) before a change is called done or merged.",
   "category": "project",
-  "file_match": "(^|/)(tests?|__tests__|spec)/|test_.*\\.py$|.*_test\\.py$|.*\\.(spec|test)\\.(ts|tsx|js|jsx|vue)$|pytest\\.ini|pyproject\\.toml$|jest\\.config|vitest\\.config",
+  "file_match": "(^|/)(tests?|__tests__|spec)/|(^|/)test_[^/]*\\.py$|(^|/)[^/]*_test\\.py$|(^|/)[^/]*\\.(spec|test)\\.(ts|tsx|js|jsx|vue)$|(^|/)pytest\\.ini$|(^|/)pyproject\\.toml$|(^|/)jest\\.config|(^|/)vitest\\.config",
   "content": null,
   "parsed_content": null,
   "path": "/home/codx-junior/codx-junior/api/codx/junior/profiles/qa/qa.profile",

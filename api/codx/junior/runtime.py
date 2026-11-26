@@ -125,6 +125,7 @@ DATA_PLANE_ENTRIES = (
     "autonomy",
     "atlas",
     "ciso",
+    "quality",
     "index",
     "task_workspaces",
     "db",

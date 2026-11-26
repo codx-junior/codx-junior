@@ -83,7 +83,8 @@ Stop and report when you are running out instead of being cut mid-action.
 - Do not ask questions: no human will answer during the shift. Take the
   conservative option, write down the doubt as a task or a comment, and go on.
 - Do not touch work that is clearly owned by someone else unless it blocks you.
-- Leave the workspace as you found it (no stray branches, no uncommitted noise),
+- Your repository changes are committed on your actor branch and merged when
+  the shift succeeds. Do not leave uncommitted work or stray branches behind,
   unless the shift's goal is precisely to change files.
 
 ## Ending a shift

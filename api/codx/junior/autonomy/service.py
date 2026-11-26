@@ -1008,7 +1008,17 @@ class ActorService:
         # attempt; tasks left due (not closed/rescheduled) stay due so the work
         # is retried instead of silently disappearing.
         if not dry_run and report.status != C.STATE_ERROR and report.turns > 0:
-            self._consume_agenda(agenda)
+            merge_error = ""
+            if report.status == C.STATE_OK:
+                merge_error = self._finalize_shift_workspace(name, shift_chat)
+                if merge_error:
+                    # The shift produced work that could not be integrated.
+                    # Keep the actor branch for the next shift/human and report
+                    # it as a failure instead of pretending the work landed.
+                    report.status = C.STATE_ERROR
+                    report.error = merge_error
+            if not merge_error:
+                self._consume_agenda(agenda)
 
         report.duration_seconds = time.monotonic() - started
         if shift_chat is not None:
@@ -1113,14 +1123,16 @@ class ActorService:
         the first model call when the background worker ran the shift.
         """
         from codx.junior.chat.chat_engine import ChatEngine
-        from codx.junior.task_workspace import TaskWorkspaceManager
+        from codx.junior.task_workspace import SCOPE_ACTOR, TaskWorkspaceManager
 
-        # Autonomous work is isolated per task tree: the turn runs with a clone
-        # of the settings whose project root is a dedicated git worktree, and
-        # the result is committed on the task branch at the end. The main
-        # checkout never accumulates another agent's changes.
+        # Autonomous shift work uses ONE stable branch/checkout per actor. A
+        # shift card is a new task tree every time, so deriving the workspace
+        # from the card root_id created a new branch per shift and left every
+        # one of them unmerged. The actor key makes the workspace reusable; the
+        # shift is merged by ``_finalize_shift_workspace`` when it succeeds.
         manager = TaskWorkspaceManager(self.settings)
-        workspace = manager.ensure(chat)
+        actor = self._shift_actor(chat)
+        workspace = manager.ensure(chat, scope=SCOPE_ACTOR, actor=actor)
         run_settings = (
             manager.settings_for(workspace, self.settings) if workspace else self.settings
         )
@@ -1134,14 +1146,64 @@ class ActorService:
             await engine.chat_with_project(chat=chat, system=system)
         finally:
             if workspace is not None:
-                result = manager.commit(chat)
+                result = manager.commit(chat, scope=SCOPE_ACTOR, actor=actor)
                 if result.get("error"):
                     logger.warning(
-                        "Autonomy: could not commit task workspace %s: %s",
+                        "Autonomy: could not commit actor workspace %s: %s",
                         workspace.branch,
                         result["error"],
                     )
         return chat
+
+    @staticmethod
+    def _shift_actor(chat: Any) -> str:
+        """Return the actor that owns *chat* (never the per-shift card id)."""
+        meta = getattr(chat, "meta_data", None) or {}
+        actor_meta = meta.get("actor") if isinstance(meta, dict) else {}
+        if isinstance(actor_meta, dict):
+            actor = str(actor_meta.get("actor") or "").strip()
+            if actor:
+                return actor
+        profiles = getattr(chat, "profiles", None) or []
+        if profiles:
+            actor = str(profiles[0] or "").strip()
+            if actor:
+                return actor
+        return "shift"
+
+    def _finalize_shift_workspace(self, actor: str, chat: Any) -> str:
+        """Merge a successful shift's actor branch and keep the workspace clean."""
+        if chat is None:
+            return ""
+        try:
+            from codx.junior.task_workspace import TaskWorkspaceManager
+
+            manager = TaskWorkspaceManager(self.settings)
+            auto_merge = getattr(
+                self.settings, "task_workspace_auto_merge", True
+            )
+            auto_merge = True if auto_merge is None else bool(auto_merge)
+            result = manager.finalize_actor(
+                actor, chat=chat, merge=auto_merge
+            )
+            if result.get("error"):
+                logger.warning(
+                    "Autonomy: shift workspace for '%s' was kept: %s",
+                    actor,
+                    result["error"],
+                )
+                return str(result["error"])
+            if result.get("merged"):
+                logger.info(
+                    "Autonomy: merged shift branch %s into %s (%s)",
+                    result.get("branch"),
+                    result.get("base"),
+                    result.get("commit"),
+                )
+            return ""
+        except Exception as ex:  # pragma: no cover - finalize must never crash a shift
+            logger.warning("Autonomy: cannot finalize shift workspace: %s", ex)
+            return f"could not finalize the shift workspace: {ex}"
 
     # -- shift card -------------------------------------------------------
 

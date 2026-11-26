@@ -25,6 +25,7 @@ const Desktop = () => import('@/components/desktop/Desktop.vue')
 const KanbanBoardView = () => import('@/components/kanban/board/KanbanBoardView.vue')
 const BrowsersSessionManager = () => import('@/components/browsers/BrowsersSessionManager.vue')
 const ProfileEditorView = () => import('@/views/ProfileEditorView.vue')
+const HarnessModeView = () => import('@/views/HarnessModeView.vue')
 
 // ─────────────────────────────────────────────────────────────────────────────
 // COMPANY-FIRST URL MODEL
@@ -176,6 +177,15 @@ const PROJECT_ROUTES = [
   },
   { path: '/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs' } },
   { path: '/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', ...mobile('Calendar', 'more') } },
+  // Harness mode: the DSH-like full-screen session workspace. It takes over
+  // the whole window (no desktop sidebar); the read-only diagnostics app stays
+  // available at /harness and from the view's footer.
+  {
+    path: '/harness-mode',
+    name: 'harness-mode',
+    component: HarnessModeView,
+    meta: { fullScreen: true, ...mobile('Harness', 'more', { hideTopBar: true, hideTabs: true }) }
+  },
   { path: '/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
   { path: '/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', ...mobile('CISO', 'more') } },
   { path: '/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
@@ -413,6 +423,20 @@ const router = createRouter({
         const projectName = activeProjectSegment()
         return companySlug && projectName
           ? { name: 'channel', params: { companySlug, projectName } }
+          : defaultHome()
+      }
+    },
+    {
+      // Harness mode without the project prefix (a shared link / bookmark):
+      // resolve the active company/project and continue to the canonical
+      // `/<company>/workspace/<project>/harness-mode` route.
+      path: '/harness-mode',
+      name: 'harness-mode-boot',
+      redirect: () => {
+        const companySlug = activeCompanySlug()
+        const projectName = activeProjectSegment()
+        return companySlug && projectName
+          ? { name: 'harness-mode', params: { companySlug, projectName } }
           : defaultHome()
       }
     },

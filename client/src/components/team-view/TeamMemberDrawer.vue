@@ -4,6 +4,7 @@ import Document from '@/components/document/Document.vue'
 import ContentEditorModal from './ContentEditorModal.vue'
 import ToolDetailsModal from './ToolDetailsModal.vue'
 import ProfileKnowledgeEditor from '@/components/profiles/ProfileKnowledgeEditor.vue'
+import { qualityModule } from '@/api/modules/quality'
 import {
   ROLE_META,
   roleMeta,
@@ -437,6 +438,145 @@ import {
           </p>
         </div>
 
+        <!-- Quality guardian -->
+        <div v-else-if="tab === 'quality'" class="flex flex-col gap-4">
+          <div class="alert py-2 text-[11px] gap-2 bg-success/10 border-success/20">
+            <i class="fa-solid fa-shield-heart text-success"></i>
+            <span>
+              A quality guardian reviews the files matching its <b>file trigger</b>
+              after a change, on staged changes or on demand. The review prompt is
+              the Persona; deterministic checks and triggers live here.
+            </span>
+          </div>
+
+          <div v-if="!draft.guardian" class="rounded-xl border border-base-content/10 bg-base-200/40 p-3">
+            <h3 class="text-sm font-semibold">Make this teammate a quality guardian</h3>
+            <p class="text-[11px] text-base-content/50 mt-1">
+              The member keeps its persona and skills; it gains a file scope,
+              fast checks and the guardian quality tools. You can run it from the
+              Git view → Quality tab.
+            </p>
+            <button type="button" class="btn btn-sm btn-success mt-3 gap-1" @click="enableGuardianDraft">
+              <i class="fa-solid fa-shield-heart"></i>
+              Enable quality guardian
+            </button>
+          </div>
+
+          <template v-else>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="badge badge-sm badge-success">Quality guardian</span>
+              <span v-if="draft.guardian.auto_generated" class="badge badge-sm badge-ghost">auto-generated</span>
+              <span v-if="draft.guardian.polished" class="badge badge-sm badge-warning">polished</span>
+              <label class="flex items-center gap-2 ml-auto text-[11px] cursor-pointer">
+                <span>Enabled</span>
+                <input v-model="draft.guardian.enabled" type="checkbox" class="toggle toggle-sm toggle-success" />
+              </label>
+            </div>
+
+            <div>
+              <label class="label-text text-xs font-semibold pb-1 block">File trigger</label>
+              <input
+                v-model="draft.file_match"
+                type="text"
+                class="input input-sm input-bordered w-full font-mono"
+                :class="fileMatchValid ? '' : 'input-error'"
+                placeholder="e.g. src/.*\.ts$ or \.vue$"
+              />
+              <p class="text-[11px] mt-1" :class="fileMatchValid ? 'text-base-content/40' : 'text-error'">
+                {{ fileMatchValid ? 'Regex matched against the absolute file path.' : 'That is not a valid pattern.' }}
+              </p>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="label-text text-xs font-semibold pb-1 block">Kind</label>
+                <select v-model="draft.guardian.kind" class="select select-sm select-bordered w-full">
+                  <option value="code">Code</option>
+                  <option value="web">Web / frontend</option>
+                  <option value="tests">Tests</option>
+                  <option value="docs">Docs</option>
+                  <option value="infra">Infra / DevOps</option>
+                  <option value="data">Data / schema</option>
+                  <option value="dependencies">Dependencies</option>
+                  <option value="config">Configuration</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div>
+                <label class="label-text text-xs font-semibold pb-1 block">Default severity</label>
+                <select v-model="draft.guardian.severity" class="select select-sm select-bordered w-full">
+                  <option v-for="severity in guardianSeverities" :key="severity" :value="severity">{{ severity }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="label-text text-xs font-semibold pb-1 block">Gate blocks at</label>
+                <select v-model="draft.guardian.blocking_severity" class="select select-sm select-bordered w-full">
+                  <option v-for="severity in guardianSeverities" :key="severity" :value="severity">{{ severity }}</option>
+                </select>
+              </div>
+              <div class="flex items-end">
+                <label class="flex items-center gap-2 text-[11px] cursor-pointer pb-2">
+                  <input v-model="draft.guardian.auto_fix" type="checkbox" class="toggle toggle-sm" />
+                  Allow deterministic fixes
+                </label>
+              </div>
+            </div>
+
+            <div>
+              <div class="label-text text-xs font-semibold pb-1">Run on</div>
+              <div class="flex flex-wrap gap-2">
+                <label v-for="trigger in guardianTriggers" :key="trigger" class="flex items-center gap-1.5 text-[11px] cursor-pointer rounded-lg border border-base-content/10 bg-base-200/50 px-2 py-1">
+                  <input
+                    type="checkbox"
+                    class="checkbox checkbox-xs checkbox-success"
+                    :checked="(draft.guardian.triggers || []).includes(trigger)"
+                    @change="toggleGuardianTrigger(trigger)"
+                  />
+                  {{ trigger }}
+                </label>
+              </div>
+              <p class="text-[11px] text-base-content/40 mt-1">
+                A manual review always runs the guardian; the other triggers require the box above.
+              </p>
+            </div>
+
+            <div>
+              <div class="flex items-center gap-2">
+                <div class="label-text text-xs font-semibold">Deterministic checks</div>
+                <span class="badge badge-xs badge-ghost">{{ (draft.guardian.checks || []).length }}</span>
+              </div>
+              <div v-if="!(draft.guardian.checks || []).length" class="text-[11px] text-base-content/40 mt-1">
+                No deterministic check. The AI review still uses the Persona rules.
+              </div>
+              <div v-else class="flex flex-col gap-1 mt-1">
+                <div v-for="check in draft.guardian.checks" :key="check.id" class="rounded-md border border-base-content/10 bg-base-100 px-2 py-1 text-[11px]">
+                  <div class="flex items-center gap-1.5">
+                    <span class="font-mono font-semibold">{{ check.id }}</span>
+                    <span class="badge badge-xs badge-ghost">{{ check.kind }}</span>
+                    <span class="badge badge-xs" :class="check.severity === 'critical' || check.severity === 'high' ? 'badge-warning' : 'badge-ghost'">{{ check.severity }}</span>
+                    <span v-if="!check.enabled" class="badge badge-xs badge-neutral">off</span>
+                  </div>
+                  <div v-if="check.kind === 'command'" class="font-mono text-[10px] text-base-content/50 truncate" :title="(check.command || []).join(' ')">
+                    {{ (check.command || []).join(' ') }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-2 pt-2 border-t border-base-content/10">
+              <button type="button" class="btn btn-sm btn-primary gap-1" :disabled="guardianRunning || !draft.name" @click="runGuardianReview">
+                <span v-if="guardianRunning" class="loading loading-spinner loading-xs"></span>
+                <i v-else class="fa-solid fa-play"></i>
+                Run review (saved profile)
+              </button>
+              <span v-if="guardianResult" class="text-[11px]" :class="guardianResult.action === 'allow' ? 'text-success' : 'text-warning'">
+                {{ guardianResult.error || `${guardianResult.action} · ${guardianResult.findings} finding(s)` }}
+              </span>
+              <span class="text-[10px] text-base-content/40 ml-auto">Full findings: Git view → Quality</span>
+            </div>
+          </template>
+        </div>
+
         <!-- Advanced -->
         <div v-else class="flex flex-col gap-4">
           <div class="alert py-2 text-[11px] gap-2 bg-base-200 border-base-content/10">
@@ -575,12 +715,17 @@ export default {
       // the values; here only name + description are shown).
       efforts: [],
       effortFields: [],
+      guardianSeverities: ['info', 'low', 'medium', 'high', 'critical'],
+      guardianTriggers: ['change', 'staged', 'commit', 'manual'],
+      guardianRunning: false,
+      guardianResult: null,
       tabs: [
         { id: 'about', label: 'About', icon: 'fa-solid fa-user' },
         { id: 'persona', label: 'Persona', icon: 'fa-solid fa-wand-magic-sparkles' },
         { id: 'knowledge', label: 'Knowledge', icon: 'fa-solid fa-brain' },
         { id: 'capabilities', label: 'Capabilities', icon: 'fa-solid fa-wrench' },
         { id: 'effort', label: 'Effort', icon: 'fa-solid fa-gauge-high' },
+        { id: 'quality', label: 'Quality', icon: 'fa-solid fa-shield-heart' },
         { id: 'guardrails', label: 'Guardrails', icon: 'fa-solid fa-shield-halved' },
         { id: 'advanced', label: 'Advanced', icon: 'fa-solid fa-key' }
       ]
@@ -734,6 +879,7 @@ export default {
           ...JSON.parse(JSON.stringify(EMPTY_GUARDRAILS)),
           ...(source.guardrails || {})
         },
+        guardian: source.guardian ? JSON.parse(JSON.stringify(source.guardian)) : null,
         // Effort overrides: every unset field inherits the resolved tier.
         effort: { ...(source.effort || {}) }
       }
@@ -881,6 +1027,72 @@ export default {
         }
       })
     },
+    // ── Quality guardian ───────────────────────────────────────────────────
+    /** Turn the draft into a guardian without saving it yet. */
+    enableGuardianDraft() {
+      this.draft.guardian = {
+        enabled: true,
+        kind: 'custom',
+        languages: [],
+        triggers: ['staged', 'manual'],
+        checks: [],
+        severity: 'medium',
+        blocking_severity: 'high',
+        auto_fix: false,
+        ignore_paths: [],
+        auto_generated: false,
+        polished: true,
+        version: 1
+      }
+      this.draft.category = 'guardian'
+      if (!this.draft.tags?.includes('guardian')) {
+        this.draft.tags = [...(this.draft.tags || []), 'guardian']
+      }
+    },
+
+    toggleGuardianTrigger(trigger) {
+      if (!this.draft.guardian) return
+      const triggers = this.draft.guardian.triggers || []
+      this.draft.guardian.triggers = triggers.includes(trigger)
+        ? triggers.filter(item => item !== trigger)
+        : [...triggers, trigger]
+      if (!this.draft.guardian.triggers.length) this.draft.guardian.triggers = ['manual']
+    },
+
+    /**
+     * Run the saved guardian on the pending change. The drawer edits are not
+     * saved yet, so the note in the template tells the user the profile must be
+     * saved first; the review uses the server-side profile.
+     */
+    async runGuardianReview() {
+      if (!this.draft.name || !this.$project?.$api) return
+      this.guardianRunning = true
+      this.guardianResult = null
+      try {
+        const api = qualityModule(this.$project.$api)
+        const run = await api.review({
+          trigger: 'manual',
+          scope: 'changed',
+          mode: 'auto',
+          guardians: [this.draft.name]
+        })
+        this.guardianResult = {
+          action: run.verdict?.action || 'allow',
+          findings: (run.findings || []).filter(finding => (finding.status || 'open') === 'open').length,
+          runId: run.id
+        }
+        this.$emit('knowledge-changed')
+      } catch (ex) {
+        this.guardianResult = {
+          action: 'error',
+          findings: 0,
+          error: ex?.response?.data?.detail || ex?.message || String(ex)
+        }
+      } finally {
+        this.guardianRunning = false
+      }
+    },
+
     requestDelete() {
       this.$emit('delete', { profile: this.draft })
     }

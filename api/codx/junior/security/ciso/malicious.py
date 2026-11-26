@@ -360,6 +360,21 @@ def _add_finding(
         # so a real defect written into a docstring is still reviewed.
         effective = SecuritySeverity.LOW
         reason = f"{reason} (documentation/detector context)"
+    elif rule_id == "malicious.agent-silent-action" \
+            and payload[start:end].lower().startswith("without"):
+        # The "without telling the user" alternative hides an action only when
+        # nothing forbids it. In "Do not enable X without telling the user" the
+        # governing prohibition makes disclosure mandatory: the clause is a
+        # transparency rule, the opposite of a secrecy instruction.
+        window = payload[max(0, start - 200):start]
+        clause = window[max(window.rfind(ch) for ch in ".!?;\n") + 1:]
+        if re.search(
+            r"\b(?:do|does|did|must|should|would|could|can|may|will|is|are|was|were)\s*(?:n't|not)\b"
+            r"|\bnever\b|\bavoid\b|\bcannot\b",
+            clause,
+            re.IGNORECASE,
+        ):
+            return
     elif rule_id == "exfiltration.ssh-keys":
         window = payload[max(0, start - 120):min(len(payload), end + 120)]
         if not re.search(

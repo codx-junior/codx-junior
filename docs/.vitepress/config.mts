@@ -53,6 +53,7 @@ export default defineConfig({
             { text: 'Vibe coding', link: '/features/vibe-coding' },
             { text: 'Kanban and tasks', link: '/features/kanban' },
             { text: 'Git and code review', link: '/features/code-review' },
+            { text: 'Quality guardians', link: '/features/quality-guardians' },
             { text: 'AI providers and models', link: '/features/ai-providers' },
             { text: 'Development tools (file explorer)', link: '/features/development-tools' },
             { text: 'API', link: '/features/api' }

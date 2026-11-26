@@ -13,7 +13,9 @@
  *    was ticked, so a rejected value never replaces a working setting.
  *
  * The component sources are read as text and never evaluated, so no test
- * builds a function from a string.
+ * builds a function from a string. The last test asserts exactly that: the
+ * suite must never turn source text into executable code (CISO
+ * `dangerous.new-function`).
  *
  * Run with: node --test tests/*.test.mjs
  */
@@ -135,4 +137,26 @@ test('the settings page edits the project token, not the global copy', () => {
     /v-model="globalGit\.git_access_token"/,
     'the token used by the git view lives in the project settings'
   )
+})
+
+/**
+ * Regression guard for CISO `dangerous.new-function`.
+ *
+ * The suite inspects components by reading them as text. Building a function
+ * from that text would turn any component source into an injection sink, so the
+ * forbidden primitives are assembled from pieces here: this assertion must not
+ * match its own pattern definitions.
+ */
+test('the suite never turns source text into executable code', async () => {
+  const ownSource = await readFile(import.meta.url, 'utf8')
+  const forbidden = [
+    [new RegExp('\\bnew\\s+' + 'Function\\s*\\('), 'a function is never constructed from a string'],
+    [new RegExp('(^|[^.\\w])' + 'eval\\s*\\('), 'source text is never evaluated']
+  ]
+
+  for (const [pattern, message] of forbidden) {
+    assert.doesNotMatch(ownSource, pattern, message)
+  }
+
+  assert.equal(typeof dialogScript, 'string', 'the dialog script stays plain text')
 })

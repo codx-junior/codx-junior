@@ -109,11 +109,22 @@ export const APPS = {
     route: () => ({ name: 'calendar' })
   },
 
+  // Harness mode: the DSH-like full-screen workspace (workspaces + sessions,
+  // "Into the Unknown" composer, collapsible run steps and delivery report).
+  // It is a route-only app: the view owns the whole window.
+  'harness-mode': {
+    id: 'harness-mode', title: 'Harness mode', component: 'harness-mode', icon: 'fa-solid fa-bolt',
+    // The view owns the whole window (its own sidebar), so it is always a
+    // route — never a dockview panel, even when the desktop shell is active.
+    routeOnly: true,
+    route: () => ({ name: 'harness-mode' })
+  },
+
   // Native harness observability: runs, worker/watchdog health and the
   // append-only audit journal of every piece of work handled by the
   // @codx-junior profile. Read-only view over /api/harness/*.
   harness: {
-    id: 'harness', title: 'Harness', component: 'harness', icon: 'fa-solid fa-bolt',
+    id: 'harness', title: 'Harness diagnostics', component: 'harness', icon: 'fa-solid fa-heart-pulse',
     route: () => ({ name: 'harness' })
   },
 

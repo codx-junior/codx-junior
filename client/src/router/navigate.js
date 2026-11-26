@@ -126,7 +126,9 @@ export default function Navigate({ $router, $storex }) {
     // ── Single mode (any route but ".../desktop") → update the route ──
     // One app at a time: the app lives in the URL (plus a transient
     // payload hand-off for rich objects that can't be encoded there).
-    if (!isDesktopMode()) {
+    // `routeOnly` apps (harness mode) declare that they own the whole window,
+    // so they are routes even while the desktop shell is active.
+    if (!isDesktopMode() || def.routeOnly) {
       setPendingParams(def.id, params)
       // The project prefix is injected centrally by the router's push wrapper.
       const location = def.route(payload)

@@ -3,7 +3,7 @@
 > **Status:** implemented · **Profile:** `codx-junior` (built-in) ·
 > **Code:** `api/codx/junior/harness/`, `api/codx/junior/orchestration/` ·
 > **API:** `/api/harness/*`, `/api/orchestration` ·
-> **UI:** Harness app (sidebar → *Harness*)
+> **UI:** Harness mode (sidebar → *Harness*) and Harness diagnostics
 
 The **codx-junior harness** is the native, self-contained way to hand a whole
 task to the platform and get notified when it is done. It is modeled on how a
@@ -39,6 +39,119 @@ registry at request time) and its `team` lists the profiles it can put to work:
    **notification**: *"Run X finished (completed). The delivery report is on
    the task."* The notification is sent exactly once per terminal status, even
    across worker restarts.
+
+## Harness mode (the DSH-like UI)
+
+**Harness mode** is the full-screen session workspace of the project. It is the
+surface a ticket is written on and the place its result is read; it is a lens
+over the existing task chat, not a second agent engine.
+
+```
+┌───────────────────────┬─────────────────────────────────────────────────┐
+│ codx-junior  HARNESS  │  Install failures register a support ticket     │
+│ + New Session         │  Completed · 13m 41s · 22.4k tokens · 8 tools  │
+│                       │  ┌ Ticket ───────────────────────────────────┐  │
+│ WORKSPACES            │  │ When an installation fails, register…     │  │
+│  ▸ codx-junior        │  └───────────────────────────────────────────┘  │
+│                       │  ▸ Read files, searched the code, edited…      │
+│ SESSIONS              │                                                 │
+│  ● Add project…   2m  │  ## Problem                                     │
+│  ● Install failures…  │  ## Root cause                                  │
+│                       │  ## What I changed                              │
+│                       │  ## Tests / Verification                        │
+│                       │  ┌ 7 files +361 -12 ─ codx/task/… ──────────┐  │
+│ Diagnostics · Settings│  └───────────────────────────────────────────┘  │
+│                       │  Message or run a task…                         │
+└───────────────────────┴─────────────────────────────────────────────────┘
+```
+
+### Start a session
+
+1. Sidebar → **Harness**.
+2. Keep or change the **workspace** (the project the session works on).
+3. Choose the tier:
+   - **Standard mode** — `codx-junior`, high effort, one turn;
+   - **Deep work** — `codx-junior-max`, max effort, long multi-batch work.
+4. Write the ticket: what is broken, the expected behaviour and the acceptance
+   criteria. A model can also be picked in the composer.
+5. The session opens immediately. The ticket card, the live activity and the
+   final report are the same conversation: tool calls and text stream in place.
+
+The left rail lists the sessions of the project, newest first; a green dot is a
+running turn, a red dot a failed one and a grey dot a finished one. The list
+keeps the last activity time, so “2h” means the last thing the harness wrote.
+
+### What a session does
+
+A session is a normal task chat executed by the `codx-junior` (or
+`codx-junior-max`) profile in `task` mode. The harness contract is appended to the **first user message**
+(`api/codx/junior/harness/prompts.py`), so the same agent loop becomes a coding
+harness without a second engine:
+
+| Step | What the agent does | Evidence stored |
+| --- | --- | --- |
+| **Survey** | `project_structure`, `project_search`, `project_grep`, `project_glob`, `project_read_file` | one `tool_event` per call |
+| **Reproduce** | reads the failing path/tests, runs the narrowest check | command + output in the event |
+| **Analyse** | names the root cause and the rejected alternatives | `## Root cause` in the report |
+| **Implement** | writes every layer the change needs | `project_write_file` / `apply_file_changes` |
+| **Test** | adds/updates tests, runs `qa_run_tests`, sets up a service with the Docker tools when needed | test files + run output |
+| **Verify** | `qa_review_changes`, `security_review_changes` when relevant | verdict + evidence |
+| **Report** | the platform delivery contract: `## What happened` (problem + reproduction), `## What I did` (root cause + files), `## Demo` (tests + evidence), `## Next tasks` | the assistant message |
+
+The turn runs through the **same chat engine/call** (`chat_with_project`) as
+every other chat: streaming events, cancellation, crash recovery, budgets and
+the CISO gate are shared. Nothing in harness mode bypasses the normal execution
+path; `POST /api/harness/sessions` schedules it in the background so a closed
+tab cannot leave a ticket idle.
+
+### Read a session
+
+* **Activity** — the collapsed row summarizes what happened
+  (`Read files, searched the code, edited files, ran tests`); expand it to see
+  every tool call, its arguments, duration, status and output.
+* **Report** — the last assistant message, rendered as Markdown. Each `##`
+  section is the delivery contract; the report can be copied from the caption.
+* **Files changed** — the branch diff of the task worktree
+  (`Edited 7 files +361 -12`), with one row per file. The branch name is shown,
+  so the change can be reviewed/merged in the Git view. The rows are a summary,
+  not a main-checkout file link: the worktree holds the delivered version.
+* **Session log** — the audit entries of this session (`task_requested`,
+  run/step events, notifications).
+* **Follow-up** — the composer at the bottom appends a message to the same
+  session and starts the next turn; the profile and the task worktree are kept.
+* **Task / Git / Diagnostics** — the header opens the card with the full chat
+  UI, the Git view on the branch, or the read-only harness diagnostics.
+
+The session branch is a normal task worktree: the main checkout is never
+modified by the harness. Review it in **Git** and merge it as any other task.
+When the project is not a git repository (or task-workspace isolation is
+disabled), the turn falls back to the project checkout and the files block
+reports the files the session wrote.
+
+### API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/harness/sessions` | List the sessions of the project (phase, timings, cost, preview). |
+| `POST` | `/api/harness/sessions` | Create a session (`prompt`, optional `name`, `profiles`, `model`, `budget_cxjcoins`, `start` default true). |
+| `GET` | `/api/harness/sessions/{id}` | Session detail: chat, metrics, worktree, diff/files, run, audit. |
+| `POST` | `/api/harness/sessions/{id}/prompt` | Append a follow-up and schedule its turn (`start=false` disables). |
+
+The create/prompt call persists the chat and **schedules the turn in the
+background** with the same `CODXJuniorSession.chat_with_project` the chat socket
+uses (`start=false` disables it for tests/tools). The HTTP response does not
+wait for the model: the client follows the streamed chat events. This is what
+keeps harness sessions crash-recoverable, visible on the board and immune to a
+closed tab, without a second runtime.
+
+### Models
+
+The harness uses the project's configured model (any OpenAI-compatible provider,
+including DeepSeek). The model is chosen in the composer or inherited from the
+profile; `DeepSeek-V4.1-Flash` and the other DeepSeek models work through the
+existing OpenAI-compatible route, so no additional SDK is required. A provider
+that is not OpenAI-compatible can still be used through its own adapter in
+`api/codx/junior/ai/` without changing the session contract.
 
 ## Observability: navigate and review everything
 
@@ -111,6 +224,10 @@ unless-stopped`, and interrupted turns are resumed by the recovery worker
 | --- | --- | --- |
 | `GET` | `/api/harness/audit?limit&offset&event` | read the audit journal (newest first) |
 | `GET` | `/api/harness/status` | worker presence, active runs, watchdog state |
+| `GET` | `/api/harness/sessions` | harness mode session list |
+| `POST` | `/api/harness/sessions` | create a harness session |
+| `GET` | `/api/harness/sessions/{id}` | session detail (chat, diff, files, audit) |
+| `POST` | `/api/harness/sessions/{id}/prompt` | append a follow-up message |
 | `GET` | `/api/orchestration` | list runs (the Harness UI table) |
 | `POST` | `/api/orchestration/{run_id}/tick` | wake the worker (admin) |
 

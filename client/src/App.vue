@@ -139,7 +139,7 @@ const isMobile = computed(() => $storex.ui.isMobile)
 // or the project workspace for the 0.0.1 `core` profile. Both `root` and the
 // company shell are full screen.
 const isCompanyRoute = computed(() => route.name === 'company-home' || route.name === 'root')
-const isFullScreenRoute = computed(() => isCompanyRoute.value)
+const isFullScreenRoute = computed(() => isCompanyRoute.value || route.meta?.fullScreen === true)
 
 /**
  * Landing target in workspace mode: the first/active project of the default

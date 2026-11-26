@@ -223,6 +223,9 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                     Folder where PR worktrees are created. Absolute when it starts with <code>/</code>, otherwise relative to the project path.
                   </div>
                   <div class="text-xs text-base-content/60 mt-1">
+                    A path inside the repository is ignored: git cannot create worktrees inside the repository, so the default below is used.
+                  </div>
+                  <div class="text-xs text-base-content/60 mt-1">
                     Leave empty to use the default: <code>{{ defaultWorktreesPath }}</code>
                   </div>
                 </div>
@@ -230,9 +233,18 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                   <label class="label-text block mb-2">Isolate autonomous agent tasks</label>
                   <input v-model="settings.task_workspace_isolation" type="checkbox" class="toggle toggle-primary" />
                   <div class="text-xs text-base-content/60 mt-1">
-                    Run autonomy shifts and harness/orchestration steps in a per-task worktree on a
-                    <code>codx/task/…</code> branch. Their changes never mix with other tasks in the main checkout;
-                    review and merge them from the Git view. Interactive chats are never isolated.
+                    Run autonomy shifts and harness/orchestration steps in an isolated git worktree.
+                    Actors reuse one stable <code>agent/shift/&lt;actor&gt;</code> branch; other task
+                    trees keep a <code>codx/task/…</code> branch. Interactive chats are never isolated.
+                  </div>
+                </div>
+                <div>
+                  <label class="label-text block mb-2">Merge successful shifts</label>
+                  <input v-model="settings.task_workspace_auto_merge" type="checkbox" class="toggle toggle-primary" />
+                  <div class="text-xs text-base-content/60 mt-1">
+                    Merge the stable actor branch into the base branch when a shift succeeds, then
+                    reset the actor checkout. A conflict keeps the single branch for review. Disable
+                    to review every shift branch manually from the Git view.
                   </div>
                 </div>
               </div>
@@ -688,6 +700,9 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                     Folder where PR worktrees are created. Absolute when it starts with <code>/</code>, otherwise relative to the project path.
                   </p>
                   <p class="text-xs text-base-content/60 mt-1">
+                    A path inside the repository is ignored: git cannot create worktrees inside the repository, so the default below is used.
+                  </p>
+                  <p class="text-xs text-base-content/60 mt-1">
                     Leave empty to use the default: <code>{{ defaultWorktreesPath }}</code>
                   </p>
                 </div>
@@ -700,13 +715,27 @@ import ProjectDependenciesEditor from '@/components/project_settings/ProjectDepe
                 <div class="flex-1">
                   <label class="label-text block font-semibold mb-2">Isolate autonomous agent tasks</label>
                   <p class="text-xs text-base-content/60">
-                    Run autonomy shifts and harness/orchestration steps in a per-task worktree on a
-                    <code>codx/task/…</code> branch. Their changes never mix with other tasks in the main
-                    checkout; review and merge them from the Git view. Interactive chats are never isolated.
+                    Run autonomy shifts and harness/orchestration steps in an isolated git worktree.
+                    Actors reuse one stable <code>agent/shift/&lt;actor&gt;</code> branch; other task
+                    trees keep a <code>codx/task/…</code> branch. Interactive chats are never isolated.
                   </p>
                 </div>
                 <div class="w-96 flex justify-end">
                   <input v-model="settings.task_workspace_isolation" type="checkbox" class="toggle toggle-primary" />
+                </div>
+              </div>
+
+              <div class="flex justify-between items-start gap-6">
+                <div class="flex-1">
+                  <label class="label-text block font-semibold mb-2">Merge successful shifts</label>
+                  <p class="text-xs text-base-content/60">
+                    Merge the stable actor branch into the base branch when a shift succeeds, then
+                    reset the actor checkout. A conflict keeps the single branch for review. Disable
+                    to review every shift branch manually from the Git view.
+                  </p>
+                </div>
+                <div class="w-96 flex justify-end">
+                  <input v-model="settings.task_workspace_auto_merge" type="checkbox" class="toggle toggle-primary" />
                 </div>
               </div>
             </div>
@@ -1080,6 +1109,9 @@ export default {
       }
       if (this.settings && this.settings.task_workspace_isolation === undefined) {
         this.settings.task_workspace_isolation = true
+      }
+      if (this.settings && this.settings.task_workspace_auto_merge === undefined) {
+        this.settings.task_workspace_auto_merge = true
       }
       // The file permission lists are optional strings: start them as `''` so the
       // dependency editors render an empty list instead of `null`.

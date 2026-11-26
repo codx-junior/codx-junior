@@ -292,11 +292,23 @@ class CODXJuniorSettings(BaseModel):
     task_workspace_isolation: Optional[bool] = Field(
         default=True,
         description=(
-            "Run autonomous agent turns (autonomy shifts, harness/orchestration "
-            "steps) in a per-task git worktree on a dedicated branch, so their "
-            "changes never mix with other tasks in the main working tree. The "
-            "worktree is committed after every turn and reviewed/merged from the "
-            "Git view. Interactive chats always use the main checkout."
+            "Run autonomous agent turns in an isolated git worktree on a "
+            "dedicated branch, so their changes never mix with other tasks in "
+            "the main working tree. Task trees get a per-task codx/task/… "
+            "branch; autonomy actors get one stable agent/shift/<actor> branch "
+            "and checkout reused by every shift. Interactive chats always use "
+            "the main checkout."
+        )
+    )
+
+    task_workspace_auto_merge: Optional[bool] = Field(
+        default=True,
+        description=(
+            "When a shift finishes successfully, merge its stable actor branch "
+            "into the workspace base branch and reset the actor checkout to "
+            "that base. A merge conflict keeps the single actor branch for "
+            "review instead of losing work. Disable to review every shift "
+            "branch manually from the Git view."
         )
     )
 

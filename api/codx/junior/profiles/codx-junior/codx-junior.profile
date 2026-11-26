@@ -21,6 +21,7 @@
     "qa_automation",
     "qa_explorer",
     "repository",
+    "quality_guardian",
     "web_master",
     "workspace",
     "browser",

@@ -1014,6 +1014,43 @@ class GitEngine:
         prefix = (prefix or "").strip("/")
         return f"{prefix}/{slug}" if prefix else slug
 
+    @staticmethod
+    def _is_path_inside(path: str, root: str) -> bool:
+        """
+        Return True when `path` is `root` itself or lives below it.
+
+        Args:
+            path: Path to test.
+            root: Folder the path must be compared against.
+
+        Returns:
+            True when `path` is the root or a descendant of it.
+        """
+        if not path or not root:
+            return False
+        path = os.path.normpath(path)
+        root = os.path.normpath(root)
+        return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+    def _default_worktrees_path(self, repo_path: Optional[str] = None) -> str:
+        """
+        Return the default worktrees base: a sibling of the repository.
+
+        `git worktree add` refuses (and must refuse) a target inside the
+        repository, so the default always points outside of it.
+
+        Args:
+            repo_path: Absolute repository root. Defaults to the git root.
+
+        Returns:
+            Absolute `<repo parent>/<repo name>-worktrees` path.
+        """
+        repo_path = os.path.normpath(repo_path or self._get_repo_root())
+        repo_path = repo_path.rstrip(os.sep) or os.sep
+        return os.path.join(
+            os.path.dirname(repo_path), f"{os.path.basename(repo_path)}-worktrees"
+        )
+
     def get_worktrees_path(self) -> str:
         """
         Return the folder where PR worktrees are created.
@@ -1023,26 +1060,42 @@ class GitEngine:
         relative values against the project path). `~` is expanded and the
         result normalized, so every worktree path is built from the same base.
 
+        A configured base that resolves *inside* the repository cannot hold a
+        worktree (git would nest a full checkout in the working tree), so it is
+        replaced by the sibling default instead of failing every PR/worktree
+        operation.
+
         Returns:
-            Absolute, normalized worktrees base path.
+            Absolute, normalized worktrees base path, always outside the repo.
         """
+        repo_path = os.path.normpath(self._get_repo_root())
+        default_path = self._default_worktrees_path(repo_path)
+
         getter = getattr(self.settings, "get_worktrees_path", None)
         base_path = getter() if callable(getter) else ""
         if not base_path:
             # Settings object without the getter: use the raw setting
             base_path = getattr(self.settings, "git_worktrees_path", "") or ""
         base_path = str(base_path).strip()
+        if not base_path:
+            return default_path
 
-        if base_path:
-            base_path = os.path.expanduser(base_path)
-            if not os.path.isabs(base_path):
-                base_path = os.path.join(self.settings.abs_project_path, base_path)
-            return os.path.normpath(base_path)
+        base_path = os.path.expanduser(base_path)
+        if not os.path.isabs(base_path):
+            base_path = os.path.join(self.settings.abs_project_path, base_path)
+        base_path = os.path.normpath(base_path)
 
-        repo_path = self._get_repo_root().rstrip("/")
-        return os.path.join(
-            os.path.dirname(repo_path), f"{os.path.basename(repo_path)}-worktrees"
-        )
+        if self._is_path_inside(base_path, repo_path):
+            logger.warning(
+                "git_worktrees_path '%s' is inside the repository '%s'; "
+                "using '%s' instead",
+                base_path,
+                repo_path,
+                default_path,
+            )
+            return default_path
+
+        return base_path
 
     def list_worktrees(self) -> list:
         """
@@ -1141,17 +1194,22 @@ class GitEngine:
             target_path = os.path.join(self.get_worktrees_path(), target_path)
         target_path = os.path.normpath(target_path)
 
-        if target_path == repo_root or target_path.startswith(repo_root + os.sep):
-            return {
-                "ok": False,
-                "path": target_path,
-                "output": "",
-                "error": (
-                    f"Worktree path '{target_path}' must be outside the "
-                    f"repository '{repo_root}'; check the project's "
-                    "git_worktrees_path setting"
-                ),
-            }
+        if self._is_path_inside(target_path, repo_root):
+            # A caller may hand over an explicit path (or an old default) that
+            # resolves inside the working tree; git refuses to nest a full
+            # checkout there, so relocate it under the worktrees base instead
+            # of failing the whole PR/commit operation.
+            relocated = os.path.normpath(
+                os.path.join(self.get_worktrees_path(), os.path.basename(target_path))
+            )
+            logger.warning(
+                "Worktree path '%s' is inside the repository '%s'; "
+                "using '%s' instead",
+                target_path,
+                repo_root,
+                relocated,
+            )
+            target_path = relocated
 
         try:
             os.makedirs(target_path, exist_ok=True)

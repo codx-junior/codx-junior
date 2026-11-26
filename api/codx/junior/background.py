@@ -160,6 +160,17 @@ def start_background_services(stop_event) -> None:
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to start the wiki update scheduler: %s", ex)
 
+    # Quality guardians: the file-change pipeline queues changed files and this
+    # scheduler runs the deterministic checks (and the AI lane when the project
+    # opted in) after a quiet period. It is a no-op for a project with no
+    # guardians until the first run bootstraps them.
+    try:
+        from codx.junior.quality.guardians.triggers import start_guardian_scheduler
+
+        start_guardian_scheduler()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to start the quality guardian scheduler: %s", ex)
+
     # Durable orchestration runs (board-native multi-step work). The worker
     # lives only in the background process; the API process writes intent and
     # reads state. Imported lazily so a missing AI dependency can never stop the
@@ -269,6 +280,13 @@ async def stop_background_services() -> None:
         stop_wiki_scheduler()
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Failed to stop the wiki update scheduler: %s", ex)
+
+    try:
+        from codx.junior.quality.guardians.triggers import stop_guardian_scheduler
+
+        stop_guardian_scheduler()
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Failed to stop the quality guardian scheduler: %s", ex)
 
     try:
         from codx.junior.media.worker import stop_media_worker

@@ -33,7 +33,7 @@ import FindReplaceBox from './FindReplaceBox.vue'
       @click.stop="$emit('toggle-collapsed')"
     >
       <i class="fa-solid fa-pen text-base-content/40 text-sm shrink-0"></i>
-      <span class="text-base-content/40 text-sm flex-1 truncate">Write a message...</span>
+      <span class="text-base-content/40 text-sm flex-1 truncate">{{ placeholder || 'Write a message...' }}</span>
       <!-- Pending attachments / files indicator (previews are hidden while collapsed) -->
       <span
         v-if="attachmentCount || fileCount"
@@ -74,7 +74,7 @@ import FindReplaceBox from './FindReplaceBox.vue'
           ref="editor"
           rows="3"
           class="w-full bg-transparent resize-none outline-none text-sm md:text-base text-base-content placeholder:text-base-content/30 leading-relaxed"
-          :placeholder="isEditing ? 'Edit your message...' : 'Write something, or @ to mention a file...'"
+          :placeholder="isEditing ? 'Edit your message...' : (placeholder || 'Write something, or @ to mention a file...')"
           @keydown="onKeyDown"
           @paste="$emit('paste', $event)"
           @focus="onFocus"
@@ -148,6 +148,10 @@ export default {
     // dialogs, "New Task") has no chat yet, so it must never persist its text as
     // the draft of the currently active — and unrelated — chat.
     chatId: { type: [String, Number], default: null },
+    // Empty-state hint of the editor. Hosts with a different contract (the
+    // harness composer, which starts a ticket rather than a chat turn) pass
+    // their own so the composer explains what Enter will do.
+    placeholder: { type: String, default: '' },
     cursorWord: { type: Object, default: () => ({}) },
     // Collapsed composer: only the pill is rendered (mobile reading mode, or any
     // viewport after the user activates the message section).

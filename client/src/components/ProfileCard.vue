@@ -13,6 +13,7 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
         'bg-secondary': profile.category === 'chat',
         'bg-accent': profile.category === 'agent',
         'bg-info': profile.category === 'file',
+        'bg-success': profile.category === 'guardian',
         'bg-neutral': profile.category === 'project'
       }">
     </div>
@@ -138,6 +139,7 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
         'bg-secondary': profile.category === 'chat',
         'bg-accent': profile.category === 'agent',
         'bg-info': profile.category === 'file',
+        'bg-success': profile.category === 'guardian',
         'bg-neutral': profile.category === 'project'
       }">
     </div>

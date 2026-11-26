@@ -23,6 +23,7 @@ import * as browsers from './browsers'
 import * as meets from './meets'
 import * as calendar from './calendar'
 import * as orchestration from './orchestration'
+import * as harness from './harness'
 import * as voice from './voice'
 
 const modules = { 
@@ -45,6 +46,7 @@ const modules = {
   meets,
   calendar,
   orchestration,
+  harness,
   voice
 }
 const storePattern = {

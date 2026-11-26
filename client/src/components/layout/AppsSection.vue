@@ -123,8 +123,9 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         @click="handleNavigateToCalendar"
       />
 
-      <!-- Native harness observability: runs, worker/watchdog health and the
-           audit journal of every piece of work handled by @codx-junior. -->
+      <!-- Harness mode: the DSH-like full-screen session workspace. The
+           read-only diagnostics (runs, worker, audit) stay reachable from its
+           own footer. -->
       <NavItem
         icon="fas fa-bolt"
         label="Harness"
@@ -360,10 +361,11 @@ export default {
     handleNavigateToCalendar() {
       this.openApp('calendar')
     },
-    // Opens the native harness observability view (runs, worker/watchdog
-    // health, audit journal). Registered as 'harness' in config/apps.js.
+    // Opens harness mode (the DSH-like session workspace). Registered as
+    // 'harness-mode' in config/apps.js; the read-only diagnostics view remains
+    // available as the 'harness' app.
     handleNavigateToHarness() {
-      this.openApp('harness')
+      this.openApp('harness-mode')
     },
     // Opens the CISO security view for the active project (same app registry
     // entry as the menu / route: desktop panel or single-mode route).

@@ -2,7 +2,8 @@
 
 The QA runner in this environment only speaks `pytest` (and `npm`), while this
 repository is shell + yaml: the real assertions live in `demo/tests/test_up.sh`
-(TAP-like, 17 checks). Without a bridge the runner collects zero tests, so a
+(TAP-like; the harness prints its own `1..N` plan, so this count never
+rots). Without a bridge the runner collects zero tests, so a
 change to `demo/up.sh` can never be verified — the "vacuous allow" problem
 tracked by cards `d0a8b091` / `de08e8d9`.
 

@@ -50,6 +50,12 @@ export const ROLE_META = {
     icon: 'fa-solid fa-shield-halved',
     badge: 'badge-success'
   },
+  guardian: {
+    label: 'Quality Guardian',
+    hint: 'Owns the quality of a set of files and reviews every change to them',
+    icon: 'fa-solid fa-shield-heart',
+    badge: 'badge-success'
+  },
   file: {
     label: 'File Specialist',
     hint: 'Expert on a specific set of files',

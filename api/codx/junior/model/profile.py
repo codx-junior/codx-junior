@@ -46,6 +46,152 @@ class ProfileGuardrailSettings(BaseModel):
     )
 
 
+class ProfileGuardianCheck(BaseModel):
+    """One deterministic check owned by a quality guardian.
+
+    A guardian is a profile that also carries this block: the ``file_match``
+    regex decides which files it owns, and these checks are the *fast,
+    evidence-first* half of the guardian. The LLM review is the other half
+    (see :class:`ProfileGuardianSettings`).
+
+    Checks are declarative on purpose: a project can inspect what will run
+    before granting the runner any execution. ``builtin`` checks are
+    implemented by ``codx.junior.quality.guardians.checks`` and never accept a
+    command; ``command`` checks run a fixed argv without a shell, inside the
+    project, with a timeout and through the CISO command gate.
+    """
+
+    id: str = Field(
+        default="",
+        description="Stable identifier inside the guardian (syntax, lint, ...)",
+    )
+    title: str = Field(default="", description="Human readable label")
+    kind: str = Field(
+        default="builtin",
+        description="Check implementation: builtin | command",
+    )
+    builtin: str = Field(
+        default="",
+        description="Builtin check id when kind=builtin (syntax, conflict_markers, markdown_links)",
+    )
+    command: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Fixed argv for kind=command. The matched paths are appended unless "
+            "attach_paths is false; '{paths}' is replaced when present."
+        ),
+    )
+    fix_command: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Optional deterministic fix argv (format/lint --fix). Only executed "
+            "by an explicit quality_fix call, never on a file-change run."
+        ),
+    )
+    cwd: str = Field(
+        default="",
+        description="Project-relative working directory (empty = project root)",
+    )
+    attach_paths: bool = Field(
+        default=True,
+        description="Append the matched project-relative paths to command",
+    )
+    timeout_seconds: int = Field(
+        default=120,
+        description="Maximum seconds the command may run",
+    )
+    severity: str = Field(
+        default="medium",
+        description="Severity assigned to a violation found by this check",
+    )
+    enabled: bool = Field(default=True)
+
+
+class ProfileGuardianSettings(BaseModel):
+    """Quality-guardian configuration carried by a profile.
+
+    The profile itself is the guardian: its ``file_match`` is the file scope,
+    its Markdown content is the review prompt and this block declares the
+    deterministic checks, triggers and behaviour. Guardians are ordinary
+    profiles, so they are listed, edited and enriched with the same profile
+    manager and profile-learning tools as any other teammate.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Run this guardian on its triggers. Disable to keep it as documentation only.",
+    )
+    kind: str = Field(
+        default="",
+        description="Quality domain: code | web | tests | docs | infra | data | dependencies | config | custom",
+    )
+    languages: List[str] = Field(
+        default_factory=list,
+        description="Languages/ecosystems this guardian was created for",
+    )
+    triggers: List[str] = Field(
+        default_factory=lambda: ["change", "staged", "manual"],
+        description=(
+            "Events that run this guardian: change (file saved), staged (index), "
+            "commit, manual. A trigger the guardian does not declare is never run "
+            "for it, even when the caller asks for it."
+        ),
+    )
+    checks: List[ProfileGuardianCheck] = Field(
+        default_factory=list,
+        description="Deterministic checks run before the AI review",
+    )
+    severity: str = Field(
+        default="medium",
+        description="Default severity for AI findings that do not report one",
+    )
+    blocking_severity: str = Field(
+        default="high",
+        description="Findings at or above this severity block the quality gate",
+    )
+    auto_fix: bool = Field(
+        default=False,
+        description="Allow quality_fix to run the deterministic fix commands",
+    )
+    ignore_paths: List[str] = Field(
+        default_factory=list,
+        description="Glob patterns (project-relative) this guardian never reviews",
+    )
+    auto_generated: bool = Field(
+        default=False,
+        description="Created automatically from the detected project stack",
+    )
+    generator: str = Field(
+        default="",
+        description="Catalog template that generated this guardian",
+    )
+    signature: str = Field(
+        default="",
+        description="Hash of the project signals used at generation time",
+    )
+    generated_at: str = Field(default="", description="ISO timestamp of the last generation")
+    generated_content_hash: str = Field(
+        default="",
+        description=(
+            "Hash of the generated Markdown content. Used to detect whether a "
+            "user polished the guardian before an automatic refresh overwrites it."
+        ),
+    )
+    generated_profile_hash: str = Field(
+        default="",
+        description=(
+            "Hash of the generated description/file_match/content/tags/checks. "
+            "A different current hash means the user edited the guardian, so an "
+            "automatic catalog refresh must leave it untouched."
+        ),
+    )
+    polished: bool = Field(
+        default=False,
+        description="The user edited this guardian; automatic refreshes leave it untouched",
+    )
+    version: int = Field(default=1, description="Guardian schema version")
+
+
 class ProfileApiSettings(BaseModel):
     active: bool = Field(description="Model is visible through API", default=False)
     model_name: Optional[str] = Field(description="Model's name", default=None)
@@ -174,6 +320,17 @@ class Profile(BaseModel):
     guardrails: ProfileGuardrailSettings = Field(
         description="Guardrail policy applied when this profile is active",
         default=ProfileGuardrailSettings(),
+    )
+    guardian: Optional[ProfileGuardianSettings] = Field(
+        description=(
+            "Quality guardian declaration. When present (or when the category "
+            "is 'guardian') the profile is a file-scoped quality guardian: its "
+            "file_match selects the files it owns and this block declares the "
+            "deterministic checks and triggers. It is still a normal profile, "
+            "so it can be edited from the team view and enriched with "
+            "profile_learning."
+        ),
+        default=None,
     )
     chat_mode: Optional[str] = Field(description="Affects on how conversation works. Like writing a document or chat messages", default=None)
     actor: Optional[Dict[str, Any]] = Field(

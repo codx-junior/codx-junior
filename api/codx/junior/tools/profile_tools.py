@@ -67,7 +67,7 @@ VALID_ACTIONS = ["list", "list_summary", "get", "create", "update", "delete"]
 
 # Categories understood by the client (ProfileCard.vue paints one colour each).
 # Kept explicit so a typo fails here instead of rendering an unstyled card.
-PROFILE_CATEGORIES = ["assistant", "chat", "agent", "file", "project"]
+PROFILE_CATEGORIES = ["assistant", "chat", "agent", "file", "project", "guardian"]
 DEFAULT_CATEGORY = "assistant"
 
 # Profile names double as @mentions (the mention regex is

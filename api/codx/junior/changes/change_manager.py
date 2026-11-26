@@ -86,6 +86,21 @@ class ChangeManager:
             return
         
         logger.info(f"Checking project {self.settings.project_name} - files: {new_files}") 
+
+        # Quality guardians: coalesce these file changes and run the fast lane
+        # (deterministic checks) after the project is quiet. The scheduler is a
+        # best-effort side channel: a missing linter or a broken guardian must
+        # never stop knowledge indexing.
+        try:
+            from codx.junior.quality.guardians.triggers import schedule_guardian_run
+
+            schedule_guardian_run(
+                self.settings,
+                files=new_files,
+                reason="file-change",
+            )
+        except Exception as ex:  # pragma: no cover - defensive
+            logger.warning("Could not schedule quality guardian checks: %s", ex)
         
         tasks = []
         for file_path in new_files:  # Process files concurrently

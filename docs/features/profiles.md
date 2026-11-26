@@ -34,7 +34,7 @@ analyst), status, priority and project.*
 | --- | --- |
 | Name, avatar, description | How the profile appears in chats and mentions. |
 | Category | `global`, `file`, `coding` and others. |
-| File match | A pattern; the profile is applied automatically to matching files. |
+| File match | A pattern; the profile is applied automatically to matching files. A profile with a `guardian` block (or the `guardian` category) is a file-scoped [quality guardian](/features/quality-guardians). |
 | Content | The instructions, in Markdown. |
 | Linked profiles | Other profiles to include. |
 | Model | The LLM the profile uses. |

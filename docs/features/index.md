@@ -1,6 +1,6 @@
 # Features
 
-**0.0.1 ships a focused set: 17 features, not 49.** This page separates what the
+**0.0.1 ships a focused set: 18 features, not 49.** This page separates what the
 public release actually enables from the rest of the platform, which stays in
 the codebase behind the install-time feature list and is turned on feature by
 feature.
@@ -61,6 +61,7 @@ the messenger are roadmap; the AI team works today.
 | --- | --- |
 | [Kanban and tasks](/features/kanban) | A work queue where every card is a chat with sub-tasks, checklists and assignees. |
 | [Git and code review](/features/code-review) | Status, branches, unified diffs, commit, PR view and history. |
+| [Quality guardians](/features/quality-guardians) | File-scoped guardian profiles: fast checks on change, evidence-bound AI review, findings, fixes and learning. |
 
 ### Extend and operate
 
@@ -114,7 +115,7 @@ product; each one has a "before enabling" note in the
 | [Suggested replies](/features/suggested-replies) | Nice-to-have, model-dependent, outside the first-run path. |
 | [Voice conversation](/features/voice-conversation) | Microphone permissions and latency make it a poor first demo. |
 | [DSH task sync](/features/dsh-sync) | External harness integration with `ok: false` on a fresh install. |
-| [codx-junior harness](/features/codx-junior-harness) | A second execution model; the project chat is the 0.0.1 path. |
+| [codx-junior harness](/features/codx-junior-harness) | Harness mode: the DSH-like session workspace over a normal task chat. |
 
 ### Control and integrate
 

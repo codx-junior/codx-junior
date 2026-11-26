@@ -1477,6 +1477,17 @@ export const actions = actionTree(
 
       return await $storex.chats.createNewChat(newChat)
     },
+    // Register a full chat document that a NON-chat endpoint already returned
+    // (e.g. the harness session detail) without fetching it a second time.
+    // The document must be the canonical one: it lands in the same map the
+    // socket events patch, so streaming keeps updating it in place.
+    registerChatDocument({ state }, chat) {
+      if (!chat?.id) return null
+      registerChat(state, { ...chat, messages: chat.messages || [] })
+      $storex.chats.setChatLoadingStatus({ chatId: chat.id, status: ENTITY_STATUS.LOADED })
+      $storex.chats.clearChatNeedsReload(chat.id)
+      return state.chats[chat.id]
+    },
     // Persist a fully-populated chat (used by board import) in a SINGLE request
     // and register it in the store. Unlike `createNewChat` — which saves the
     // metadata first and then writes each message with its own request — this

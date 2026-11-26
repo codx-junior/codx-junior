@@ -9,9 +9,20 @@ Log in with the `admin` user. The first password you type becomes the admin pass
 ## 2. Start in the workspace
 
 The 0.0.1 installer defaults to the **`core` feature profile**: the company OS
-is hidden, so after the first login codx-junior opens the project workspace and
-there is **no company wizard**. Add your first repository next (step 4); the
-workspace then opens on that project.
+is hidden, so after the first login codx-junior opens the **workspace wizard**
+instead of an empty project list.
+
+1. **Add a project** — a Git URL to clone or an absolute folder on the server.
+   codx-junior creates its `.codx` workspace and initialises Git when needed.
+2. **Connect a model** — any OpenAI-compatible provider, or **Skip for now**.
+   AI is optional: without it you can browse files, review Git and use the setup
+   assistant.
+3. **Open workspace** — the new project is in **Top projects** immediately.
+
+The **setup assistant** is always available from the floating robot button (and
+from the wizard). Before a provider is configured it answers from a
+preconfigured guide about projects, models and first-run issues; once a provider
+and model exist the same panel becomes an AI chat.
 
 If the installation has no project yet, `/projects` lists what was discovered
 and offers **New project**.

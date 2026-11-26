@@ -40,7 +40,12 @@ export class CodxJuniorConnection {
   }
 
   prepareUrl(url) {
-    const query = `codx_path=${encodeURIComponent(this.settings?.codx_path)}`;
+    // No active project yet (login, first-run wizard, project list): do NOT
+    // append the literal ``codx_path=undefined``. A project-less endpoint must
+    // answer a clear 4xx instead of resolving a path called "undefined".
+    const codxPath = this.settings?.codx_path;
+    if (!codxPath) return url;
+    const query = `codx_path=${encodeURIComponent(codxPath)}`;
     if (url.indexOf("codx_path") === -1) {
       let [path, params] = url.split("?");
       if (params) {

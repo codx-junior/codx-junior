@@ -15,7 +15,11 @@ from codx.junior.events.collection_events import (
     COLLECTION_PROJECTS,
     emit_collection_event
 )
-from codx.junior.project.project_discover import find_project_by_project_path, get_projects_root_path
+from codx.junior.project.project_discover import (
+    find_project_by_project_path,
+    get_projects_root_path,
+    update_project_snapshot,
+)
     
 logger = logging.getLogger(__name__)
 
@@ -42,7 +46,12 @@ def create_project(project_path: str, user: CodxUser):
     settings = CODXJuniorSettings()
     if project_path[0] != '/':
         project_path = os.path.join(CODX_JUNIOR_PROJECTS_PATH, project_path)
-    
+
+    # The wizard accepts a folder path that does not exist yet: create it so the
+    # first project can be added without a shell step. A Git URL already cloned
+    # its folder, and makedirs(exist_ok=True) is a no-op there.
+    os.makedirs(project_path, exist_ok=True)
+
     settings.project_name = project_path.split("/")[-1]
     settings.codx_path = f"{project_path}/.codx"
     settings.watching = True
@@ -55,6 +64,11 @@ def create_project(project_path: str, user: CodxUser):
     new_project = CODXJuniorSettings.from_project_file(f"{project_path}/.codx/project.json")
     if user:
         UserSecurityManager().add_user_to_project(project_id=new_project.project_id, user=user, permissions='admin')
+
+    # The discovery cache is what ``GET /api/projects`` reads. Saving the
+    # project file is not enough: without this the freshly created project is
+    # invisible to the list endpoint until the next full scan/restart.
+    update_project_snapshot(new_project)
 
     # Every client caches the project list: announce the new project so other
     # tabs/users reload it instead of rendering a stale list. Best effort: the

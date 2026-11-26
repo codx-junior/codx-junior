@@ -113,6 +113,18 @@ without Docker. Those are the 0.1+ features, not a missing checkbox.
 
 ## See it
 
+**First run is a wizard, not an empty project list.**
+
+![Workspace setup wizard: add a project, connect a model or skip, with the setup assistant](docs/public/images/0.0.1/first-run.png)
+
+Add a Git URL or a folder on the server, connect any OpenAI-compatible model
+(or skip it), and land in the project list with the new project already there.
+The setup assistant on the right answers before an API key exists: its
+preconfigured guide covers projects, models and first-run troubleshooting, and
+upgrades to a real AI chat once a provider is connected.
+
+![The project list immediately after setup, showing the new project](docs/public/images/0.0.1/project-list.png)
+
 **A project workspace with tasks, profiles and the agent one click away.**
 
 ![codx-junior project workspace](docs/public/images/0.0.1/workspace.png)
@@ -152,7 +164,7 @@ CISO or analyst — plus status, priority and project.*
 | Area | What you get |
 | --- | --- |
 | **Install** | One-command installer, local/server/DIND modes, update path, health check. |
-| **First run** | Admin access, workspace setup, project discovery, model connection. |
+| **First run** | Workspace wizard: add a project, connect a model or skip, setup assistant with QA fallback. |
 | **Projects** | Import a folder or clone a repo, switch projects, per-project settings. |
 | **Chat & agent** | Project-aware chat with a tool loop: read, search, patch, run commands and tests. |
 | **Agent team** | Role-specific profiles (PM, developer, QA, security) with their own instructions, tools and model; the shared board carries the handoff. |
@@ -232,8 +244,9 @@ Full options: [`install.sh --help`](codx-junior-installer/README.md) and the
 
 > [!IMPORTANT]
 > **First boot.** Sign in as `admin`, set a strong password and add your first
-> repository **before** exposing the port to the internet. The complete
-> first-run flow is in [Initial setup](docs/initial-setup.md).
+> repository **before** exposing the port to the internet. The workspace wizard
+> guides the project and model; the setup assistant stays available from the
+> floating button. The complete flow is in [Initial setup](docs/initial-setup.md).
 
 ### Try the demo loop
 

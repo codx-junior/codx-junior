@@ -5,6 +5,7 @@ import { $storex } from '@/store'
 import { API } from '@/api/api'
 import Login from './components/user/Login.vue'
 import CompanyWizard from './components/company/CompanyWizard.vue'
+import WorkspaceWizard from './components/setup/WorkspaceWizard.vue'
 import Toast from './components/Toast.vue'
 import DesktopSidebar from './components/layout/DesktopSidebar.vue'
 import NewProject from './components/project/NewProject.vue'
@@ -42,6 +43,8 @@ const companyEnabled = computed(() => $storex.features?.companyEnabled !== false
 // upgrade or a re-run from the company menu is never locked.
 const onboardingChecked = ref(false)
 const setupRequired = ref(false)
+const workspaceSetupRequired = ref(false)
+const assistantOpen = ref(false)
 const setupError = ref('')
 let setupCheck = null
 
@@ -62,12 +65,21 @@ function checkSetup(force = false) {
   setupCheck = (async () => {
     try {
       // The feature profile decides whether the company shell exists at all.
-      // Load it first so a `core` install never flashes the wizard.
+      // Load it first so a `core` install never flashes the company wizard.
       await $storex.features?.ensureLoaded?.()
       if (!companyEnabled.value) {
-        // Workspace mode has no company wizard: do not depend on the company
-        // API to unlock the project shell.
+        // Workspace mode: a project is the only hard requirement. A fresh
+        // install starts in the workspace wizard instead of an empty project
+        // list; the assistant inside stays available afterwards.
         setupRequired.value = false
+        setupError.value = ''
+        try {
+          const projects = await API.projects.list(false)
+          workspaceSetupRequired.value = !(Array.isArray(projects) && projects.length > 0)
+        } catch (ex) {
+          // Fail toward the guided flow: the wizard can retry and explain.
+          workspaceSetupRequired.value = true
+        }
         return
       }
       const status = await API.companies.onboarding()
@@ -102,10 +114,19 @@ async function onSetupDone() {
   ).catch(() => {})
 }
 
+/** Workspace setup finished: unlock the project shell. */
+function onWorkspaceSetupDone() {
+  workspaceSetupRequired.value = false
+  setupError.value = ''
+  onboardingChecked.value = true
+}
+
 watch(isLogin, value => {
   if (value) {
     onboardingChecked.value = false
     setupRequired.value = false
+    workspaceSetupRequired.value = false
+    assistantOpen.value = false
     setupError.value = ''
     return
   }
@@ -253,6 +274,12 @@ onMounted(() => {
       </div>
     </template>
 
+    <template v-else-if="workspaceSetupRequired">
+      <div class="h-full w-full bg-base-100">
+        <WorkspaceWizard :open="true" mandatory @done="onWorkspaceSetupDone" />
+      </div>
+    </template>
+
     <template v-else>
       <!-- Phones and tablets (<= 1024px): one purpose-built app shell. The
            desktop sidebar is not rendered at all — the mobile experience lives
@@ -334,6 +361,22 @@ onMounted(() => {
         :key="$ui.filePreview.filePath"
         :file-path="$ui.filePreview.filePath"
         @close="$ui.closeFileViewer()"
+      />
+
+      <!-- Workspace mode: setup help is always one click away. -->
+      <button
+        v-if="!companyEnabled"
+        class="btn btn-primary btn-circle fixed bottom-5 right-5 z-40 shadow-lg"
+        title="Setup assistant"
+        aria-label="Open setup assistant"
+        @click="assistantOpen = true"
+      >
+        <i class="fa-solid fa-robot"></i>
+      </button>
+      <WorkspaceWizard
+        v-if="assistantOpen"
+        assistant-only
+        @close="assistantOpen = false"
       />
     </template>
   </div>

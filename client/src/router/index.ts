@@ -506,11 +506,10 @@ router.beforeEach(async (to, _from) => {
   // bootstrap back to the company home when the company shell is enabled.
   if (to.name === 'workspace-projects') {
     if (companyModeEnabled()) return defaultCompanyHome()
-    // Direct visit / reload: a project may have been discovered since the
-    // bootstrap screen was opened. Prefer its workspace home.
-    await ensureProjectsLoaded()
-    const target = workspaceTarget()
-    return target ? { name: 'home', params: target } : true
+    // 0.0.1 workspace mode: the project list is a real landing screen. Do not
+    // bounce a reload to a company workspace route while a project exists —
+    // that redirect loop left a fresh install on a blank page.
+    return true
   }
   if (to.meta?.company && !companyModeEnabled()) {
     return defaultWorkspaceHome()

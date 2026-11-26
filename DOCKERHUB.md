@@ -30,6 +30,12 @@ platform you have to learn.
 [Feature matrix](https://github.com/codx-junior/codx-junior/blob/main/docs/product/v0.0.1-feature-matrix.md) ·
 [Issues](https://github.com/codx-junior/codx-junior/issues)
 
+**First run is a wizard, not an empty project list.** Add a Git URL or server
+folder, connect a model or skip, and the setup assistant is available even before
+an API key exists.
+
+![The first-run workspace wizard](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/0.0.1/first-run.png)
+
 ![The codx-junior project workspace](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/0.0.1/workspace.png)
 
 ![The shared team board](https://raw.githubusercontent.com/codx-junior/codx-junior/main/docs/public/images/0.0.1/team-board.png)

@@ -1121,9 +1121,15 @@ const initializeAPI = ({ project, user } = {}) => {
         API.users.list()
       ])
     },
-    async setActiveProject({ project_id }) {
-      if (project_id !== API.activeProject?.project_id) {
-        API.activeProject = API.allProjects?.find(p => p.project_id === project_id)
+    async setActiveProject(project) {
+      // Callers pass either a project object or just ``{ project_id }``. Never
+      // fall back to ``undefined``: that used to erase the active project and
+      // make the next request send ``codx_path=undefined``.
+      const projectId = project?.project_id
+      const target = API.allProjects?.find(p => p.project_id === projectId) ||
+        (project?.codx_path ? project : null)
+      if (target?.codx_path && target.project_id !== API.activeProject?.project_id) {
+        API.activeProject = target
         await API.settings.read()
       }
       return API

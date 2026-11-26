@@ -43,6 +43,8 @@ features:
     details: "0.0.1 ships 17 features, not 49. The company OS, autonomous agents and browser desktops stay in the codebase behind the feature list until they are ready."
 ---
 
+![The first-run workspace wizard](/images/0.0.1/first-run.png)
+
 ![codx-junior project workspace with tasks](/images/0.0.1/workspace.png)
 
 ![Review a change before committing](/images/0.0.1/git-review.png)

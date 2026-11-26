@@ -41,7 +41,11 @@ export default {
   },
   computed: {
     filteredProjects() {
-      const visible = this.$storex.company?.loaded
+      // The company projection is a company-shell concern. In workspace mode
+      // (`core`) the project catalogue is the only source of truth: a company
+      // that has not linked the new project yet must not hide it from the list.
+      const workspaceMode = this.$storex.features?.companyEnabled === false
+      const visible = !workspaceMode && this.$storex.company?.loaded
         ? (this.$storex.company.companyProjects || [])
         : (this.$projects.allProjects || [])
       const projects = [...visible].sort((a, b) => 

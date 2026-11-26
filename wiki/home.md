@@ -18,6 +18,15 @@ wider platform (autonomous agents, meetings, dev containers, multi-user) is in
 the codebase but hidden behind the install-time feature list. See
 [what ships in 0.0.1](/0.0.1).
 
+## First run
+
+A fresh `core` install opens the workspace wizard: add a Git URL or server
+folder, connect an OpenAI-compatible model or skip, and the new project is in
+Top projects immediately. The setup assistant answers from a preconfigured guide
+until a provider is connected.
+
+![The first-run workspace wizard](/images/0.0.1/first-run.png)
+
 ![The project workspace: tasks, the agent and the project in one place](/images/0.0.1/workspace.png)
 
 ## Why codx-junior

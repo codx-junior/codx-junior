@@ -62,7 +62,7 @@ disable_logs([
     'selenium.webdriver.common.selenium_manager'
 ])
 
-from fastapi import FastAPI, Request, status, Response, Depends
+from fastapi import FastAPI, HTTPException, Request, status, Response, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -721,9 +721,18 @@ def test_sio(request: Request):
 @app.get("/api/settings")
 def api_settings_check(request: Request):
     logger.info("/api/settings")
-    codx_junior_session = request.state.codx_junior_session
-    codx_junior_session.check_project()
-    return codx_junior_session.settings
+    session = getattr(request.state, "codx_junior_session", None)
+    if session is None:
+        # A project-less request used to raise AttributeError -> 500 (often
+        # with the literal ``codx_path=undefined``). The setup wizard and the
+        # first render legitimately ask before a project exists: answer with an
+        # actionable 4xx instead of crashing.
+        detail = getattr(request.state, "codx_path_error", None) or (
+            "No project selected. Add or choose a project before reading its settings."
+        )
+        raise HTTPException(status_code=422, detail=detail)
+    session.check_project()
+    return session.settings
 
 @app.put("/api/settings")
 async def api_save_settings(request: Request):

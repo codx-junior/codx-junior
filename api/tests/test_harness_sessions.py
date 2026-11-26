@@ -85,6 +85,57 @@ def service(tmp_path):
     )
 
 
+# A composer attachment exactly as the browser posts it (client
+# `ChatAttachment.toJSON()`): the harness composer pastes screenshots and
+# uploads files, so the first message and every follow-up must store them.
+SCREENSHOT = {
+    "file_name": "screenshot.png",
+    "file_type": "image/png",
+    "file_size": 8,
+    "base64_data": "iVBORw0KGgo=",
+}
+
+
+def test_create_stores_the_composer_attachments(service):
+    """A pasted/uploaded file travels with the ticket message."""
+    summary = service.create("What is wrong in this screenshot?", attachments=[SCREENSHOT])
+
+    chat = service.chat_manager.chats[summary["session_id"]]
+    message = chat.messages[0]
+    assert len(message.attachments) == 1
+    assert message.attachments[0].file_name == "screenshot.png"
+    assert message.attachments[0].file_type == "image/png"
+    assert message.attachments[0].base64_data == "iVBORw0KGgo="
+
+
+def test_create_accepts_an_image_without_text(service):
+    """Pasting only an image is a valid ticket (no empty-prompt error)."""
+    summary = service.create("", attachments=[SCREENSHOT])
+
+    chat = service.chat_manager.chats[summary["session_id"]]
+    assert len(chat.messages[0].attachments) == 1
+    assert summary["session_id"]
+
+
+def test_create_still_rejects_an_empty_request(service):
+    """Without text AND without attachments the prompt stays invalid."""
+    with pytest.raises(HarnessSessionError):
+        service.create("   ", attachments=[])
+
+
+def test_prompt_stores_the_composer_attachments(service):
+    """A follow-up image/fed file lands on the new user message."""
+    summary = service.create("First ticket")
+
+    service.prompt(summary["session_id"], "", attachments=[SCREENSHOT])
+
+    chat = service.chat_manager.chats[summary["session_id"]]
+    follow_up = chat.messages[-1]
+    assert follow_up.role == "user"
+    assert len(follow_up.attachments) == 1
+    assert follow_up.attachments[0].file_name == "screenshot.png"
+
+
 # ---------------------------------------------------------------------------
 # Prompt contract
 # ---------------------------------------------------------------------------

@@ -277,15 +277,20 @@ function selectedProfileNames() {
   return names
 }
 
-async function submit(prompt) {
-  if (!prompt || creating.value) return
+async function submit(payload) {
+  // Accepts both the composer payload (`{ text, attachments }`) and a plain
+  // string, so the view keeps working with any host that sends only text.
+  const text = String((payload && payload.text) || (typeof payload === 'string' ? payload : '') || '').trim()
+  const attachments = (payload && payload.attachments) || []
+  if ((!text && !attachments.length) || creating.value) return
   creating.value = true
   actionError.value = ''
   try {
     const created = await $storex.harness.createSession({
-      prompt,
+      prompt: text,
       profiles: selectedProfileNames(),
-      model: selectedModel.value || undefined
+      model: selectedModel.value || undefined,
+      attachments
     })
     homeRef.value?.clear?.()
     await selectSession(created.session_id)
@@ -299,15 +304,16 @@ async function submit(prompt) {
   }
 }
 
-async function sendFollowUp({ text, model } = {}) {
-  if (!text || !activeSessionId.value || busy.value) return
+async function sendFollowUp({ text, model, attachments = [] } = {}) {
+  if ((!text && !attachments.length) || !activeSessionId.value || busy.value) return
   busy.value = true
   actionError.value = ''
   try {
     const updated = await $storex.harness.promptSession({
       id: activeSessionId.value,
       content: text,
-      model: model || undefined
+      model: model || undefined,
+      attachments
     })
     sessionRef.value?.clearComposer?.()
     if (updated?.started === false) {

@@ -16,6 +16,12 @@ import HarnessActivity from './HarnessActivity.vue'
 import HarnessFiles from './HarnessFiles.vue'
 import { $storex } from '@/store'
 import {
+  attachmentFromPaste,
+  attachmentPayload,
+  attachmentPayloads,
+  attachmentsFromFiles
+} from '@/utils/composerAttachments'
+import {
   activitySummary,
   buildHarnessView,
   formatDuration,
@@ -128,14 +134,47 @@ watch(
   }
 )
 
+// Pending attachments of the follow-up composer. `ChatInputBox` only emits
+// `paste` / `upload-files`: converting them into chat attachments is the host's
+// job (a full chat does it inside Chat.vue), so harness mode does it here and
+// posts them with the message.
+const pendingAttachments = ref([])
+const attachmentPreviews = computed(() => pendingAttachments.value.map(attachmentPayload))
+
+function notifyError(text) {
+  $storex.ui?.addNotification?.({ text, type: 'error' })
+}
+
+async function onUploadFiles(files) {
+  const prepared = await attachmentsFromFiles(files, notifyError)
+  if (!prepared.length) return
+  pendingAttachments.value = [...pendingAttachments.value, ...prepared]
+}
+
+async function onPaste(event) {
+  const attachment = await attachmentFromPaste(event, notifyError)
+  if (!attachment) return
+  // The image IS the message: do not let the paste also dump markup.
+  event?.preventDefault?.()
+  event?.stopPropagation?.()
+  pendingAttachments.value = [...pendingAttachments.value, attachment]
+}
+
+function removeAttachment(index) {
+  pendingAttachments.value = pendingAttachments.value.filter((_, ix) => ix !== index)
+}
+
 function sendFollowUp() {
   const text = String(composer.value?.getEditorText?.() || '').trim()
-  if (!text || props.busy || live.value) return
-  emit('send', { text, model: followModel.value })
+  const attachments = attachmentPayloads(pendingAttachments.value)
+  if ((!text && !attachments.length) || props.busy || live.value) return
+  emit('send', { text, model: followModel.value, attachments })
+  pendingAttachments.value = []
 }
 
 function clearComposer() {
   composer.value?.setEditorText?.('')
+  pendingAttachments.value = []
 }
 
 // Enter sends, Shift+Enter adds a newline.
@@ -382,11 +421,38 @@ function copyReport(text) {
           :selected-model="followModel"
           :project="null"
           :chat-project="null"
+          :attachment-count="pendingAttachments.length"
           placeholder="Message or run a task…"
           @send="sendFollowUp"
           @keydown="onKeyDown"
+          @paste="onPaste"
+          @upload-files="onUploadFiles"
           @model-changed="followModel = $event"
         />
+        <!-- Pasted / uploaded attachments waiting for the follow-up -->
+        <div v-if="attachmentPreviews.length" class="flex flex-wrap gap-1.5 px-1 pb-2">
+          <div
+            v-for="(item, index) in attachmentPreviews"
+            :key="`${item.name}-${index}`"
+            class="flex items-center gap-1.5 rounded-lg border border-base-content/15 bg-base-200/60 px-2 py-1 text-[11px]"
+          >
+            <img
+              v-if="String(item.type).startsWith('image/')"
+              :src="item.data"
+              class="h-6 w-6 rounded object-cover"
+              alt=""
+            />
+            <i v-else class="fa-solid fa-paperclip text-base-content/50"></i>
+            <span class="max-w-32 truncate">{{ item.name }}</span>
+            <button
+              class="btn btn-ghost btn-xs px-1"
+              title="Remove attachment"
+              @click="removeAttachment(index)"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>

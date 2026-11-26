@@ -424,6 +424,7 @@ class HarnessSessionService:
         profiles: Optional[Iterable[str]] = None,
         model: Optional[str] = None,
         budget_cxjcoins: Optional[float] = None,
+        attachments: Optional[Iterable[Any]] = None,
     ) -> Dict[str, Any]:
         """
         Create a harness session (chat + first user message) and persist it.
@@ -443,9 +444,12 @@ class HarnessSessionService:
         """
         from codx.junior.db import Chat, Message
 
+        prepared = _attachments(attachments)
         text = str(prompt or "").strip()
-        if not text:
+        if not text and not prepared:
             raise HarnessSessionError("The session prompt cannot be empty")
+        # A pasted screenshot with no text is a valid ticket.
+        text = text or "Review the attached file."
 
         requested = [
             str(profile or "").strip()
@@ -501,6 +505,7 @@ class HarnessSessionService:
             # The harness contract is instruction text, not project knowledge:
             # never feed it to the RAG index.
             disable_knowledge=True,
+            attachments=prepared,
         )
         chat = Chat(
             id=chat_id,
@@ -914,6 +919,7 @@ class HarnessSessionService:
         *,
         profiles: Optional[Iterable[str]] = None,
         model: Optional[str] = None,
+        attachments: Optional[Iterable[Any]] = None,
     ) -> Dict[str, Any]:
         """
         Append a follow-up user message to the session.
@@ -933,9 +939,11 @@ class HarnessSessionService:
         """
         from codx.junior.db import Message
 
+        prepared = _attachments(attachments)
         text = str(content or "").strip()
-        if not text:
+        if not text and not prepared:
             raise HarnessSessionError("The message cannot be empty")
+        text = text or "Review the attached file."
         chat = self._find(session_id)
         message = Message(
             doc_id=str(uuid.uuid4()),
@@ -951,6 +959,7 @@ class HarnessSessionService:
             created_at=_now_iso(),
             updated_at=_now_iso(),
             done=True,
+            attachments=prepared,
         )
         # A follow-up reopens the card on the board: the session is working
         # again until the new turn produces its report.
@@ -961,3 +970,29 @@ class HarnessSessionService:
             chat.llm_model = model
         self._manager().save_chat(chat=chat, chat_only=True)
         return self.get(session_id)
+
+
+def _attachments(items: Optional[Iterable[Any]]) -> List[Any]:
+    """
+    Normalise the attachments posted by a composer.
+
+    A harness composer sends the same JSON a chat message stores
+    (``{name, type, data}``); anything that is not a mapping is dropped instead
+    of breaking the whole turn, and an empty list stays empty so the message is
+    persisted exactly like a text-only one.
+
+    Args:
+        items: Attachments sent by the client (dicts or ``ChatAttachment``).
+
+    Returns:
+        The attachments to store on the user message.
+    """
+    prepared: List[Any] = []
+    for item in items or []:
+        if item is None:
+            continue
+        if hasattr(item, "model_dump"):
+            prepared.append(item.model_dump())
+        elif isinstance(item, dict):
+            prepared.append(item)
+    return prepared

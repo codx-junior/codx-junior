@@ -40,7 +40,7 @@ registry at request time) and its `team` lists the profiles it can put to work:
    the task."* The notification is sent exactly once per terminal status, even
    across worker restarts.
 
-## Harness mode (the DSH-like UI)
+## Harness mode (the session workspace)
 
 **Harness mode** is the full-screen session workspace of the project. It is the
 surface a ticket is written on and the place its result is read; it is a lens

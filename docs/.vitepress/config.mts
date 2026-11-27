@@ -56,7 +56,8 @@ export default defineConfig({
             { text: 'Quality guardians', link: '/features/quality-guardians' },
             { text: 'AI providers and models', link: '/features/ai-providers' },
             { text: 'Development tools (file explorer)', link: '/features/development-tools' },
-            { text: 'API', link: '/features/api' }
+            { text: 'API', link: '/features/api' },
+            { text: 'Personal access tokens', link: '/features/personal-access-tokens' }
           ]
         },
         {
@@ -84,7 +85,6 @@ export default defineConfig({
             { text: 'Users and security', link: '/features/users-and-security' },
             { text: 'MCP connections', link: '/features/mcp-connections' },
             { text: 'Plugins', link: '/features/plugins' },
-            { text: 'DSH task sync', link: '/features/dsh-sync' },
             { text: 'codx-junior harness', link: '/features/codx-junior-harness' }
           ]
         }

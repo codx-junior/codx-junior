@@ -8,7 +8,6 @@
 >
 > Companion reading: [Teams and messenger](/features/teams),
 > [Chats and agents](/features/chats-and-agents),
-> [DSH task sync](/features/dsh-sync) (the closest existing external bridge),
 > [Users and security](/features/users-and-security).
 
 ---

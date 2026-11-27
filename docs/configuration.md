@@ -31,6 +31,8 @@ Most settings are edited in the app (**Global settings** and **Project settings*
 | `CODX_JUNIOR_API_ANALYTICS_DATA_PATH` | Folder for usage analytics data. |
 | `CODX_JUNIOR_ADMIN_USER`, `CODX_JUNIOR_ADMIN_PASSWORD`, `CODX_JUNIOR_ADMIN_EMAIL` | First admin created on the first boot of an unattended install (password bcrypt-hashed, never logged). The email also works as a login identifier. |
 | `CODX_JUNIOR_WORKSPACE_TOKEN` | Per-instance scoped API key a hosted console uses to act on the workspace without the owner's password. Accepted as `Authorization: Bearer <token>`; rotate it by changing the value and restarting the API. |
+| `CODX_JUNIOR_PAT_FOLDER` | Optional folder for the personal access token catalogue (`pat_tokens.json`). Defaults to `CODX_JUNIOR_CONFIG_FOLDER`. The file is written with owner-only permissions; tokens are stored hashed. |
+| `CODX_PUBLIC_API_REQUEST_TIMEOUT_SECONDS` | Request budget for the PAT-authenticated public API (`/api/v1/*`). Defaults to `600`; the generic API budget is 30 s. |
 | `CODX_JUNIOR_ACTIVE_FEATURES` | Install-time feature profile. `core` (the 0.0.1 installer default) exposes the project workspace and hides the company OS and its wizard; `all` exposes the full product; a comma-separated id list selects a subset (ids in `docs/product/features-0.0.1.json`). Unset means `all`. |
 
 The machine-client contract (accepted auth headers, `codx_path` rules, login by

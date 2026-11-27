@@ -74,7 +74,7 @@ DEFAULT_ACME_EMAIL=""
 # Keep them in sync: an unknown id must fail the install instead of silently
 # reappearing in a demo.
 CORE_FEATURE_IDS="install onboarding auth workspace-shell projects chats agent-tools profiles knowledge vibe-coding file-explorer kanban git-review settings api mobile themes-i18n"
-ALL_FEATURE_IDS="install onboarding auth workspace-shell projects chats agent-tools profiles knowledge vibe-coding file-explorer kanban git-review settings api mobile themes-i18n suggested-replies multi-user budget analytics workspaces coworking browser-use computer-use desktop mentions wiki company-business company-tickets company-assistant company-files company-security teams meetings calendar autonomous-agents autonomous-tickets channel-creator external-actors slack-whatsapp voice plugins mcp harness-dsh images logs infra self-update"
+ALL_FEATURE_IDS="install onboarding auth workspace-shell projects chats agent-tools profiles knowledge vibe-coding file-explorer kanban git-review settings api mobile themes-i18n suggested-replies multi-user budget analytics workspaces coworking browser-use computer-use desktop mentions wiki company-business company-tickets company-assistant company-files company-security teams meetings calendar autonomous-agents autonomous-tickets channel-creator external-actors slack-whatsapp voice plugins mcp images logs infra self-update"
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORIGINAL_ARGC=$#

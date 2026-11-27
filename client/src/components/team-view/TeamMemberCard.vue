@@ -130,7 +130,7 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
 
       <!-- Footer: stats on the left, coloured role icon top-right -->
       <div class="flex items-start gap-3 text-[11px] text-base-content/50 border-t border-base-content/10 pt-2">
-        <span class="inline-flex items-center gap-1" :class="member.guardrails?.enabled ? 'text-info' : ''" title="Guardrails">
+        <span class="inline-flex items-center gap-1" :class="member.guardrails?.enabled ? 'text-info' : ''" title="Public Exposure Protection">
           <i class="fa-solid fa-shield-halved"></i>{{ member.guardrails?.enabled ? 'On' : 'Off' }}
         </span>
         <span class="inline-flex items-center gap-1" :class="member.tools?.length ? 'text-success' : ''" title="Skills">

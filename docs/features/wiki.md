@@ -127,7 +127,7 @@ flowchart LR
 
 Each project has a **`wiki` profile**:
 
-- `codx-junior`: public landing page, install and usage, app tour and DSH.
+- `codx-junior`: public landing page, install and usage, and app tour.
 - `codx-junior-ui`: screens, sections, workflows and screenshots.
 - `codx-junior-api`: internal architecture, setup and operations.
 

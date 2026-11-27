@@ -24,7 +24,6 @@ import { infraModule } from './modules/infra'
 import { repoModule } from './modules/repo'
 import { consoleModule } from './modules/console'
 import { traefikModule } from './modules/traefik'
-import { dshModule } from './modules/dsh'
 import { harnessModule } from './modules/harness'
 import { cisoModule } from './modules/ciso'
 import { updateModule } from './modules/update'
@@ -495,6 +494,38 @@ const initializeAPI = ({ project, user } = {}) => {
           }
         }
         return data
+      },
+      /**
+       * List the personal access tokens of the current account.
+       *
+       * The response never carries the token itself (or its digest): only the
+       * metadata, so the list is safe to render in the account screen.
+       * @param {{ includeRevoked?: boolean, username?: string }} [options]
+       * @returns {Promise<{ tokens: Object[], scopes: Object[] }>}
+       */
+      listTokens(options = {}) {
+        const params = new URLSearchParams()
+        if (options.includeRevoked === false) params.set('include_revoked', 'false')
+        if (options.username) params.set('username', options.username)
+        const query = params.toString()
+        return API.get(`/api/users/tokens${query ? `?${query}` : ''}`)
+      },
+      /**
+       * Create a personal access token. The returned `token` is shown once.
+       * @param {Object} payload - name, scopes, project_id, profiles,
+       *   expires_in_days, require_public_exposure_protection.
+       * @returns {Promise<{ token: string, pat: Object }>}
+       */
+      createToken(payload) {
+        return API.post('/api/users/tokens', payload)
+      },
+      /**
+       * Revoke a token by id.
+       * @param {string} tokenId
+       * @returns {Promise<{ revoked: boolean }>}
+       */
+      revokeToken(tokenId) {
+        return API.delete(`/api/users/tokens/${encodeURIComponent(tokenId)}`)
       }
     },
     apps: {
@@ -606,17 +637,6 @@ const initializeAPI = ({ project, user } = {}) => {
           return await API.get(`/api/github/issues/ai/process?issue_url=${encodeURIComponent(issueUrl)}`)
         }
       }
-    },
-
-    /**
-     * DSH Harness bridge: connection settings, health, sync and task triggers.
-     * See `api/modules/dsh.js`.
-     */
-    get dsh() {
-      if (!API._dshModule) {
-        API._dshModule = dshModule(API)
-      }
-      return API._dshModule
     },
 
     /**

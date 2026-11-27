@@ -30,9 +30,7 @@ export const APP_FEATURES = Object.freeze({
   planning: 'kanban',
   'board-management': 'kanban',
   calendar: 'calendar',
-  // Harness MODE is the New chat destination (always available). Only the
-  // read-only diagnostics view belongs to the DSH bridge feature.
-  harness: 'harness-dsh',
+  // Harness MODE is the New chat destination (always available).
   ciso: 'company-security',
   // Human teams, meetings and the project channel are post-0.0.1 surfaces.
   messenger: 'teams',

@@ -281,11 +281,12 @@ import {
           </div>
         </div>
 
-        <!-- Guardrails -->
+        <!-- Public Exposure Protection (persisted as `guardrails`, kept for
+             compatibility with profiles created before the feature existed). -->
         <div v-else-if="tab === 'guardrails'" class="flex flex-col gap-4">
           <div class="flex items-center gap-2">
             <i class="fa-solid fa-shield-halved text-sm" :class="guardrailsEnabled ? 'text-info' : 'text-base-content/40'"></i>
-            <span class="text-xs font-semibold uppercase tracking-wide text-base-content/60">Guardrails</span>
+            <span class="text-xs font-semibold uppercase tracking-wide text-base-content/60">Public Exposure Protection</span>
             <span class="badge badge-xs" :class="guardrailsEnabled ? 'badge-info' : 'badge-ghost'">
               {{ guardrailsEnabled ? 'Enabled' : 'Disabled' }}
             </span>
@@ -293,9 +294,15 @@ import {
               type="checkbox"
               v-model="draft.guardrails.enabled"
               class="toggle toggle-xs checked:border-info checked:bg-info ml-auto"
-              aria-label="Enable guardrails for this member"
+              aria-label="Enable Public Exposure Protection for this member"
             />
           </div>
+
+          <p class="text-[11px] text-base-content/50 -mt-2">
+            An extra conversation layer for teammates reachable by public users. It refuses
+            out-of-scope requests, prompt injection and misbehaviour before the profile answers,
+            and checks the answer before it leaves codx-junior.
+          </p>
 
           <div v-if="guardrailsEnabled" class="flex flex-col gap-4">
             <div>
@@ -327,11 +334,80 @@ import {
             </div>
 
             <div>
+              <label class="label-text text-xs font-semibold pb-1 block">
+                <i class="fa-solid fa-ban mr-1 text-info"></i> Blocked topics
+              </label>
+              <input
+                v-model="blockedTopicsText"
+                type="text"
+                class="input input-sm input-bordered w-full"
+                placeholder="politics, medical advice, competitors…"
+              />
+              <p class="text-[10px] text-base-content/50 mt-1">
+                Comma separated phrases refused deterministically, before any model call.
+              </p>
+              <div v-if="draft.guardrails.blocked_topics?.length" class="flex flex-wrap gap-1 mt-1">
+                <span v-for="topic in draft.guardrails.blocked_topics" :key="topic" class="badge badge-xs badge-error badge-outline">{{ topic }}</span>
+              </div>
+            </div>
+
+            <div>
               <label class="label-text text-xs font-semibold pb-1 flex justify-between">
                 <span><i class="fa-solid fa-percent mr-1 text-info"></i> Scope similarity threshold</span>
                 <span class="font-mono">{{ draft.guardrails.scope_similarity_threshold }}</span>
               </label>
               <input v-model.number="draft.guardrails.scope_similarity_threshold" type="range" min="0" max="1" step="0.05" class="range range-xs range-info" />
+            </div>
+
+            <div class="rounded-lg bg-base-200/60 p-3 flex flex-col gap-3">
+              <div class="flex items-center gap-2">
+                <i class="fa-solid fa-robot text-info"></i>
+                <span class="text-xs font-semibold">Decision model</span>
+              </div>
+              <p class="text-[10px] text-base-content/50">
+                The semantic layer that classifies intent and topic. It runs before the answer
+                and again on the answer.
+              </p>
+              <div>
+                <label class="label-text text-[11px] pb-1 block">Mode</label>
+                <select v-model="draft.guardrails.decision_mode" class="select select-sm select-bordered w-full">
+                  <option value="rules">Rules only (deterministic)</option>
+                  <option value="llm">Decision model only</option>
+                  <option value="hybrid">Hybrid (rules + decision model)</option>
+                </select>
+              </div>
+              <div>
+                <label class="label-text text-[11px] pb-1 block">Model</label>
+                <ChatLLMModelSelector
+                  :selectedModel="draft.guardrails.decision_model"
+                  @model-changed="draft.guardrails.decision_model = $event || ''"
+                />
+                <p class="text-[10px] text-base-content/50 mt-1">
+                  Leave “default” to use the project or global Guardrail model.
+                </p>
+              </div>
+              <label class="flex items-center gap-2 cursor-pointer">
+                <span class="text-[11px] flex-1">
+                  Fail closed when the decision model is unavailable
+                  <span class="block text-[10px] text-base-content/50">Refuse instead of allowing an unclassified request.</span>
+                </span>
+                <input
+                  v-model="draft.guardrails.fail_closed"
+                  type="checkbox"
+                  class="toggle toggle-xs checked:border-info checked:bg-info"
+                />
+              </label>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="label-text text-xs font-semibold pb-1 block">Max input (chars)</label>
+                <input v-model.number="draft.guardrails.max_input_chars" type="number" min="0" class="input input-sm input-bordered w-full" placeholder="0 = no limit" />
+              </div>
+              <div>
+                <label class="label-text text-xs font-semibold pb-1 block">Inspect output (chars)</label>
+                <input v-model.number="draft.guardrails.max_output_chars" type="number" min="0" class="input input-sm input-bordered w-full" placeholder="0 = full answer" />
+              </div>
             </div>
 
             <div>
@@ -374,16 +450,11 @@ import {
               </div>
               <p v-else class="text-xs text-base-content/50">No tools available.</p>
             </div>
-
-            <div class="flex items-center gap-2">
-              <i class="fa-solid fa-robot text-info text-sm"></i>
-              <span class="text-xs">Use LLM classifier</span>
-              <input type="checkbox" v-model="draft.guardrails.use_llm_classifier" class="toggle toggle-xs checked:border-info checked:bg-info ml-auto" aria-label="Use LLM classifier" />
-            </div>
           </div>
 
           <p v-else class="text-xs text-base-content/50 pl-1">
-            Guardrails are off. Enable them to restrict this teammate's scope, refusal behaviour and tool usage.
+            Protection is off. External applications holding a public token will not be able
+            to use this teammate while the token requires Public Exposure Protection.
           </p>
         </div>
 
@@ -629,11 +700,18 @@ import {
           <div v-if="draft.api_settings?.active" class="flex flex-col gap-3 pl-3 border-l-2 border-warning/40">
             <div>
               <label class="label-text text-xs font-semibold pb-1 block">API name</label>
-              <input v-model="draft.api_settings.modelName" type="text" class="input input-sm input-bordered w-full" :placeholder="apiNamePlaceholder" />
+              <input v-model="draft.api_settings.model_name" type="text" class="input input-sm input-bordered w-full" :placeholder="apiNamePlaceholder" />
             </div>
             <div>
               <label class="label-text text-xs font-semibold pb-1 block">API description</label>
-              <textarea v-model="draft.api_settings.modelDescription" rows="2" class="textarea textarea-bordered textarea-sm w-full"></textarea>
+              <textarea v-model="draft.api_settings.description" rows="2" class="textarea textarea-bordered textarea-sm w-full"></textarea>
+            </div>
+            <div v-if="!guardrailsEnabled" class="alert alert-warning py-2 text-[11px] gap-2">
+              <i class="fa-solid fa-shield-halved"></i>
+              <span>
+                This teammate is shared but not protected. Personal access tokens that
+                require Public Exposure Protection will not be able to call it.
+              </span>
             </div>
           </div>
 
@@ -726,7 +804,7 @@ export default {
         { id: 'capabilities', label: 'Capabilities', icon: 'fa-solid fa-wrench' },
         { id: 'effort', label: 'Effort', icon: 'fa-solid fa-gauge-high' },
         { id: 'quality', label: 'Quality', icon: 'fa-solid fa-shield-heart' },
-        { id: 'guardrails', label: 'Guardrails', icon: 'fa-solid fa-shield-halved' },
+        { id: 'guardrails', label: 'Public exposure', icon: 'fa-solid fa-shield-halved' },
         { id: 'advanced', label: 'Advanced', icon: 'fa-solid fa-key' }
       ]
     }
@@ -753,6 +831,18 @@ export default {
         this.draft.guardrails.scope_keywords = value
           .split(',')
           .map(keyword => keyword.trim())
+          .filter(Boolean)
+      }
+    },
+    blockedTopicsText: {
+      get() {
+        return (this.draft.guardrails?.blocked_topics || []).join(', ')
+      },
+      set(value) {
+        if (!this.draft.guardrails) return
+        this.draft.guardrails.blocked_topics = value
+          .split(',')
+          .map(topic => topic.trim())
           .filter(Boolean)
       }
     },
@@ -871,8 +961,8 @@ export default {
         profiles: [...(source.profiles || [])],
         api_settings: {
           active: false,
-          modelName: '',
-          modelDescription: '',
+          model_name: '',
+          description: '',
           ...(source.api_settings || {})
         },
         guardrails: {
@@ -1014,12 +1104,26 @@ export default {
     },
 
     // ── Persistence ────────────────────────────────────────────────────────
+    /**
+     * Numeric guardrail controls can be emptied in the UI; the API expects
+     * numbers, so normalize them before saving.
+     */
+    cleanedGuardrails(source) {
+      const guardrails = { ...(source || {}) }
+      guardrails.scope_similarity_threshold = Number(guardrails.scope_similarity_threshold) || 0
+      guardrails.risk_threshold = Number(guardrails.risk_threshold) || 0
+      guardrails.max_input_chars = Math.max(0, Number(guardrails.max_input_chars) || 0)
+      guardrails.max_output_chars = Math.max(0, Number(guardrails.max_output_chars) || 0)
+      guardrails.decision_model = guardrails.decision_model || ''
+      return guardrails
+    },
     submit() {
       if (!this.draft.name || !this.draft.name.trim() || this.saving) return
       const effort = this.cleanedEffort(this.draft.effort)
       this.$emit('save', {
         profile: {
           ...this.draft,
+          guardrails: this.cleanedGuardrails(this.draft.guardrails),
           // The association is what the team view owns: the values live in the
           // effort definition (Global Settings → Efforts).
           effort_name: this.draft.effort_name || null,

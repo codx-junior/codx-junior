@@ -405,6 +405,22 @@ def workspace_api_capabilities() -> Dict[str, Any]:
         logger.warning("workspace_api_capabilities: %s", ex)
         default_path = None
 
+    # Import lazily: ``security.pat`` imports ``normalize_token`` from this
+    # module, so a module-level import would be circular.
+    try:
+        from codx.junior.security.pat import PAT_SCOPES, PAT_PREFIX
+
+        personal_access_tokens = {
+            "supported": True,
+            "prefix": PAT_PREFIX,
+            "scopes": list(PAT_SCOPES),
+            "manage_endpoint": "/api/users/tokens",
+            "chat_endpoint": "/api/v1/chat/completions",
+            "models_endpoint": "/api/v1/models",
+        }
+    except Exception:  # pragma: no cover - optional during a partial upgrade
+        personal_access_tokens = {"supported": False}
+
     return {
         "contract_version": WORKSPACE_API_CONTRACT_VERSION,
         "auth_headers": list(AUTH_HEADERS),
@@ -412,6 +428,7 @@ def workspace_api_capabilities() -> Dict[str, Any]:
         "scoped_token": True,
         "scoped_token_configured": workspace_token_configured(),
         "scoped_token_env": WORKSPACE_TOKEN_ENV,
+        "personal_access_tokens": personal_access_tokens,
         "login_by_email": True,
         "login_endpoint": LOGIN_ENDPOINT,
         "session_endpoint": SESSION_ENDPOINT,

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Any, Dict, List, Optional
 
 from codx.junior.media.model import VoiceProfile
@@ -6,15 +6,21 @@ from codx.junior.model.user import CodxUser
 
 
 class ProfileGuardrailSettings(BaseModel):
-    """Security policy applied to a profile.
+    """Public Exposure Protection policy applied to a profile.
 
     Every profile carries a guardrail policy. When multiple profiles work
     together in a chat, their policies are aggregated before a request is
     processed.
+
+    The deterministic part (static rules, scope relevance, tool allowlist) is
+    always available. ``decision_mode`` adds the semantic layer: a small
+    decision-model call that classifies an input or an answer as on-topic,
+    off-topic or abusive. This is the layer that protects a profile exposed to
+    public users through a personal access token.
     """
 
     enabled: bool = Field(
-        description="Enable guardrails for this profile",
+        description="Enable Public Exposure Protection for this profile",
         default=False,
     )
     scope: Optional[str] = Field(
@@ -23,6 +29,13 @@ class ProfileGuardrailSettings(BaseModel):
     )
     scope_keywords: List[str] = Field(
         description="Keywords that indicate a request is on-scope",
+        default_factory=list,
+    )
+    blocked_topics: List[str] = Field(
+        description=(
+            "Topics or phrases that are always refused by the deterministic "
+            "layer, before any decision-model call."
+        ),
         default_factory=list,
     )
     scope_similarity_threshold: float = Field(
@@ -41,9 +54,62 @@ class ProfileGuardrailSettings(BaseModel):
         default=10.0,
     )
     use_llm_classifier: bool = Field(
-        description="Placeholder for a future local decision model",
+        description=(
+            "Legacy alias for decision_mode='hybrid'. Kept so profiles created "
+            "before Public Exposure Protection keep using the classifier when "
+            "they already opted in."
+        ),
         default=False,
     )
+    decision_mode: str = Field(
+        description=(
+            "Decision layer: 'rules' (deterministic only), 'llm' (only the "
+            "decision model) or 'hybrid' (both)."
+        ),
+        default="rules",
+    )
+    decision_model: str = Field(
+        description=(
+            "Model used by the decision layer. Empty uses the project's "
+            "guardrail model, then the global one."
+        ),
+        default="",
+    )
+    fail_closed: bool = Field(
+        description=(
+            "When the decision model cannot be called, refuse instead of "
+            "allowing the request. Recommended for a public profile."
+        ),
+        default=False,
+    )
+    max_input_chars: int = Field(
+        description=(
+            "Maximum characters accepted from one public request (0 = no "
+            "profile-level limit; the API still enforces its own bound)."
+        ),
+        default=0,
+        ge=0,
+    )
+    max_output_chars: int = Field(
+        description=(
+            "Maximum assistant answer length inspected by the output guardrail "
+            "(0 = inspect the whole answer)."
+        ),
+        default=0,
+        ge=0,
+    )
+
+    @field_validator("decision_mode", mode="before")
+    @classmethod
+    def _decision_mode(cls, value):
+        """Normalize the decision mode; unknown values fall back to rules."""
+        mode = str(value or "rules").strip().lower()
+        return mode if mode in ("rules", "llm", "hybrid") else "rules"
+
+    def uses_decision_model(self) -> bool:
+        """``True`` when the semantic decision layer must run."""
+        mode = str(self.decision_mode or "rules").strip().lower()
+        return bool(self.use_llm_classifier or mode in ("llm", "hybrid"))
 
 
 class ProfileGuardianCheck(BaseModel):

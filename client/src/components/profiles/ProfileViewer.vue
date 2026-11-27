@@ -14,10 +14,10 @@ import ProfileKnowledgeEditor from './ProfileKnowledgeEditor.vue'
       <span
         class="badge badge-sm gap-1"
         :class="profile.guardrails?.enabled ? 'badge-info' : 'badge-ghost'"
-        :title="profile.guardrails?.enabled ? 'Guardrails enabled' : 'Guardrails disabled'"
+        :title="profile.guardrails?.enabled ? 'Public Exposure Protection enabled' : 'Public Exposure Protection disabled'"
       >
         <i class="fa-solid fa-shield-halved"></i>
-        {{ profile.guardrails?.enabled ? 'Guardrails' : 'No guardrails' }}
+        {{ profile.guardrails?.enabled ? 'Protected' : 'Not protected' }}
       </span>
     </div>
     <div class="bg-base-300 p-4 rounded-md">
@@ -26,11 +26,16 @@ import ProfileKnowledgeEditor from './ProfileKnowledgeEditor.vue'
     </div>
     <div v-if="profile.guardrails?.enabled" class="bg-base-300 p-4 rounded-md">
       <div class="font-semibold flex items-center gap-2">
-        <i class="fa-solid fa-shield-halved text-info"></i> Guardrails
+        <i class="fa-solid fa-shield-halved text-info"></i> Public Exposure Protection
       </div>
       <div class="mt-2 flex flex-col gap-2 text-sm">
         <div v-if="profile.guardrails.scope">
           <span class="font-semibold">Scope:</span> {{ profile.guardrails.scope }}
+        </div>
+        <div v-if="profile.guardrails.decision_mode">
+          <span class="font-semibold">Decision layer:</span>
+          {{ profile.guardrails.decision_mode }}{{ profile.guardrails.decision_model ? ` (${profile.guardrails.decision_model})` : '' }}
+          <span v-if="profile.guardrails.fail_closed" class="badge badge-xs badge-warning ml-1">fail closed</span>
         </div>
         <div v-if="profile.guardrails.scope_keywords?.length" class="flex flex-wrap gap-1 items-center">
           <span class="font-semibold">Keywords:</span>
@@ -39,6 +44,14 @@ import ProfileKnowledgeEditor from './ProfileKnowledgeEditor.vue'
             :key="keyword"
             class="badge badge-xs badge-outline"
           >{{ keyword }}</span>
+        </div>
+        <div v-if="profile.guardrails.blocked_topics?.length" class="flex flex-wrap gap-1 items-center">
+          <span class="font-semibold">Blocked topics:</span>
+          <span
+            v-for="topic in profile.guardrails.blocked_topics"
+            :key="topic"
+            class="badge badge-xs badge-error badge-outline"
+          >{{ topic }}</span>
         </div>
         <div class="flex flex-wrap gap-1 items-center">
           <span class="font-semibold">Allowed tools:</span>

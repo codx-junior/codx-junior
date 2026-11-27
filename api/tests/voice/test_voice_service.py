@@ -208,7 +208,7 @@ def test_harness_chat_cannot_start_a_voice_call(tmp_path):
             id="chat-1",
             name="Harness task",
             owner_project_id="project-1",
-            harness="dsh",
+            harness="claude-code",
         )
     ]
     session = FakeSession(tmp_path, chats)
@@ -225,7 +225,7 @@ def test_call_cannot_switch_into_a_harness_chat(tmp_path):
             id="chat-2",
             name="Harness task",
             owner_project_id="project-1",
-            external_source="dsh",
+            external_source="claude-code",
         ),
     ]
     session = FakeSession(tmp_path, chats)

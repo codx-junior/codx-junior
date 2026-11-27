@@ -11,7 +11,6 @@ import ChatGlobalPrompts from '@/components/global_settings/ChatGlobalPrompts.vu
 import EffortsSettings from '@/components/global_settings/EffortsSettings.vue'
 import TraefikRulesPanel from '@/components/traefik/TraefikRulesPanel.vue'
 import SecretsEditor from '@/components/secrets/SecretsEditor.vue'
-import DshIntegrationPanel from '@/components/global_settings/DshIntegrationPanel.vue'
 import UpdatePanel from '@/components/global_settings/UpdatePanel.vue'
 </script>
 
@@ -128,7 +127,6 @@ import UpdatePanel from '@/components/global_settings/UpdatePanel.vue'
             scope="global"
             v-model:rules="settings.traefik_rules"
           />
-          <DshIntegrationPanel v-if="activeTab === 'dsh'" :settings="settings" />
           <UpdatePanel v-if="activeTab === 'update'" />
         </div>
       </main>
@@ -156,7 +154,6 @@ export default {
         { id: 'efforts', label: 'Efforts', icon: 'fa-gauge-high' },
         { id: 'plugins', label: 'Plugins', icon: 'fa-puzzle-piece' },
         { id: 'traefik', label: 'Traefik', icon: 'fa-route' },
-        { id: 'dsh', label: 'DSH Harness', icon: 'fa-diagram-project' },
         { id: 'users', label: 'Users', icon: 'fa-users' },
         { id: 'scripts', label: 'Scripts', icon: 'fa-code' },
         { id: 'oauth', label: 'OAuth', icon: 'fa-key' },
@@ -199,15 +196,6 @@ export default {
       const data = await this.$storex.api.settings.global.read()
       if (data && !Array.isArray(data.traefik_rules)) {
         data.traefik_rules = []
-      }
-      if (data && (!data.dsh || typeof data.dsh !== 'object')) {
-        data.dsh = {
-          enabled: true,
-          agent_token: '',
-          default_instance_id: '',
-          board: 'DSH',
-          only_project: true,
-        }
       }
       this.settings = data
     },
@@ -266,7 +254,6 @@ export default {
         chat: 'Set global prompts for all chat interactions',
         plugins: 'Install and manage plugins',
         traefik: 'Manage global Traefik routes and review workspace/project routes',
-        dsh: 'Connect a DeepSeek Harness and mirror its tasks on the board',
         users: 'Control user access and permissions',
         scripts: 'Create and manage project scripts',
         oauth: 'Configure OAuth providers',

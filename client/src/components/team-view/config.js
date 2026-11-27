@@ -69,16 +69,23 @@ export function roleMeta(category) {
 }
 
 // Default guardrails applied to a member that has none yet. Kept in sync with
-// the shape used by EditProfile.vue / the profiles API.
+// the shape used by EditProfile.vue / the profiles API. `guardrails` is the
+// persisted key for Public Exposure Protection (kept for compatibility).
 export const EMPTY_GUARDRAILS = {
   enabled: false,
   scope: '',
   scope_keywords: [],
+  blocked_topics: [],
   scope_similarity_threshold: 0.35,
   allowed_tools: [],
   refusal_message: 'I can only answer questions within my configured scope.',
   risk_threshold: 10.0,
-  use_llm_classifier: false
+  use_llm_classifier: false,
+  decision_mode: 'hybrid',
+  decision_model: '',
+  fail_closed: true,
+  max_input_chars: 0,
+  max_output_chars: 0
 }
 
 // ── API <-> local team mapping ───────────────────────────────────────────────

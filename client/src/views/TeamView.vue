@@ -176,10 +176,10 @@ import {
           <span class="text-sm font-bold leading-none">{{ stats.skills }}</span>
           <span class="hidden md:inline text-[11px] text-base-content/50">Skills</span>
         </button>
-        <div class="flex items-center gap-1.5 rounded-lg bg-base-200 border border-base-content/10 px-2 py-1 shrink-0" title="Guardrailed members">
+        <div class="flex items-center gap-1.5 rounded-lg bg-base-200 border border-base-content/10 px-2 py-1 shrink-0" title="Public Exposure Protection enabled">
           <i class="fa-solid fa-shield-halved text-warning text-[11px]"></i>
           <span class="text-sm font-bold leading-none">{{ stats.guardrails }}</span>
-          <span class="hidden md:inline text-[11px] text-base-content/50">Guardrailed</span>
+          <span class="hidden md:inline text-[11px] text-base-content/50">Protected</span>
         </div>
       </div>
     </section>
@@ -1336,7 +1336,7 @@ export default {
           file_match: '',
           profiles: [],
           tools: [],
-          api_settings: { active: false, modelName: '', modelDescription: '' },
+          api_settings: { active: false, model_name: '', description: '' },
           guardrails: { ...EMPTY_GUARDRAILS },
           project_id: this.$project.project_id
         }

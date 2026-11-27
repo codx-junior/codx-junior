@@ -47,16 +47,6 @@ def _is_harness_chat(chat) -> bool:
     return bool(getattr(chat, "harness", None) or getattr(chat, "external_source", None))
 
 
-def _is_dsh_chat(chat) -> bool:
-    """True for DSH tasks, including legacy rows without the harness field."""
-    if chat is None:
-        return False
-    return (
-        getattr(chat, "harness", None) == "dsh"
-        or getattr(chat, "external_source", None) == "dsh"
-    )
-
-
 def _harness_task_id(chat) -> Optional[str]:
     return (
         getattr(chat, "harness_task_id", None)
@@ -1890,41 +1880,6 @@ def api_list_chats(
             chat = chat_manager.find_by_id(chat_id=chat_id)
             if not chat:
                 logger.error('Chat not found. chat_id: %s, project: %s', chat_id, codx_junior_session.settings.project_name)
-            elif _is_dsh_chat(chat):
-                # The DSH Session log remains the only copy of the
-                # conversation. Hydration is an in-memory read: nothing is
-                # written back to the task JSON.
-                try:
-                    from codx.junior.integrations.dsh import DshConfig, DshSync
-                    from codx.junior.integrations.dsh_agent import (
-                        DshAgentClient,
-                        get_dsh_agent_registry,
-                    )
-                    config = DshConfig.from_settings(codx_junior_session.settings)
-                    registry = get_dsh_agent_registry()
-                    chat_instance_id = getattr(chat, "external_instance_id", None)
-                    instance = (
-                        registry.get(chat_instance_id)
-                        if chat_instance_id
-                        else registry.default_instance(
-                            getattr(codx_junior_session.settings, "project_id", None),
-                            config.default_instance_id,
-                        )
-                    )
-                    if instance is not None:
-                        client = DshAgentClient(
-                            registry,
-                            instance.id,
-                            timeout=max(config.timeout, 20),
-                        )
-                        DshSync(
-                            codx_junior_session.settings,
-                            config=config,
-                            client=client,
-                            instance_id=instance.id,
-                        ).for_chat_manager(chat_manager).hydrate_chat(chat)
-                except Exception as ex:
-                    logger.warning("api_list_chats: cannot hydrate DSH chat %s: %s", chat_id, ex)
             # The unsent draft never reaches other clients: it is filtered out
             # here and read only through GET /chats/draft by its composer.
             # A response whose turn is dead can never answer any more: close it

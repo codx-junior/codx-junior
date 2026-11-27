@@ -18,11 +18,11 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
       }">
     </div>
 
-    <!-- Guardrails indicator -->
+    <!-- Public Exposure Protection indicator -->
     <div
       v-if="profile.guardrails?.enabled"
       class="absolute top-4 right-3 z-20 tooltip tooltip-left"
-      data-tip="Guardrails enabled"
+      data-tip="Public Exposure Protection enabled"
     >
       <i class="fa-solid fa-shield-halved text-info text-sm"></i>
     </div>
@@ -107,7 +107,7 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
           </div>
         </div>
         <div class="stat p-2 text-center">
-          <div class="stat-title text-xs">Guardrails</div>
+          <div class="stat-title text-xs">Protected</div>
           <div class="stat-value text-base">
             <i class="fa-solid fa-shield-halved" :class="profile.guardrails?.enabled ? 'text-info' : 'text-base-content/30'"></i>
           </div>
@@ -163,7 +163,7 @@ import { profileKnowledgeInfo } from '@/utils/profileKnowledge'
       <div v-if="knowledge.hasExtraKnowledge" class="tooltip" :data-tip="knowledge.tooltip">
         <i class="fa-solid fa-book-bookmark text-warning text-xs"></i>
       </div>
-      <div v-if="profile.guardrails?.enabled" class="tooltip" data-tip="Guardrails enabled">
+      <div v-if="profile.guardrails?.enabled" class="tooltip" data-tip="Public Exposure Protection enabled">
         <i class="fa-solid fa-shield-halved text-info text-xs"></i>
       </div>
       <div v-if="profile.use_knowledge" class="tooltip" data-tip="Uses Knowledge">

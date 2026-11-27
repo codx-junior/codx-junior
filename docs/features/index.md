@@ -68,6 +68,7 @@ the messenger are roadmap; the AI team works today.
 | Feature | Summary |
 | --- | --- |
 | [API](/features/api) | REST, Socket.IO and the OpenAI-compatible endpoint, with OpenAPI docs. |
+| [Personal access tokens](/features/personal-access-tokens) | Scoped tokens for third-party apps, plus the Public Exposure Protection policy that keeps a public profile on-topic. |
 | [Login and admin access](/initial-setup) | Single-admin login and session; multi-user roles and invitations are on the roadmap. |
 | Responsive mobile shell, themes and languages | Works on a phone; the desktop workspace is the primary target. |
 
@@ -114,8 +115,7 @@ product; each one has a "before enabling" note in the
 | [@codx mentions](/features/mentions) | A background file watcher that writes in place; needs a visible undo. |
 | [Suggested replies](/features/suggested-replies) | Nice-to-have, model-dependent, outside the first-run path. |
 | [Voice conversation](/features/voice-conversation) | Microphone permissions and latency make it a poor first demo. |
-| [DSH task sync](/features/dsh-sync) | External harness integration with `ok: false` on a fresh install. |
-| [codx-junior harness](/features/codx-junior-harness) | Harness mode: the DSH-like session workspace over a normal task chat. |
+| [codx-junior harness](/features/codx-junior-harness) | Harness mode: the session workspace over a normal task chat. |
 
 ### Control and integrate
 

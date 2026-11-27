@@ -86,3 +86,18 @@ Set the voice from the profile editor, ask an assistant to do it, or use the API
 * `GET /api/profiles/{name}/voice` — **resolve** the effective voice of the profile: its own value with the project and then the system defaults filled in, plus the source the value came from.
 * `POST /api/profiles/{name}/voice/preview` — **preview** the voice: renders a short audio sample so you can hear it before it is used in a video. It answers `503` when no speech provider is available instead of returning fake audio.
 
+
+## Publishing a profile to third-party apps
+
+A profile can be shared through the API (**Advanced → Shareable via API**) and
+called by an external application with a [personal access
+token](/features/personal-access-tokens). The token selects the project and,
+optionally, the teammates it may use.
+
+Before a profile is reachable by public users, enable **Public Exposure
+Protection** in the teammate drawer. It adds a deterministic layer (scope,
+keywords, blocked topics, tool allowlist, size limits) and an optional **decision
+model** that classifies each request and answer as on-topic, off-topic, prompt
+injection, misbehaviour, secret extraction or unsafe. A token can require this
+protection, so a shared-but-unprotected profile is never called by a public
+application.

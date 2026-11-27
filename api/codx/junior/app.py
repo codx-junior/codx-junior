@@ -128,6 +128,13 @@ BROWSER_LIFECYCLE_PREFIX = "/api/browsers"
 COMPUTER_LIFECYCLE_PREFIX = "/api/computers"
 #: Delegated-agent LLM gateway (see api/ai_gateway.py).
 LLM_GATEWAY_PREFIX = "/api/ai/llm"
+#: PAT-authenticated public API (api/chatGPTLikeApi.py). A chat turn is an LLM
+#: request plus tools; the 30 s global budget is too short for a support
+#: assistant answering a real question.
+PUBLIC_API_PREFIX = "/api/v1/"
+PUBLIC_API_REQUEST_TIMEOUT_SECONDS = int(
+    os.environ.get("CODX_PUBLIC_API_REQUEST_TIMEOUT_SECONDS", "600")
+)
 
 # ── API performance logging ────────────────────────────────────────────────────
 # Records every HTTP call's duration/status into the API logs storage so that
@@ -540,6 +547,8 @@ class ApiRequestMiddleware:
             # longer than the global 30 s budget (the upstream has its own
             # timeout, CODX_LLM_GATEWAY_TIMEOUT_SECONDS).
             timeout = BROWSER_REQUEST_TIMEOUT_SECONDS
+        elif path.startswith(PUBLIC_API_PREFIX):
+            timeout = PUBLIC_API_REQUEST_TIMEOUT_SECONDS
 
         _attach_session(request, scope)
 

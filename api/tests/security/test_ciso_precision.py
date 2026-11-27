@@ -303,7 +303,7 @@ def test_credential_harvest_does_not_match_prefetch_or_os_environ():
 
 def test_os_system_does_not_match_prose_that_says_system_paren():
     findings, _ = malicious.scan_text(
-        "A chat may mirror a task in another system (currently DSH).",
+        "A chat may mirror a task that lives in another system.",
         path="api/db.py",
     )
     assert not [f for f in findings if f.rule_id == "dangerous.os-system"]

@@ -162,7 +162,7 @@ class ChatEngineActions:
 
     @profile_function
     async def api_chat_with_project(
-        self, profile_name: str, messages: list
+        self, profile_name: str, messages: list, chat_name: str = "api-chat"
     ) -> Chat:
         """
         Chat with the project via the API using a named profile.
@@ -170,12 +170,15 @@ class ChatEngineActions:
         Args:
             profile_name: Profile to apply.
             messages: List of dicts with 'role' and 'content'.
+            chat_name: Name used for the persisted chat. The public API passes a
+                per-request name so concurrent third-party calls do not all share
+                one ``api-chat`` document.
 
         Returns:
             Updated Chat object.
         """
         chat = Chat(
-            name="api-chat",
+            name=chat_name or "api-chat",
             profiles=[profile_name],
             messages=[
                 Message(role=m["role"], content=m["content"]) for m in messages

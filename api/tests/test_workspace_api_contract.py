@@ -31,8 +31,8 @@ import pytest
 from fastapi import HTTPException
 
 # Imported at collection time, BEFORE other tests install their lightweight
-# ``codx.junior.api`` package stub (see ``_import_dsh_router``), so the real
-# package is the one in ``sys.modules`` for the whole session.
+# ``codx.junior.api`` package stub, so the real package is the one in
+# ``sys.modules`` for the whole session.
 import codx.junior.app as app_module
 
 from codx.junior.model.user import CodxUser, CodxUserLogin

@@ -12,13 +12,35 @@ Real-time events (chat streaming, notifications, progress) use Socket.IO at `/ap
 
 Requests are authenticated with the user token returned by `POST /api/users/login`.
 
-## OpenAI-compatible endpoint
+## Personal access tokens
 
-Any [profile](/features/profiles) can be exposed as a model. Turn on **API settings → active** in the profile and optionally give it a model name and description. Then use it from any OpenAI-compatible client:
+A machine client (a support widget, a CRM, an automation) authenticates with a
+personal access token created in **Account settings → Personal Access Tokens**.
+The token is scoped to a project, optionally to specific teammates, and carries
+only the permissions it needs. The clear value is shown once; only its hash is
+stored.
 
-| Endpoint | Description |
-| --- | --- |
-| `GET /api/v1/models` | Lists the profiles exposed as models, named `<project>/<profile>` unless a model name is set. |
-| `POST /api/v1/completions` | Sends chat `messages` to a `<project>/<profile>` model and returns a chat completion. |
+| Endpoint | Scope | Description |
+| --- | --- | --- |
+| `GET /api/users/tokens` | session | List the caller's tokens (metadata only). |
+| `POST /api/users/tokens` | session | Create a token; the response is the only time the secret is returned. |
+| `DELETE /api/users/tokens/{id}` | session | Revoke a token immediately. |
+| `GET /api/v1/models` | `models:read` | Lists the profiles exposed as models, named `<project>/<profile>` unless a model name is set. |
+| `GET /api/v1/profiles` | `profiles:read` | Public profile metadata. |
+| `GET /api/v1/projects` | `projects:read` | The project bound to the token. |
+| `POST /api/v1/chat/completions` | `chat:write` | OpenAI-compatible chat completion. |
+| `POST /api/v1/completions` | `chat:write` | Legacy single-prompt completion. |
 
-This lets you plug codx-junior's project-aware assistants into other tools, such as IDE extensions.
+Send the token as `Authorization: Bearer cxj_pat_…` (or `x-api-key`). The
+OpenAI-compatible endpoints do **not** accept a browser session, so a token can
+never inherit the owner's full API access.
+
+Any [profile](/features/profiles) can be exposed as a model. Turn on **API
+settings → active** in the profile and optionally give it a model name and
+description. Public tokens require **Public Exposure Protection** by default:
+the profile's scope, decision model and tool allowlist are enforced on every
+public turn. See [Personal access tokens and public exposure
+protection](/features/personal-access-tokens).
+
+This lets you plug codx-junior's project-aware assistants into other tools, such
+as IDE extensions and support widgets.

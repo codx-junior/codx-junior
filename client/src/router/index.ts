@@ -187,7 +187,7 @@ const PROJECT_ROUTES = [
     component: HarnessModeView,
     meta: { fullScreen: true, ...mobile('Harness', 'more', { hideTopBar: true, hideTabs: true }) }
   },
-  { path: '/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', feature: 'harness-dsh', ...mobile('Harness', 'more') } },
+  { path: '/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
   { path: '/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', feature: 'company-security', ...mobile('CISO', 'more') } },
   { path: '/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
   { path: '/knowledge-settings', name: 'knowledge-settings', component: AppRouteView, meta: { app: 'knowledge_settings' } },

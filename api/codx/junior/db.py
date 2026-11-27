@@ -767,13 +767,14 @@ class Chat(BaseModel):
     )
 
     # ── External task mirrors ──────────────────────────────────────────────
-    # A chat may mirror a task that lives in another system (currently DSH).
-    # The mirror stores only identity + board placement; the conversation is
-    # fetched live from the external system when the chat is opened, so no
-    # message content is duplicated in codx-junior's task files.
+    # A chat may mirror a task that lives in another system. The mirror stores
+    # only identity + board placement; the conversation lives in the external
+    # system, so no message content is duplicated in codx-junior's task files.
+    # No external mirror is integrated today; the fields are kept so a future
+    # connector can reuse the storage without a schema migration.
     external_source: Optional[str] = Field(
         default=None,
-        description="External system owning this task (e.g. 'dsh'). None for native chats."
+        description="External system owning this task. None for native chats."
     )
     external_id: Optional[str] = Field(
         default=None,
@@ -785,7 +786,7 @@ class Chat(BaseModel):
     )
     external_instance_id: Optional[str] = Field(
         default=None,
-        description="DSH instance that owns the external session, when applicable."
+        description="Instance of the external system that owns the session, when applicable."
     )
     external_status: Optional[str] = Field(
         default=None,
@@ -801,14 +802,14 @@ class Chat(BaseModel):
     )
 
     # ── Harness association ────────────────────────────────────────────────
-    # A task may be executed by an external harness (DSH, Claude Code, Codex).
+    # A task may be executed by an external harness (Claude Code, Codex, …).
     # The harness fields are the generic association; the external_* fields
-    # above remain as compatibility aliases for the original DSH mirror.
+    # above remain as compatibility aliases for the original task mirror.
     # `status` is the workflow status and `harness_status` is the execution
     # status; they must not be conflated.
     harness: Optional[str] = Field(
         default=None,
-        description="Execution harness kind (e.g. 'dsh', 'claude-code', 'codex')."
+        description="Execution harness kind (e.g. 'claude-code', 'codex')."
     )
     harness_instance_id: Optional[str] = Field(
         default=None,

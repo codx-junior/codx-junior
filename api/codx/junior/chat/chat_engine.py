@@ -1246,6 +1246,7 @@ class ChatEngine:
         return GuardrailService(
             policies=[p.guardrails for p in profiles],
             settings=self.settings,
+            profile_names=[p.name for p in profiles],
         )
 
     # -------------------------------------------------------------------------
@@ -3474,7 +3475,7 @@ class ChatEngine:
             guardrail_scope_instructions: Optional[str] = None
 
             if guardrail_service:
-                guardrail_input = guardrail_service.check_input(query)
+                guardrail_input = await guardrail_service.acheck_input(query)
                 response_message.meta_data = {
                     **(response_message.meta_data or {}),
                     "guardrail": guardrail_input.to_dict(),
@@ -3502,8 +3503,10 @@ class ChatEngine:
                         )
                     return chat, documents
 
-                if guardrail_input.disable_tools:
-                    chat_tools = guardrail_service.filter_tools(chat_tools)
+                # The tool allowlist is a standing policy, not a punishment:
+                # apply it on PASS too. An enabled profile with an empty
+                # ``allowed_tools`` deliberately grants no tools.
+                chat_tools = guardrail_service.filter_tools(chat_tools)
 
                 guardrail_scope_instructions = guardrail_input.scope_instructions
             
@@ -3915,8 +3918,8 @@ class ChatEngine:
 
             # ADDED: output guardrail for externally exposed profiles.
             if guardrail_service:
-                guardrail_output = guardrail_service.check_output(main_content)
-                if guardrail_output.blocked:
+                guardrail_output = await guardrail_service.acheck_output(main_content)
+                if guardrail_output.action != "pass":
                     response_message.meta_data = {
                         **(response_message.meta_data or {}),
                         "guardrail_output": guardrail_output.to_dict(),

@@ -286,7 +286,6 @@ const SPOT_CHECK_LINKS = [
   '/home',
   '/setup-and-installation',
   '/deployment-and-operations/codx-junior',
-  '/integrations/dsh-harness',
   '/project-overview/license-md',
 ];
 

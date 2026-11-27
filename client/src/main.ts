@@ -92,6 +92,13 @@ const globalMixin = {
     $voice () {
       return $storex.voice
     },
+    // `$api` is the escape hatch used by panels that own a feature endpoint
+    // (personal access tokens). It was documented but never registered, so
+    // `this.$api.users` threw "Cannot read properties of undefined
+    // (reading 'users')" on the account settings screen.
+    $api () {
+      return $storex.api
+    },
     $globalSettings() {
       return $storex.api.globalSettings
     },

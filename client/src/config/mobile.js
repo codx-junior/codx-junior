@@ -217,13 +217,6 @@ export const MOBILE_APP_GROUPS = [
         icon: 'fa-solid fa-book',
         tone: 'primary'
       },
-      {
-        key: 'knowledge',
-        title: 'Knowledge',
-        description: 'Search the knowledge base',
-        icon: 'fa-solid fa-magnifying-glass',
-        tone: 'info'
-      }
     ]
   },
   {
@@ -293,13 +286,6 @@ export const MOBILE_APP_GROUPS = [
         description: 'Instance-wide configuration',
         icon: 'fa-solid fa-sliders',
         tone: 'secondary'
-      },
-      {
-        key: 'knowledge_settings',
-        title: 'Knowledge settings',
-        description: 'Indexes and sources',
-        icon: 'fa-solid fa-sliders',
-        tone: 'success'
       },
       {
         key: 'account',

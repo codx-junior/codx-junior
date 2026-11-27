@@ -33,7 +33,18 @@ import SettingsMenu from './SettingsMenu.vue'
       @click="run(item)"
     >
       <i :class="item.icon" class="w-5 text-center"></i>
-      {{ item.label }}
+      <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+      <span
+        v-if="item.action === 'desktop'"
+        class="ml-auto inline-flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors"
+        :class="isDesktopMode ? 'bg-primary' : 'bg-base-content/20'"
+        aria-hidden="true"
+      >
+        <span
+          class="h-3 w-3 rounded-full bg-base-100 shadow-sm transition-transform"
+          :class="isDesktopMode ? 'translate-x-3' : 'translate-x-0'"
+        ></span>
+      </span>
     </MenubarItem>
 
     <div v-if="!filteredItems.length" class="col-span-2 px-3 py-2 text-xs opacity-50">
@@ -69,24 +80,23 @@ export default {
         { label: 'Home', icon: 'fa-solid fa-home', action: 'home' },
         // New chat opens the full-screen harness workspace.
         { label: 'New chat', icon: 'fa-solid fa-plus', action: 'harness-mode' },
+        { label: 'Desktop', icon: 'fa-solid fa-table-columns', action: 'desktop' },
         { label: 'Company', icon: 'fa-solid fa-building-columns', action: 'company', company: true },
         { label: 'Company settings', icon: 'fa-solid fa-building-user', action: 'company-settings', company: true },
         { label: 'Projects', icon: 'fa-solid fa-cubes', action: 'projects', feature: 'projects' },
         { label: 'New project', icon: 'fa-solid fa-plus', action: 'new-project' },
         { label: 'Wiki', icon: 'fa-solid fa-graduation-cap', action: 'wiki', feature: 'wiki' },
-        { label: 'Chats', icon: 'fa-regular fa-comments', action: 'chats' },
+        { label: 'Harness', icon: 'fa-solid fa-bolt', action: 'harness-mode' },
         { label: 'Messenger', icon: 'fa-regular fa-comment-dots', action: 'messenger', feature: 'teams' },
         { label: 'CISO', icon: 'fa-solid fa-shield-halved', action: 'ciso', feature: 'company-security' },
         { label: 'Git', icon: 'fa-solid fa-code-branch', action: 'git-view', feature: 'git-review' },
         { label: 'Tasks', icon: 'fa-solid fa-list-check', action: 'task-list', feature: 'kanban' },
         { label: 'Board', icon: 'fa-brands fa-trello', action: 'tasks', feature: 'kanban' },
         { label: 'Planning', icon: 'fa-solid fa-diagram-project', action: 'planning', feature: 'kanban' },
-        { label: 'Team', icon: 'fa-solid fa-people-group', action: 'team', feature: 'teams' },
+        { label: 'Team', icon: 'fa-solid fa-people-group', action: 'team', feature: 'profiles' },
         { label: 'Meet', icon: 'fa-solid fa-video', action: 'meet', feature: 'meetings' },
         { label: 'File explorer', icon: 'fa-regular fa-folder-open', action: 'file-explorer', feature: 'file-explorer' },
         { label: 'Computer sessions', icon: 'fa-solid fa-desktop', action: 'browser-sessions', feature: 'browser-use' },
-        { label: 'Profiles', icon: 'fa-solid fa-id-badge', action: 'profiles', admin: true },
-        { label: 'Knowledge', icon: 'fa-solid fa-magnifying-glass', action: 'knowledge', admin: true, feature: 'knowledge' },
         { label: 'Analytics', icon: 'fa-solid fa-chart-area', action: 'analytics', feature: 'analytics' },
         // Docker infrastructure (containers, stacks, images, volumes,
         // networks, events) — see config/apps.js → infra.
@@ -98,6 +108,9 @@ export default {
     isProjectAdmin() {
       return this.$users.isProjectAdmin
     },
+    isDesktopMode() {
+      return this.$storex.$router?.$navigation?.isDesktopMode === true
+    },
     filteredItems() {
       const term = this.search.trim().toLowerCase()
       return this.items
@@ -108,6 +121,12 @@ export default {
     }
   },
   methods: {
+    toggleDesktop() {
+      const navigation = this.$storex.$router?.$navigation
+      if (!navigation?.apps) return
+      if (this.isDesktopMode) navigation.apps.openHome()
+      else navigation.apps.openDesktop()
+    },
     run(item) {
       const companyLocation = (section = '') => {
         const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
@@ -120,14 +139,14 @@ export default {
         }
       }
       const actions = {
-        home: () => this.$ui.setActiveTab('home'),
+        home: () => this.$ui.openApp('home'),
+        desktop: () => this.toggleDesktop(),
         'harness-mode': () => this.$ui.openApp('harness-mode'),
         company: () => this.$storex.$router.push(companyLocation()).catch(() => {}),
         'company-settings': () => this.$storex.$router.push(companyLocation('settings')).catch(() => {}),
         projects: () => this.$ui.openApp('projects'),
         'new-project': () => this.$ui.showNewProject(true),
         wiki: () => this.$ui.setActiveTab('wiki'),
-        chats: () => this.$storex.$router.push({ name: 'chats' }).catch(() => {}),
         messenger: () => this.$storex.$router.push({ name: 'messenger' }).catch(() => {}),
         ciso: () => this.$ui.openApp('ciso'),
         'git-view': () => this.$ui.openApp('git-view'),
@@ -138,8 +157,6 @@ export default {
         meet: () => this.$ui.openMeet(),
         'file-explorer': () => this.$ui.setActiveTab('file-explorer'),
         'browser-sessions': () => this.$ui.setActiveTab('browser-sessions'),
-        profiles: () => this.$ui.setActiveTab('profiles'),
-        knowledge: () => this.$ui.setActiveTab('knowledge'),
         analytics: () => this.$ui.setActiveTab('analytics'),
         infra: () => this.$ui.openInfra()
       }

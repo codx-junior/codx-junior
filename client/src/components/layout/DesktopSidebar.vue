@@ -1,7 +1,6 @@
 <script setup>
 import AppsSection from './AppsSection.vue'
 import WorkspacesSection from './WorkspacesSection.vue'
-import Notifications from '../Notifications.vue'
 import WindowsMenu from '../main-menu/WindowsMenu.vue'
 </script>
 
@@ -23,37 +22,37 @@ import WindowsMenu from '../main-menu/WindowsMenu.vue'
       :class="isCollapsed ? 'w-16' : 'w-64'"
     >
       <!-- Header Section -->
-      <div class="px-2 py-4 shrink-0 border-b border-base-content/5">
+      <div class="px-3 py-4 shrink-0 border-b border-base-content/5">
         <div class="flex items-center justify-between gap-2">
-          <div v-if="!isCollapsed" class="flex items-center shrink-0 gap-2 flex-1">
-            <!-- Expanded: Collapse back to the icon rail -->
-            <button
-              class="click w-6 h-6 rounded border border-base-content/20 flex items-center justify-center hover:bg-white/5 transition-colors"
-              @click="toggleCollapse"
-              title="Collapse sidebar"
-            >
-              <i class="fa-solid fa-angle-left text-base-content/40 text-xs"></i>
-            </button>
-            <span class="text-lg font-semibold">
-              <span class="text-codx-secondary">codx-</span>
-              <span class="text-codx-secondary">junior</span>
+          <div v-if="!isCollapsed" class="flex min-w-0 items-center gap-2">
+            <img class="h-8 w-8 shrink-0 rounded-xl" src="/only_icon.png" alt="codx-junior" />
+            <span class="truncate text-lg font-semibold tracking-tight">
+              <span class="text-codx-primary">codx</span><span class="text-codx-secondary">-junior</span>
             </span>
           </div>
-          <!-- Collapsed: logo + chevron indicator inviting the user to expand -->
-          <div v-else class="flex justify-center w-full">
+
+          <!-- Collapsed: logo only. Clicking the logo expands the bar. -->
+          <div v-else class="flex w-full justify-center">
             <button
-              class="click w-10 flex flex-col items-center gap-1 py-1.5 rounded-lg hover:bg-white/5 transition-colors"
+              class="click flex w-10 flex-col items-center gap-1 rounded-lg py-1.5 hover:bg-white/5 transition-colors"
               title="Expand sidebar"
               aria-label="Expand sidebar"
               @click="toggleCollapse"
             >
-              <img class="w-6 h-6" src="/only_icon.png" alt="codx-junior" />
+              <img class="h-7 w-7" src="/only_icon.png" alt="codx-junior" />
             </button>
           </div>
 
-          <div v-if="!isCollapsed" class="flex items-center gap-2">
-            <Notifications />
-          </div>        
+          <!-- Expanded: collapse control replaces the old notifications bell. -->
+          <button
+            v-if="!isCollapsed"
+            class="click flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-base-content/15 text-base-content/50 transition-colors hover:bg-white/5 hover:text-base-content"
+            title="Collapse sidebar"
+            aria-label="Collapse sidebar"
+            @click="toggleCollapse"
+          >
+            <i class="fa-solid fa-angle-left text-xs"></i>
+          </button>
         </div>
       </div>
 

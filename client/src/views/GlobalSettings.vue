@@ -3,13 +3,7 @@ import AISettings from './AISettings.vue'
 import AgentSettings from '@/components/ai_settings/AgentSettings.vue'
 import ExportImportButton from '@/components/ExportImportButton.vue'
 import SecurityUserList from '@/components/security/SecurityUserList.vue'
-import ProjectScripts from '@/components/project/ProjectScripts.vue'
-import OAuthSettings from '@/components/oauth_settings/OAuthSettings.vue'
-import PluginsEditor from '@/components/global_settings/plugins/PluginsEditor.vue'
 import GeneralSettings from '@/components/global_settings/GeneralSettings.vue'
-import ChatGlobalPrompts from '@/components/global_settings/ChatGlobalPrompts.vue'
-import EffortsSettings from '@/components/global_settings/EffortsSettings.vue'
-import TraefikRulesPanel from '@/components/traefik/TraefikRulesPanel.vue'
 import SecretsEditor from '@/components/secrets/SecretsEditor.vue'
 import UpdatePanel from '@/components/global_settings/UpdatePanel.vue'
 </script>
@@ -114,19 +108,9 @@ import UpdatePanel from '@/components/global_settings/UpdatePanel.vue'
         <div class="flex-1 overflow-y-auto p-4 @md:p-8">
           <SecurityUserList :settings="settings" v-if="activeTab === 'users'" />
           <SecretsEditor v-if="activeTab === 'secrets'" scope="all" default-scope="global" />
-          <ProjectScripts :settings="settings" v-if="activeTab === 'scripts'" />
-          <OAuthSettings :settings="settings" v-if="activeTab === 'oauth'" />
-          <PluginsEditor v-if="activeTab === 'plugins'" />
           <GeneralSettings :settings="settings" v-if="activeTab === 'general'" />
           <AISettings :settings="settings" v-if="activeTab === 'ai'" />
           <AgentSettings v-if="activeTab === 'agents'" />
-          <ChatGlobalPrompts :settings="settings" v-if="activeTab === 'chat'" />
-          <EffortsSettings :settings="settings" v-if="activeTab === 'efforts'" />
-          <TraefikRulesPanel
-            v-if="activeTab === 'traefik'"
-            scope="global"
-            v-model:rules="settings.traefik_rules"
-          />
           <UpdatePanel v-if="activeTab === 'update'" />
         </div>
       </main>
@@ -150,13 +134,7 @@ export default {
         { id: 'update', label: 'Updates', icon: 'fa-cloud-arrow-down' },
         { id: 'ai', label: 'AI Models', icon: 'fa-brain' },
         { id: 'agents', label: 'Agents', icon: 'fa-robot' },
-        { id: 'chat', label: 'Chat Prompts', icon: 'fa-comments' },
-        { id: 'efforts', label: 'Efforts', icon: 'fa-gauge-high' },
-        { id: 'plugins', label: 'Plugins', icon: 'fa-puzzle-piece' },
-        { id: 'traefik', label: 'Traefik', icon: 'fa-route' },
         { id: 'users', label: 'Users', icon: 'fa-users' },
-        { id: 'scripts', label: 'Scripts', icon: 'fa-code' },
-        { id: 'oauth', label: 'OAuth', icon: 'fa-key' },
         // 'ENV Variables' was removed from the menu: those values were only
         // ever written by the UI and never read by the API. Credentials are
         // managed in the Secrets tab instead.
@@ -251,13 +229,7 @@ export default {
         update: 'Update this installation: pull the latest image and recreate the container',
         ai: 'Manage AI models and LLM configurations',
         agents: 'Define and configure AI agents',
-        chat: 'Set global prompts for all chat interactions',
-        plugins: 'Install and manage plugins',
-        traefik: 'Manage global Traefik routes and review workspace/project routes',
         users: 'Control user access and permissions',
-        scripts: 'Create and manage project scripts',
-        oauth: 'Configure OAuth providers',
-        efforts: 'Define the effort budgets (name, description and values) that profiles are linked to'
       }
       // Kept out of the map above: an assignment shaped `name: '<long text>'`
       // trips the CISO hardcoded-credential heuristic, so this entry is

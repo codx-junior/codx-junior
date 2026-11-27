@@ -37,6 +37,13 @@ function openNewChat() {
   $storex.ui.openApp('harness-mode')
 }
 
+function toggleDesktop() {
+  const navigation = $storex.$router?.$navigation
+  if (!navigation?.apps) return
+  if (navigation.isDesktopMode) navigation.apps.openHome()
+  else navigation.apps.openDesktop()
+}
+
 function appEnabled(appKey) {
   return isAppEnabled($storex.features, appKey)
 }
@@ -47,13 +54,28 @@ function featureEnabled(featureId) {
 </script>
 
 <template>
-  <MenubarItem @click="$ui.setActiveTab('home')">
+  <MenubarItem @click="$ui.openApp('home')">
     <i class="fa-solid fa-home"></i>
     Home
   </MenubarItem>
   <MenubarItem @click="openNewChat">
     <i class="fa-solid fa-plus"></i>
     New chat
+  </MenubarItem>
+
+  <MenubarItem @click="toggleDesktop">
+    <i class="fa-solid fa-table-columns"></i>
+    Desktop
+    <span
+      class="ml-auto inline-flex h-4 w-7 items-center rounded-full p-0.5 transition-colors"
+      :class="$storex.$router?.$navigation?.isDesktopMode ? 'bg-primary' : 'bg-base-content/20'"
+      aria-hidden="true"
+    >
+      <span
+        class="h-3 w-3 rounded-full bg-base-100 shadow-sm transition-transform"
+        :class="$storex.$router?.$navigation?.isDesktopMode ? 'translate-x-3' : 'translate-x-0'"
+      ></span>
+    </span>
   </MenubarItem>
   <MenubarItem
     v-if="$storex.features?.companyEnabled !== false"
@@ -112,13 +134,6 @@ function featureEnabled(featureId) {
   </MenubarItem>
   <MenubarItem v-if="appEnabled('ciso')" @click="$ui.openApp('ciso')">
     <i class="fa-solid fa-shield-halved"></i> CISO
-  </MenubarItem>
-  <MenubarItem
-    v-if="$users.isProjectAdmin && appEnabled('knowledge')"
-    @click="$ui.setActiveTab('knowledge')"
-  >
-    <i class="fa-solid fa-magnifying-glass"></i>
-    Knowledge
   </MenubarItem>
   <MenubarItem v-if="appEnabled('analytics')" @click="$ui.setActiveTab('analytics')">
     <i class="fa-solid fa-chart-area"></i>

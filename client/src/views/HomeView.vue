@@ -73,15 +73,6 @@ const actions = computed(() => {
       run: () => $storex.ui.openGitView()
     },
     {
-      key: 'knowledge',
-      appKey: 'knowledge',
-      title: 'Knowledge',
-      description: 'Search the indexed project so answers use your real code and docs.',
-      icon: 'fa-solid fa-magnifying-glass',
-      tone: 'info',
-      run: () => $storex.ui.setActiveTab('knowledge')
-    },
-    {
       key: 'vibe',
       appKey: 'vibe-coding',
       title: 'Vibe coding',
@@ -324,11 +315,6 @@ async function switchProject(nextProject) {
                 <i class="fa-solid fa-code-branch w-4 text-center text-error" aria-hidden="true"></i>
                 <span class="flex-1">Git review</span>
                 <span class="text-[10px] text-base-content/40">diff &amp; commit</span>
-              </li>
-              <li class="flex items-center gap-2 py-2">
-                <i class="fa-solid fa-magnifying-glass w-4 text-center text-info" aria-hidden="true"></i>
-                <span class="flex-1">Knowledge</span>
-                <span class="text-[10px] text-base-content/40">indexed code</span>
               </li>
             </ul>
           </div>

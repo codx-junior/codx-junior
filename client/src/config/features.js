@@ -36,7 +36,7 @@ export const APP_FEATURES = Object.freeze({
   messenger: 'teams',
   meet: 'meetings',
   'meet-summary': 'meetings',
-  team: 'teams',
+  team: 'profiles',
   'team-channel': 'teams',
   'team-dm': 'teams',
   'team-media-library': 'teams',

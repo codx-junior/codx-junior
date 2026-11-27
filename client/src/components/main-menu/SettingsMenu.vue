@@ -20,13 +20,6 @@ import MenubarItem from './MenubarItem.vue'
         </MenubarItem>
 
 
-        <MenubarItem v-if="$project && $storex.api.permissions.isProjectAdmin">
-            <a class="flex gap-1 tooltip tooltip-right click" data-tip="Knowledge settings"
-                @click.stop="$ui.setActiveTab('knowledge_settings')">
-                Knowledge settings
-            </a>
-        </MenubarItem>
-
         <MenubarItem class="flex gap-2 hover:bg-base-300" @click="$ui.setActiveTab('global-settings')"
             v-if="$users.isAdmin">
             Global settings

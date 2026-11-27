@@ -54,7 +54,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       aria-modal="false"
       aria-label="Setup assistant"
     >
-      <header class="flex items-center gap-2 border-b border-base-300 bg-base-200/60 px-3 py-2">
+      <header class="flex items-center gap-2 border-b border-base-300 bg-base-100 px-3 py-2">
         <img src="/only_icon.png" alt="codx-junior" class="h-7 w-7 rounded-lg" />
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm font-bold">Setup assistant</div>

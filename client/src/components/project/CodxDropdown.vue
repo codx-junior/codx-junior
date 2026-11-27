@@ -60,14 +60,6 @@ import Chat from '../chat/Chat.vue'
             <i class="fa-solid fa-sliders"></i>
           </a>
         </li>
-        <li v-if="$project && $storex.api.permissions.isProjectAdmin">
-          <a
-            class="flex gap-1 tooltip tooltip-right click"
-            data-tip="Knowledge settings"
-            @click.stop="setProjectTab('knowledge_settings')">
-            <i class="fa-solid fa-book"></i>
-          </a>
-        </li>
         <li v-if="$storex.api.permissions.isAdmin">
           <a
             class="flex gap-1 tooltip tooltip-right click"

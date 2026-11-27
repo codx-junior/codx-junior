@@ -16,7 +16,8 @@
         v-model="formData.projectName"
         type="text"
         placeholder="my-awesome-project"
-        class="input input-bordered w-full"
+        class="input input-bordered input-lg w-full text-lg"
+        style="height: 3.5rem !important; min-height: 3.5rem"
         autofocus
       />
     </div>

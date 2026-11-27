@@ -29,10 +29,14 @@ const error = ref('')
 const projects = ref([])
 const selected = ref(null)
 const projectPath = ref('')
-// The assistant is an explicit, collapsible card: it starts hidden so the
-// setup form always has the full width, and a fixed height so its answers can
+// The assistant is part of the first-run page: visible on the right on
+// desktop and at the bottom on mobile, with a fixed height so its answers can
 // never grow over the form.
-const assistantVisible = ref(false)
+const assistantVisible = ref(true)
+// Responsive layout is driven by the shared shell flag instead of only the
+// `lg:` classes: the app CSS ships a duplicated `.flex-col` utility that can
+// override `lg:flex-row`, so the first-run assistant must be laid out here.
+const isDesktopLayout = computed(() => !$storex.ui?.isMobile)
 const ai = ref({ configured: false, provider: '', model: '' })
 const aiForm = ref({
   provider: 'deepseek',
@@ -259,7 +263,7 @@ onMounted(() => { if (props.open) load() })
       role="dialog"
       aria-label="Setup assistant"
     >
-      <header class="flex items-center gap-2 border-b border-base-300 bg-base-200/60 px-3 py-2">
+      <header class="flex items-center gap-2 border-b border-base-300 bg-base-100 px-3 py-2">
         <img src="/only_icon.png" alt="codx-junior" class="h-7 w-7 rounded-lg" />
         <div class="min-w-0 flex-1">
           <div class="truncate text-sm font-bold">Setup assistant</div>
@@ -278,7 +282,7 @@ onMounted(() => { if (props.open) load() })
 
     <div
       v-else
-      class="fixed inset-0 z-[120] flex items-center justify-center bg-base-300/80 p-2 backdrop-blur-sm"
+      class="fixed inset-0 z-[120] flex items-center justify-center bg-base-100/80 p-2 backdrop-blur-sm"
     >
       <div class="flex h-[90vh] max-h-[900px] w-[96vw] max-w-6xl flex-col overflow-hidden rounded-2xl bg-base-100 p-0 shadow-2xl">
         <div class="flex items-center gap-3 border-b border-base-300 px-5 py-3">
@@ -310,7 +314,7 @@ onMounted(() => { if (props.open) load() })
           </button>
         </div>
 
-        <div class="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <div class="flex min-h-0 flex-1 flex-col lg:flex-row" :style="{ flexDirection: isDesktopLayout ? 'row' : 'column' }">
           <div class="flex min-h-0 flex-1 flex-col overflow-y-auto p-5 sm:p-7">
             <div v-if="error" class="alert alert-warning mb-4 py-2 text-xs">
               <i class="fa-solid fa-triangle-exclamation"></i>
@@ -377,11 +381,12 @@ onMounted(() => { if (props.open) load() })
                   <label class="mb-2 block text-sm font-bold" for="wizard-project-path">
                     New project — Git URL or absolute folder
                   </label>
-                  <div class="flex flex-col gap-2 sm:flex-row">
+                  <div class="flex flex-col gap-2 sm:flex-row" :style="{ flexDirection: isDesktopLayout ? 'row' : 'column' }">
                     <input
                       id="wizard-project-path"
                       v-model="projectPath"
-                      class="input input-bordered h-12 min-w-0 flex-1 border-base-content/25 bg-base-100 text-base"
+                      class="input input-bordered h-14 min-w-0 flex-1 border-base-content/25 bg-base-100 text-lg"
+                      style="height: 3.5rem !important; min-height: 3.5rem"
                       placeholder="https://github.com/you/repo.git or /srv/projects/my-app"
                       :disabled="creating"
                       @keyup.enter="createProject"
@@ -526,10 +531,13 @@ onMounted(() => { if (props.open) load() })
                settings above. -->
           <aside
             v-if="assistantVisible"
-            class="shrink-0 border-t border-base-300 bg-base-200/30 p-3 lg:w-[390px] lg:self-start lg:border-l lg:border-t-0"
+            class="shrink-0 border-t border-base-300 bg-base-100 p-3 lg:w-[390px] lg:self-start lg:border-l lg:border-t-0"
+            :style="isDesktopLayout
+              ? { width: '390px', alignSelf: 'flex-start', borderLeft: '1px solid var(--color-base-300, #3b4252)', borderTop: '0' }
+              : { width: '100%' }"
           >
-            <div class="flex h-[320px] flex-col overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm lg:h-[520px]">
-              <div class="flex items-center gap-2 border-b border-base-300 bg-base-200/60 px-3 py-2">
+            <div class="flex h-[320px] flex-col overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-sm lg:h-[520px]" :style="{ height: isDesktopLayout ? '520px' : '320px' }">
+              <div class="flex items-center gap-2 border-b border-base-300 bg-base-100 px-3 py-2">
                 <img src="/only_icon.png" alt="codx-junior" class="h-7 w-7 rounded-lg" />
                 <div class="min-w-0 flex-1">
                   <div class="truncate text-sm font-bold">Setup assistant</div>

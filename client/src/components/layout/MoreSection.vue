@@ -41,26 +41,6 @@
       </button>
 
       <button
-        v-if="isProjectAdmin"
-        class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-base-content/70 hover:bg-white/8 hover: transition-colors text-left w-full"
-        @click="handleNavigateToProfiles"
-        title="Profiles"
-      >
-        <i class="fa-solid fa-id-badge w-4 text-center shrink-0"></i>
-        <span>Profiles</span>
-      </button>
-
-      <button
-        v-if="isProjectAdmin"
-        class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-base-content/70 hover:bg-white/8 hover: transition-colors text-left w-full"
-        @click="handleNavigateToKnowledge"
-        title="Knowledge"
-      >
-        <i class="fa-solid fa-magnifying-glass w-4 text-center shrink-0"></i>
-        <span>Knowledge</span>
-      </button>
-
-      <button
         class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-base-content/70 hover:bg-white/8 hover: transition-colors text-left w-full"
         @click="handleNavigateToAnalytics"
         title="Analytics"
@@ -106,14 +86,6 @@ export default {
     },
     handleNavigateToViews() {
       this.$storex.$router.$navigation.apps.openViews()
-      this.$emit('close')
-    },
-    handleNavigateToProfiles() {
-      this.$storex.$router.$navigation.apps.openProfiles()
-      this.$emit('close')
-    },
-    handleNavigateToKnowledge() {
-      this.$storex.$router.$navigation.apps.openKnowledge()
       this.$emit('close')
     },
     handleNavigateToAnalytics() {

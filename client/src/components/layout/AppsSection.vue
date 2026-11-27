@@ -1,11 +1,9 @@
 <script setup>
 import NavItem from './NavItem.vue'
 import ProjectDetailt from '../ProjectDetailt.vue'
-import ViewModeToggle from './ViewModeToggle.vue'
 import PinnedProjectsSwitcher from './PinnedProjectsSwitcher.vue';
 import { isMultiInstance } from '@/config/apps'
 import { isOpenInNewTabEvent, openProjectInNewTab } from '@/utils/projectLinks'
-import { SESSION_LABELS } from '@/utils/sessionLabels'
 </script>
 
 <template>
@@ -25,22 +23,6 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         @close="$emit('overlay-close')"
       />
 
-      <!-- Pin / unpin the active project (quick switcher) -->
-      <button
-        v-if="!isCollapsed"
-        class="btn tooltip tooltip-right shrink-0"
-        :class="isActiveProjectPinned ? 'click text-primary' : 'click text-base-content/50'"
-        :data-tip="isActiveProjectPinned ? 'Unpin project' : 'Pin project'"
-        :aria-pressed="isActiveProjectPinned"
-        aria-label="Pin project"
-        @click.stop="togglePinCurrentProject"
-      >
-        <i class="fa-solid fa-thumbtack text-xs"></i>
-      </button>
-
-      <ViewModeToggle v-if="!isCollapsed"
-        class="shrink-0" />
-          
     </div>
 
     <!-- Pinned projects quick switcher (icons only while the rail is collapsed) -->
@@ -67,6 +49,13 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
            `core` feature profile hides it (workspace mode): no company shell,
            no company wizard, no company launcher. -->
       <NavItem
+        icon="fas fa-home"
+        label="Home"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToHome"
+      />
+
+      <NavItem
         v-if="companyEnabled"
         icon="fas fa-building-columns"
         label="Company"
@@ -80,6 +69,28 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
         :is-collapsed="isCollapsed"
         :is-primary="true"
         @click="handleNavigateToNewChat"
+      />
+
+      <NavItem
+        v-if="appEnabled('team')"
+        icon="fas fa-people-group"
+        label="Team"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToTeam"
+      />
+
+      <NavItem
+        icon="fa-regular fa-window-maximize"
+        label="Coworking"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToCoworking"
+      />
+
+      <NavItem
+        icon="fas fa-graduation-cap"
+        label="Wiki"
+        :is-collapsed="isCollapsed"
+        @click="handleNavigateToWiki"
       />
 
       <!-- New company: a company is the top-level element ABOVE projects, so
@@ -145,30 +156,11 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       />
 
       <NavItem
-        v-if="appEnabled('team')"
-        icon="fas fa-people-group"
-        label="Team"
-        :is-collapsed="isCollapsed"
-        @click="handleNavigateToTeam"
-      />
-
-      <NavItem
         v-if="appEnabled('file-explorer')"
         icon="fas fa-folder-open"
         label="File Explorer"
         :is-collapsed="isCollapsed"
         @click="handleNavigateToFileExplorer"
-      />
-
-      <!-- Running Chromium sessions shared by the user and the AI. Opens the
-           session manager (list + live co-browsing view) on desktop and the
-           "/:projectName/browsers" route in single / mobile mode. -->
-      <NavItem
-        v-if="appEnabled('browser-sessions')"
-        icon="fa-regular fa-compass"
-        :label="SESSION_LABELS.section"
-        :is-collapsed="isCollapsed"
-        @click="handleNavigateToBrowserSessions"
       />
 
       <NavItem
@@ -363,6 +355,28 @@ export default {
       // New chat IS harness mode in the 0.0.1 workspace: the full-screen
       // session workspace (brief → agent run → delivery), not the old modal.
       this.openApp('harness-mode')
+    },
+
+    // Home is the new project start page (HomeView), not the old dashboard.
+    handleNavigateToHome() {
+      this.openApp('home')
+    },
+    // Coworking is the shared co-working/browser-session surface. In the
+    // company product it is a company section; in workspace mode the browser
+    // session manager is the same place.
+    handleNavigateToCoworking() {
+      if (this.companyEnabled) {
+        const company = this.$storex.company?.activeCompany || this.$storex.company?.defaultCompany
+        if (company?.slug) {
+          this.$storex.$router.push({
+            name: 'company-home',
+            params: { companySlug: company.slug, section: 'coworking' }
+          }).catch(() => {})
+          this.$emit('close')
+          return
+        }
+      }
+      this.openApp('browser-sessions')
     },
     handleNavigateToTasks() {
       this.openApp('task-list')

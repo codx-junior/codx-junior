@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ROOT / "demo" / "tests" / "test_up.sh"
 GATE = ROOT / "tests" / "test_shell.sh"
+INSTALL = ROOT / "tests" / "test_install.sh"
 
 
 def _run(script: Path) -> subprocess.CompletedProcess:
@@ -45,3 +46,12 @@ def test_shell_gate() -> None:
     report = (result.stdout or "") + (result.stderr or "")
     print(report, file=sys.stderr)
     assert result.returncode == 0, f"tests/test_shell.sh failed:\n{report}"
+
+
+def test_install_harness() -> None:
+    """`install.sh` CLI/behaviour: `tests/test_install.sh` (no Docker, no network)."""
+    assert INSTALL.is_file(), f"missing harness: {INSTALL}"
+    result = _run(INSTALL)
+    report = (result.stdout or "") + (result.stderr or "")
+    print(report, file=sys.stderr)
+    assert result.returncode == 0, f"tests/test_install.sh failed:\n{report}"

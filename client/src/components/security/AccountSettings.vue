@@ -1,5 +1,6 @@
 <script setup>
 import ThemeSelector from '../ThemeSelector.vue'
+import PersonalAccessTokens from './PersonalAccessTokens.vue'
 </script>
 
 <template>
@@ -170,6 +171,10 @@ import ThemeSelector from '../ThemeSelector.vue'
           </div>
         </div>
       </div>
+
+      <!-- Tokens for third-party applications. The component owns its own
+           form, list and one-time secret display; this page only mounts it. -->
+      <PersonalAccessTokens class="w-full" />
 
       <div class="flex justify-end pb-4">
         <button type="button" class="btn btn-primary" :disabled="saving || !dirty" @click="save">

@@ -196,6 +196,31 @@ def test_create_persists_a_harness_task(service):
     assert message.user == "tester"
 
 
+def test_create_saves_the_ticket_branch_in_the_chat(service):
+    """The ticket branch lives in the chat model the harness tree groups by."""
+    summary = service.create("Fix the empty board CSV export", branch="feature/export")
+
+    chat = service.chat_manager.chats[summary["session_id"]]
+    assert chat.branch == "feature/export"
+    # The descriptor keeps a copy so older chats stay readable.
+    assert chat.meta_data[prompts.HARNESS_META_KEY]["branch"] == "feature/export"
+    assert summary["branch"] == "feature/export"
+    assert [item["branch"] for item in service.list()] == ["feature/export"]
+
+
+def test_a_chat_without_a_branch_is_unknown(service, monkeypatch):
+    """An unrecorded branch is unknown: it is never guessed from the checkout."""
+    summary = service.create("Legacy ticket")
+    chat = service.chat_manager.chats[summary["session_id"]]
+    chat.branch = ""
+    chat.meta_data = {prompts.HARNESS_META_KEY: {"enabled": True}}
+    monkeypatch.setattr(
+        "codx.junior.harness.sessions.current_branch", lambda path: "main"
+    )
+
+    assert service.summary(chat)["branch"] == ""
+
+
 def test_create_always_adds_the_harness_profile_and_dedupes(service):
     summary = service.create(
         "Add the export header",

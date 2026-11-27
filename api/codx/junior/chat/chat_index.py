@@ -53,7 +53,7 @@ from codx.junior.chat.chat_fingerprint import message_fingerprint
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_SEARCH_MODE = "contentless"
 #: Meta key used to tell OTHER processes that a full rebuild owns the index.
 BUILD_MARKER = "build_in_progress"
@@ -94,7 +94,7 @@ CHAT_COLUMNS: Tuple[str, ...] = (
     "id", "doc_id", "path", "file_mtime", "file_size", "sig", "content_hash",
     "name", "description",
     "board", "board_folder", "column_name", "column_folder",
-    "status", "mode", "parent_id", "root_id",
+    "status", "mode", "branch", "parent_id", "root_id",
     "project_id", "owner_project_id",
     "created_at", "updated_at", "last_activity_at",
     "chat_index", "sort_index", "pinned", "is_template",
@@ -114,7 +114,7 @@ CHAT_COLUMNS: Tuple[str, ...] = (
 _TEXT_COLUMNS = {
     "id", "doc_id", "path", "sig", "content_hash", "name", "description",
     "board", "board_folder", "column_name", "column_folder", "status", "mode",
-    "parent_id", "root_id", "project_id", "owner_project_id", "created_at",
+    "branch", "parent_id", "root_id", "project_id", "owner_project_id", "created_at",
     "updated_at", "last_activity_at", "priority", "due_date", "wake_at",
     "scheduled_start", "scheduled_end", "calendar_ids", "tags", "profiles",
     "users", "assignees", "sprints", "file_list", "run_id", "run_status",
@@ -772,6 +772,9 @@ class ChatIndexStore:
             "column_folder": None,
             "status": document.get("status") or "",
             "mode": document.get("mode") or "",
+            # Git branch the task is bound to (a harness ticket records it so
+            # the harness tree can group the tasks by branch).
+            "branch": document.get("branch") or "",
             "parent_id": document.get("parent_id"),
             "root_id": document.get("root_id"),
             "project_id": document.get("project_id"),

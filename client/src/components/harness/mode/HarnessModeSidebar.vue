@@ -17,6 +17,7 @@ import { useRouter } from 'vue-router'
 import moment from 'moment'
 import { $storex } from '@/store'
 import { countUnreadMessages } from '@/utils/chatUnread'
+import { harnessTreeRows } from '@/utils/harnessTree'
 
 const props = defineProps({
   sessions: { type: Array, default: () => [] },
@@ -36,7 +37,7 @@ const emit = defineEmits([
   'diagnostics',
   'settings',
   'refresh',
-  'remove-session',
+  'archive-session',
   'exit'
 ])
 
@@ -86,9 +87,11 @@ const filteredSessions = computed(() => {
 })
 
 // ── Branch tree (project → branch → tasks) ──────────────────────────────────
-// A session is bound to a branch (no worktree: it runs in the checkout on that
-// branch), so the left bar groups the tasks per branch and several tickets can
-// run per branch. A collapsed branch renders only its header row.
+// A session is bound to a ticket branch and that value is saved in the chat
+// model (backend `branch`), so the left bar groups the tasks by it and several
+// tickets can run per branch. A ticket WITHOUT a recorded branch is never
+// guessed: it lands in the "Unknown" node of its project. A collapsed branch
+// renders only its header row.
 const branches = ref([])
 const currentBranch = ref('')
 const collapsedBranches = ref([])
@@ -127,48 +130,11 @@ async function loadBranches() {
 
 onMounted(() => { loadBranches() })
 
-const treeRows = computed(() => {
-  const term = search.value.trim().toLowerCase()
-  const matches = session => [
-    session.name,
-    session.description,
-    session.preview,
-    session.model
-  ].some(value => String(value || '').toLowerCase().includes(term))
-
-  const groups = new Map()
-  for (const session of sortedSessions.value) {
-    const branch = String(session.branch || currentBranch.value || '').trim() || 'Unknown branch'
-    if (!groups.has(branch)) groups.set(branch, [])
-    groups.get(branch).push(session)
-  }
-  const active = String(currentBranch.value || '').trim()
-  const order = [...groups.keys()].sort((a, b) => {
-    if (a === active) return -1
-    if (b === active) return 1
-    return a.localeCompare(b)
-  })
-
-  const rows = []
-  for (const branch of order) {
-    const all = groups.get(branch)
-    const visible = term ? all.filter(matches) : all
-    if (term && !visible.length) continue
-    const collapsed = collapsedBranches.value.includes(branch)
-    rows.push({
-      session_id: `branch:${branch}`,
-      __branchHeader: true,
-      __branch: branch,
-      __branchCount: all.length,
-      __branchRunning: all.filter(item => item.phase === 'running').length,
-      __branchCurrent: branch === active,
-      __branchCollapsed: collapsed
-    })
-    if (collapsed) continue
-    for (const session of visible) rows.push({ ...session, __branch: branch })
-  }
-  return rows
-})
+const treeRows = computed(() => harnessTreeRows(sortedSessions.value, {
+  currentBranch: currentBranch.value,
+  search: search.value,
+  collapsed: collapsedBranches.value
+}))
 
 // ── Branch node actions ─────────────────────────────────────────────────────
 
@@ -248,7 +214,12 @@ async function archiveBranch(branch) {
   }
 }
 
-/** Project menu: archive the done tasks, or every task. */
+/**
+ * Project node menu: archive the done tasks of THIS project, or every task.
+ *
+ * The archive is scoped to the project of the node (the harness API is the
+ * project API), so it never touches the chats of another project.
+ */
 async function archiveProject({ all = false } = {}) {
   closeMenus()
   try {
@@ -351,22 +322,22 @@ function cancelRemove() {
 }
 
 /**
- * Remove a chat (session) through the regular chats API: a harness session *is*
- * a chat, so the same call the chat UI uses deletes it. The list is reloaded so
- * the root stops showing it immediately.
+ * Archive a chat (session).
+ *
+ * A harness session *is* a task chat, so it is ARCHIVED, never deleted: the
+ * task is compressed out of the live tree and can be restored from the project
+ * archive. The store drops it from the list as soon as the API confirms.
  */
-async function removeSession(session) {
+async function archiveSession(session) {
   const id = session.session_id
-  const project = rootProject.value
   if (!id || deletingId.value) return
   deletingId.value = id
   confirmId.value = ''
   try {
-    await project?.$api?.chats?.delete({ id })
-    emit('remove-session', id)
-    await $storex.harness?.loadSessions?.({ limit: 50 })
+    await $storex.harness.archiveSessions({ sessionIds: [id] })
+    emit('archive-session', id)
   } catch (error) {
-    console.error('[harness sidebar] Failed to remove chat:', error)
+    notify(apiError(error))
   } finally {
     deletingId.value = ''
   }
@@ -459,36 +430,6 @@ function exitHarness() {
         >
           <i class="fa-solid fa-rotate text-[10px]" :class="{ 'animate-spin': loading }"></i>
         </button>
-        <button
-          v-if="!collapsed"
-          type="button"
-          class="btn btn-ghost btn-xs btn-square"
-          title="Project actions: archive done / archive all"
-          @click="toggleProjectMenu"
-        >
-          <i class="fa-solid fa-ellipsis-vertical text-[10px]"></i>
-        </button>
-      </div>
-
-      <!-- Project menu: archive the tasks of the whole tree -->
-      <div
-        v-if="!collapsed && projectMenuOpen"
-        class="mb-1 rounded-md border border-base-content/10 bg-base-100/70 p-1"
-      >
-        <button
-          type="button"
-          class="w-full flex items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10"
-          @click="archiveProject()"
-        >
-          <i class="fa-solid fa-box-archive text-[9px]"></i> Archive done
-        </button>
-        <button
-          type="button"
-          class="w-full flex items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10"
-          @click="archiveProject({ all: true })"
-        >
-          <i class="fa-solid fa-boxes-stacked text-[9px]"></i> Archive all
-        </button>
       </div>
 
       <!-- Project picker (add a root) -->
@@ -510,24 +451,58 @@ function exitHarness() {
         </div>
       </div>
 
-      <!-- Root (the selected project) -->
-      <button
-        type="button"
-        class="w-full flex items-center gap-2 rounded-md px-2 py-1.5 text-left bg-base-content/10 text-base-content"
-        :title="rootName"
-        @click="toggleRoot"
-      >
-        <img
-          v-if="!collapsed && projectIcon(rootProject)"
-          :src="projectIcon(rootProject)"
-          alt=""
-          class="w-4 h-4 rounded shrink-0 object-cover"
-        />
-        <i v-else class="fa-solid fa-folder-open text-[11px] shrink-0"></i>
-        <span v-if="!collapsed" class="text-xs truncate grow">{{ rootName }}</span>
-        <span v-if="!collapsed && sessions.length" class="text-[10px] text-base-content/40 tabular-nums">{{ sessions.length }}</span>
-        <span v-if="runningCount" class="badge badge-success badge-xs border-0 text-[9px]">{{ runningCount }}</span>
-      </button>
+      <!-- Project node: the project menu belongs to THIS node, not to the header -->
+      <div class="group/project">
+        <div class="flex items-center gap-1 rounded-md px-2 py-1.5 bg-base-content/10 text-base-content">
+          <button
+            type="button"
+            class="flex items-center gap-2 min-w-0 flex-1 text-left"
+            :title="rootName"
+            @click="toggleRoot"
+          >
+            <img
+              v-if="!collapsed && projectIcon(rootProject)"
+              :src="projectIcon(rootProject)"
+              alt=""
+              class="w-4 h-4 rounded shrink-0 object-cover"
+            />
+            <i v-else class="fa-solid fa-folder-open text-[11px] shrink-0"></i>
+            <span v-if="!collapsed" class="text-xs truncate grow">{{ rootName }}</span>
+            <span v-if="!collapsed && sessions.length" class="text-[10px] text-base-content/40 tabular-nums">{{ sessions.length }}</span>
+            <span v-if="runningCount" class="badge badge-success badge-xs border-0 text-[9px]">{{ runningCount }}</span>
+          </button>
+          <button
+            v-if="!collapsed"
+            type="button"
+            class="btn btn-ghost btn-xs btn-square opacity-0 group-hover/project:opacity-100 focus:opacity-100"
+            :title="`Project actions: ${rootName}`"
+            @click.stop="toggleProjectMenu"
+          >
+            <i class="fa-solid fa-ellipsis text-[10px] text-base-content/40"></i>
+          </button>
+        </div>
+
+        <!-- Project node menu: archives the chats of THIS project only -->
+        <div
+          v-if="!collapsed && projectMenuOpen"
+          class="mx-1.5 mb-1 rounded-md border border-base-content/10 bg-base-100/90 py-0.5 shadow-sm"
+        >
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10"
+            @click="archiveProject()"
+          >
+            <i class="fa-solid fa-box-archive text-[9px]"></i> Archive done
+          </button>
+          <button
+            type="button"
+            class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10"
+            @click="archiveProject({ all: true })"
+          >
+            <i class="fa-solid fa-boxes-stacked text-[9px]"></i> Archive all
+          </button>
+        </div>
+      </div>
 
       <template v-if="!collapsed && !rootCollapsed">
         <!-- Chat search -->
@@ -557,8 +532,8 @@ function exitHarness() {
                 <button
                   type="button"
                   class="flex items-center gap-1.5 min-w-0 flex-1 text-left"
-                  :title="session.__branch"
-                  @click="toggleBranch(session.__branch)"
+                  :title="session.__branchLabel"
+                  @click="toggleBranch(session.__branchKey)"
                 >
                   <i
                     :class="session.__branchCollapsed ? 'fa-solid fa-chevron-right' : 'fa-solid fa-chevron-down'"
@@ -568,15 +543,16 @@ function exitHarness() {
                   <span
                     class="text-[11px] font-medium truncate"
                     :class="session.__branchCurrent ? 'text-base-content' : 'text-base-content/70'"
-                  >{{ session.__branch }}</span>
+                  >{{ session.__branchLabel }}</span>
                   <span class="text-[10px] text-base-content/35 tabular-nums">{{ session.__branchCount }}</span>
                   <span v-if="session.__branchRunning" class="badge badge-success badge-xs border-0 text-[9px]">{{ session.__branchRunning }}</span>
                 </button>
                 <button
+                  v-if="!session.__branchUnknown"
                   type="button"
                   class="btn btn-ghost btn-xs btn-square opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  :title="`Branch actions: ${session.__branch}`"
-                  @click.stop="toggleBranchMenu(session.__branch)"
+                  :title="`Branch actions: ${session.__branchLabel}`"
+                  @click.stop="toggleBranchMenu(session.__branchKey)"
                 >
                   <i class="fa-solid fa-ellipsis text-[10px] text-base-content/40"></i>
                 </button>
@@ -584,7 +560,7 @@ function exitHarness() {
 
               <!-- Branch submenu -->
               <div
-                v-if="menuBranch === session.__branch"
+                v-if="menuBranch === session.__branchKey"
                 class="mx-1.5 mb-1 rounded-md border border-base-content/10 bg-base-100/90 py-0.5 shadow-sm"
               >
                 <button type="button" class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10" @click="viewBranchDiff(session.__branch)">
@@ -635,23 +611,23 @@ function exitHarness() {
               <button
                 type="button"
                 class="btn btn-ghost btn-xs btn-square opacity-0 group-hover:opacity-100 focus:opacity-100"
-                title="Remove chat"
+                title="Archive chat"
                 :disabled="deletingId === session.session_id"
                 @click.stop="askRemove(session)"
               >
-                <i class="fa-solid fa-trash-can text-[9px] text-base-content/40"></i>
+                <i class="fa-solid fa-box-archive text-[9px] text-base-content/40"></i>
               </button>
             </div>
 
-            <!-- Confirm removal -->
+            <!-- Confirm archive: the chat is compressed, never deleted -->
             <div
               v-if="confirmId === session.session_id"
-              class="mx-2 mb-1.5 rounded-md border border-error/30 bg-error/5 px-2 py-1.5"
+              class="mx-2 mb-1.5 rounded-md border border-base-content/20 bg-base-content/5 px-2 py-1.5"
             >
-              <div class="text-[10px] text-base-content/60 mb-1">Remove this chat?</div>
+              <div class="text-[10px] text-base-content/60 mb-1">Archive this chat?</div>
               <div class="flex items-center gap-1 justify-end">
                 <button type="button" class="btn btn-ghost btn-xs text-[10px]" @click="cancelRemove">Cancel</button>
-                <button type="button" class="btn btn-error btn-xs text-[10px]" @click="removeSession(session)">Remove</button>
+                <button type="button" class="btn btn-xs text-[10px]" @click="archiveSession(session)">Archive</button>
               </div>
             </div>
             </template>

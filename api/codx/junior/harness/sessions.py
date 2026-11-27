@@ -414,16 +414,20 @@ class HarnessSessionService:
 
     def _session_branch(self, chat: Any) -> str:
         """
-        Branch the session is bound to.
+        Branch the ticket is bound to ('' when the chat records none).
 
-        No worktree is created, so a session without a recorded branch runs on
-        whatever the checkout has checked out: that is its branch.
+        The branch is SAVED in the chat model (``Chat.branch``) when the ticket
+        is created, so the harness tree can group the tasks by it without
+        guessing; the harness descriptor keeps a copy for chats created by an
+        older version. A chat without a recorded branch is *unknown*: it is
+        never derived from the checkout, because the tree would then file the
+        ticket under whatever branch happens to be checked out.
         """
+        recorded = str(getattr(chat, "branch", "") or "").strip()
+        if recorded:
+            return recorded
         descriptor = harness_descriptor(getattr(chat, "meta_data", None))
-        branch = str(descriptor.get("branch") or "").strip()
-        if branch:
-            return branch
-        return current_branch(project_checkout(self.settings))
+        return str(descriptor.get("branch") or "").strip()
 
     def archive(
         self,
@@ -666,6 +670,9 @@ class HarnessSessionService:
             status="doing",
             project_id=self.project_id,
             owner_project_id=self.project_id,
+            # The ticket branch is part of the chat model: the harness tree
+            # groups the tasks by it (no branch -> the "Unknown" node).
+            branch=session_branch,
             profiles=selected,
             llm_model=model or None,
             estimation_cost=budget,

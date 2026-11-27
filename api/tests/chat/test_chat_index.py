@@ -99,6 +99,14 @@ class ChatIndexTest(unittest.TestCase):
         self.assertEqual(row["message_count"], 1)
         self.assertNotIn("messages", row)
 
+    def test_branch_is_projected_for_the_harness_tree(self):
+        self._rebuild([chat("a", "Alpha", "ticket", branch="feature/export")])
+        self.assertEqual(self.store.get_chat("a")["branch"], "feature/export")
+        # A chat that never recorded a branch projects an empty value, so the
+        # harness tree can place it in its "Unknown" node.
+        self._rebuild([chat("b", "Beta", "task")])
+        self.assertEqual(self.store.get_chat("b")["branch"], "")
+
     def test_search_finds_content_and_updates(self):
         self._rebuild([chat("a", "Alpha", "deployment pipeline")])
         result = self.store.search("deployment")

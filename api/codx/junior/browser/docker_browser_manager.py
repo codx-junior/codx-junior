@@ -58,6 +58,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import time
 import urllib.error
@@ -67,7 +68,7 @@ from typing import Any, Optional, List, Tuple
 from urllib.parse import urlparse
 
 from codx.junior.browser.model import BrowserSession, SharedFolder, normalize_size
-from codx.junior.computer.images import browser_image_profile
+from codx.junior.computer.images import browser_image_profile, web_app_image_profile
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,12 @@ RESERVED_LINUX_ENV = {
     "SELKIES_MANUAL_WIDTH", "SELKIES_MANUAL_HEIGHT",
     "SELKIES_MANUAL_RESOLUTION", "SELKIES_IS_MANUAL_RESOLUTION_MODE",
     "SELKIES_ENABLE_RESIZE",
+}
+#: Web-app images (code-server, VSCodium Web): the base path is derived from
+#: the session route, so the advanced settings cannot change it.
+RESERVED_WEB_ENV = {
+    "PUID", "PGID", "TZ", "TITLE", "SUBFOLDER", "CODE_ARGS",
+    "PROXY_DOMAIN", "DEFAULT_WORKSPACE",
 }
 RESERVED_VM_ENV = {
     "VERSION", "RAM_SIZE", "CPU_CORES", "DISK_SIZE", "USERNAME", "PASSWORD",
@@ -769,9 +776,16 @@ class DockerBrowserManager:
             session.traefik_path_prefix = path_prefix
             if session.kind == "linux":
                 session.display = self.display
-                if (session.live_view or "selkies") in ("selkies", "kasmvnc"):
+                if (session.live_view or "selkies") in ("selkies", "kasmvnc", "web"):
                     session.vnc_url = self._build_vnc_url(session.id, path_prefix)
                     session.vnc_path = path_prefix
+                    if session.live_view == "web":
+                        # The embedded application *is* the live view: the AI
+                        # keeps the project files and a shell, but there is no
+                        # shared desktop to screenshot or click.
+                        session.control = "none"
+                        session.vnc_host = None
+                        session.capabilities = ["files", "shell"]
                 else:
                     # Unknown desktop image: no web live view; the UI falls
                     # back to screenshot polling.
@@ -982,6 +996,11 @@ class DockerBrowserManager:
             session.live_scheme = spec.live_scheme
             session.strip_prefix = spec.strip_prefix
             session.viewer_user = spec.viewer_user
+            if spec.live_view == "web":
+                # code-server/VSCodium Web: the app is the live view.  The AI
+                # keeps the project and a shell, but not a screen to click.
+                session.control = "none"
+                session.capabilities = ["files", "shell"]
             if spec.provider == "kasmweb":
                 session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
                 session.viewer_view_password = (
@@ -1267,6 +1286,14 @@ class DockerBrowserManager:
         router_name: str,
     ) -> List[str]:
         """Dispatch the Linux desktop command by image provider."""
+        if session.live_view == "web":
+            return self._build_web_app_run_command(
+                session=session,
+                container_name=container_name,
+                profile_path=profile_path,
+                path_prefix=path_prefix,
+                router_name=router_name,
+            )
         provider = (session.image_provider or "linuxserver").lower()
         if provider == "kasmweb":
             return self._build_kasm_run_command(
@@ -1291,6 +1318,89 @@ class DockerBrowserManager:
             path_prefix=path_prefix,
             router_name=router_name,
         )
+
+    def _build_web_app_run_command(
+        self,
+        session: BrowserSession,
+        container_name: str,
+        profile_path: str,
+        path_prefix: str,
+        router_name: str,
+    ) -> List[str]:
+        """
+        Build the container command for a web IDE (code-server, VSCodium Web).
+
+        These images do not run Xvfb/Selkies: they serve their own HTTP UI.  The
+        route stays ``/computer/<id>/`` so one Traefik rule pattern covers every
+        desktop; the application is told that prefix (code-server through its
+        config file, VSCodium through ``--server-base-path``) so its assets and
+        websocket work without a second hostname.
+
+        The AI agent is still mounted for ``run_command``; the session has no
+        shared screen, so its capabilities are ``files`` and ``shell`` only.
+        """
+        agent_script = self._prepare_computer_agent(session.id)
+        profile = web_app_image_profile(self.image_for(session))
+        app = profile.app if profile else ""
+        # The public prefix without the trailing slash (both apps build URLs
+        # from it, and the route keeps the trailing slash for the iframe).
+        base_path = path_prefix.rstrip("/") or "/"
+        strip_prefix = bool(profile.strip_prefix) if profile else False
+
+        env_args = [
+            "-e", f"PUID={os.getuid() or 1000}",
+            "-e", f"PGID={os.getgid() or 1000}",
+            "-e", "TZ=Etc/UTC",
+            "-e", f"TITLE={self._container_title(session)}",
+        ]
+        if app == "code-server":
+            # LinuxServer's code-server entrypoint opens this folder by default.
+            # Its HTML uses relative URLs, so Traefik strips the public prefix
+            # and the app keeps serving at "/".  With no project share, keep
+            # the persistent /config workspace instead of an unmounted path.
+            workspace_path = (
+                session.shared_folders[0].mount_path
+                if session.shared_folders
+                else "/config"
+            )
+            env_args.extend(["-e", f"DEFAULT_WORKSPACE={workspace_path}"])
+        elif app == "vscodium-web" and profile and profile.base_path_flag:
+            # The image appends CODE_ARGS to `codium-server`; it needs the
+            # public prefix to build its workbench and websocket URLs.
+            env_args.extend([
+                "-e", f"CODE_ARGS={profile.base_path_flag}={base_path}",
+            ])
+
+        cmd = [
+            "docker",
+            "run",
+            "-d",
+            "--name", container_name,
+            "--network", self.network,
+            "--label", f"{CONTAINER_DESKTOP_LABEL}=true",
+            "--label", f"{CONTAINER_PROJECT_LABEL}={self.project_id or ''}",
+            "--label", f"{CONTAINER_SESSION_LABEL}={session.id}",
+            *env_args,
+            *self._extra_env_args(session, RESERVED_WEB_ENV),
+            "-v", f"{profile_path}:/config",
+            "-v", f"{agent_script}:/codx/computer_agent.py:ro",
+            *self._container_resource_args(session),
+            "--security-opt", "seccomp=unconfined",
+        ]
+        for mount in self._build_share_mounts(session):
+            cmd.extend(["-v", mount])
+        for label in self._build_traefik_labels(
+            router_name=router_name,
+            session_id=session.id,
+            path_prefix=path_prefix,
+            port=session.live_port or self.vnc_port,
+            scheme=session.live_scheme or "http",
+            strip_prefix=strip_prefix,
+            drop_forwarded_port=True,
+        ):
+            cmd.extend(["-l", label])
+        cmd.append(self.image_for(session))
+        return cmd
 
     def _build_webtop_run_command(
         self,
@@ -1679,6 +1789,7 @@ class DockerBrowserManager:
         strip_prefix: bool = False,
         insecure_skip_verify: bool = False,
         basic_auth: Optional[str] = None,
+        drop_forwarded_port: bool = False,
     ) -> List[str]:
         """
         Build Traefik Docker labels for the live-view route.
@@ -1707,6 +1818,19 @@ class DockerBrowserManager:
             labels.append(
                 f"traefik.http.middlewares.{middleware_name}.stripprefix.prefixes="
                 f"{path_prefix.rstrip('/')}"
+            )
+            middlewares.append(f"{middleware_name}@docker")
+        if drop_forwarded_port:
+            # Traefik appends its own listening port (80 on the `web` entry
+            # point) to X-Forwarded-Port.  Web IDEs build their websocket URL
+            # from X-Forwarded-Host + X-Forwarded-Port, so behind a TLS edge
+            # that forwards plain HTTP they would dial wss://host:80 and fail
+            # with code 1006.  Removing the header leaves the host untouched;
+            # the browser then uses its real scheme/port (443 for HTTPS).
+            middleware_name = f"{router_name}-forwarded"
+            labels.append(
+                f"traefik.http.middlewares.{middleware_name}.headers."
+                "customrequestheaders.X-Forwarded-Port="
             )
             middlewares.append(f"{middleware_name}@docker")
         if basic_auth:
@@ -1739,7 +1863,10 @@ class DockerBrowserManager:
         if session.kind == "browser":
             self._wait_for_container_ready(container_name, timeout=DOCKER_READY_TIMEOUT)
         elif session.kind == "linux":
-            self._wait_for_linux_ready(session, container_name, timeout=DOCKER_READY_TIMEOUT)
+            if session.live_view == "web":
+                self._wait_for_web_ready(session, container_name, timeout=DOCKER_READY_TIMEOUT)
+            else:
+                self._wait_for_linux_ready(session, container_name, timeout=DOCKER_READY_TIMEOUT)
         elif session.kind in ("windows", "macos"):
             self._wait_for_vnc_ready(container_name, timeout=DOCKER_VM_READY_TIMEOUT)
 
@@ -1846,6 +1973,66 @@ class DockerBrowserManager:
             f"(last error: {last_error})"
         )
 
+    def _wait_for_web_ready(
+        self,
+        session: BrowserSession,
+        container_name: str,
+        timeout: int = DOCKER_READY_TIMEOUT,
+    ) -> None:
+        """
+        Wait until a web IDE answers on its own HTTP port.
+
+        Web-app sessions have no X11 display: readiness is the application's
+        public base path replying on the container network.  A 2xx/3xx or an
+        auth error means the server is up; 404 means the base path was not
+        applied yet (or is wrong), so keep waiting.
+        """
+        scheme = (session.live_scheme or "http").strip().lower()
+        port = int(session.live_port or self.vnc_port)
+        if session.strip_prefix:
+            # The app serves at "/" and Traefik removes the public prefix
+            # before forwarding (code-server's relative URLs).
+            path = "/"
+        else:
+            path = session.traefik_path_prefix or session.vnc_path or "/"
+        if not path.startswith("/"):
+            path = "/" + path
+        if not path.endswith("/"):
+            path += "/"
+        url = f"{scheme}://{container_name}:{port}{path}"
+        context = ssl._create_unverified_context() if scheme == "https" else None
+        deadline = time.time() + timeout
+        last_error = "not started"
+        while time.time() < deadline:
+            if not self._container_exists(container_name):
+                raise RuntimeError(
+                    f"Web-app container {container_name} exited before becoming ready"
+                )
+            try:
+                request = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "codx-junior-web-app-probe"},
+                )
+                with urllib.request.urlopen(request, timeout=5, context=context) as response:
+                    if response.status < 500:
+                        logger.debug("Web app %s is ready at %s", container_name, url)
+                        return
+                    last_error = f"HTTP {response.status}"
+            except urllib.error.HTTPError as ex:
+                if ex.code < 500 and ex.code != 404:
+                    # Auth/redirect: the server is up and serving the prefix.
+                    logger.debug("Web app %s is ready (HTTP %s)", container_name, ex.code)
+                    return
+                last_error = f"HTTP {ex.code} from {url}"
+            except Exception as ex:
+                last_error = str(ex)
+            time.sleep(0.5)
+
+        raise TimeoutError(
+            f"Web app {container_name} did not answer at {url} in {timeout}s "
+            f"(last error: {last_error})"
+        )
+
     def _wait_for_vnc_ready(
         self,
         container_name: str,
@@ -1883,6 +2070,12 @@ class DockerBrowserManager:
         if session.kind == "linux":
             session.debug_url = None
             session.display = self.display
+            if session.live_view == "web":
+                # No X11/VNC endpoint: the human uses the application's HTTP
+                # UI (already embedded through /computer/<id>/).
+                session.control = "none"
+                session.vnc_host = None
+                return
             session.control = "docker" if session.control != "vnc" else "vnc"
             session.vnc_host = container_name
             # Keep the default port even for the docker-exec backend: the

@@ -1,8 +1,9 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { $storex } from '@/store'
 import { MOBILE_APP_GROUPS, MOBILE_TONES } from '@/config/mobile'
+import { isAppEnabled, isFeatureEnabled } from '@/config/features'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,13 +50,22 @@ const projects = computed(() => {
 })
 
 const workspaces = computed(() => $storex.projects.projectApps || [])
+// Dev-container workspaces are a post-0.0.1 feature and are no longer
+// configured from Global Settings; hide the whole mobile section with it.
+const workspacesEnabled = computed(() =>
+  isFeatureEnabled($storex.features, 'workspaces')
+)
 
 // The company OS is hidden in the 0.0.1 `core` profile: drop the company tile
-// from the mobile launcher instead of sending it to a guarded route.
+// from the mobile launcher instead of sending it to a guarded route. Every
+// other tile follows the install feature profile too (config/features.js).
 const companyEnabled = computed(() => $storex.features?.companyEnabled !== false)
 const featureGroups = computed(() => MOBILE_APP_GROUPS.map(group => ({
   ...group,
-  apps: group.apps.filter(app => app.key !== 'company' || companyEnabled.value)
+  apps: group.apps.filter(app =>
+    (app.key !== 'company' || companyEnabled.value) &&
+    isAppEnabled($storex.features, app.key)
+  )
 })))
 
 const query = computed(() => search.value.trim().toLowerCase())
@@ -90,6 +100,17 @@ watch(open, isOpen => {
   if (isOpen) {
     search.value = ''
     projectsOpen.value = false
+    // First run can open the launcher before the project catalogue finished
+    // loading; make the switcher useful on the first tap.
+    if (!($storex.projects.allProjects || []).length) {
+      $storex.projects.loadAllProjects?.()
+    }
+  }
+})
+
+onMounted(() => {
+  if (!($storex.projects.allProjects || []).length) {
+    $storex.projects.loadAllProjects?.()
   }
 })
 
@@ -110,8 +131,10 @@ function openSearch() {
 function openApp(app) {
   close()
   if (!app) return
+  // New chat is harness mode: the full-screen session workspace, identical to
+  // the desktop left-bar entry. The old chat modal is no longer the entry.
   if (app.action === 'new-chat') {
-    router.push({ name: 'new-chat' })
+    $storex.ui.openApp({ appKey: 'harness-mode' })
     return
   }
   if (app.action === 'chats') {
@@ -355,8 +378,8 @@ function toneClass(tone) {
               </div>
             </section>
 
-            <!-- Workspaces -->
-            <section v-if="!query && workspaces.length" class="mt-5">
+            <!-- Workspaces (deprecated for 0.0.1, hidden with the feature) -->
+            <section v-if="!query && workspacesEnabled && workspaces.length" class="mt-5">
               <div class="mb-2 flex items-baseline justify-between px-1">
                 <h2 class="text-[11px] font-bold uppercase tracking-wider text-base-content/45">Workspaces</h2>
                 <button type="button" class="text-[10px] font-medium text-primary" @click="goTo('workspaces')">

@@ -72,10 +72,10 @@ import WindowsMenu from '../main-menu/WindowsMenu.vue'
         
         <!-- Workspaces Section — the active project's workspace apps
              (store/project.js → projectApps → API.allWorkspaces).
-             Always rendered, no workspace-mode filter: the section is a
-             launcher in its own right, not a company-mode-only affordance.
-             The component itself hides when the project has no apps. -->
+             Deprecated for 0.0.1: only rendered when the install profile
+             exposes the privileged `workspaces` feature. -->
         <WorkspacesSection
+          v-if="workspacesEnabled"
           :workspace-apps="workspaceApps"
           :is-collapsed="isCollapsed"
           :current-workspace-id="currentWorkspaceId"
@@ -158,6 +158,8 @@ import WindowsMenu from '../main-menu/WindowsMenu.vue'
 </template>
 
 <script>
+import { isFeatureEnabled } from '@/config/features'
+
 export default {
   emits: ['settings', 'close'],
   data() {
@@ -175,6 +177,11 @@ export default {
     },
     workspaceApps() {
       return this.$projects.projectApps || []
+    },
+    // Workspaces (dev containers) are a post-0.0.1 feature: the section is
+    // hidden unless the install profile enables the `workspaces` feature.
+    workspacesEnabled() {
+      return isFeatureEnabled(this.$storex.features, 'workspaces')
     },
     currentUser() {
       return this.$storex?.users?.user || this.$user

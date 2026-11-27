@@ -14,6 +14,7 @@ import {
   filesSummary,
   formatDuration,
   formatTokens,
+  harnessTranscript,
   stripHarnessBrief
 } from '../src/utils/harnessSteps.js'
 
@@ -216,4 +217,29 @@ test('has no model warning when a model is pinned', () => {
     assistantMessage({ meta_data: { model: 'deepseek-flash' } })
   ])
   assert.equal(view.modelWarning, null)
+})
+
+test('harnessTranscript keeps every message and strips only the ticket brief', () => {
+  const archived = assistantMessage({ doc_id: 'a2', content: 'Second answer', hide: true })
+  const messages = [
+    userMessage('Ticket', 'u1'),
+    assistantMessage({ doc_id: 'a1', content: 'First answer', hide: true }),
+    userMessage('Follow-up', 'u2'),
+    archived,
+    { doc_id: 'draft', role: 'user', content: 'typing', unsent: true }
+  ]
+
+  const transcript = harnessTranscript(messages)
+
+  // The review lens shows the full conversation, including turns the task-mode
+  // cleanup archived; drafts never belong to it.
+  assert.equal(transcript.length, 4)
+  assert.deepEqual(transcript.map(message => message.doc_id), ['u1', 'a1', 'u2', 'a2'])
+  assert.equal(transcript[0].content, 'Ticket')
+  assert.equal(transcript[1].content, 'First answer')
+  assert.equal(transcript[0].hide, false)
+  assert.equal(transcript[1].hide, false)
+  // The original chat objects are not mutated.
+  assert.equal(messages[1].hide, true)
+  assert.ok(messages[0].content.includes(HARNESS_BRIEF_MARKER))
 })

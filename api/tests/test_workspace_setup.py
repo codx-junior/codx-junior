@@ -56,7 +56,8 @@ def test_workspace_wizard_is_the_core_first_run_gate():
     app = read(CLIENT / "src" / "App.vue")
     assert "WorkspaceWizard" in app
     assert "workspaceSetupRequired" in app
-    assert "assistant-only" in app
+    # The assistant is a standalone launcher now (New chat is harness mode).
+    assert "SetupAssistantLauncher" in app
     wizard = read(CLIENT / "src" / "components" / "setup" / "WorkspaceWizard.vue")
     for step in ("'welcome'", "'project'", "'ai'"):
         assert f"step === {step}" in wizard
@@ -78,8 +79,11 @@ def test_setup_assistant_has_qa_and_ai_paths():
 
 def test_assistant_panel_is_always_available_in_the_shell():
     app = read(CLIENT / "src" / "App.vue")
-    assert "assistantOpen = true" in app
-    assert "assistant-only" in app
+    assert "SetupAssistantLauncher" in app
+    launcher = read(CLIENT / "src" / "components" / "setup" / "SetupAssistantLauncher.vue")
+    # The launcher owns its open/close state and uses the codx-junior logo.
+    assert "const open = ref(false)" in launcher
+    assert "/only_icon.png" in launcher
     panel = read(CLIENT / "src" / "components" / "setup" / "SetupAssistantPanel.vue")
     assert "preconfigured" in panel
     assert "localQa" in panel
@@ -90,6 +94,8 @@ def test_project_list_is_the_core_landing_and_shows_every_project():
     router = read(CLIENT / "src" / "router" / "index.ts")
     assert "if (to.name === 'workspace-projects')" in router
     assert "0.0.1 workspace mode: the project list is a real landing screen" in router
-    overview = read(CLIENT / "src" / "components" / "project" / "ProjectOverview.vue")
-    assert "features?.companyEnabled === false" in overview
-    assert "this.$projects.allProjects" in overview
+    # The old chart dashboard was removed; the catalogue is a plain list.
+    assert not (CLIENT / "src" / "components" / "project" / "ProjectOverview.vue").exists()
+    catalogue = read(CLIENT / "src" / "views" / "ProjectsView.vue")
+    assert "ProjectList" in catalogue
+    assert "$storex.projects.allProjects" in catalogue

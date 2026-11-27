@@ -99,8 +99,11 @@ class MentionSearchController {
 }
 
 function getProfiles(project) {
+  // The active project is null while the shell boots and while a project is
+  // being switched; destructuring it crashed every chat render.
+  if (!project) return []
   const { project_id, $state } = project
-  return $state?.profiles || $storex.profiles.profilesByProject[project_id]
+  return $state?.profiles || $storex.profiles.profilesByProject[project_id] || []
 }
 
 const promiseOrDefault = async (p, def) => {
@@ -228,7 +231,7 @@ async function buildMentions(project) {
   const { files, profiles } = $state
 
   return [
-    ...$storex.api.userNetwork.map(user => ({ 
+    ...($storex.api.userNetwork || []).map(user => ({
       name: user.username,
       user,
       tooltip: `User @${user.username}` 
@@ -594,7 +597,13 @@ export const getters = getterTree(state, {
     $storex.chats.allChats
       .filter(c => c.board === 'codx-junior')
       .sort((a, b) => a.updated_at > b.updated_at ? -11 : 1).slice(0, 6),
-  userList: () => [$storex.users.user, ...$storex.projects.profiles?.map(p => ({ ...p, isProfile: true }))] || [],
+  // Chat participants: the signed-in user plus the project profiles. The
+  // profiles getter is undefined until a project (and its profile catalogue)
+  // has loaded — spreading that undefined crashed every chat render.
+  userList: () => [
+    $storex.users.user,
+    ...($storex.projects.profiles || []).map(p => ({ ...p, isProfile: true }))
+  ].filter(Boolean),
   projectApps: state => state.workspaces?.reduce((a, w) => 
     a.concat(w.apps.map(a => ({ ...a, workspaceName: w.name, key: `${w.name}-${a.name}` }))), []),
   activeChat: () => $storex.chats.activeChat,

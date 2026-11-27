@@ -32,28 +32,28 @@ import MenubarItem from './MenubarItem.vue'
             Global settings
         </MenubarItem>
 
-        <MenubarSub title="Miscellaneous">
+        <MenubarSub title="Miscellaneous" v-if="showMiscellaneous">
             <div class="font-bold px-2 hover:bg-base-300">
                 Miscellaneous
             </div>
 
-            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+            <MenubarItem v-if="$storex.api.permissions.isAdmin && featureEnabled('logs')">
                 <a class="flex gap-1 tooltip tooltip-right click" data-tip="Logs" @click="$ui.toggleLogs()">
                     View logs
                 </a>
             </MenubarItem>
-            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+            <MenubarItem v-if="$storex.api.permissions.isAdmin && featureEnabled('analytics')">
                 <a class="flex gap-1 tooltip tooltip-right click" data-tip="Logs" @click="$ui.openChatLogs()">
                     Chat logs
                 </a>
             </MenubarItem>
-            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+            <MenubarItem v-if="$storex.api.permissions.isAdmin && featureEnabled('analytics')">
                 <a class="flex gap-1 tooltip tooltip-right click" data-tip="Decision model logs"
                     @click="$ui.openDecisionModelLogs()">
                     Decision model logs
                 </a>
             </MenubarItem>
-            <MenubarItem v-if="$storex.api.permissions.isAdmin">
+            <MenubarItem v-if="$storex.api.permissions.isAdmin && featureEnabled('logs')">
                 <!-- Uses the unified opener so it works in BOTH modes: desktop
                      opens the dockview panel, single/mobile pushes the
                      "/:projectName/api-monitoring" route (see config/apps.js). -->
@@ -67,7 +67,7 @@ import MenubarItem from './MenubarItem.vue'
             </MenubarItem>
         </MenubarSub>
 
-        <MenubarItem>
+        <MenubarItem v-if="featureEnabled('voice')">
             <a class="flex gap-4 items-center gap-2 tooltip select select-sm" data-tip="Voice language">
                 <i class="fa-solid fa-microphone-lines"></i>
                 <select class="select select-sm" @change="$ui.setVoiceLanguage($event.target.value)" @click.stop="">
@@ -81,8 +81,18 @@ import MenubarItem from './MenubarItem.vue'
     </MenubarSub>
 </template>
 <script>
+import { isFeatureEnabled } from '@/config/features'
+
 export default {
     computed: {
+        // The Miscellaneous submenu only holds post-0.0.1 diagnostics. With the
+        // core profile it would be empty, so hide it entirely (except the
+        // mobile debug console, which is always available on a phone).
+        showMiscellaneous() {
+            if (this.$ui.isMobile) return true
+            if (!this.$storex.api.permissions.isAdmin) return false
+            return ['logs', 'analytics'].some(id => isFeatureEnabled(this.$storex.features, id))
+        },
         workspaces() {
             return this.$storex.projects.projectApps.reduce((acc, app) => {
                 const apps = acc[app.workspaceName] || []
@@ -95,6 +105,9 @@ export default {
         }
     },
     methods: {
+        featureEnabled(featureId) {
+            return isFeatureEnabled(this.$storex.features, featureId)
+        },
         toggleViewMode() {
             if (this.$storex.ui.viewMode === 'vibe') {
                 this.$storex.ui.setExpertMode()

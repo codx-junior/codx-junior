@@ -1595,7 +1595,7 @@ export default {
     // without it the board still works (unassigned team).
     async loadTeams() {
       try {
-        const data = await API.tasks.boards()
+        const data = await API.tasks.teams()
         this.teams = data?.teams || []
       } catch (error) {
         this.teams = []

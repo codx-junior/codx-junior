@@ -85,11 +85,13 @@ export default {
       return this.activeSession?.kind || 'linux'
     },
     kindLabel() {
+      if (this.isWebApp) return 'Web app'
       return this.activeSession?.kind_label || {
         linux: 'Linux', windows: 'Windows', macos: 'macOS', remote: 'Remote', browser: 'Browser'
       }[this.kind] || 'Computer'
     },
     kindIcon() {
+      if (this.isWebApp) return 'fa-solid fa-window-maximize'
       return {
         linux: 'fa-brands fa-linux',
         windows: 'fa-brands fa-windows',
@@ -109,6 +111,9 @@ export default {
     },
     isKasm() {
       return this.activeSession?.live_view === 'kasmvnc'
+    },
+    isWebApp() {
+      return this.activeSession?.live_view === 'web'
     },
     vncEmbedUrl() {
       const session = this.activeSession
@@ -150,9 +155,9 @@ export default {
     autoResize() {
       return this.activeSession?.desktop_auto_resize !== false
     },
-    /** Selkies/KasmVNC resize themselves; only RFB/screenshot need the API. */
+    /** Selkies/KasmVNC/web apps resize themselves; only RFB/screenshot need the API. */
     usesNativeAutoResize() {
-      return this.isKasm || (this.isLinux && !!this.vncEmbedUrl)
+      return this.isKasm || this.isWebApp || (this.isLinux && !!this.vncEmbedUrl)
     },
     userActive() {
       const until = this.activeSession?.user_active_until
@@ -571,6 +576,7 @@ export default {
         {{ isRunning ? 'running' : (activeSession?.status || 'stopped') }}
       </span>
       <span
+        v-if="!isWebApp"
         class="badge badge-xs badge-outline flex-shrink-0"
         :class="control === 'user' || userActive ? 'badge-warning' : 'badge-info'"
         :title="statusText"
@@ -587,12 +593,12 @@ export default {
         </summary>
         <div class="dropdown-content bg-base-100 rounded-box shadow-lg border border-base-content/10 w-64 p-1 z-40">
           <ul class="menu menu-xs p-0">
-            <li v-if="isLinux && isRunning">
+            <li v-if="isLinux && isRunning && !isWebApp">
               <button class="flex items-center gap-2" @click="closeOverflow(); showSaveModal = true">
                 <i class="fa-solid fa-floppy-disk"></i><span>Save this computer to the library</span>
               </button>
             </li>
-            <li>
+            <li v-if="!isWebApp">
               <button
                 class="flex items-center gap-2"
                 :disabled="!isRunning || loadingShot"
@@ -627,7 +633,7 @@ export default {
         </div>
       </details>
     </div>
-    <div v-if="activeSession" class="px-2 py-1.5 border-b border-base-content/10 bg-base-100 flex-shrink-0">
+    <div v-if="activeSession && !isWebApp" class="px-2 py-1.5 border-b border-base-content/10 bg-base-100 flex-shrink-0">
       <SessionControlBar
         :session="activeSession"
         :current-user="currentUser"
@@ -661,7 +667,7 @@ export default {
         :key="viewerKey"
         :src="vncEmbedUrl"
         class="w-full h-full border-0 bg-black"
-        title="Linux desktop live view"
+        :title="isWebApp ? 'Web app live view' : 'Linux desktop live view'"
         allow="clipboard-read; clipboard-write; fullscreen"
       ></iframe>
       <div v-else-if="screenshot" class="w-full h-full overflow-hidden flex items-center justify-center">
@@ -687,7 +693,7 @@ export default {
            request = click to ask). KasmVNC also enforces it with the
            view-only password in the iframe. -->
       <div
-        v-if="overlay.interactive && isRunning"
+        v-if="overlay.interactive && isRunning && !isWebApp"
         class="absolute inset-0 z-20 flex items-end justify-center pb-4"
         :class="isKasm ? 'pointer-events-none' : 'cursor-pointer'"
         role="button"
@@ -719,7 +725,7 @@ export default {
 
     <!-- Action bar: ONE row. The shell prompt is a tool, not chrome: it appears
          only when it is asked for, so the bar never wraps into a second row. -->
-    <div class="border-t border-base-content/10 bg-base-200/60 flex-shrink-0">
+    <div v-if="!isWebApp" class="border-t border-base-content/10 bg-base-200/60 flex-shrink-0">
       <div class="flex items-center gap-1.5 px-2 py-1.5">
         <div class="flex items-center gap-1">
           <button class="btn btn-xs btn-ghost" title="Click the screen to click the desktop" @click="showKeys = !showKeys">

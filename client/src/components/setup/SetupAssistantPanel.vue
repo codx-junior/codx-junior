@@ -15,7 +15,9 @@ const props = defineProps({
   /** Wizard step / project count / AI state, sent with every question. */
   context: { type: Object, default: () => ({}) },
   /** Compact mode for the floating panel. */
-  compact: { type: Boolean, default: false }
+  compact: { type: Boolean, default: false },
+  /** Hide the panel header when the wrapper already renders one (card). */
+  hideHeader: { type: Boolean, default: false }
 })
 
 const messages = ref([
@@ -49,9 +51,9 @@ function localQa(message) {
   if (has('ai', 'model', 'provider', 'api key', 'key', 'llm')) {
     return (
       'To connect a model:\n' +
-      '1. Pick a provider preset (DeepSeek, OpenAI, OpenRouter, Mistral, Groq) or Custom.\n' +
-      '2. Paste the API key. It stays on this server.\n' +
-      '3. Keep the suggested chat model or type the provider id.\n' +
+      '1. Pick a provider preset (DeepSeek, OpenAI, Anthropic, Ollama, OpenRouter, Mistral, Groq) or Custom.\n' +
+      '2. Paste the API key (Ollama runs locally and needs none). It stays on this server.\n' +
+      '3. Keep the suggested chat model (deepseek-flash, gpt-4.1-mini, claude-sonnet-4-5, qwen2.5-coder:7b) or type the provider id.\n' +
       '4. Save. The model becomes the default for chats and knowledge.\n\n' +
       'You can skip it now and use this guide without a model; configure AI later in Settings → AI Models.'
     )
@@ -135,8 +137,8 @@ defineExpose({ send })
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-base-100">
-    <div class="flex items-center gap-2 border-b border-base-300 px-4 py-3">
-      <i class="fa-solid fa-robot text-primary"></i>
+    <div v-if="!hideHeader" class="flex items-center gap-2 border-b border-base-300 px-4 py-3">
+      <img src="/only_icon.png" alt="codx-junior" class="h-7 w-7 shrink-0 rounded-lg" />
       <div class="min-w-0">
         <div class="text-sm font-bold">Setup assistant</div>
         <div class="text-[11px] text-base-content/60">

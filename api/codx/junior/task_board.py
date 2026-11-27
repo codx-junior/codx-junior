@@ -1045,12 +1045,17 @@ class TaskBoardService:
         )
 
     def team_refs(self) -> List[Dict[str, Any]]:
-        """Teams offered by the task table filter."""
+        """Teams offered by the task table filter and the board owner picker."""
+        cache_key = f"teams::{_scope_key(self.user)}"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return list(cached)
         self._load_company_catalog()
-        return sorted(
+        teams = sorted(
             (self._company_teams or {}).values(),
             key=lambda team: (team.get("name") or "").lower(),
         )
+        return _cache_put(cache_key, teams)
 
 
 def _unique(values: Iterable[Any]) -> List[str]:

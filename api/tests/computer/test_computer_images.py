@@ -19,7 +19,52 @@ def test_library_offers_kasmweb_and_linuxserver():
     assert any(image.name == "Kasm Desktop" for image in kasm)
     assert any(image.tag == "debian-kde" for image in linuxserver)
     assert {image.live_view for image in kasm} == {"kasmvnc"}
-    assert {image.live_view for image in linuxserver} == {"selkies"}
+    # LinuxServer now serves both Selkies desktops and plain web IDEs.
+    assert {image.live_view for image in linuxserver} == {"selkies", "web"}
+
+
+def test_library_offers_code_server_and_vscodium_web():
+    """The two web IDEs are ordinary catalog entries with a web live view."""
+    images = list_images(provider="linuxserver")
+    by_app = {
+        image.repository.split("/", 1)[-1]: image
+        for image in images
+        if image.live_view == "web"
+    }
+
+    assert set(by_app) == {"code-server", "vscodium-web"}
+    code = by_app["code-server"]
+    assert code.image == "lscr.io/linuxserver/code-server:latest"
+    assert code.live_port == 8443
+    assert code.live_scheme == "http"
+    assert code.control == "none"
+    assert "web" in code.tags
+
+    vscodium = by_app["vscodium-web"]
+    assert vscodium.image == "lscr.io/linuxserver/vscodium-web:latest"
+    assert vscodium.live_port == 8000
+
+
+def test_resolve_web_ide_profiles():
+    code = resolve_image("lscr.io/linuxserver/code-server:latest")
+    assert code.provider == "linuxserver"
+    assert code.live_view == "web"
+    assert code.live_port == 8443
+    assert code.live_scheme == "http"
+    # code-server uses relative URLs and works behind a stripped prefix.
+    assert code.strip_prefix is True
+    assert code.control == "none"
+    assert code.image == "lscr.io/linuxserver/code-server:latest"
+
+    vscodium = resolve_image("linuxserver/vscodium-web")
+    assert vscodium.live_view == "web"
+    assert vscodium.live_port == 8000
+    assert vscodium.strip_prefix is False
+    assert vscodium.image == "lscr.io/linuxserver/vscodium-web:latest"
+
+    # A web IDE is not a Selkies desktop and must not be mistaken for one.
+    webtop = resolve_image("lscr.io/linuxserver/webtop:debian-kde")
+    assert webtop.live_view == "selkies"
 
 
 def test_library_offers_browseruse_as_a_headless_screenshot_image():
@@ -169,3 +214,153 @@ def test_traefik_labels_for_selkies_are_not_stripped(tmp_path):
     assert "server.port=3000" in joined
     assert "server.scheme=http" in joined
     assert "stripprefix" not in joined
+
+
+def test_web_app_container_command_uses_the_web_transport(tmp_path, monkeypatch):
+    from codx.junior.browser.docker_browser_manager import DockerBrowserManager
+
+    manager = DockerBrowserManager(
+        str(tmp_path),
+        traefik_domain="example.test",
+        project_id="project-1",
+        project_root_path=str(tmp_path / "project"),
+        project_name="proj",
+    )
+    (tmp_path / "project").mkdir(exist_ok=True)
+    monkeypatch.setattr(manager, "_ensure_image", lambda image=None: None)
+    monkeypatch.setattr(manager, "_prepare_computer_agent", lambda sid: "/tmp/agent.py")
+
+    session = BrowserSession(
+        name="Code Server",
+        kind="linux",
+        image="lscr.io/linuxserver/code-server:latest",
+        image_provider="linuxserver",
+        live_view="web",
+        live_port=8443,
+        live_scheme="http",
+        control="none",
+    )
+    session.id = "62345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    manager.configure_share(session, share_project=True)
+    profile_path = str(tmp_path / "profile")
+    cmd = manager._build_web_app_run_command(
+        session,
+        "computer_62345678",
+        profile_path,
+        f"/computer/{session.id}/",
+        "codx-computer-62345678",
+    )
+    joined = " ".join(cmd)
+
+    assert "lscr.io/linuxserver/code-server:latest" in cmd
+    assert "loadbalancer.server.port=8443" in joined
+    assert "loadbalancer.server.scheme=http" in joined
+    # code-server serves relative URLs: Traefik strips the public prefix.
+    assert "stripprefix.prefixes=/computer/" + session.id in joined
+    assert "codx-junior-auth" in joined
+    # The public edge terminates TLS but forwards plain HTTP: Traefik would
+    # otherwise add X-Forwarded-Port: 80 and VSCodium/code-server would dial
+    # wss://host:80 (websocket 1006).  The web-app route drops it.
+    assert "customrequestheaders.X-Forwarded-Port=" in joined
+    assert "/tmp/agent.py:/codx/computer_agent.py:ro" in cmd
+    assert not (tmp_path / "profile" / ".config").exists()
+
+
+def test_vscodium_web_command_passes_the_server_base_path(tmp_path, monkeypatch):
+    from codx.junior.browser.docker_browser_manager import DockerBrowserManager
+
+    manager = DockerBrowserManager(
+        str(tmp_path),
+        traefik_domain="example.test",
+        project_id="project-1",
+        project_root_path=str(tmp_path / "project"),
+        project_name="proj",
+    )
+    (tmp_path / "project").mkdir(exist_ok=True)
+    monkeypatch.setattr(manager, "_ensure_image", lambda image=None: None)
+    monkeypatch.setattr(manager, "_prepare_computer_agent", lambda sid: "/tmp/agent.py")
+
+    session = BrowserSession(
+        name="VSCodium",
+        kind="linux",
+        image="lscr.io/linuxserver/vscodium-web:latest",
+        image_provider="linuxserver",
+        live_view="web",
+        live_port=8000,
+        live_scheme="http",
+        control="none",
+    )
+    session.id = "72345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    manager.configure_share(session, share_project=False)
+    cmd = manager._build_web_app_run_command(
+        session,
+        "computer_72345678",
+        str(tmp_path / "profile"),
+        f"/computer/{session.id}/",
+        "codx-computer-72345678",
+    )
+    joined = " ".join(cmd)
+
+    assert f"CODE_ARGS=--server-base-path=/computer/{session.id}" in cmd
+    assert "loadbalancer.server.port=8000" in joined
+    assert "stripprefix" not in joined
+    assert "customrequestheaders.X-Forwarded-Port=" in joined
+
+
+def test_linux_session_can_use_the_none_control_channel():
+    session = BrowserSession(name="Web", kind="linux", control="none")
+
+    assert session.control == "none"
+
+
+def test_web_app_readiness_probes_the_container_path(tmp_path, monkeypatch):
+    from codx.junior.browser.docker_browser_manager import DockerBrowserManager
+
+    manager = DockerBrowserManager(str(tmp_path), traefik_domain="example.test")
+    monkeypatch.setattr(manager, "_container_exists", lambda name: True)
+
+    seen = []
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=5, context=None):
+        seen.append(request.full_url)
+        return _Response()
+
+    monkeypatch.setattr(
+        "codx.junior.browser.docker_browser_manager.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    code = BrowserSession(
+        name="Code",
+        kind="linux",
+        live_view="web",
+        live_port=8443,
+        live_scheme="http",
+        strip_prefix=True,
+    )
+    code.id = "82345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    manager._wait_for_web_ready(code, "computer_82345678")
+
+    vscodium = BrowserSession(
+        name="VSCodium",
+        kind="linux",
+        live_view="web",
+        live_port=8000,
+        live_scheme="http",
+        strip_prefix=False,
+    )
+    vscodium.id = "92345678-aaaa-bbbb-cccc-ddddeeeeffff"
+    vscodium.traefik_path_prefix = f"/computer/{vscodium.id}/"
+    manager._wait_for_web_ready(vscodium, "computer_92345678")
+
+    assert seen[0] == "http://computer_82345678:8443/"
+    assert seen[1] == f"http://computer_92345678:8000/computer/{vscodium.id}/"

@@ -12,6 +12,7 @@ so renaming it again is a single edit there.
 | --- | --- | --- | --- |
 | `browser` | Chromium container | Chrome DevTools Protocol | The existing browser co-pilot (DOM snapshots, scripts, downloads). |
 | `linux` | LinuxServer.io webtop desktop container (Xvfb + KDE/XFCE + Selkies) | `docker exec` with `xdotool` + Pillow screenshots | A full Linux desktop: terminals, IDEs, GUI apps, package installs. |
+| `linux` + web-app image | LinuxServer.io `code-server` / `vscodium-web` container | `none` (the product's web UI is the live view) | Browser-based IDEs: VS Code or VSCodium without a desktop. |
 | `windows` | `dockurr/windows` QEMU VM | VNC (RFB) | Windows-only software, testing an installer, Windows browsers. |
 | `macos` | `dockurr/macos` QEMU VM or a remote Mac | VNC (RFB) + optional SSH | Xcode/Simulator, macOS-only tooling; a physical Mac via Screen Sharing. |
 | `remote` | An existing machine reachable over VNC | VNC (RFB) + optional SSH | A Mac mini in the office, a lab workstation, a cloud desktop. |
@@ -52,11 +53,13 @@ image browser (`ComputerImageLibrary.vue`): search, category chips, provider
 tabs and image details.  Picking an image opens the new-session dialog with that
 image already selected.  The same browser is also embedded in the new-session
 dialog under **Desktop image**.  The library ships with two curated providers
-and resolves the live-view transport automatically:
+plus a set of **web-app images**, and resolves the live-view transport
+automatically:
 
 | Provider | Examples | Live view | AI control |
 | --- | --- | --- | --- |
-| **LinuxServer.io** | `webtop:debian-kde`, `ubuntu-xfce`, `ubuntu-kde`, `fedora-xfce`, `arch-i3`, `latest` (Alpine XFCE) | Selkies on `3000` (HTTP, path prefix) | `docker exec` agent (`xdotool`/Pillow) |
+| **LinuxServer.io desktops** | `webtop:debian-kde`, `ubuntu-xfce`, `ubuntu-kde`, `fedora-xfce`, `arch-i3`, `latest` (Alpine XFCE) | Selkies on `3000` (HTTP, path prefix) | `docker exec` agent (`xdotool`/Pillow) |
+| **LinuxServer.io web apps** | `code-server` (VS Code in the browser), `vscodium-web` (VSCodium remote web client) | The application's own UI on `8443` or `8000`, embedded in the same iframe | **None** (no shared screen); the AI keeps `files` + `shell` |
 | **Kasmweb** | `desktop`, `ubuntu-jammy-desktop`, `core-kali-rolling`, `alma/rocky/oracle` desktops, `firefox`, `chrome`, `vs-code`, `terminal`, `libre-office`, `gimp`, … | KasmVNC on `6901` (HTTPS, stripped prefix) | `docker exec` agent (libX11/XTest + `xwd` fallback) |
 
 The selector shows name, category, description, screenshot/logo, provider and
@@ -65,6 +68,34 @@ release can be pinned; LinuxServer flavours are themselves the image tags and
 therefore already appear as cards.  Any other `registry/image:tag` can be
 entered under **Custom image**; unknown images use the screenshot fallback until
 a known profile is chosen.
+
+### Web-app images (no VNC)
+
+Some products expose a web interface instead of a desktop.  `code-server`,
+`vscodium-web` and future entries with `live_view="web"` are started as normal
+containers, but the live view is the product itself, embedded through the same
+`/computer/<id>/` iframe as a Selkies desktop.  The session:
+
+* serves the public route through Traefik at `/computer/<id>/`, protected by the
+  usual `codx-junior-auth` middleware;
+* lets each app handle the prefix the way it needs: code-server uses relative
+  URLs, so Traefik strips `/computer/<id>` before forwarding; VSCodium Web
+  receives `--server-base-path=/computer/<id>` in `CODE_ARGS` and serves its
+  assets and websocket under the path;
+* removes `X-Forwarded-Port` on the web-app route. A TLS edge forwards plain
+  HTTP to Traefik, so Traefik would advertise port `80`; VSCodium builds its
+  websocket URL from `X-Forwarded-Host` + `X-Forwarded-Port` and would dial
+  `wss://host:80` (WebSocket close `1006`). Without the header the browser's
+  real scheme/port (443 for HTTPS) is used;
+* has `control="none"` and capabilities `files` + `shell`: there is no X11
+  screen to screenshot or click, while the AI can still run commands and read
+  the shared project files;
+* skips the desktop viewer chrome (control lease, mouse/keyboard overlay,
+  screenshot and resize actions) and only shows the embedded app.
+
+Adding another web app is a catalog entry plus its port and base-path flag in
+`api/codx/junior/computer/images.py`; the session manager, route and viewer are
+generic.
 
 Kasmweb images are started with `VNC_PW`, `VNC_RESOLUTION`, `--shm-size=512m`
 and the API user's group so shared project folders stay writable.  KasmVNC uses

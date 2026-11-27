@@ -215,6 +215,26 @@ def api_task_schedule(
         raise HTTPException(status_code=400, detail=f"Cannot resolve schedule: {ex}")
 
 
+@router.get("/teams")
+def api_task_teams(
+    user: CodxUser = Depends(get_authenticated_user),
+):
+    """
+    Return only the teams that can own a board.
+
+    The board editors need this list to render the owner picker. It used to call
+    ``GET /api/tasks/boards``, which also scans every board and every task — an
+    expensive cold read that could exceed the gateway timeout. Teams alone come
+    from the company catalogue and are cheap.
+    """
+    try:
+        service = TaskBoardService(user=user)
+        return {"teams": service.team_refs()}
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("api_task_teams failed: %s", ex)
+        raise HTTPException(status_code=500, detail=f"Cannot list teams: {ex}")
+
+
 @router.get("/boards")
 def api_task_boards(
     user: CodxUser = Depends(get_authenticated_user),

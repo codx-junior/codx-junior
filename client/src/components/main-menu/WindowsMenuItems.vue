@@ -1,6 +1,5 @@
 <script setup>
 import MenubarItem from './MenubarItem.vue'
-import WorkspacesMenu from './WorkspacesMenu.vue'
 import SettingsMenu from './SettingsMenu.vue'
 </script>
 
@@ -22,9 +21,7 @@ import SettingsMenu from './SettingsMenu.vue'
   </div>
 
   <!-- Apps grid: ONLY the app results scroll. Keeping this block bounded is
-       what stops the Workspaces / Settings sections below from being clipped
-       (they used to live inside this scroll box, at the bottom of a max-h-360
-       area, so they were effectively unreachable). -->
+       what stops the Settings section below from being clipped. -->
   <div
     class="p-2 grid grid-cols-2 gap-1 text-sm"
     :class="mobile ? '' : 'overflow-y-auto max-h-[300px]'"
@@ -44,15 +41,11 @@ import SettingsMenu from './SettingsMenu.vue'
     </div>
   </div>
 
-  <!-- Workspaces + Settings: always visible, below the scrolling app grid.
-       Hidden while searching so the results stay focused. -->
+  <!-- Settings: always visible, below the scrolling app grid. Hidden while
+       searching so the results stay focused. Workspaces were removed from the
+       product UI (deprecated feature). -->
   <div v-if="!search" class="border-t border-base-content/10 px-2 py-2">
     <div class="px-3 pt-1 pb-1 text-[11px] font-bold uppercase tracking-wide opacity-50">
-      Workspaces
-    </div>
-    <WorkspacesMenu />
-
-    <div class="px-3 pt-2 pb-1 text-[11px] font-bold uppercase tracking-wide opacity-50">
       Settings
     </div>
     <SettingsMenu />
@@ -60,6 +53,8 @@ import SettingsMenu from './SettingsMenu.vue'
 </template>
 
 <script>
+import { isFeatureEnabled } from '@/config/features'
+
 export default {
   props: {
     // Mobile layout: drop the internal max-height/scroll so the whole
@@ -72,32 +67,30 @@ export default {
       search: '',
       items: [
         { label: 'Home', icon: 'fa-solid fa-home', action: 'home' },
+        // New chat opens the full-screen harness workspace.
+        { label: 'New chat', icon: 'fa-solid fa-plus', action: 'harness-mode' },
         { label: 'Company', icon: 'fa-solid fa-building-columns', action: 'company', company: true },
         { label: 'Company settings', icon: 'fa-solid fa-building-user', action: 'company-settings', company: true },
-        { label: 'Projects', icon: 'fa-solid fa-cubes', action: 'projects' },
+        { label: 'Projects', icon: 'fa-solid fa-cubes', action: 'projects', feature: 'projects' },
         { label: 'New project', icon: 'fa-solid fa-plus', action: 'new-project' },
-        { label: 'Wiki', icon: 'fa-solid fa-graduation-cap', action: 'wiki' },
+        { label: 'Wiki', icon: 'fa-solid fa-graduation-cap', action: 'wiki', feature: 'wiki' },
         { label: 'Chats', icon: 'fa-regular fa-comments', action: 'chats' },
-        { label: 'Messenger', icon: 'fa-regular fa-comment-dots', action: 'messenger' },
-        { label: 'Harness mode', icon: 'fa-solid fa-bolt', action: 'harness-mode' },
-        { label: 'Harness diagnostics', icon: 'fa-solid fa-heart-pulse', action: 'harness' },
-        { label: 'CISO', icon: 'fa-solid fa-shield-halved', action: 'ciso' },
-        { label: 'Git', icon: 'fa-solid fa-code-branch', action: 'git-view' },
-        { label: 'Tasks', icon: 'fa-solid fa-list-check', action: 'task-list' },
-        { label: 'Board', icon: 'fa-brands fa-trello', action: 'tasks' },
-        { label: 'Planning', icon: 'fa-solid fa-diagram-project', action: 'planning' },
-        { label: 'Team', icon: 'fa-solid fa-people-group', action: 'team' },
-        { label: 'Meet', icon: 'fa-solid fa-video', action: 'meet' },
-        { label: 'File explorer', icon: 'fa-regular fa-folder-open', action: 'file-explorer' },
-        { label: 'Computer sessions', icon: 'fa-solid fa-desktop', action: 'browser-sessions' },
+        { label: 'Messenger', icon: 'fa-regular fa-comment-dots', action: 'messenger', feature: 'teams' },
+        { label: 'CISO', icon: 'fa-solid fa-shield-halved', action: 'ciso', feature: 'company-security' },
+        { label: 'Git', icon: 'fa-solid fa-code-branch', action: 'git-view', feature: 'git-review' },
+        { label: 'Tasks', icon: 'fa-solid fa-list-check', action: 'task-list', feature: 'kanban' },
+        { label: 'Board', icon: 'fa-brands fa-trello', action: 'tasks', feature: 'kanban' },
+        { label: 'Planning', icon: 'fa-solid fa-diagram-project', action: 'planning', feature: 'kanban' },
+        { label: 'Team', icon: 'fa-solid fa-people-group', action: 'team', feature: 'teams' },
+        { label: 'Meet', icon: 'fa-solid fa-video', action: 'meet', feature: 'meetings' },
+        { label: 'File explorer', icon: 'fa-regular fa-folder-open', action: 'file-explorer', feature: 'file-explorer' },
+        { label: 'Computer sessions', icon: 'fa-solid fa-desktop', action: 'browser-sessions', feature: 'browser-use' },
         { label: 'Profiles', icon: 'fa-solid fa-id-badge', action: 'profiles', admin: true },
-        { label: 'Knowledge', icon: 'fa-solid fa-magnifying-glass', action: 'knowledge', admin: true },
-        { label: 'Analytics', icon: 'fa-solid fa-chart-area', action: 'analytics' },
+        { label: 'Knowledge', icon: 'fa-solid fa-magnifying-glass', action: 'knowledge', admin: true, feature: 'knowledge' },
+        { label: 'Analytics', icon: 'fa-solid fa-chart-area', action: 'analytics', feature: 'analytics' },
         // Docker infrastructure (containers, stacks, images, volumes,
         // networks, events) — see config/apps.js → infra.
-        // NOTE: `/api/infra/*` is admin-only on the backend; add
-        // `admin: true` here once the role is enforced server-side.
-        { label: 'Infrastructure', icon: 'fa-solid fa-server', action: 'infra' }
+        { label: 'Infrastructure', icon: 'fa-solid fa-server', action: 'infra', feature: 'infra' }
       ]
     }
   },
@@ -110,6 +103,7 @@ export default {
       return this.items
         .filter(item => !item.admin || this.isProjectAdmin)
         .filter(item => !item.company || this.$storex.features?.companyEnabled !== false)
+        .filter(item => !item.feature || isFeatureEnabled(this.$storex.features, item.feature))
         .filter(item => !term || item.label.toLowerCase().includes(term))
     }
   },
@@ -127,6 +121,7 @@ export default {
       }
       const actions = {
         home: () => this.$ui.setActiveTab('home'),
+        'harness-mode': () => this.$ui.openApp('harness-mode'),
         company: () => this.$storex.$router.push(companyLocation()).catch(() => {}),
         'company-settings': () => this.$storex.$router.push(companyLocation('settings')).catch(() => {}),
         projects: () => this.$ui.openApp('projects'),
@@ -134,8 +129,6 @@ export default {
         wiki: () => this.$ui.setActiveTab('wiki'),
         chats: () => this.$storex.$router.push({ name: 'chats' }).catch(() => {}),
         messenger: () => this.$storex.$router.push({ name: 'messenger' }).catch(() => {}),
-        'harness-mode': () => this.$ui.openApp('harness-mode'),
-        harness: () => this.$ui.openApp('harness'),
         ciso: () => this.$ui.openApp('ciso'),
         'git-view': () => this.$ui.openApp('git-view'),
         'task-list': () => this.$ui.openApp('task-list'),

@@ -82,6 +82,15 @@ to end in this turn, not a plan, not a diagnosis, not one file.
    (missing credential, a product decision only the user can make, a destructive
    action, or a sandbox boundary).
 
+**Do not hand the turn back with a question**
+
+Asking "should I continue?" is not a delivery and not a blocker. If the next
+step is obvious from the ticket, the repository or the evidence you collected,
+take it and keep working. When you really need the user's decision, do all the
+work that does not depend on it first and end with ONE fenced `options` block of
+concrete replies (the interface renders them as buttons, so the user can continue
+with a click). A bare question without options wastes a turn.
+
 **Required delivery report**
 
 Use the platform delivery contract (the same four sections every codx-junior

@@ -15,6 +15,7 @@ import ChatTurnTimeline from './chat/ChatTurnTimeline.vue'
 import ChatImageEditorModal from './chat/ChatImageEditorModal.vue'
 import ChatResponseOptions from './chat/ChatResponseOptions.vue'
 import { formatElapsed } from '../utils/duration.js'
+import { stripHarnessBrief } from '../utils/harnessSteps.js'
 import { parseResponseOptions, withResponseOptions } from '../utils/responseOptions.js'
 </script>
 
@@ -63,9 +64,10 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
 
           <!-- ─────────────────────────── LEFT: identity + state ─────────────────────────── -->
 
-          <!-- Archive toggle -->
+          <!-- Archive toggle (never in a harness transcript: it is the review
+               lens of a durable task chat, not a chat the user archives). -->
           <button
-            v-if="isDone"
+            v-if="isDone && !menuLess"
             class="btn btn-xs btn-ghost tooltip tooltip-bottom"
             :class="displayMessage.hide ? 'text-warning/70' : '' "
             :data-tip="displayMessage.hide ? 'Unarchive' : 'Archive'"
@@ -237,6 +239,7 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
                  (mobile) panels all of them live in the ⋯ dropdown below, so the
                  message header keeps a single compact line. -->
             <button
+              v-if="!menuLess"
               class="hidden @lg/panel:inline-flex btn btn-xs btn-ghost tooltip tooltip-bottom"
               data-tip="Thread"
               @click.stop="$emit('thread', message)"
@@ -244,7 +247,7 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
               <i class="fa-solid fa-comment-dots"></i>
             </button>
             <button
-              v-if="!isChannel"
+              v-if="!isChannel && !menuLess"
               class="hidden @lg/panel:inline-flex btn btn-xs btn-ghost tooltip tooltip-bottom"
               data-tip="Mark as answer"
               @click.stop="$emit('answer', message)"
@@ -289,8 +292,9 @@ import { parseResponseOptions, withResponseOptions } from '../utils/responseOpti
             <!-- Divider (wide panels only) -->
             <div class="hidden @lg/panel:block w-px h-4 bg-base-300 mx-0.5"></div>
 
-            <!-- More dropdown -->
-            <div class="dropdown dropdown-end" @click.stop>
+            <!-- More dropdown (edit/delete/thread actions do not belong to a
+                 harness transcript; copy stays inline above). -->
+            <div v-if="!menuLess" class="dropdown dropdown-end" @click.stop>
               <button tabindex="0" class="btn btn-xs btn-ghost">
                 <i class="fa-solid fa-ellipsis-vertical"></i>
               </button>
@@ -733,6 +737,10 @@ export default {
     'message',
     'mentionList',
     'menu-less',
+    // Harness transcript lens: every message stays visible (never "archived"),
+    // and the appended harness contract is stripped from the ticket so the
+    // user reads their own request.
+    'harness',
     'usersList',
     'isNewSpeaker',
     'eventsOpen',
@@ -893,7 +901,19 @@ export default {
             ?.filter(m => !m.hide)
             .reverse()[0]
         : null
-      return threadReply || this.message
+      const message = threadReply || this.message
+      if (!this.harness || !message) return message
+      // Harness sessions used to be cleaned up as task turns: prior messages
+      // were flagged `hide` and the whole history disappeared from the review
+      // lens. The transcript shows all of it, and the ticket drops the brief
+      // the backend appended (`## Harness mode …`).
+      return {
+        ...message,
+        hide: false,
+        content: message.role === 'user'
+          ? stripHarnessBrief(message.content)
+          : message.content
+      }
     },
     messageProfiles() {
       let profiles = this.$projects.profiles

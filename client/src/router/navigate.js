@@ -575,8 +575,8 @@ export default function Navigate({ $router, $storex }) {
 
       // Git repository view, rendered by components/repo/GitView.vue
       // (see router/index.ts → "/:projectName/git-view")
-      openGitView() {
-        openApp('git-view')
+      openGitView(options = {}) {
+        openApp('git-view', options && typeof options === 'object' ? options : {})
       },
 
       // Docker infrastructure, rendered by views/infra/InfraView.vue

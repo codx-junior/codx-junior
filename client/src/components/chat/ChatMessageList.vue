@@ -5,6 +5,7 @@ import ChatEntryToolCard from '@/components/ChatEntryToolCard.vue'
 import ChatEntryMetadata from '@/components/ChatEntryMetadata.vue'
 import ChatAttachmentCard from '@/components/ChatAttachmentCard.vue'
 import ChatMiniMap from '@/components/chat/ChatMiniMap.vue'
+import ChatFindBar from '@/components/chat/ChatFindBar.vue'
 import { formatGenerationTime } from '@/utils/duration.js'
 </script>
 
@@ -132,6 +133,9 @@ import { formatGenerationTime } from '@/utils/duration.js'
         >
           <div class="max-w-[860px] mx-auto flex flex-col px-3 py-3 @lg/panel:px-4 @lg/panel:py-6">
 
+            <!-- Host-provided preamble (harness mode: ticket/error/alerts). -->
+            <slot name="transcript-header" />
+
             <!-- ── Message Blocks ── -->
             <!-- Lazy rendering: a message mounts only while it is (or is about to
                  be) visible. Off-screen messages keep their wrapper in the DOM —
@@ -157,13 +161,15 @@ import { formatGenerationTime } from '@/utils/duration.js'
                   :chat="chat"
                   :message="message"
                   :mentionList="mentionList"
-                  :menu-less="readOnly"
+                  :menu-less="readOnly || harness"
+                  :harness="harness"
                   :usersList="usersList"
                   :isNewSpeaker="isNewSpeaker(message, ix)"
                   :events-open="eventsOpenKey === (message.doc_id || message.id)"
                   :events-drawer-open="showEventsPanel && activeEventsMessageKey === (message.doc_id || message.id)"
-                  :options-active="ix === messages.length - 1"
-                  :options-disabled="!!processing || !!readOnly"
+                  :options-enabled="!readOnly"
+                  :options-active="harness ? true : ix === messages.length - 1"
+                  :options-disabled="harness ? !!processing : (!!processing || !!readOnly)"
                   @answer-option="$emit('answer-option', $event)"
                   @edited="$emit('edited', $event)"
                   @enhance="$emit('enhance', message)"
@@ -238,6 +244,9 @@ import { formatGenerationTime } from '@/utils/duration.js'
               </div>
             </div>
 
+            <!-- Host-provided epilogue (harness mode: files changed, run, log). -->
+            <slot name="transcript-footer" />
+
             <!-- Scroll anchor -->
             <div class="h-4" ref="anchor"></div>
           </div>
@@ -287,6 +296,10 @@ export default {
     'usersList',
     'childrenChats',
     'processing',
+    // Harness mode lens: the transcript is a durable review of a task chat, so
+    // every message stays visible (no archive toggle) and every assistant turn
+    // keeps its suggested replies clickable.
+    'harness',
   ],
   emits: [
     'edited',

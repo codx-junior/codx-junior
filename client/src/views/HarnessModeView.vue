@@ -20,6 +20,11 @@ import { $storex } from '@/store'
 import HarnessModeSidebar from '@/components/harness/mode/HarnessModeSidebar.vue'
 import HarnessHome from '@/components/harness/mode/HarnessHome.vue'
 import HarnessSessionView from '@/components/harness/mode/HarnessSessionView.vue'
+import {
+  followUpProfiles,
+  modeForProfiles,
+  tierProfileName as tierProfileForMode
+} from '@/utils/harnessMode.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -87,9 +92,7 @@ const models = computed(() => {
   const stored = $storex.projects.ai?.models || []
   return stored.length ? stored : localModels.value
 })
-const tierProfileName = computed(() =>
-  mode.value === 'deep' ? 'codx-junior-max' : 'codx-junior'
-)
+const tierProfileName = computed(() => tierProfileForMode(mode.value))
 const tierProfiles = computed(() =>
   allProfiles.value.filter(profile => profile.name === tierProfileName.value)
 )
@@ -106,10 +109,23 @@ watch(
 )
 
 function setMode(value) {
-  mode.value = value
-  const target = value === 'deep' ? 'codx-junior-max' : 'codx-junior'
-  const profiles = allProfiles.value.filter(profile => profile.name === target)
+  mode.value = value === 'deep' ? 'deep' : 'standard'
+  const profiles = allProfiles.value.filter(
+    profile => profile.name === tierProfileName.value
+  )
   if (profiles.length) selectedProfiles.value = [...profiles]
+}
+
+/**
+ * Reflect the tier a session was created/continued with in the effort control.
+ *
+ * Only called when the active session changes (never on a poll): a tier the
+ * user just picked for the NEXT turn must not be overwritten by the persisted
+ * profile list of the previous one.
+ */
+function syncModeFromSession() {
+  const profiles = session.value?.profiles || detail.value?.session?.profiles || []
+  if (profiles.length) mode.value = modeForProfiles(profiles)
 }
 
 // ── Data loading ────────────────────────────────────────────────────────────
@@ -179,6 +195,7 @@ async function selectSession(sessionId, { updateRoute = true } = {}) {
   actionError.value = ''
   $storex.harness.selectSession(sessionId)
   await $storex.harness.loadSession({ id: sessionId })
+  syncModeFromSession()
   if (!detail.value && !session.value) {
     // Deleted/unknown session (a stale deep link): go back to the composer
     // instead of rendering an empty transcript forever.
@@ -256,8 +273,16 @@ function openChat() {
   if (chat.value?.id) $storex.ui.openChat({ ...chat.value, name: session.value?.name || chat.value.name })
 }
 
+/**
+ * Open the Git view on the Review tab with the session branch compared to the
+ * active branch of the project checkout.
+ */
 function openGit() {
-  $storex.ui.openGitView()
+  const branch = detail.value?.workspace?.branch || ''
+  $storex.ui.openGitView({
+    tab: 'review',
+    compareBranch: branch
+  })
 }
 
 function errorMessage(ex) {
@@ -304,16 +329,23 @@ async function submit(payload) {
   }
 }
 
-async function sendFollowUp({ text, model, attachments = [] } = {}) {
+async function sendFollowUp({ text, model, attachments = [], profiles } = {}) {
   if ((!text && !attachments.length) || !activeSessionId.value || busy.value) return
   busy.value = true
   actionError.value = ''
+  // The effort selected in the composer/header is sent with the message: the
+  // engine resolves the turn's profile from `message.profiles`, so switching
+  // Standard/Deep while continuing a session takes effect on this turn.
+  const nextProfiles = Array.isArray(profiles) && profiles.length
+    ? profiles
+    : followUpProfiles(session.value?.profiles || [], mode.value)
   try {
     const updated = await $storex.harness.promptSession({
       id: activeSessionId.value,
       content: text,
       model: model || undefined,
-      attachments
+      attachments,
+      profiles: nextProfiles
     })
     sessionRef.value?.clearComposer?.()
     if (updated?.started === false) {
@@ -439,6 +471,7 @@ watch(
           :busy="busy"
           :error="error"
           :models="models"
+          :mode="mode"
           @back="closeSession"
           @open-chat="openChat"
           @open-git="openGit"
@@ -447,6 +480,7 @@ watch(
           @stop="stopSession"
           @send="sendFollowUp"
           @refresh="refresh({ silent: false })"
+          @update:mode="setMode"
         />
         <HarnessHome
           v-else

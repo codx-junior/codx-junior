@@ -19,7 +19,7 @@ const read = path => readFile(new URL(path, import.meta.url), 'utf8')
 const appsSection = await read('../src/components/layout/AppsSection.vue')
 const desktopSidebar = await read('../src/components/layout/DesktopSidebar.vue')
 
-test('the left bar renders the project selector only in workspace mode', () => {
+test('the left bar renders the project selector whenever a project exists', () => {
   assert.match(
     appsSection,
     /import ProjectDetailt from '\.\.\/ProjectDetailt\.vue'/,
@@ -27,13 +27,23 @@ test('the left bar renders the project selector only in workspace mode', () => {
   )
   assert.match(
     appsSection,
-    /v-if="!isCollapsed && inWorkspaceMode"/,
-    'the selector is hidden outside workspace mode and on the collapsed rail'
+    /v-if="!isCollapsed && canShowProjectSelector"/,
+    'the selector is hidden only on the collapsed rail'
+  )
+  assert.match(
+    appsSection,
+    /canShowProjectSelector\(\) \{[\s\S]*?inWorkspaceMode \|\| this\.\$storex\.projects\.activeProject/,
+    'the selector is visible on the bootstrap screen as soon as a project is known'
   )
   assert.match(
     desktopSidebar,
     /:in-workspace-mode="isWorkspaceMode"/,
     'the sidebar passes the workspace-mode flag to the apps section'
+  )
+  assert.match(
+    appsSection,
+    /mounted\(\) \{[\s\S]*?loadAllProjects/,
+    'the launcher requests the project catalogue when the shell mounts'
   )
 })
 

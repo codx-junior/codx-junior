@@ -123,6 +123,26 @@ PROVIDER_PRESETS: Dict[str, dict] = {
         "embeddings_dim": 768,
         "documentation": "https://aistudio.google.com/app/apikey",
     },
+    "anthropic": {
+        # Anthropic exposes an OpenAI-compatible endpoint, so the same client
+        # works with a Claude model list.
+        "api_url": "https://api.anthropic.com/v1",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "llm": "claude-sonnet-4-5",
+        "embeddings": "",
+        "embeddings_dim": 0,
+        "documentation": "https://console.anthropic.com/settings/keys",
+    },
+    "ollama": {
+        # Local Ollama. No key is required; the API still stores a placeholder
+        # when one is not supplied (see api/setup.py).
+        "api_url": "http://localhost:11434/v1",
+        "api_key_env": "",
+        "llm": "qwen2.5-coder:7b",
+        "embeddings": "",
+        "embeddings_dim": 0,
+        "documentation": "https://ollama.com/library/qwen2.5-coder",
+    },
     "openrouter": {
         "api_url": "https://openrouter.ai/api/v1",
         "api_key_env": "OPENROUTER_API_KEY",
@@ -335,14 +355,10 @@ def build_provider_and_models(config: Optional[Dict[str, Any]] = None) -> Option
         )
         return None
 
-    if provider_name == "anthropic":
-        # Anthropic does not expose an OpenAI-compatible endpoint: it needs an
-        # OpenAI-compatible gateway in front of it.
-        logger.warning(
-            "AI bootstrap: 'anthropic' has no OpenAI-compatible endpoint. "
-            "Run an OpenAI-compatible gateway and set CODX_JUNIOR_AI_API_URL."
-        )
-        return None
+    # A local Ollama needs no key; store the conventional placeholder so the
+    # provider is usable from the bootstrap path too.
+    if provider_name == "ollama" and not api_key:
+        api_key = "ollama"
 
     if not api_key:
         logger.warning(

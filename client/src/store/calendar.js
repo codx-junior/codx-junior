@@ -44,11 +44,52 @@ export const PERSONAL_PROJECT = 'personal'
 
 export const DEFAULT_PREFS = {
   hidden_calendars: [],
-  order: [],
+  // The API stores the calendar positions as an object keyed by calendar id
+  // (`{ cal_id: 0 }`). Accept an array too: older clients persisted the order
+  // as a list.
+  order: {},
   week_start: 1,
   // Not part of the §5.1 sketch, additive: lets the project filter survive a
   // reload ("persist the choice via prefs").
   active_projects: []
+}
+
+/**
+ * Normalize the preferences document returned by the API.
+ *
+ * The backend owns the shape (`order` is a `{calendar_id: position}` object),
+ * but prefs can also come from an older client as an array. Normalizing here
+ * keeps every getter safe: `order.indexOf` on an object was crashing the
+ * calendar with "order.indexOf is not a function".
+ *
+ * @param {Object|null|undefined} prefs
+ * @returns {Object} A complete, safe preferences object.
+ */
+function normalizePrefs(prefs = {}) {
+  const source = prefs && typeof prefs === 'object' && !Array.isArray(prefs) ? prefs : {}
+  const next = { ...DEFAULT_PREFS, ...source }
+
+  if (!Array.isArray(next.hidden_calendars)) next.hidden_calendars = []
+  if (!Array.isArray(next.active_projects)) next.active_projects = []
+
+  const rawOrder = next.order
+  if (Array.isArray(rawOrder)) {
+    // Legacy array form: the index is the position.
+    next.order = rawOrder.reduce((acc, id, index) => {
+      if (id) acc[String(id)] = index
+      return acc
+    }, {})
+  } else if (rawOrder && typeof rawOrder === 'object') {
+    next.order = Object.entries(rawOrder).reduce((acc, [id, value]) => {
+      const position = Number(value)
+      if (id && Number.isFinite(position)) acc[String(id)] = position
+      return acc
+    }, {})
+  } else {
+    next.order = {}
+  }
+
+  return next
 }
 
 /** The API client of the active project (global endpoints, project headers). */
@@ -80,7 +121,7 @@ export const state = () => ({
   range: null,
 
   // Per-user preferences (hidden calendars, order, week start, filter)
-  prefs: { ...DEFAULT_PREFS },
+  prefs: normalizePrefs(),
   prefsLoaded: false,
 
   loading: false,
@@ -94,10 +135,15 @@ export const state = () => ({
 export const getters = getterTree(state, {
   /** Every calendar the viewer may see, in display order. */
   calendarList: state => {
-    const order = state.prefs.order || []
+    const order = state.prefs.order || {}
     const weight = cal => {
-      const index = order.indexOf(cal.id)
-      return index === -1 ? Number.MAX_SAFE_INTEGER : index
+      const id = String(cal?.id ?? '')
+      if (Array.isArray(order)) {
+        const index = order.indexOf(cal?.id)
+        return index === -1 ? Number.MAX_SAFE_INTEGER : index
+      }
+      const position = Number(order?.[id])
+      return Number.isFinite(position) ? position : Number.MAX_SAFE_INTEGER
     }
     return [...(state.calendars || [])].sort((a, b) => {
       const wa = weight(a)
@@ -112,7 +158,9 @@ export const getters = getterTree(state, {
 
   /** Calendars the viewer has not hidden (prefs + the calendar's own flag). */
   visibleCalendarIds: (state, getters) => {
-    const hidden = state.prefs.hidden_calendars || []
+    const hidden = Array.isArray(state.prefs.hidden_calendars)
+      ? state.prefs.hidden_calendars
+      : []
     return (getters.calendarList || [])
       .filter(cal => cal.visible !== false && !hidden.includes(cal.id))
       .map(cal => cal.id)
@@ -253,11 +301,11 @@ export const mutations = mutationTree(state, {
   },
 
   setPrefs(state, prefs) {
-    state.prefs = { ...DEFAULT_PREFS, ...(prefs || {}) }
+    state.prefs = normalizePrefs(prefs)
   },
 
   patchPrefs(state, patch) {
-    state.prefs = { ...state.prefs, ...(patch || {}) }
+    state.prefs = normalizePrefs({ ...state.prefs, ...(patch || {}) })
   },
 
   setPrefsLoaded(state, loaded) {
@@ -452,7 +500,7 @@ export const actions = actionTree(
       if (!api?.calendar) return state.prefs
       try {
         const response = await api.calendar.prefs.read()
-        const prefs = { ...DEFAULT_PREFS, ...(response?.prefs || response || {}) }
+        const prefs = normalizePrefs(response?.prefs || response || {})
         commit('setPrefs', prefs)
         commit('setActiveProjects', prefs.active_projects || [])
         commit('setPrefsLoaded', true)
@@ -465,7 +513,7 @@ export const actions = actionTree(
     },
 
     async savePrefs({ state, commit }, patch = {}) {
-      const prefs = { ...state.prefs, ...(patch || {}) }
+      const prefs = normalizePrefs({ ...state.prefs, ...(patch || {}) })
       commit('setPrefs', prefs)
       const api = apiClient()
       if (!api?.calendar) return prefs

@@ -19,6 +19,8 @@ const COMMIT_SUBJECT_LIMIT = 50
 const COMMIT_BODY_LIMIT = 72
 // File events are coalesced: a burst of writes reloads the view only once
 const FILE_EVENT_REFRESH_DELAY = 600
+// Tabs of the view; an external opener (harness header) can request one.
+const GIT_TABS = ['repository', 'graph', 'review', 'validator', 'quality']
 // Success notices of the remote operations (shared by the credential retry)
 const REMOTE_SUCCESS_MESSAGES = {
   fetch: 'Fetched from remote',
@@ -116,6 +118,9 @@ export default {
       // (worktree / branch "Compare with current branch"). A token makes every
       // click a new request, even when the pair is the same.
       reviewComparison: null,
+      // Identity of the last comparison applied from the `params` prop, so a
+      // poll/re-render never re-applies an external request.
+      requestedReviewKey: '',
       // Conflicts: pending merge/rebase state and the resolver modal
       conflictState: null,
       showConflicts: false,
@@ -475,9 +480,20 @@ export default {
     // A worktree removal only applies to the branch it was chosen for
     mergeFrom() {
       this.mergeDeleteWorktree = false
+    },
+    // An already-open Git panel receives the new params when another surface
+    // requests a review (openApp reuses the panel). Apply the tab now and the
+    // comparison as soon as the repository info is known.
+    params: {
+      deep: true,
+      handler() {
+        this.applyRequestedTab()
+        this.applyRequestedReview()
+      }
     }
   },
   created() {
+    this.applyRequestedTab()
     this.loadRepo()
   },
   mounted() {
@@ -597,6 +613,41 @@ export default {
       if (this.activeTab === 'quality') {
         this.$refs.qualityPanel?.refresh()
       }
+    },
+
+    // ── External open request (tab + branch comparison) ──────────────────
+    /**
+     * Select the tab requested through the `params` prop (harness header opens
+     * the Review tab). Unknown/missing tabs leave the current one untouched.
+     */
+    applyRequestedTab() {
+      const tab = String(this.params?.tab || '').trim()
+      if (tab && GIT_TABS.includes(tab)) this.activeTab = tab
+    },
+
+    /**
+     * Apply an external "review this branch against the active one" request.
+     *
+     * The harness header passes the task worktree branch and expects the
+     * Review tab with that branch as the SOURCE and the project checkout's
+     * active branch as the TARGET. It is idempotent: the same request is only
+     * applied once, and a branch equal to the active one needs no comparison.
+     */
+    applyRequestedReview() {
+      const branch = String(this.params?.compareBranch || '').trim()
+      this.applyRequestedTab()
+      if (!branch) return
+      const target = String(this.params?.compareTo || '').trim() || this.currentBranch
+      if (!target || this.sameBranch(branch, target)) return
+      const key = `${branch}\u0000${target}`
+      if (this.requestedReviewKey === key) return
+      this.requestedReviewKey = key
+      this.reviewComparison = {
+        from: branch,
+        to: target,
+        token: (this.reviewComparison?.token || 0) + 1
+      }
+      this.activeTab = 'review'
     },
 
     // ── Local changes review ────────────────────────────────────────────
@@ -1773,6 +1824,9 @@ export default {
       this.pruneSelection()
       this.syncSelectedFile()
       this.loading = false
+      // The comparison needs the active branch, which only exists after this
+      // load: apply an external "review this branch" request now.
+      this.applyRequestedReview()
     },
 
     /**

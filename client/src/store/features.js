@@ -34,9 +34,19 @@ export const state = () => ({
 })
 
 export const getters = getterTree(state, {
-  /** Whether a feature id is exposed by this installation. */
-  isActive: (state) => (featureId) =>
-    (state.active || []).includes(String(featureId || '')),
+  /**
+   * Whether a feature id is exposed by this installation.
+   *
+   * Fails OPEN when the profile could not be read: an older API (no
+   * `/api/features`) or a transient error must keep the legacy product instead
+   * of hiding every gated surface.
+   */
+  isActive: (state) => (featureId) => {
+    const id = String(featureId || '')
+    if (!id) return true
+    if (!state.loaded || state.error) return true
+    return (state.active || []).includes(id)
+  },
   /** True when the company shell should be used. */
   companyEnabled: (state) => !!state.company,
   /** True when the company first-run wizard should gate the product. */

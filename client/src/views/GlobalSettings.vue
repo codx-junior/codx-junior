@@ -3,7 +3,6 @@ import AISettings from './AISettings.vue'
 import AgentSettings from '@/components/ai_settings/AgentSettings.vue'
 import ExportImportButton from '@/components/ExportImportButton.vue'
 import SecurityUserList from '@/components/security/SecurityUserList.vue'
-import Workspaces from '@/components/workspaces/Workspaces.vue'
 import ProjectScripts from '@/components/project/ProjectScripts.vue'
 import OAuthSettings from '@/components/oauth_settings/OAuthSettings.vue'
 import PluginsEditor from '@/components/global_settings/plugins/PluginsEditor.vue'
@@ -116,7 +115,6 @@ import UpdatePanel from '@/components/global_settings/UpdatePanel.vue'
         <div class="flex-1 overflow-y-auto p-4 @md:p-8">
           <SecurityUserList :settings="settings" v-if="activeTab === 'users'" />
           <SecretsEditor v-if="activeTab === 'secrets'" scope="all" default-scope="global" />
-          <Workspaces :settings="settings" v-if="activeTab === 'workspaces'" />
           <ProjectScripts :settings="settings" v-if="activeTab === 'scripts'" />
           <OAuthSettings :settings="settings" v-if="activeTab === 'oauth'" />
           <PluginsEditor v-if="activeTab === 'plugins'" />
@@ -157,7 +155,6 @@ export default {
         { id: 'chat', label: 'Chat Prompts', icon: 'fa-comments' },
         { id: 'efforts', label: 'Efforts', icon: 'fa-gauge-high' },
         { id: 'plugins', label: 'Plugins', icon: 'fa-puzzle-piece' },
-        { id: 'workspaces', label: 'Workspaces', icon: 'fa-cube' },
         { id: 'traefik', label: 'Traefik', icon: 'fa-route' },
         { id: 'dsh', label: 'DSH Harness', icon: 'fa-diagram-project' },
         { id: 'users', label: 'Users', icon: 'fa-users' },
@@ -268,7 +265,6 @@ export default {
         agents: 'Define and configure AI agents',
         chat: 'Set global prompts for all chat interactions',
         plugins: 'Install and manage plugins',
-        workspaces: 'Organize and manage workspaces',
         traefik: 'Manage global Traefik routes and review workspace/project routes',
         dsh: 'Connect a DeepSeek Harness and mirror its tasks on the board',
         users: 'Control user access and permissions',

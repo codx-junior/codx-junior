@@ -6,16 +6,17 @@
  * selectors and attachment handling) and adds only what harness mode needs:
  * a workspace picker and the two execution tiers (Standard / Deep).
  */
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import ChatInputBox from '@/components/chat/ChatInputBox.vue'
+import ChatAttachmentPreview from '@/components/chat/ChatAttachmentPreview.vue'
 import ProjectDetailt from '@/components/ProjectDetailt.vue'
 import { $storex } from '@/store'
 import {
   attachmentFromPaste,
-  attachmentPayload,
   attachmentPayloads,
   attachmentsFromFiles
 } from '@/utils/composerAttachments'
+import { HARNESS_TIERS, tierHint } from '@/utils/harnessMode.js'
 
 const props = defineProps({
   project: { type: Object, default: null },
@@ -38,21 +39,6 @@ const emit = defineEmits([
 
 const composer = ref(null)
 
-const TIERS = [
-  {
-    id: 'standard',
-    label: 'Standard mode',
-    hint: 'codx-junior · high effort · one turn',
-    icon: 'fa-solid fa-bolt'
-  },
-  {
-    id: 'deep',
-    label: 'Deep work',
-    hint: 'codx-junior-max · max effort · long tasks',
-    icon: 'fa-solid fa-mountain-sun'
-  }
-]
-
 function onSend() {
   const text = String(composer.value?.getEditorText?.() || '').trim()
   const attachments = attachmentPayloads(pendingAttachments.value)
@@ -70,8 +56,6 @@ function clear() {
 // `ChatInputBox` only EMITS `paste` and `upload-files`; converting them into
 // chat attachments is the host's job, like Chat.vue does for a full chat.
 const pendingAttachments = ref([])
-const attachmentPreviews = computed(() => pendingAttachments.value.map(attachmentPayload))
-
 function notifyError(text) {
   $storex.ui?.addNotification?.({ text, type: 'error' })
 }
@@ -94,6 +78,18 @@ function removeAttachment(index) {
   pendingAttachments.value = pendingAttachments.value.filter((_, ix) => ix !== index)
 }
 
+function onAttachmentUpdated({ index, attachment }) {
+  if (!attachment || index < 0) return
+  pendingAttachments.value = pendingAttachments.value.map((item, ix) =>
+    ix === index ? attachment : item
+  )
+}
+
+async function onDrop(event) {
+  const files = Array.from(event?.dataTransfer?.files || [])
+  if (files.length) await onUploadFiles(files)
+}
+
 // Enter sends, Shift+Enter adds a newline (the chat composer convention).
 function onKeyDown(event) {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
@@ -102,10 +98,6 @@ function onKeyDown(event) {
 }
 
 defineExpose({ clear })
-
-function tierHint() {
-  return TIERS.find(tier => tier.id === props.mode)?.hint || ''
-}
 </script>
 
 <template>
@@ -138,6 +130,7 @@ function tierHint() {
           @send="onSend"
           @keydown="onKeyDown"
           @paste="onPaste"
+          @drop="onDrop"
           @upload-files="onUploadFiles"
           @model-changed="emit('update:model', $event)"
           @profiles-selected="emit('update:profiles', $event)"
@@ -156,7 +149,7 @@ function tierHint() {
               <!-- Execution tier -->
               <div class="flex items-center rounded-lg border border-base-content/15 bg-base-100/40 p-0.5" role="group" aria-label="Harness tier">
                 <button
-                  v-for="tier in TIERS"
+                  v-for="tier in HARNESS_TIERS"
                   :key="tier.id"
                   type="button"
                   class="flex items-center gap-1.5 rounded-md px-2 py-1 text-[11px] transition-colors"
@@ -172,35 +165,20 @@ function tierHint() {
                 </button>
               </div>
 
-              <span class="text-[10px] text-base-content/30 truncate">{{ tierHint() }}</span>
+              <span class="text-[10px] text-base-content/30 truncate">{{ tierHint(mode) }}</span>
             </div>
           </template>
         </ChatInputBox>
 
-        <!-- Pasted / uploaded attachments of the ticket -->
-        <div v-if="attachmentPreviews.length" class="flex flex-wrap gap-1.5 justify-center px-1">
-          <div
-            v-for="(item, index) in attachmentPreviews"
-            :key="`${item.name}-${index}`"
-            class="flex items-center gap-1.5 rounded-lg border border-base-content/15 bg-base-200/60 px-2 py-1 text-[11px]"
-          >
-            <img
-              v-if="String(item.type).startsWith('image/')"
-              :src="item.data"
-              class="h-6 w-6 rounded object-cover"
-              alt=""
-            />
-            <i v-else class="fa-solid fa-paperclip text-base-content/50"></i>
-            <span class="max-w-32 truncate">{{ item.name }}</span>
-            <button
-              class="btn btn-ghost btn-xs px-1"
-              title="Remove attachment"
-              @click="removeAttachment(index)"
-            >
-              <i class="fa-solid fa-xmark"></i>
-            </button>
-          </div>
-        </div>
+        <!-- Pasted / uploaded attachments of the ticket. The standard preview
+             renders real image thumbnails (data: URL) and the full-size modal. -->
+        <ChatAttachmentPreview
+          v-if="pendingAttachments.length"
+          :attachments="pendingAttachments"
+          size="sm"
+          @remove-attachment="removeAttachment"
+          @update-attachment="onAttachmentUpdated"
+        />
 
         <div v-if="error" class="alert alert-error text-xs py-2">
           <i class="fa-solid fa-triangle-exclamation"></i>

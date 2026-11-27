@@ -12,10 +12,12 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
   <div class="px-2 py-3 shrink-0 border-b border-base-content/5">
     <div class="flex gap-2 pb-1 min-w-0">  
       
-      <!-- Project selector: a workspace-mode affordance only. It opens the
-           project picker and switches the ACTIVE project. -->
+      <!-- Project selector: visible as soon as a project exists. On the
+           workspace bootstrap (`/projects`) the URL has no project segment yet,
+           but the active project is known — hiding the selector there was the
+           "first load has no project selector" bug. -->
       <ProjectDetailt
-        v-if="!isCollapsed && inWorkspaceMode"
+        v-if="!isCollapsed && canShowProjectSelector"
         class="flex-1 min-w-0"
         @click.stop=""
         @select="onProjectSelected"
@@ -98,6 +100,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
            Boards are opened from a row, so the board canvas is not a separate
            launcher item. -->
       <NavItem
+        v-if="appEnabled('task-list')"
         icon="fas fa-list-check"
         label="Tasks"
         :is-collapsed="isCollapsed"
@@ -105,6 +108,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       />
 
       <NavItem
+        v-if="appEnabled('planning')"
         icon="fas fa-diagram-project"
         label="Planning"
         :is-collapsed="isCollapsed"
@@ -117,23 +121,15 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
            config/apps.js, so this opens a dockview panel on desktop and the
            "/:projectName/calendar" route in single / mobile mode. -->
       <NavItem
+        v-if="appEnabled('calendar')"
         icon="fa-regular fa-calendar-days"
         label="Calendar"
         :is-collapsed="isCollapsed"
         @click="handleNavigateToCalendar"
       />
 
-      <!-- Harness mode: the DSH-like full-screen session workspace. The
-           read-only diagnostics (runs, worker, audit) stay reachable from its
-           own footer. -->
       <NavItem
-        icon="fas fa-bolt"
-        label="Harness"
-        :is-collapsed="isCollapsed"
-        @click="handleNavigateToHarness"
-      />
-
-      <NavItem
+        v-if="appEnabled('messenger')"
         icon="fa-regular fa-comments"
         label="Messenger"
         :is-collapsed="isCollapsed"
@@ -141,6 +137,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       />
 
       <NavItem
+        v-if="appEnabled('meet')"
         icon="fas fa-video"
         label="Meet"
         :is-collapsed="isCollapsed"
@@ -148,6 +145,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       />
 
       <NavItem
+        v-if="appEnabled('team')"
         icon="fas fa-people-group"
         label="Team"
         :is-collapsed="isCollapsed"
@@ -155,6 +153,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       />
 
       <NavItem
+        v-if="appEnabled('file-explorer')"
         icon="fas fa-folder-open"
         label="File Explorer"
         :is-collapsed="isCollapsed"
@@ -165,6 +164,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
            session manager (list + live co-browsing view) on desktop and the
            "/:projectName/browsers" route in single / mobile mode. -->
       <NavItem
+        v-if="appEnabled('browser-sessions')"
         icon="fa-regular fa-compass"
         :label="SESSION_LABELS.section"
         :is-collapsed="isCollapsed"
@@ -172,6 +172,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       />
 
       <NavItem
+        v-if="appEnabled('git-view')"
         icon="fas fa-code-branch"
         label="Git"
         :is-collapsed="isCollapsed"
@@ -182,6 +183,7 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
            Registered as 'ciso' in config/apps.js, so the single opener uses a
            dockview panel on desktop and "/:projectName/ciso" otherwise. -->
       <NavItem
+        v-if="appEnabled('ciso')"
         icon="fas fa-shield-halved"
         label="CISO"
         :is-collapsed="isCollapsed"
@@ -191,20 +193,18 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
       <!-- `/api/infra/*` is admin-only, including the container shell. Hide the
            entry for other roles instead of opening a view that can only 403. -->
       <NavItem
-        v-if="$users.isAdmin"
+        v-if="$users.isAdmin && appEnabled('infra')"
         icon="fas fa-server"
         label="Infrastructure"
         :is-collapsed="isCollapsed"
         @click="handleNavigateToInfra"
       />
 
-      <!-- Project's channel (design/project-channel.md): the video-first shell
-           of the project. It replaces the Wiki item as the VISIBLE entry point
-           — the wiki becomes its "Library" tab — but nothing is removed: the
-           "/:projectName/wiki" route and the 'wiki' app registry entry keep
-           working, and the channel links to the wiki until the Library tab
-           renders it (see views/ChannelView.vue). -->
+      <!-- Project channel (design/project-channel.md): shipped after 0.0.1.
+           The route and the component stay in the codebase; the install feature
+           profile decides whether the launcher is visible. -->
       <NavItem
+        v-if="appEnabled('channel')"
         icon="fas fa-tower-broadcast"
         label="Channel"
         :is-collapsed="isCollapsed"
@@ -216,6 +216,8 @@ import { SESSION_LABELS } from '@/utils/sessionLabels'
 </template>
 
 <script>
+import { isAppEnabled } from '@/config/features'
+
 export default {
   props: {
     isCollapsed: { type: Boolean, default: false },
@@ -229,6 +231,15 @@ export default {
       primaryNavExpanded: true
     }
   },
+  mounted() {
+    // The selector and the launcher read the project store. The shell can mount
+    // before the first project refresh finishes (deep link / first login), so
+    // make sure the catalogue is requested here as well — this is what made the
+    // project selector look missing until a task screen forced a load.
+    if (!(this.$storex.projects.allProjects || []).length) {
+      this.$storex.projects.loadAllProjects?.()
+    }
+  },
   computed: {
     // True when the active project is in the UI store's pinned list
     isActiveProjectPinned() {
@@ -238,6 +249,17 @@ export default {
     // installs start in the project workspace with the company OS hidden.
     companyEnabled() {
       return this.$storex.features?.companyEnabled !== false
+    },
+    // Show the switcher whenever there is a project to show. The URL only has a
+    // project segment on workspace routes, but the bootstrap `/projects` screen
+    // also needs a way to switch before the first workspace navigation.
+    canShowProjectSelector() {
+      return Boolean(this.inWorkspaceMode || this.$storex.projects.activeProject)
+    },
+    // Install-time feature filters (see config/features.js). Fails open while
+    // the profile is loading or unavailable.
+    appEnabled() {
+      return appKey => isAppEnabled(this.$storex.features, appKey)
     }
   },
   methods: {
@@ -338,11 +360,9 @@ export default {
       this.$emit('close')
     },
     handleNavigateToNewChat() {
-      // New = talk to codx-junior. The assistant chat opens in a modal so it
-      // works identically on desktop and mobile, and lets the user schedule the
-      // task (now / non-working hours / a concrete instant).
-      this.$storex.ui.showNewAssistantChat(true)
-      this.$emit('close')
+      // New chat IS harness mode in the 0.0.1 workspace: the full-screen
+      // session workspace (brief → agent run → delivery), not the old modal.
+      this.openApp('harness-mode')
     },
     handleNavigateToTasks() {
       this.openApp('task-list')
@@ -360,12 +380,6 @@ export default {
     // single / mobile mode (see views/CalendarView.vue).
     handleNavigateToCalendar() {
       this.openApp('calendar')
-    },
-    // Opens harness mode (the DSH-like session workspace). Registered as
-    // 'harness-mode' in config/apps.js; the read-only diagnostics view remains
-    // available as the 'harness' app.
-    handleNavigateToHarness() {
-      this.openApp('harness-mode')
     },
     // Opens the CISO security view for the active project (same app registry
     // entry as the menu / route: desktop panel or single-mode route).

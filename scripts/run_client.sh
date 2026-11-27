@@ -1,4 +1,9 @@
 #!/bin/bash
+
+## TODO: REMOVE IN VERSION 1.0.0
+DEBUG=1
+codx nodejs
+
 # Dynamically set CODX_JUNIOR_PATH to the parent directory of the script
 export CODX_JUNIOR_PATH="$(cd "$(dirname "$0")/.." && pwd)"
 source ${CODX_JUNIOR_PATH}/set_env.sh

@@ -6,6 +6,7 @@ import { API } from '@/api/api'
 import Login from './components/user/Login.vue'
 import CompanyWizard from './components/company/CompanyWizard.vue'
 import WorkspaceWizard from './components/setup/WorkspaceWizard.vue'
+import SetupAssistantLauncher from './components/setup/SetupAssistantLauncher.vue'
 import Toast from './components/Toast.vue'
 import DesktopSidebar from './components/layout/DesktopSidebar.vue'
 import NewProject from './components/project/NewProject.vue'
@@ -20,9 +21,9 @@ import FileViewerModal from './components/filebrowser/FileViewerModal.vue'
 const route = useRoute()
 const router = useRouter()
 
-// New (left bar) → codx-junior assistant chat in a modal. The card lands on the
-// codx-junior board; the schedule selector decides whether it starts now, runs
-// in the human non-working hours, or at a concrete instant.
+// Legacy codx-junior assistant chat modal (still used by board/task screens to
+// create a scheduled chat). The left-bar "New chat" now opens harness mode
+// instead; this modal remains for the task-creation flow.
 const ASSISTANT_CHAT_COLUMNS = [{ title: 'tasks', value: 'tasks' }]
 function onAssistantChatCreated(chat) {
   $storex.ui.showNewAssistantChat(false)
@@ -44,7 +45,6 @@ const companyEnabled = computed(() => $storex.features?.companyEnabled !== false
 const onboardingChecked = ref(false)
 const setupRequired = ref(false)
 const workspaceSetupRequired = ref(false)
-const assistantOpen = ref(false)
 const setupError = ref('')
 let setupCheck = null
 
@@ -126,7 +126,6 @@ watch(isLogin, value => {
     onboardingChecked.value = false
     setupRequired.value = false
     workspaceSetupRequired.value = false
-    assistantOpen.value = false
     setupError.value = ''
     return
   }
@@ -363,21 +362,10 @@ onMounted(() => {
         @close="$ui.closeFileViewer()"
       />
 
-      <!-- Workspace mode: setup help is always one click away. -->
-      <button
-        v-if="!companyEnabled"
-        class="btn btn-primary btn-circle fixed bottom-5 right-5 z-40 shadow-lg"
-        title="Setup assistant"
-        aria-label="Open setup assistant"
-        @click="assistantOpen = true"
-      >
-        <i class="fa-solid fa-robot"></i>
-      </button>
-      <WorkspaceWizard
-        v-if="assistantOpen"
-        assistant-only
-        @close="assistantOpen = false"
-      />
+      <!-- Workspace mode: setup help is always one click away. The launcher
+           owns both the button and the floating card, so it works on desktop
+           and mobile and can be opened/closed repeatedly. -->
+      <SetupAssistantLauncher v-if="!companyEnabled" />
     </template>
   </div>
 

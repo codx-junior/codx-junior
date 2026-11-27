@@ -24,6 +24,7 @@ from codx.junior.ai import AI
 from codx.junior.ai.cancellation import CancellationToken, CancelledError, CANCELLATION_REGISTRY
 from codx.junior.chat_manager import ChatManager
 from codx.junior.chat.chat_event_bridge import ChatEventBridge
+from codx.junior.chat.harness_chat import is_harness_chat as _is_harness_chat
 from codx.junior.chat.chat_tool_memory import build_tool_memory_section
 from codx.junior.chat.turn_store import (
     TurnCancellationWatcher,
@@ -114,6 +115,7 @@ CHAT_INIT_MAX_MESSAGES = 6
 
 def _is_refine(mode) -> bool:
     return mode in [CHAT_MODE_TASK, CHAT_MODE_TUTORIAL] 
+
 
 def _is_orchestration_owned(chat: Any) -> bool:
     """
@@ -3582,10 +3584,15 @@ class ChatEngine:
                     tool_memory_stats["chars"],
                 )
 
+            # A harness session is a durable transcript: the next turn MUST see
+            # the previous user request and assistant work. Filtering to
+            # `is_answer` messages (task/refine mode) made the agent lose its own
+            # work and ask again about things it had already resolved.
+            harness_transcript = _is_harness_chat(chat)
             messages = self.prompt_builder.build_message_history(
                 chat=chat,
                 include_parent_messages=True,
-                only_answers=(is_refine or is_vibe),
+                only_answers=((is_refine or is_vibe) and not harness_transcript),
                 tool_memory_section=tool_memory_section,
             )
 
@@ -3649,10 +3656,11 @@ class ChatEngine:
             # chat UI turns into clickable answers (the user can always type a
             # different reply). Appended last so it is the most salient rule.
             #
-            # Task/tutorial modes are autonomous/refine work: nobody is waiting
-            # to click an option, so the task mode contract is a final report,
-            # not a menu. Interactive chat mode keeps the suggested replies.
-            if not is_refine:
+            # Task/tutorial turns normally do not offer replies: nobody is
+            # waiting to click one. A harness session IS interactive (a human
+            # continues it turn by turn), so it keeps the suggested replies that
+            # let the user accept the next step instead of typing it.
+            if not is_refine or _is_harness_chat(chat):
                 if final_system_prompt:
                     final_system_prompt += "\n\n" + RESPONSE_OPTIONS_SYSTEM_PROMPT
                 else:
@@ -3970,7 +3978,7 @@ class ChatEngine:
                 await self._generate_chat_description(
                     chat=chat,
                     messages=messages,
-                    is_refine=is_refine,
+                    is_refine=is_refine and not _is_harness_chat(chat),
                     ai_chat_fn=ai_chat_fn
                 )
 
@@ -3981,7 +3989,9 @@ class ChatEngine:
                     ai_chat_fn=ai_chat_fn
                 )
 
-                if _is_refine(chat_mode) or is_vibe:
+                # Harness sessions keep their whole transcript: archiving prior
+                # turns hid them from the review lens and from the next turn.
+                if (_is_refine(chat_mode) or is_vibe) and not _is_harness_chat(chat):
                     self._hide_non_answer_messages(chat=chat)
 
             # NOTE: the former agent iteration recursion (``AGENT_DONE_WORD`` +

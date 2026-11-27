@@ -77,7 +77,7 @@ export const MOBILE_APP_GROUPS = [
         key: 'new-chat',
         action: 'new-chat',
         title: 'New chat',
-        description: 'Start a conversation',
+        description: 'Brief codx-junior in harness mode',
         icon: 'fa-solid fa-pen-to-square',
         tone: 'primary'
       },
@@ -125,13 +125,6 @@ export const MOBILE_APP_GROUPS = [
         description: 'Browse every workspace',
         icon: 'fa-solid fa-cubes',
         tone: 'accent'
-      },
-      {
-        key: 'harness',
-        title: 'Harness',
-        description: 'Runs, worker health and audit',
-        icon: 'fa-solid fa-bolt',
-        tone: 'warning'
       }
     ]
   },

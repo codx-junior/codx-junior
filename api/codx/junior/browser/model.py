@@ -39,8 +39,10 @@ COMPUTER_KINDS = ("browser", "linux", "macos", "windows", "remote")
 CONTAINER_KINDS = ("browser", "linux", "macos", "windows")
 #: Kinds that expose a graphical desktop (not a browser page).
 DESKTOP_KINDS = ("linux", "macos", "windows", "remote")
-#: Ways the AI can drive a session.
-CONTROL_MODES = ("cdp", "docker", "vnc", "ssh")
+#: Ways the AI can drive a session.  ``none`` is used by web-app images (for
+#: example code-server or VSCodium Web): the human uses the application's own
+#: web UI, and there is no shared screen for the AI to click on.
+CONTROL_MODES = ("cdp", "docker", "vnc", "ssh", "none")
 #: Ways the *humans* sharing a session may take the control lease.
 #:
 #: - ``auto``    — the first participant that clicks the live view drives; the
@@ -462,7 +464,7 @@ class BrowserSession(BaseModel):
     )
     live_view: Optional[str] = Field(
         default=None,
-        description="Human live view transport: selkies, kasmvnc, vnc or screenshot"
+        description="Human live view transport: selkies, kasmvnc, web, vnc or screenshot"
     )
     live_scheme: Optional[str] = Field(
         default=None,
@@ -806,7 +808,10 @@ class BrowserSession(BaseModel):
         if kind == "browser":
             control = "cdp"
         elif kind == "linux":
-            control = "vnc" if control == "vnc" else "docker"
+            # Linux is normally driven through the in-container agent; ``none``
+            # is the web-app transport (code-server, VSCodium Web), where the
+            # human uses the app's own UI and there is no screen to click.
+            control = control if control in ("vnc", "none") else "docker"
         else:
             control = "vnc"
         data["control"] = control

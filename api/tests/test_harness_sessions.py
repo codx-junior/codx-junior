@@ -151,6 +151,7 @@ def test_brief_keeps_the_request_and_appends_the_contract():
     assert "## Demo" in message
     assert "## Next tasks" in message
     assert "qa_run_tests" in message
+    assert "Do not hand the turn back with a question" in message
     assert prompts.strip_session_brief(message) == "Fix the empty board export"
 
 
@@ -322,3 +323,49 @@ def test_phase_reports_running_and_failed(service):
 
     chat.task_process_state = "idle"
     assert service.summary(chat)["phase"] == SESSION_IDLE
+
+# ---------------------------------------------------------------------------
+# Effort: switching the tier while continuing a session
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_updates_the_effort_tier_of_the_session(service):
+    """A follow-up sent as Deep work persists the max tier on the chat."""
+    created = service.create("Fix it", profiles=["codx-junior-max", "software_developer"])
+
+    service.prompt(
+        created["session_id"],
+        "Continue with the full suite",
+        profiles=["codx-junior", "software_developer"],
+    )
+
+    chat = service.chat_manager.chats[created["session_id"]]
+    assert chat.profiles == ["codx-junior", "software_developer"]
+    assert chat.messages[-1].profiles == ["codx-junior", "software_developer"]
+
+
+def test_prompt_without_profiles_keeps_the_session_tier(service):
+    created = service.create("Fix it", profiles=["codx-junior-max"])
+
+    service.prompt(created["session_id"], "Continue")
+
+    chat = service.chat_manager.chats[created["session_id"]]
+    assert chat.profiles == ["codx-junior-max"]
+    assert chat.messages[-1].profiles == []
+    # The engine resolves the tier from the chat when the message has none.
+    assert service.get(created["session_id"])["session"]["profiles"] == ["codx-junior-max"]
+
+def test_get_repairs_archived_transcripts(service):
+    """Legacy task-mode cleanup archived prior turns; opening repairs them."""
+    created = service.create("Fix the export")
+    chat = service.chat_manager.chats[created["session_id"]]
+    chat.messages.append(
+        Message(doc_id="assistant-1", role="assistant", content="First answer", hide=True)
+    )
+
+    detail = service.get(created["session_id"])
+
+    # The conversation is shown in full and the repair is persisted, so the
+    # next turn also receives the previous work as history.
+    assert detail["chat"]["messages"][1]["hide"] is False
+    assert service.chat_manager.chats[created["session_id"]].messages[1].hide is False

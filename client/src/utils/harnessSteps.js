@@ -94,6 +94,43 @@ export function stripHarnessBrief(content) {
 }
 
 /**
+ * Build the message list a harness transcript renders.
+ *
+ * A harness session is a normal task chat, so the chat engine used to *archive*
+ * every prior turn (`Message.hide`) and the model only received the answer
+ * messages. Both behaviours destroy a multi-turn harness session: the user saw
+ * a single exchange and the agent lost the work of the previous turn. The
+ * transcript lens therefore shows EVERY message, with the appended harness
+ * contract removed from the ticket so it reads like the user wrote it.
+ *
+ * Drafts (`unsent`) still never belong to the transcript, and the input list is
+ * never mutated: `ChatEntry` keeps the original objects for actions/edit.
+ *
+ * @param {object[]} messages Chat messages.
+ * @returns {object[]} Every persisted message, unarchived and brief-free.
+ */
+export function harnessTranscript(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .filter(message => message && !message.unsent)
+    .map(message => {
+      const content = message.role === 'user'
+        ? stripHarnessBrief(message.content)
+        : message.content
+      // Keep the identity of untouched messages: the chats store streams the
+      // last message in place, and cloning every object on each event would
+      // re-render the whole transcript while a turn runs.
+      if (!message.hide && content === message.content) return message
+      return {
+        ...message,
+        // Harness sessions are a durable transcript: an archived flag written
+        // by the old task-mode cleanup must not hide the work from the lens.
+        hide: false,
+        content
+      }
+    })
+}
+
+/**
  * Metadata of a tool call.
  * @param {string} tool Tool name.
  * @returns {{label: string, icon: string, category: string}}

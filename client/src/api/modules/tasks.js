@@ -37,6 +37,11 @@ export const tasksModule = (API) => ({
     return API.get(`${BASE}${toQuery(params)}`)
   },
 
+  /** Teams that can own a board (cheap: no board/task scan). */
+  teams() {
+    return API.get(`${BASE}/teams`)
+  },
+
   /** Boards (with team/lead, flow and effective responsible) and teams. */
   boards() {
     return API.get(`${BASE}/boards`)

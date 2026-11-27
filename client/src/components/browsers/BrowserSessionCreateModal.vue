@@ -1021,6 +1021,7 @@ export default {
           const transport = {
             kasmvnc: 'KasmVNC',
             selkies: 'Selkies',
+            web: 'Web app',
             screenshot: 'Screenshot'
           }[image.live_view] || 'Screenshot'
           const author = image.created_by ? ` · by ${image.created_by}` : ''
@@ -1034,6 +1035,7 @@ export default {
         const transport = {
           kasmvnc: 'KasmVNC',
           selkies: 'Selkies',
+          web: 'Web app',
           screenshot: 'Screenshot'
         }[image.live_view] || 'Screenshot'
         return `${provider} · ${transport} · ${image.tag || 'latest'}`

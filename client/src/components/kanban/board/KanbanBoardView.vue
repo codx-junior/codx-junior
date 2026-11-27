@@ -1921,7 +1921,7 @@ export default {
     // still works, it just has no responsible team lead.
     async loadBoardTeams() {
       try {
-        const data = await API.tasks.boards()
+        const data = await API.tasks.teams()
         this.boardTeams = data?.teams || []
       } catch (error) {
         this.boardTeams = []

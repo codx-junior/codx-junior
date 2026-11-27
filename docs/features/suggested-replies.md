@@ -65,6 +65,8 @@ The fence languages `options`, `suggestions`, `suggested-replies`,
 
 - Only the latest assistant message shows its suggested replies. Once the user
   replies (by clicking or typing), the buttons disappear with that message.
+  Harness mode is the exception: its transcript is a durable review surface, so
+  the replies of every assistant turn stay clickable.
 - Buttons are disabled while the answer is streaming and in read-only chats.
 - The composer stays available the whole time: the user can write any other
   answer or edit the one a button inserted.

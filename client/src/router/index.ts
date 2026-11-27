@@ -38,7 +38,7 @@ const HarnessModeView = () => import('@/views/HarnessModeView.vue')
 // The company is the root. Legacy project URLs are resolved by the guard and
 // redirected to the canonical company/workspace path.
 // ─────────────────────────────────────────────────────────────────────────────
-const WELCOME_APP = 'task-list'
+const WELCOME_APP = 'home'
 
 const COMPANY_SECTIONS = [
   'home',
@@ -96,39 +96,39 @@ const PROJECT_ROUTES = [
     component: QuickChatView,
     meta: { ...mobile('Chat', 'chats', { hideTopBar: true, hideTabs: true }) }
   },
-  { path: '/meet', name: 'meet', component: MeetView },
+  { path: '/meet', name: 'meet', component: MeetView, meta: { feature: 'meetings' } },
   {
     path: '/meet/:meetId',
     name: 'meet-session',
     component: MeetView,
-    meta: { ...mobile('Meeting', 'more', { hideTabs: true }) }
+    meta: { feature: 'meetings', ...mobile('Meeting', 'more', { hideTabs: true }) }
   },
   {
     path: '/meet/:meetId/summary',
     name: 'meet-summary',
     component: MeetSummaryView,
-    meta: { ...mobile('Meeting summary', 'more', { hideTabs: true }) }
+    meta: { feature: 'meetings', ...mobile('Meeting summary', 'more', { hideTabs: true }) }
   },
-  { path: '/workspaces', name: 'workspaces', component: WorkspaceView },
+  { path: '/workspaces', name: 'workspaces', component: WorkspaceView, meta: { feature: 'workspaces' } },
   {
     path: '/workspaces/:workspaceId/:workspaceName',
     name: 'workspace',
     component: WorkspaceView,
-    meta: { ...mobile('Workspace', 'more', { hideTabs: true }) }
+    meta: { feature: 'workspaces', ...mobile('Workspace', 'more', { hideTabs: true }) }
   },
-  { path: '/browsers', name: 'browsers', component: BrowsersSessionManager },
+  { path: '/browsers', name: 'browsers', component: BrowsersSessionManager, meta: { feature: 'browser-use' } },
   {
     path: '/browsers/:sessionId/:sessionName',
     name: 'browser-session',
     component: BrowsersSessionManager,
-    meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
+    meta: { feature: 'browser-use', ...mobile('Computer', 'desktop', { hideTabs: true }) }
   },
-  { path: '/computers', name: 'computers', component: BrowsersSessionManager },
+  { path: '/computers', name: 'computers', component: BrowsersSessionManager, meta: { feature: 'browser-use' } },
   {
     path: '/computers/:sessionId/:sessionName',
     name: 'computer-session',
     component: BrowsersSessionManager,
-    meta: { ...mobile('Computer', 'desktop', { hideTabs: true }) }
+    meta: { feature: 'browser-use', ...mobile('Computer', 'desktop', { hideTabs: true }) }
   },
   {
     path: '/board-management',
@@ -157,7 +157,8 @@ const PROJECT_ROUTES = [
   {
     path: '/team/:teamId?',
     name: 'team',
-    component: TeamView
+    component: TeamView,
+    meta: { feature: 'teams' }
   },
   {
     path: '/profiles/:name/edit',
@@ -168,15 +169,15 @@ const PROJECT_ROUTES = [
 
   // ── Generic app routes ────────────────────────────────────────────────
   { path: '/vibe-coding', name: 'vibe-coding', component: AppRouteView, meta: { app: 'vibe-coding' } },
-  { path: '/wiki', name: 'wiki', component: AppRouteView, meta: { app: 'wiki' } },
+  { path: '/wiki', name: 'wiki', component: AppRouteView, meta: { app: 'wiki', feature: 'wiki' } },
   {
     path: '/channel',
     name: 'channel',
     component: ChannelView,
-    meta: { ...mobile('Channel', 'more', { hideTopBar: true, hideTabs: true }) }
+    meta: { feature: 'channel-creator', ...mobile('Channel', 'more', { hideTopBar: true, hideTabs: true }) }
   },
-  { path: '/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs' } },
-  { path: '/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', ...mobile('Calendar', 'more') } },
+  { path: '/docs', name: 'docs', component: AppRouteView, meta: { app: 'docs', feature: 'wiki' } },
+  { path: '/calendar', name: 'calendar', component: AppRouteView, meta: { app: 'calendar', feature: 'calendar', ...mobile('Calendar', 'more') } },
   // Harness mode: the DSH-like full-screen session workspace. It takes over
   // the whole window (no desktop sidebar); the read-only diagnostics app stays
   // available at /harness and from the view's footer.
@@ -186,8 +187,8 @@ const PROJECT_ROUTES = [
     component: HarnessModeView,
     meta: { fullScreen: true, ...mobile('Harness', 'more', { hideTopBar: true, hideTabs: true }) }
   },
-  { path: '/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', ...mobile('Harness', 'more') } },
-  { path: '/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', ...mobile('CISO', 'more') } },
+  { path: '/harness', name: 'harness', component: AppRouteView, meta: { app: 'harness', feature: 'harness-dsh', ...mobile('Harness', 'more') } },
+  { path: '/ciso', name: 'ciso', component: AppRouteView, meta: { app: 'ciso', feature: 'company-security', ...mobile('CISO', 'more') } },
   { path: '/knowledge', name: 'knowledge', component: AppRouteView, meta: { app: 'knowledge' } },
   { path: '/knowledge-settings', name: 'knowledge-settings', component: AppRouteView, meta: { app: 'knowledge_settings' } },
   { path: '/projects', name: 'projects', component: AppRouteView, meta: { app: 'projects' } },
@@ -196,10 +197,10 @@ const PROJECT_ROUTES = [
   { path: '/account', name: 'account', component: AppRouteView, meta: { app: 'account' } },
   { path: '/file-explorer', name: 'file-explorer', component: AppRouteView, meta: { app: 'file-explorer' } },
   { path: '/file-viewer/:filePath(.*)*', name: 'file-viewer', component: AppRouteView, meta: { app: 'file-viewer', ...mobile('File', 'more', { hideTabs: true }) } },
-  { path: '/logs', name: 'log-viewer', component: AppRouteView, meta: { app: 'log-viewer' } },
-  { path: '/chat-logs', name: 'chat-logs', component: AppRouteView, meta: { app: 'chat-logs' } },
-  { path: '/decision-model-logs', name: 'decision-model-logs', component: AppRouteView, meta: { app: 'decision-model-logs' } },
-  { path: '/metrics', name: 'metrics', component: AppRouteView, meta: { app: 'metrics' } },
+  { path: '/logs', name: 'log-viewer', component: AppRouteView, meta: { app: 'log-viewer', feature: 'logs' } },
+  { path: '/chat-logs', name: 'chat-logs', component: AppRouteView, meta: { app: 'chat-logs', feature: 'analytics' } },
+  { path: '/decision-model-logs', name: 'decision-model-logs', component: AppRouteView, meta: { app: 'decision-model-logs', feature: 'analytics' } },
+  { path: '/metrics', name: 'metrics', component: AppRouteView, meta: { app: 'metrics', feature: 'analytics' } },
   {
     path: '/management-dashboard',
     redirect: (to: any) => ({
@@ -207,19 +208,19 @@ const PROJECT_ROUTES = [
       params: { companySlug: to.params.companySlug, projectName: to.params.projectName }
     })
   },
-  { path: '/api-monitoring', name: 'api-monitoring', component: AppRouteView, meta: { app: 'api-monitoring' } },
-  { path: '/infra', name: 'infra', component: AppRouteView, meta: { app: 'infra' } },
+  { path: '/api-monitoring', name: 'api-monitoring', component: AppRouteView, meta: { app: 'api-monitoring', feature: 'logs' } },
+  { path: '/infra', name: 'infra', component: AppRouteView, meta: { app: 'infra', feature: 'infra' } },
   { path: '/git-view', name: 'git-view', component: AppRouteView, meta: { app: 'git-view' } },
-  { path: '/team-channel/:channelId', name: 'team-channel', component: AppRouteView, meta: { app: 'team-channel', ...mobile('Channel', 'chats', { hideTabs: true }) } },
-  { path: '/team-dm/:dmId', name: 'team-dm', component: AppRouteView, meta: { app: 'team-dm', ...mobile('Direct message', 'chats', { hideTabs: true }) } },
-  { path: '/team-media-library/:teamId', name: 'team-media-library', component: AppRouteView, meta: { app: 'team-media-library' } },
+  { path: '/team-channel/:channelId', name: 'team-channel', component: AppRouteView, meta: { app: 'team-channel', feature: 'teams', ...mobile('Channel', 'chats', { hideTabs: true }) } },
+  { path: '/team-dm/:dmId', name: 'team-dm', component: AppRouteView, meta: { app: 'team-dm', feature: 'teams', ...mobile('Direct message', 'chats', { hideTabs: true }) } },
+  { path: '/team-media-library/:teamId', name: 'team-media-library', component: AppRouteView, meta: { app: 'team-media-library', feature: 'teams' } },
   {
     path: '/desktop/:pathMatch(.*)*',
     name: 'codx-junior-split',
     component: Desktop,
     meta: { ...mobile('Desktop', 'more', { hideTopBar: true, hideTabs: true }) }
   },
-  { path: '/analytics', name: 'analytics', component: MetricsDashboard }
+  { path: '/analytics', name: 'analytics', component: MetricsDashboard, meta: { feature: 'analytics' } }
 ]
 
 // The same route names, mounted under the company workspace prefix.
@@ -515,6 +516,13 @@ router.beforeEach(async (to, _from) => {
   if (to.path.startsWith('/solopreneur')) return defaultHome()
   if (to.name === 'legacy') return resolveLegacy(to)
   if (!$storex.api.user) return true
+
+  // Install-time feature gate: a hidden surface is not reachable by URL either.
+  // `isActive` fails open when the profile could not be loaded.
+  const requiredFeature = (to.meta as any)?.feature
+  if (requiredFeature && $storex.features?.isActive?.(requiredFeature) === false) {
+    return defaultHome()
+  }
 
   if (to.name === 'root') {
     await $storex.company.ensureLoaded().catch(() => {})

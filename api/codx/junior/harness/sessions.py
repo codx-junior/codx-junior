@@ -605,6 +605,7 @@ class HarnessSessionService:
             repository or worktree never prevents opening the conversation.
         """
         chat = self._find(session_id)
+        self._restore_transcript(chat)
         summary = self.summary(chat)
         messages = list(getattr(chat, "messages", None) or [])
         first = self._first_user_message(chat)
@@ -661,6 +662,33 @@ class HarnessSessionService:
             "run": run,
             "audit": audit,
         }
+
+    def _restore_transcript(self, chat: Any) -> bool:
+        """
+        Unarchive the messages of a harness session (legacy task-mode cleanup).
+
+        Before the engine learned that a harness session is a durable
+        transcript, every finished turn archived the previous messages. Those
+        sessions are still on disk: clear the flag in memory and persist the
+        repair so both the review lens and the next turn see the full work.
+
+        Args:
+            chat: The harness chat to repair.
+
+        Returns:
+            True when at least one message was unarchived and saved.
+        """
+        changed = False
+        for message in getattr(chat, "messages", None) or []:
+            if getattr(message, "hide", False):
+                message.hide = False
+                changed = True
+        if changed:
+            try:
+                self._manager().save_chat(chat=chat, chat_only=True)
+            except Exception as ex:  # pragma: no cover - repair is best effort
+                logger.debug("Harness session: cannot persist transcript repair: %s", ex)
+        return changed
 
     def _workspace(self, chat: Any) -> Optional[Dict[str, Any]]:
         """Return the task worktree of the session, when isolation is on."""
@@ -858,6 +886,7 @@ class HarnessSessionService:
                 user are reused; settings are cloned for the worktree).
         """
         chat = self._find(session_id)
+        self._restore_transcript(chat)
         try:
             from codx.junior.task_workspace import TaskWorkspaceManager
 
@@ -949,17 +978,18 @@ class HarnessSessionService:
             raise HarnessSessionError("The message cannot be empty")
         text = text or "Review the attached file."
         chat = self._find(session_id)
+        # The effort tier is a per-turn profile selection: a session started at
+        # one tier can be continued at another. The chat keeps the latest
+        # selection so the sidebar/header (and the next default) agree with the
+        # message that actually ran.
+        next_profiles = _profiles(profiles)
         message = Message(
             doc_id=str(uuid.uuid4()),
             role="user",
             content=text,
             user=self.user,
             project_id=getattr(chat, "project_id", None) or self.project_id,
-            profiles=[
-                str(profile).strip()
-                for profile in (profiles or [])
-                if str(profile or "").strip()
-            ],
+            profiles=next_profiles,
             created_at=_now_iso(),
             updated_at=_now_iso(),
             done=True,
@@ -969,11 +999,31 @@ class HarnessSessionService:
         # again until the new turn produces its report.
         chat.status = "doing"
         chat.column = prompts.HARNESS_COLUMN
+        if next_profiles:
+            chat.profiles = next_profiles
         self._manager().add_message(chat=chat, message=message)
         if model:
             chat.llm_model = model
         self._manager().save_chat(chat=chat, chat_only=True)
         return self.get(session_id)
+
+
+def _profiles(items: Optional[Iterable[Any]]) -> List[str]:
+    """
+    Normalise the profile list of a follow-up message.
+
+    Args:
+        items: Profile names (or profile objects) posted by the client.
+
+    Returns:
+        Unique, non-empty profile names in the order received.
+    """
+    selected: List[str] = []
+    for item in items or []:
+        name = str(getattr(item, "name", item) or "").strip()
+        if name and name not in selected:
+            selected.append(name)
+    return selected
 
 
 def _attachments(items: Optional[Iterable[Any]]) -> List[Any]:

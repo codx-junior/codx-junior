@@ -42,7 +42,6 @@ from codx.junior.model.profile import (
 from codx.junior.model.workspace import (
     Workspace,
     WorkspaceApp,
-    DEFAULT_WORKSPACE,
 )
 
 # ---------------------------------------------------------------------------
@@ -385,7 +384,10 @@ class GlobalSettings(BaseModel):
         ),
     )
 
-    workspaces: Optional[List[Workspace]] = Field(default=[DEFAULT_WORKSPACE])
+    # Dev-container workspaces are a post-0.0.1 feature and are no longer
+    # configured from Global Settings. A fresh installation starts with none
+    # instead of seeding the old "codx-junior" default workspace.
+    workspaces: Optional[List[Workspace]] = Field(default=[])
     workspace_start_port: Optional[int] = Field(default=16000)
     workspace_end_port: Optional[int] = Field(default=17000)
     workspace_docker_settings: Optional[dict] = Field(default={})

@@ -106,11 +106,20 @@ tab cannot leave a ticket idle.
 
 ### Read a session
 
-* **Activity** — the collapsed row summarizes what happened
+* **Transcript** — the conversation uses the same `ChatMessageList` +
+  `ChatEntry` components as every chat, adapted to harness mode: every message
+  is visible (task-mode cleanup never archives a harness turn), the appended
+  harness contract is stripped from the ticket, and images/attachments,
+  tool events and the turn timeline are the standard ones.
+* **Activity** — the turn timeline summarizes what happened
   (`Read files, searched the code, edited files, ran tests`); expand it to see
   every tool call, its arguments, duration, status and output.
-* **Report** — the last assistant message, rendered as Markdown. Each `##`
-  section is the delivery contract; the report can be copied from the caption.
+* **Report** — the assistant messages are rendered as Markdown. The last one
+  carries the delivery contract; the report can be copied from the caption.
+* **Continue** — suggested replies emitted by the model (the `options` block)
+  stay clickable on every assistant turn, so continuing the task never depends
+  on retyping it. The effort tier (Standard / Deep work) is selectable in the
+  session header while the session runs; the next follow-up uses it.
 * **Files changed** — the branch diff of the task worktree
   (`Edited 7 files +361 -12`), with one row per file. The branch name is shown,
   so the change can be reviewed/merged in the Git view. The rows are a summary,
@@ -118,9 +127,12 @@ tab cannot leave a ticket idle.
 * **Session log** — the audit entries of this session (`task_requested`,
   run/step events, notifications).
 * **Follow-up** — the composer at the bottom appends a message to the same
-  session and starts the next turn; the profile and the task worktree are kept.
+  session and starts the next turn; the profile, the task worktree and the
+  whole conversation are kept. Pasted screenshots and uploaded files use the
+  standard chat attachment pipeline and are stored on the user message.
 * **Task / Git / Diagnostics** — the header opens the card with the full chat
-  UI, the Git view on the branch, or the read-only harness diagnostics.
+  UI, the Git view directly on the **Review** tab comparing the task branch
+  with the project's active branch, or the read-only harness diagnostics.
 
 The session branch is a normal task worktree: the main checkout is never
 modified by the harness. Review it in **Git** and merge it as any other task.

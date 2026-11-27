@@ -39,9 +39,13 @@ export default {
     // params/query so deep-links still render something sensible.
     params() {
       if (!this.def) return {}
+      // Read the route first: when openApp() pushes the same app again with
+      // new params (e.g. the harness Git button asking for Review), the
+      // computed must re-evaluate and pick up the new pending payload.
+      const route = this.$route
       const pending = getPendingParams(this.def.id)
       if (pending) return pending
-      return { ...this.$route.params, ...this.$route.query }
+      return { ...route.params, ...route.query }
     }
   },
   watch: {

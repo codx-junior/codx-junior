@@ -817,9 +817,12 @@ export const actions = actionTree(
       $storex.ui.openApp('projects')
     },
 
-    // Open the Git view (repository changes / history).
-    openGitView() {
-      $storex.ui.openApp('git-view')
+    // Open the Git view (repository changes / history). Optional params let a
+    // caller land on a tab and on an explicit branch comparison, e.g. the
+    // harness header opens Review on the task branch vs the active one.
+    openGitView(options = {}) {
+      const payload = options && typeof options === 'object' ? options : {}
+      $storex.ui.openApp({ appKey: 'git-view', payload })
     },
 
     // Open the Infrastructure (Docker) view: containers, compose stacks, images,

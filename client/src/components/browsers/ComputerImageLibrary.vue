@@ -71,7 +71,8 @@ export default {
       const priority = [
         'linuxserver', 'kasmweb', 'custom', 'saved', 'browseruse',
         'desktop', 'application', 'browser',
-        'cdp', 'live-view-only', 'chromium', 'firefox', 'kasmvnc', 'selkies'
+        'cdp', 'live-view-only', 'web', 'code-server', 'vscodium-web',
+        'chromium', 'firefox', 'kasmvnc', 'selkies'
       ]
       const head = priority.filter((tag) => counts.has(tag))
       const tail = [...counts.keys()]
@@ -259,6 +260,7 @@ export default {
       if (image.source === 'saved') return { label: 'Snapshot', class: 'badge-success' }
       if (image.source === 'custom') return { label: 'Custom', class: 'badge-warning' }
       if (tags.includes('browseruse')) return { label: 'Headless', class: 'badge-ghost' }
+      if (tags.includes('web') || tags.includes('web-app')) return { label: 'Web app', class: 'badge-accent' }
       if (tags.includes('cdp')) return { label: 'AI · CDP', class: 'badge-info' }
       if (tags.includes('live-view-only')) return { label: 'Live view', class: 'badge-ghost' }
       if (tags.includes('kasmvnc')) return { label: 'KasmVNC', class: 'badge-secondary' }
@@ -319,6 +321,7 @@ export default {
           screenshot_url: null
         }
       }
+      const isWebApp = tags.includes('web') || tags.includes('web-app')
       return {
         ...base,
         provider: image.provider || image.source,
@@ -326,10 +329,12 @@ export default {
         tag: this.selectedTag || this.tagOf(image),
         default_tag: this.tagOf(image),
         image: `${repository}:${this.selectedTag || this.tagOf(image)}`,
-        live_view: tags.includes('kasmvnc')
-          ? 'kasmvnc'
-          : (tags.includes('browseruse') ? 'screenshot' : 'selkies'),
-        control: tags.includes('cdp') ? 'cdp' : 'docker',
+        live_view: isWebApp
+          ? 'web'
+          : (tags.includes('kasmvnc')
+            ? 'kasmvnc'
+            : (tags.includes('browseruse') ? 'screenshot' : 'selkies')),
+        control: isWebApp ? 'none' : (tags.includes('cdp') ? 'cdp' : 'docker'),
         browser_engine: tags.includes('firefox') ? 'firefox' : (tags.includes('chromium') ? 'chromium' : null),
         supports_cdp: tags.includes('cdp') ? true : (tags.includes('live-view-only') ? false : null)
       }

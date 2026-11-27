@@ -242,7 +242,24 @@ export const APPS = {
   // ── Git ───────────────────────────────────────────────────────────────────
   'git-view': {
     id: 'git-view', title: 'Git', component: 'git-view', icon: 'fa-solid fa-code-branch',
-    route: () => ({ name: 'git-view' })
+    // A caller can land on a tab and on an explicit comparison (the harness
+    // header opens Review on the task branch vs the active branch). Both modes
+    // receive the same param names: desktop via `desktopParams`, route via the
+    // query string (read back by AppRouteView).
+    desktopParams: p => ({
+      ...(p.params || {}),
+      ...(p.tab ? { tab: p.tab } : {}),
+      ...(p.compareBranch ? { compareBranch: p.compareBranch } : {}),
+      ...(p.compareTo ? { compareTo: p.compareTo } : {})
+    }),
+    route: p => ({
+      name: 'git-view',
+      query: {
+        ...(p.tab ? { tab: p.tab } : {}),
+        ...(p.compareBranch ? { compareBranch: p.compareBranch } : {}),
+        ...(p.compareTo ? { compareTo: p.compareTo } : {})
+      }
+    })
   },
 
   // ── Knowledge / docs ──────────────────────────────────────────────────────

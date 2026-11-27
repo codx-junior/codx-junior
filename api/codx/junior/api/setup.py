@@ -48,8 +48,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/setup", tags=["setup"])
 
 PROVIDER_PRESETS = {
-    "deepseek": {"api_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
-    "openai": {"api_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "deepseek": {"api_url": "https://api.deepseek.com/v1", "model": "deepseek-flash"},
+    "openai": {"api_url": "https://api.openai.com/v1", "model": "gpt-4.1-mini"},
+    "anthropic": {"api_url": "https://api.anthropic.com/v1", "model": "claude-sonnet-4-5"},
+    "ollama": {"api_url": "http://localhost:11434/v1", "model": "qwen2.5-coder:7b"},
     "openrouter": {"api_url": "https://openrouter.ai/api/v1", "model": "openai/gpt-4o-mini"},
     "mistral": {"api_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest"},
     "groq": {"api_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile"},
@@ -131,6 +133,10 @@ def setup_ai(payload: AISetupRequest, user: CodxUser = Depends(is_admin_user)):
     api_key = (payload.api_key or "").strip()
     if not provider_type:
         raise HTTPException(status_code=422, detail="Choose a provider.")
+    # A local Ollama does not use an API key; store a conventional placeholder
+    # so the provider counts as configured without asking for a fake secret.
+    if provider_type == "ollama" and not api_key:
+        api_key = "ollama"
     if not api_key:
         raise HTTPException(status_code=422, detail="The provider API key is required.")
 
@@ -181,9 +187,12 @@ def _qa_answer(message: str, context: Optional[Dict[str, Any]] = None) -> str:
     if has("ai", "model", "provider", "api key", "key", "llm"):
         return (
             "To connect a model:\n"
-            "1. Pick a provider preset (DeepSeek, OpenAI, OpenRouter, Mistral, Groq) or Custom.\n"
-            "2. Paste its API key. The key is sent only to your own codx-junior instance.\n"
-            "3. Keep the suggested chat model or type the provider's model id.\n"
+            "1. Pick a provider preset (DeepSeek, OpenAI, Anthropic, Ollama, "
+            "OpenRouter, Mistral, Groq) or Custom.\n"
+            "2. Paste its API key (Ollama runs locally and needs none). The key is "
+            "sent only to your own codx-junior instance.\n"
+            "3. Keep the suggested chat model (deepseek-flash, gpt-4.1-mini, "
+            "claude-sonnet-4-5, qwen2.5-coder:7b) or type the provider's model id.\n"
             "4. Save. The first model becomes the default for chats and knowledge.\n\n"
             "You can skip this now and use the setup assistant (me) without a model. "
             "Configure AI later from Settings → AI Models."

@@ -539,6 +539,11 @@ class BrowserManager:
             session.live_scheme = image_spec.live_scheme
             session.strip_prefix = image_spec.strip_prefix
             session.viewer_user = image_spec.viewer_user
+            if image_spec.live_view == "web":
+                # The live view is the application itself: no shared X11 screen
+                # for screenshot/mouse/keyboard tools.
+                session.control = "none"
+                session.capabilities = ["files", "shell"]
             if image_spec.provider == "kasmweb":
                 session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
                 session.viewer_view_password = session.viewer_view_password or secrets.token_urlsafe(9)
@@ -553,6 +558,9 @@ class BrowserManager:
             session.strip_prefix = bool(library_item.strip_prefix)
             session.control = library_item.control or session.control
             session.viewer_user = library_item.viewer_user
+            if session.live_view == "web":
+                session.control = "none"
+                session.capabilities = ["files", "shell"]
             if (library_item.provider or "").lower() == "kasmweb":
                 session.viewer_password = session.viewer_password or secrets.token_urlsafe(9)
                 session.viewer_view_password = session.viewer_view_password or secrets.token_urlsafe(9)

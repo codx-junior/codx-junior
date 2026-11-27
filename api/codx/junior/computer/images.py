@@ -61,6 +61,22 @@ TAGS_TTL_SECONDS = 900
 BROWSERUSE_IMAGE = "browseruse/browseruse"
 BROWSERUSE_DOCS = "https://github.com/browser-use/browser-use"
 
+#: LinuxServer.io publishes the two web IDEs we ship.  They are *not* VNC
+#: desktops: the live view is the application's own web interface, so the
+#: session is embedded with the same iframe as the Selkies desktops.
+WEB_APP_PROVIDER = "linuxserver"
+WEB_APP_DOCS = "https://docs.linuxserver.io/images/"
+#: ``(app, name, port, path flag, strip prefix)``.  ``path flag`` is the CLI
+#: option the application needs to serve itself under ``/computer/<session>/``;
+#: when it is ``None`` the app uses relative URLs and Traefik strips the prefix.
+WEB_APP_IMAGES: List[Tuple[str, str, int, Optional[str], bool]] = [
+    # code-server serves relative URLs (`./_static`, `./?folder=...`), so the
+    # public prefix can be stripped before the request reaches the container.
+    ("code-server", "Code Server", 8443, None, True),
+    # VSCodium's server needs to know the prefix to build its workbench URLs.
+    ("vscodium-web", "VSCodium Web", 8000, "--server-base-path", False),
+]
+
 
 class ComputerImage(BaseModel):
     """One selectable image in the library."""
@@ -79,7 +95,7 @@ class ComputerImage(BaseModel):
     docs_url: Optional[str] = Field(default=None, description="Upstream documentation")
     pull_count: Optional[int] = Field(default=None, description="Docker Hub pulls (when known)")
     updated_at: Optional[str] = Field(default=None, description="Last update (when known)")
-    live_view: str = Field(description="selkies, kasmvnc or screenshot")
+    live_view: str = Field(description="selkies, kasmvnc, web or screenshot")
     live_port: Optional[int] = Field(default=None, description="Container port of the live view")
     live_scheme: str = Field(default="http", description="http or https")
     strip_prefix: bool = Field(default=False, description="Strip the public path prefix when proxying")
@@ -455,12 +471,134 @@ def _browser_entries() -> List[ComputerImage]:
     return entries
 
 
+@dataclass(frozen=True)
+class WebAppProfile:
+    """Resolved profile of a web-IDE image (no VNC, no X11)."""
+
+    app: str
+    name: str
+    live_port: int
+    #: CLI flag that tells the app its public base path (``None`` when the app
+    #: works with the prefix stripped by Traefik).
+    base_path_flag: Optional[str] = None
+    strip_prefix: bool = False
+    description: str = ""
+    docs_url: str = ""
+
+
+_WEB_APP_APPS: Dict[str, Tuple[str, str, int, Optional[str], bool]] = {
+    entry[0]: entry for entry in WEB_APP_IMAGES
+}
+
+
+def web_app_image_profile(
+    image: Optional[str],
+    provider: Optional[str] = None,
+) -> Optional[WebAppProfile]:
+    """
+    Resolve a web-IDE image reference into its web-app profile.
+
+    Args:
+        image: Repository or full image reference
+            (``lscr.io/linuxserver/code-server:latest``).
+        provider: Optional provider hint; Kasmweb images are never matched.
+
+    Returns:
+        WebAppProfile for a known web IDE, else None.
+    """
+    raw = (image or "").strip()
+    if not raw:
+        return None
+    repository, _tag = _split_image(raw)
+    lowered = (repository or "").lower()
+    if (provider or "").strip().lower() in ("kasmweb", "kasm") or "kasmweb/" in lowered:
+        return None
+    if "/" in lowered and "linuxserver/" not in lowered:
+        # A same-named image from another registry (for example
+        # ``codercom/code-server``) has a different port and home directory:
+        # keep it on the generic/screenshot path until it gets its own profile.
+        return None
+    app = lowered.rsplit("/", 1)[-1]
+    entry = _WEB_APP_APPS.get(app)
+    if not entry:
+        return None
+    app, name, live_port, base_path_flag, strip_prefix = entry
+    return WebAppProfile(
+        app=app,
+        name=name,
+        live_port=live_port,
+        base_path_flag=base_path_flag,
+        strip_prefix=bool(strip_prefix),
+        description=_web_app_description(app),
+        docs_url=f"{WEB_APP_DOCS}docker-{app}/",
+    )
+
+
+#: Public card art from the LinuxServer templates repository.
+_WEB_APP_MEDIA = {
+    "code-server": (
+        "https://raw.githubusercontent.com/linuxserver/docker-templates/master/"
+        "linuxserver.io/img/code-server-banner.png"
+    ),
+    "vscodium-web": (
+        "https://raw.githubusercontent.com/linuxserver/docker-templates/master/"
+        "linuxserver.io/img/vscodium-icon.png"
+    ),
+}
+
+
+def _web_app_entries() -> List[ComputerImage]:
+    """LinuxServer web IDE images (code-server and VSCodium Web)."""
+    entries: List[ComputerImage] = []
+    for app, name, live_port, _base_path_flag, strip_prefix in WEB_APP_IMAGES:
+        media = _WEB_APP_MEDIA.get(app)
+        entries.append(ComputerImage(
+            id=f"linuxserver:{app}:latest",
+            provider=WEB_APP_PROVIDER,
+            repository=f"{WEB_APP_PROVIDER}/{app}",
+            image=f"lscr.io/{WEB_APP_PROVIDER}/{app}:latest",
+            tag="latest",
+            default_tag="latest",
+            name=name,
+            description=_web_app_description(app),
+            category="Development",
+            icon_url=media,
+            screenshot_url=media,
+            docs_url=f"{WEB_APP_DOCS}docker-{app}/",
+            live_view="web",
+            live_port=live_port,
+            live_scheme="http",
+            strip_prefix=bool(strip_prefix),
+            control="none",
+            tags=[app, "linuxserver", "web", "web-app", "ide", "vscode", "editor", "no-vnc"],
+        ))
+    return entries
+
+
+def _web_app_description(app: str) -> str:
+    """Human description of one web IDE (kept next to the entries)."""
+    return {
+        "code-server": (
+            "VS Code in the browser (Coder code-server) served by LinuxServer.io. "
+            "A full editor and terminal without a virtual desktop."
+        ),
+        "vscodium-web": (
+            "VSCodium's remote web client served by LinuxServer.io: the free "
+            "VS Code distribution, in the browser, no VNC."
+        ),
+    }.get(app, f"{app} in the browser, served by LinuxServer.io.")
+
+
+
 def all_catalog_images(provider: Optional[str] = None, refresh: bool = False) -> List[ComputerImage]:
     """Return the curated catalog, optionally enriched from upstream APIs."""
     provider = (provider or "").strip().lower() or None
     images: List[ComputerImage] = []
     if provider in (None, "all", "linuxserver", "lscr"):
         images.extend(_linuxserver_entries(with_dynamic=True, refresh=refresh))
+        # Web IDEs are plain HTTP apps (no Selkies/VNC): same provider, a
+        # different live-view transport.
+        images.extend(_web_app_entries())
     if provider in (None, "all", "kasmweb", "kasm"):
         images.extend(_kasm_entries())
     if provider in (None, "all", "browseruse", "browser-use"):
@@ -526,7 +664,7 @@ def find_catalog_image(repository: str, tag: Optional[str] = None) -> Optional[C
     repo = (repository or "").strip().lower()
     if "kasmweb/" in repo:
         provider = "kasmweb"
-    elif "webtop" in repo:
+    elif "webtop" in repo or "code-server" in repo or "vscodium-web" in repo:
         provider = "linuxserver"
     else:
         provider = None
@@ -644,6 +782,25 @@ def resolve_image(
             cli_env=browser_profile.cli_env,
         )
 
+    web_profile = web_app_image_profile(raw, provider=hint)
+    if web_profile is not None:
+        _repository, tag = _split_image(raw)
+        tag = tag or "latest"
+        repository = f"{WEB_APP_PROVIDER}/{web_profile.app}"
+        return ImageSpec(
+            provider=WEB_APP_PROVIDER,
+            image=f"lscr.io/{repository}:{tag}",
+            repository=repository,
+            tag=tag,
+            live_view="web",
+            live_port=web_profile.live_port,
+            live_scheme="http",
+            strip_prefix=web_profile.strip_prefix,
+            control="none",
+            name=web_profile.name,
+            docs_url=web_profile.docs_url,
+        )
+
     if hint in ("linuxserver", "lscr") or "linuxserver/webtop" in lowered:
         repository, tag = _split_image(raw)
         tag = tag or DEFAULT_LINUXSERVER_TAG
@@ -716,6 +873,26 @@ def list_image_tags(
             return _sort_tags(tags) or [ComputerImageTag(name=fallback_tag)]
 
         if provider in ("linuxserver", "lscr"):
+            if "webtop" not in (repository or "").lower():
+                # Web IDEs (code-server, VSCodium Web) are versioned on Docker
+                # Hub, not in the LinuxServer webtop API.
+                repo = repository if "/" in repository else f"linuxserver/{repository}"
+                data = _cached_json(
+                    f"linuxserver:tags:{repo}",
+                    lambda: _http_json(
+                        f"https://hub.docker.com/v2/repositories/{repo}/tags"
+                        "?page_size=100&ordering=last_updated"
+                    ),
+                    0 if refresh else TAGS_TTL_SECONDS,
+                )
+                tags = []
+                for item in (data or {}).get("results", []):
+                    name = (item.get("name") or "").strip()
+                    if not name or name.startswith(("aarch64-", "x86_64-", "arm64v8-")):
+                        continue
+                    tags.append(ComputerImageTag(name=name, updated_at=item.get("last_updated")))
+                return _sort_tags(tags) or [ComputerImageTag(name=fallback_tag)]
+
             data = _cached_json(
                 "linuxserver:webtop:tags",
                 lambda: _http_json(

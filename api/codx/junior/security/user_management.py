@@ -14,6 +14,7 @@ from codx.junior.global_settings import (
     ensure_signing_secret,
     read_global_settings,
     write_global_settings,
+    write_settings_section,
 )
 from codx.junior.security.workspace_api import (
     AUTH_ERROR_INVALID,
@@ -165,6 +166,12 @@ def is_github_admin_account(github_username: str) -> bool:
 
 
 class UserSecurityManager():
+    # Sections owned by this manager. An account save may only write these.
+    # Anything else (AI models and providers, git credentials, working hours,
+    # agent settings...) belongs to other components and must never be touched
+    # from the account screen.
+    USER_SETTINGS_SECTIONS = ("users", "user_logins")
+
     def __init__(self):
         self.global_settings = read_global_settings()
 
@@ -743,6 +750,16 @@ class UserSecurityManager():
     def update_user(self, user: CodxUser, password: str = None):
         existing_user = self.find_user(username=user.username)
         if existing_user:
+            # ``find_user`` returns a COPY, so mutating it and saving persisted
+            # nothing: the account screen reported "User account updated" while
+            # the email, avatar, theme and language were silently dropped. Edits
+            # go to the document that is actually stored in the users section.
+            stored_user = next(
+                (u for u in (self.global_settings.users or [])
+                 if u.username == user.username),
+                None,
+            )
+            target_user = stored_user or existing_user
             existing_user.email = user.email
             existing_user.avatar = user.avatar
             existing_user.theme = user.theme
@@ -755,6 +772,13 @@ class UserSecurityManager():
             existing_user.language = getattr(
                 user, "language", existing_user.language
             ) or "auto"
+
+            if target_user is not existing_user:
+                target_user.email = existing_user.email
+                target_user.avatar = existing_user.avatar
+                target_user.theme = existing_user.theme
+                target_user.workspace_mode = existing_user.workspace_mode
+                target_user.language = existing_user.language
 
             if password:
                 # Prevent password update for GitHub-only users
@@ -852,7 +876,27 @@ class UserSecurityManager():
         return users_with_access
 
     def save_settings(self):
-        write_global_settings(self.global_settings)
+        """
+        Persist the sections owned by the user security manager only.
+
+        The previous implementation called ``write_global_settings`` on
+        ``self.global_settings``: every section of GlobalSettings was rewritten
+        from the snapshot this manager took in ``__init__``. An account save
+        (profile, email, avatar, language, theme, workspace mode, password or
+        project permission) therefore wrote the stale values of the AI models,
+        providers, git credentials, working hours... back over the section
+        files and silently reverted whatever the Global Settings screen had
+        changed after the snapshot was taken.
+
+        Writing just ``users`` and ``user_logins`` keeps the account screen
+        unable to damage anything it does not own, and the sectioned write
+        invalidates the shared settings cache so the next read sees the
+        persisted state.
+        """
+        data = self.global_settings.dict()
+        for section in self.USER_SETTINGS_SECTIONS:
+            write_settings_section(section, data.get(section))
+        self.global_settings = read_global_settings(refresh=True)
 
 
 # ---------------------------------------------------------------------------

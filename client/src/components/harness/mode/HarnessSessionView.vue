@@ -287,8 +287,8 @@ watch(
           <span v-if="summary?.profiles?.length" class="font-mono">· {{ summary.profiles.join(', ') }}</span>
           <span class="font-mono">· effort {{ tierHint(mode) }}</span>
           <span v-if="summary?.model" class="font-mono truncate max-w-40" :title="summary.model">· {{ summary.model }}</span>
-          <span v-if="detail?.workspace?.branch" class="font-mono truncate max-w-56" :title="detail.workspace.branch">
-            · {{ detail.workspace.branch }}
+          <span v-if="detail?.session?.branch || detail?.workspace?.branch" class="font-mono truncate max-w-56" :title="detail.session?.branch || detail.workspace.branch">
+            · {{ detail.session?.branch || detail.workspace.branch }}
           </span>
         </div>
       </div>
@@ -335,9 +335,9 @@ watch(
         <button
           type="button"
           class="btn btn-xs btn-ghost gap-1"
-          :disabled="!detail?.workspace?.branch"
-          :title="detail?.workspace?.branch
-            ? `Review ${detail.workspace.branch} in the Git view`
+          :disabled="!(detail?.session?.branch || detail?.workspace?.branch)"
+          :title="(detail?.session?.branch || detail?.workspace?.branch)
+            ? `Review ${detail.session?.branch || detail.workspace.branch} in the Git view`
             : 'This session has no task branch to review'"
           @click="emit('open-git')"
         >

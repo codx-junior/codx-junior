@@ -12,7 +12,7 @@
  *   • chat documents → the regular chats store (unread counts, previews)
  *   • project delete → `api.chats.delete` (the same call the chat UI uses)
  */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import moment from 'moment'
 import { $storex } from '@/store'
@@ -84,6 +84,179 @@ const filteredSessions = computed(() => {
     session.model
   ].some(value => String(value || '').toLowerCase().includes(term)))
 })
+
+// ── Branch tree (project → branch → tasks) ──────────────────────────────────
+// A session is bound to a branch (no worktree: it runs in the checkout on that
+// branch), so the left bar groups the tasks per branch and several tickets can
+// run per branch. A collapsed branch renders only its header row.
+const branches = ref([])
+const currentBranch = ref('')
+const collapsedBranches = ref([])
+const menuBranch = ref('')
+const projectMenuOpen = ref(false)
+const branchBusy = ref('')
+
+function notify(text, type = 'error') {
+  $storex.ui?.addNotification?.({ text: String(text || ''), type })
+}
+
+function apiError(error) {
+  return error?.response?.data?.detail || error?.message || String(error)
+}
+
+function projectApi() {
+  return rootProject.value?.$api || $storex.api
+}
+
+/** Branches of the project and the one checked out (the merge target). */
+async function loadBranches() {
+  const api = projectApi()
+  if (!api?.repo?.branches) return
+  try {
+    const payload = await api.repo.branches()
+    const list = (payload?.branches || payload || [])
+      .filter(item => typeof item === 'string' || !item?.type || item.type === 'local')
+      .map(item => (typeof item === 'string' ? item : item?.name))
+      .filter(Boolean)
+    branches.value = [...new Set(list)]
+    currentBranch.value = String(payload?.active_branch || '').trim() || currentBranch.value
+  } catch (error) {
+    branches.value = []
+  }
+}
+
+onMounted(() => { loadBranches() })
+
+const treeRows = computed(() => {
+  const term = search.value.trim().toLowerCase()
+  const matches = session => [
+    session.name,
+    session.description,
+    session.preview,
+    session.model
+  ].some(value => String(value || '').toLowerCase().includes(term))
+
+  const groups = new Map()
+  for (const session of sortedSessions.value) {
+    const branch = String(session.branch || currentBranch.value || '').trim() || 'Unknown branch'
+    if (!groups.has(branch)) groups.set(branch, [])
+    groups.get(branch).push(session)
+  }
+  const active = String(currentBranch.value || '').trim()
+  const order = [...groups.keys()].sort((a, b) => {
+    if (a === active) return -1
+    if (b === active) return 1
+    return a.localeCompare(b)
+  })
+
+  const rows = []
+  for (const branch of order) {
+    const all = groups.get(branch)
+    const visible = term ? all.filter(matches) : all
+    if (term && !visible.length) continue
+    const collapsed = collapsedBranches.value.includes(branch)
+    rows.push({
+      session_id: `branch:${branch}`,
+      __branchHeader: true,
+      __branch: branch,
+      __branchCount: all.length,
+      __branchRunning: all.filter(item => item.phase === 'running').length,
+      __branchCurrent: branch === active,
+      __branchCollapsed: collapsed
+    })
+    if (collapsed) continue
+    for (const session of visible) rows.push({ ...session, __branch: branch })
+  }
+  return rows
+})
+
+// ── Branch node actions ─────────────────────────────────────────────────────
+
+function toggleBranch(branch) {
+  collapsedBranches.value = collapsedBranches.value.includes(branch)
+    ? collapsedBranches.value.filter(item => item !== branch)
+    : [...collapsedBranches.value, branch]
+}
+
+function toggleBranchMenu(branch) {
+  projectMenuOpen.value = false
+  menuBranch.value = menuBranch.value === branch ? '' : branch
+}
+
+function toggleProjectMenu() {
+  menuBranch.value = ''
+  projectMenuOpen.value = !projectMenuOpen.value
+}
+
+function closeMenus() {
+  menuBranch.value = ''
+  projectMenuOpen.value = false
+}
+
+/** View diff: the Git view, Review (compare) tab, branch vs the current one. */
+function viewBranchDiff(branch) {
+  closeMenus()
+  $storex.ui.openGitView({
+    tab: 'review',
+    compareBranch: String(branch || ''),
+    compareTo: currentBranch.value || ''
+  })
+}
+
+/** Merge a branch into the checked out one. No worktree to delete. */
+async function mergeBranch(branch, { close = false } = {}) {
+  closeMenus()
+  const source = String(branch || '').trim()
+  const target = String(currentBranch.value || '').trim()
+  if (!source || !target) return
+  if (source === target) {
+    notify(`'${source}' is already the current branch.`, 'warning')
+    return
+  }
+  branchBusy.value = source
+  try {
+    const result = await projectApi().repo.merge({
+      from_branch: source,
+      to_branch: target,
+      delete_branch: !!close,
+      delete_worktree: false
+    })
+    if (result?.conflicted) {
+      notify(`Merge of '${source}' has conflicts: resolve them in the Git view.`, 'warning')
+    }
+    await loadBranches()
+    await $storex.harness?.loadSessions?.({ limit: 50 })
+  } catch (error) {
+    notify(apiError(error))
+  } finally {
+    branchBusy.value = ''
+  }
+}
+
+/** Archive every task of a branch. */
+async function archiveBranch(branch) {
+  closeMenus()
+  const name = String(branch || '').trim()
+  if (!name) return
+  branchBusy.value = name
+  try {
+    await $storex.harness.archiveSessions({ branch: name })
+  } catch (error) {
+    notify(apiError(error))
+  } finally {
+    branchBusy.value = ''
+  }
+}
+
+/** Project menu: archive the done tasks, or every task. */
+async function archiveProject({ all = false } = {}) {
+  closeMenus()
+  try {
+    await $storex.harness.archiveSessions(all ? { allSessions: true } : { phase: 'done' })
+  } catch (error) {
+    notify(apiError(error))
+  }
+}
 
 function chatDocument(sessionId) {
   return $storex.chats?.chats?.[sessionId] || null
@@ -286,6 +459,36 @@ function exitHarness() {
         >
           <i class="fa-solid fa-rotate text-[10px]" :class="{ 'animate-spin': loading }"></i>
         </button>
+        <button
+          v-if="!collapsed"
+          type="button"
+          class="btn btn-ghost btn-xs btn-square"
+          title="Project actions: archive done / archive all"
+          @click="toggleProjectMenu"
+        >
+          <i class="fa-solid fa-ellipsis-vertical text-[10px]"></i>
+        </button>
+      </div>
+
+      <!-- Project menu: archive the tasks of the whole tree -->
+      <div
+        v-if="!collapsed && projectMenuOpen"
+        class="mb-1 rounded-md border border-base-content/10 bg-base-100/70 p-1"
+      >
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10"
+          @click="archiveProject()"
+        >
+          <i class="fa-solid fa-box-archive text-[9px]"></i> Archive done
+        </button>
+        <button
+          type="button"
+          class="w-full flex items-center gap-2 rounded px-1.5 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10"
+          @click="archiveProject({ all: true })"
+        >
+          <i class="fa-solid fa-boxes-stacked text-[9px]"></i> Archive all
+        </button>
       </div>
 
       <!-- Project picker (add a root) -->
@@ -341,11 +544,66 @@ function exitHarness() {
         <!-- Chats under the project root -->
         <div class="mt-1 flex flex-col">
           <div
-            v-for="session in filteredSessions"
+            v-for="session in treeRows"
             :key="session.session_id"
             class="group rounded-md transition-colors"
-            :class="session.session_id === activeSessionId ? 'bg-base-content/10' : 'hover:bg-base-content/5'"
+            :class="session.__branchHeader
+              ? ''
+              : (session.session_id === activeSessionId ? 'bg-base-content/10' : 'hover:bg-base-content/5')"
           >
+            <!-- Branch node: collapsible, with its own submenu -->
+            <template v-if="session.__branchHeader">
+              <div class="flex items-center gap-1 rounded-md px-1.5 py-1 hover:bg-base-content/5">
+                <button
+                  type="button"
+                  class="flex items-center gap-1.5 min-w-0 flex-1 text-left"
+                  :title="session.__branch"
+                  @click="toggleBranch(session.__branch)"
+                >
+                  <i
+                    :class="session.__branchCollapsed ? 'fa-solid fa-chevron-right' : 'fa-solid fa-chevron-down'"
+                    class="text-[8px] text-base-content/35 shrink-0"
+                  ></i>
+                  <i class="fa-solid fa-code-branch text-[10px] text-base-content/40 shrink-0"></i>
+                  <span
+                    class="text-[11px] font-medium truncate"
+                    :class="session.__branchCurrent ? 'text-base-content' : 'text-base-content/70'"
+                  >{{ session.__branch }}</span>
+                  <span class="text-[10px] text-base-content/35 tabular-nums">{{ session.__branchCount }}</span>
+                  <span v-if="session.__branchRunning" class="badge badge-success badge-xs border-0 text-[9px]">{{ session.__branchRunning }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-xs btn-square opacity-0 group-hover:opacity-100 focus:opacity-100"
+                  :title="`Branch actions: ${session.__branch}`"
+                  @click.stop="toggleBranchMenu(session.__branch)"
+                >
+                  <i class="fa-solid fa-ellipsis text-[10px] text-base-content/40"></i>
+                </button>
+              </div>
+
+              <!-- Branch submenu -->
+              <div
+                v-if="menuBranch === session.__branch"
+                class="mx-1.5 mb-1 rounded-md border border-base-content/10 bg-base-100/90 py-0.5 shadow-sm"
+              >
+                <button type="button" class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10" @click="viewBranchDiff(session.__branch)">
+                  <i class="fa-solid fa-code-compare text-[9px]"></i> View diff
+                </button>
+                <button type="button" class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10" :disabled="!!branchBusy" @click="mergeBranch(session.__branch)">
+                  <i class="fa-solid fa-code-merge text-[9px]"></i> Merge
+                </button>
+                <button type="button" class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/70 hover:bg-base-content/10" :disabled="!!branchBusy" @click="mergeBranch(session.__branch, { close: true })">
+                  <i class="fa-solid fa-code-merge text-[9px]"></i> Merge and close
+                </button>
+                <div class="my-0.5 border-t border-base-content/10"></div>
+                <button type="button" class="w-full flex items-center gap-2 px-2 py-1 text-left text-[11px] text-base-content/50 hover:bg-base-content/10" :disabled="!!branchBusy" @click="archiveBranch(session.__branch)">
+                  <i class="fa-solid fa-box-archive text-[9px]"></i> Archive
+                </button>
+              </div>
+            </template>
+
+            <template v-else>
             <div class="flex items-start gap-2 px-2 py-1.5">
               <button
                 type="button"
@@ -396,6 +654,7 @@ function exitHarness() {
                 <button type="button" class="btn btn-error btn-xs text-[10px]" @click="removeSession(session)">Remove</button>
               </div>
             </div>
+            </template>
           </div>
 
           <div v-if="!filteredSessions.length && !loading" class="px-2 py-3 text-[11px] text-base-content/35 leading-relaxed">

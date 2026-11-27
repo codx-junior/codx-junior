@@ -216,6 +216,43 @@ export const actions = actionTree(
       return detail
     },
 
+    /**
+     * Archive sessions and drop them from the sidebar.
+     *
+     * The left bar groups the sessions per branch, so archiving is offered on
+     * the branch node (every task of that branch) and on the project node
+     * (the done tasks or every task).
+     *
+     * @param {object} payload
+     * @param {string[]} [payload.sessionIds] - Explicit sessions.
+     * @param {string} [payload.branch] - Every session bound to this branch.
+     * @param {string} [payload.phase] - Only this phase (`done`).
+     * @param {boolean} [payload.allSessions] - Every session of the project.
+     * @returns {Promise<{archived: string[], count: number, failed: Array}>}.
+     */
+    async archiveSessions(
+      { state, commit },
+      { sessionIds = [], branch = '', phase = '', allSessions = false } = {}
+    ) {
+      const api = harnessApi()
+      if (!api?.harness?.archiveSessions) throw new Error('Harness API is not available')
+      const result = await api.harness.archiveSessions({
+        session_ids: sessionIds,
+        branch,
+        phase,
+        all_sessions: allSessions
+      })
+      const archived = new Set((result?.archived || []).map(String))
+      if (archived.size) {
+        commit(
+          'setSessions',
+          state.sessions.filter(item => !archived.has(String(item.session_id)))
+        )
+        if (archived.has(String(state.activeSessionId))) commit('setActiveSessionId', '')
+      }
+      return result
+    },
+
     /** Select a session (without loading it). */
     selectSession({ commit }, sessionId) {
       commit('setActiveSessionId', sessionId || '')

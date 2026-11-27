@@ -6,10 +6,9 @@
  * selectors and attachment handling) and adds only what harness mode needs:
  * a workspace picker and the two execution tiers (Standard / Deep).
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import ChatInputBox from '@/components/chat/ChatInputBox.vue'
 import ChatAttachmentPreview from '@/components/chat/ChatAttachmentPreview.vue'
-import ProjectDetailt from '@/components/ProjectDetailt.vue'
 import { $storex } from '@/store'
 import {
   attachmentFromPaste,
@@ -20,6 +19,12 @@ import { HARNESS_TIERS, tierHint } from '@/utils/harnessMode.js'
 
 const props = defineProps({
   project: { type: Object, default: null },
+  // Branches of the project and the one the ticket is bound to. No worktree is
+  // created: the ticket runs in the checkout on this branch, the current one by
+  // default.
+  branches: { type: Array, default: () => [] },
+  branch: { type: String, default: '' },
+  currentBranch: { type: String, default: '' },
   mode: { type: String, default: 'standard' },
   profiles: { type: Array, default: () => [] },
   selectedProfiles: { type: Array, default: () => [] },
@@ -30,7 +35,7 @@ const props = defineProps({
 })
 
 const emit = defineEmits([
-  'update:project',
+  'update:branch',
   'update:mode',
   'update:profiles',
   'update:model',
@@ -38,6 +43,17 @@ const emit = defineEmits([
 ])
 
 const composer = ref(null)
+
+// Options of the branch selector: the project branches, always including the
+// selected one so the control never shows an empty value.
+const branchOptions = computed(() => {
+  const names = (props.branches || [])
+    .map(item => (typeof item === 'string' ? item : item?.name))
+    .filter(Boolean)
+  const selected = String(props.branch || props.currentBranch || '').trim()
+  if (selected && !names.includes(selected)) names.unshift(selected)
+  return names
+})
 
 function onSend() {
   const text = String(composer.value?.getEditorText?.() || '').trim()
@@ -137,13 +153,20 @@ defineExpose({ clear })
         >
           <template #before-textarea>
             <div class="flex flex-wrap items-center gap-2">
-              <!-- Workspace (the project the session belongs to) -->
-              <div class="min-w-0 max-w-64">
-                <ProjectDetailt
-                  :model-value="project"
-                  :options="{ showIcon: true, showFolders: false, showSelector: true }"
-                  @select="emit('update:project', $event)"
-                />
+              <!-- Branch the ticket is bound to (no worktree is created) -->
+              <div class="flex items-center gap-1.5 min-w-0 max-w-64 rounded-lg border border-base-content/15 bg-base-100/40 px-2 py-1">
+                <i class="fa-solid fa-code-branch text-[10px] text-base-content/40 shrink-0"></i>
+                <select
+                  class="select select-xs w-full bg-transparent border-0 focus:outline-none text-[11px]"
+                  :value="branch || currentBranch"
+                  :title="`Branch the ticket runs on${currentBranch ? ` (current: ${currentBranch})` : ''}`"
+                  aria-label="Branch"
+                  @change="emit('update:branch', $event.target.value)"
+                >
+                  <option v-for="name in branchOptions" :key="name" :value="name">
+                    {{ name }}{{ name === currentBranch ? ' · current' : '' }}
+                  </option>
+                </select>
               </div>
 
               <!-- Execution tier -->

@@ -59,6 +59,43 @@ const projects = computed(() => {
   )
 })
 
+// ── Branch selector ────────────────────────────────────────────────────────
+// The ticket is bound to a branch of the project. No worktree is created: the
+// turn runs in the project checkout on that branch, the current one by default.
+const branches = ref([])
+const currentBranch = ref('')
+const selectedBranch = ref('')
+
+async function loadBranches() {
+  const api = project.value?.$api || $storex.api
+  if (!api?.repo?.branches) return
+  try {
+    const payload = await api.repo.branches()
+    const list = (payload?.branches || payload || [])
+      .filter(item => typeof item === 'string' || !item?.type || item.type === 'local')
+      .map(item => (typeof item === 'string' ? item : item?.name))
+      .filter(Boolean)
+    branches.value = [...new Set(list)]
+    currentBranch.value = String(payload?.active_branch || '').trim() || currentBranch.value
+  } catch (error) {
+    branches.value = []
+  }
+  // A deep link (`?branch=`) preselects the branch of the ticket.
+  const requested = String(route.query.branch || '').trim()
+  if (!selectedBranch.value) {
+    selectedBranch.value = branches.value.includes(requested)
+      ? requested
+      : (currentBranch.value || branches.value[0] || '')
+  }
+}
+
+/** Branch picked in the composer. */
+function selectBranch(branch) {
+  selectedBranch.value = String(branch || '')
+}
+
+watch(() => project.value?.project_id, () => { loadBranches() }, { immediate: true })
+
 const sessions = computed(() => $storex.harness.sessions || [])
 const runningCount = computed(() => $storex.harness.runningCount || 0)
 const activeSessionId = computed(() => $storex.harness.activeSessionId || '')
@@ -315,6 +352,7 @@ async function submit(payload) {
       prompt: text,
       profiles: selectedProfileNames(),
       model: selectedModel.value || undefined,
+      branch: selectedBranch.value || undefined,
       attachments
     })
     homeRef.value?.clear?.()
@@ -493,7 +531,10 @@ watch(
           :selected-model="selectedModel"
           :creating="creating"
           :error="error"
-          @update:project="selectProject"
+          :branches="branches"
+          :branch="selectedBranch"
+          :current-branch="currentBranch"
+          @update:branch="selectBranch"
           @update:mode="setMode"
           @update:profiles="selectedProfiles = $event"
           @update:model="selectedModel = $event"

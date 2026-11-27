@@ -61,10 +61,33 @@ export const harnessModule = (API) => ({
   /**
    * Create a harness session from a ticket.
    *
-   * @param {object} payload - { prompt, name, profiles, model, budget_cxjcoins }
+   * @param {object} payload - { prompt, name, profiles, model, budget_cxjcoins,
+   *   branch, attachments }
+   *   `branch` is the branch the ticket is bound to: no worktree is created, the
+   *   turn runs in the project checkout on that branch (the current one by
+   *   default).
    */
   createSession(payload = {}) {
     return API.post('/api/harness/sessions', payload)
+  },
+
+  /**
+   * Archive harness sessions.
+   *
+   * Feeds the branch node menu (archive every task of a branch) and the project
+   * menu (archive the done tasks / every task). Nothing is deleted: the tasks
+   * move to the project archive and can be restored.
+   *
+   * @param {object} [payload] - { session_ids, branch, phase, all_sessions }
+   * @returns {Promise<{archived: string[], count: number, failed: Array}>}.
+   */
+  archiveSessions(payload = {}) {
+    return API.post('/api/harness/sessions/archive', {
+      session_ids: payload.session_ids || [],
+      branch: payload.branch || undefined,
+      phase: payload.phase || undefined,
+      all_sessions: !!payload.all_sessions
+    })
   },
 
   /** One session: chat, metrics, worktree, changed files, run and audit. */

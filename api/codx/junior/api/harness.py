@@ -59,6 +59,14 @@ class HarnessSessionCreateRequest(BaseModel):
             "the first user message so the turn sees them like a chat attachment."
         ),
     )
+    branch: Optional[str] = Field(
+        default=None,
+        description=(
+            "Branch the ticket is bound to. No worktree is created: the turn "
+            "runs in the project checkout on this branch (the current one by "
+            "default)."
+        ),
+    )
     start: bool = Field(
         default=True,
         description=(
@@ -316,6 +324,7 @@ async def harness_session_create(
             model=payload.model,
             budget_cxjcoins=payload.budget_cxjcoins,
             attachments=payload.attachments,
+            branch=payload.branch,
         )
         summary["started"] = bool(payload.start and _schedule_session_turn(request, summary["session_id"]))
         return summary
@@ -375,4 +384,59 @@ async def harness_session_prompt(
         raise HTTPException(status_code=400, detail=str(ex)) from ex
     except Exception as ex:  # pragma: no cover - defensive
         logger.exception("Harness session prompt failed: %s", ex)
+        raise HTTPException(status_code=500, detail=str(ex)) from ex
+
+
+class HarnessSessionArchiveRequest(BaseModel):
+    """Body of ``POST /api/harness/sessions/archive``.
+
+    Feeds the branch-node menu (archive every task of a branch) and the project
+    menu (archive the done tasks / every task).
+    """
+
+    session_ids: List[str] = Field(
+        default_factory=list, description="Explicit sessions to archive."
+    )
+    branch: Optional[str] = Field(
+        default=None, description="Archive every session bound to this branch."
+    )
+    phase: Optional[str] = Field(
+        default=None, description="Only sessions in this phase (``done``)."
+    )
+    all_sessions: bool = Field(
+        default=False, description="Archive every harness session of the project."
+    )
+
+
+@router.post("/harness/sessions/archive")
+def harness_sessions_archive(
+    request: Request, payload: HarnessSessionArchiveRequest
+) -> Dict[str, Any]:
+    """
+    Archive harness sessions (branch node and project menu).
+
+    Archiving compresses the task chat, so the session leaves the live tree, the
+    boards and the listings; nothing is deleted and ``POST /api/chats/restore``
+    brings a task back.
+
+    Returns:
+        ``{"archived": [ids], "count": n, "failed": [{session_id, error}]}``.
+    """
+    from codx.junior.harness.sessions import HarnessSessionError
+
+    service = _harness_session_service(request)
+    session = _session(request)
+    user = getattr(getattr(session, "user", None), "username", "") or "harness"
+    try:
+        return service.archive(
+            session_ids=payload.session_ids,
+            branch=payload.branch,
+            phase=payload.phase,
+            all_sessions=payload.all_sessions,
+            user=user,
+        )
+    except HarnessSessionError as ex:
+        raise HTTPException(status_code=400, detail=str(ex)) from ex
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Harness session archive failed: %s", ex)
         raise HTTPException(status_code=500, detail=str(ex)) from ex

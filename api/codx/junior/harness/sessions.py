@@ -59,6 +59,64 @@ _WRITE_TOOLS = {
 _PATH_KEYS = ("file_path", "path", "file", "filename", "filepath")
 
 
+def harness_descriptor(meta: Any) -> Dict[str, Any]:
+    """
+    Return the ``harness_mode`` descriptor of a chat ``meta_data``.
+
+    Args:
+        meta: ``Chat.meta_data`` (may be ``None``).
+
+    Returns:
+        The descriptor dict, empty when the chat is not a harness session.
+    """
+    if not isinstance(meta, dict):
+        return {}
+    descriptor = meta.get(prompts.HARNESS_META_KEY)
+    if isinstance(descriptor, dict):
+        return descriptor
+    return {"enabled": True} if descriptor else {}
+
+
+def project_checkout(settings: Any) -> str:
+    """Absolute path of the project checkout the session turns run in."""
+    path = str(getattr(settings, "abs_project_path", "") or "")
+    if path and os.path.isdir(path):
+        return path
+    return str(getattr(settings, "project_path", "") or "")
+
+
+def current_branch(path: str) -> str:
+    """Name of the branch checked out in *path* ('' when unknown)."""
+    if not path:
+        return ""
+    ok, output = _run_git(path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    name = str(output or "").strip()
+    if not ok or not name or name == "HEAD":
+        return ""
+    return name
+
+
+def branch_exists(path: str, branch: str) -> bool:
+    """Tell whether *branch* is a local branch of the repository at *path*."""
+    if not path or not branch:
+        return False
+    ok, _ = _run_git(
+        path, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"]
+    )
+    return bool(ok)
+
+
+def checkout_branch(path: str, branch: str) -> Tuple[bool, str]:
+    """
+    Check out *branch* in the project checkout.
+
+    A harness session never creates a worktree: a ticket bound to another branch
+    is executed in this checkout, so the checkout follows the selected branch
+    (and git refuses when the working tree would be overwritten).
+    """
+    return _run_git(path, ["checkout", branch])
+
+
 class HarnessSessionError(RuntimeError):
     """A harness session request is invalid or the session does not exist."""
 
@@ -354,6 +412,79 @@ class HarnessSessionService:
             return SESSION_DONE
         return SESSION_IDLE
 
+    def _session_branch(self, chat: Any) -> str:
+        """
+        Branch the session is bound to.
+
+        No worktree is created, so a session without a recorded branch runs on
+        whatever the checkout has checked out: that is its branch.
+        """
+        descriptor = harness_descriptor(getattr(chat, "meta_data", None))
+        branch = str(descriptor.get("branch") or "").strip()
+        if branch:
+            return branch
+        return current_branch(project_checkout(self.settings))
+
+    def archive(
+        self,
+        *,
+        session_ids: Optional[Iterable[str]] = None,
+        branch: Optional[str] = None,
+        phase: Optional[str] = None,
+        all_sessions: bool = False,
+        user: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Archive harness sessions (branch node and project menu actions).
+
+        Archiving compresses the task chat, so it leaves the live tree, the
+        boards and the listings.
+
+        Args:
+            session_ids: Explicit sessions to archive.
+            branch: Archive every session bound to this branch.
+            phase: Only sessions in this phase (``done``).
+            all_sessions: Archive every session of the project.
+            user: Author recorded by the archive.
+
+        Returns:
+            ``{"archived": [...], "count": n, "failed": [...]}``.
+        """
+        ids = [str(item).strip() for item in (session_ids or []) if str(item).strip()]
+        if ids:
+            validated: List[str] = []
+            for session_id in ids:
+                try:
+                    found = self._find(session_id)
+                except HarnessSessionError:
+                    continue
+                validated.append(str(getattr(found, "id", "") or session_id))
+            ids = validated
+        else:
+            wanted_branch = str(branch or "").strip()
+            wanted_phase = str(phase or "").strip().lower()
+            if not (wanted_branch or wanted_phase or all_sessions):
+                return {"archived": [], "count": 0, "failed": []}
+            for summary in self.list(limit=1000):
+                if wanted_branch and str(summary.get("branch") or "") != wanted_branch:
+                    continue
+                if wanted_phase and str(summary.get("phase") or "") != wanted_phase:
+                    continue
+                session_id = str(summary.get("session_id") or "")
+                if session_id:
+                    ids.append(session_id)
+
+        manager = self._manager()
+        archived: List[str] = []
+        failed: List[Dict[str, str]] = []
+        for session_id in ids:
+            try:
+                manager.archive_chat(chat_id=session_id, user=user or self.user)
+                archived.append(session_id)
+            except Exception as ex:  # pragma: no cover - reported to the caller
+                failed.append({"session_id": session_id, "error": str(ex)})
+        return {"archived": archived, "count": len(archived), "failed": failed}
+
     def summary(self, chat: Any) -> Dict[str, Any]:
         """
         Build the compact session row shown by the harness sidebar.
@@ -411,6 +542,7 @@ class HarnessSessionService:
             "message_count": int(
                 getattr(chat, "message_count", 0) or len(messages) or 0
             ),
+            "branch": self._session_branch(chat),
             "run_id": getattr(chat, "run_id", None),
         }
 
@@ -425,6 +557,7 @@ class HarnessSessionService:
         model: Optional[str] = None,
         budget_cxjcoins: Optional[float] = None,
         attachments: Optional[Iterable[Any]] = None,
+        branch: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a harness session (chat + first user message) and persist it.
@@ -485,6 +618,22 @@ class HarnessSessionService:
             if profile and profile not in selected:
                 selected.append(profile)
 
+        # The ticket is bound to a branch and gets NO worktree: the turn runs in
+        # the project checkout, so the selected branch must be the checked out
+        # one. `git checkout` refuses a dirty tree and the refusal is returned to
+        # the composer instead of silently working on the wrong branch.
+        project_path = project_checkout(self.settings)
+        session_branch = str(branch or "").strip() or current_branch(project_path)
+        if session_branch and project_path and branch_exists(project_path, session_branch):
+            active = current_branch(project_path)
+            if active and active != session_branch:
+                switched, output = checkout_branch(project_path, session_branch)
+                if not switched:
+                    raise HarnessSessionError(
+                        f"Cannot switch the project to branch '{session_branch}': "
+                        f"{str(output or '').strip()[:400]}"
+                    )
+
         manager = self._manager()
         self.ensure_board()
         now = _now_iso()
@@ -528,6 +677,7 @@ class HarnessSessionService:
                     "engine": "chat",
                     "brief": "harness-v1",
                     "created_by": self.user,
+                    "branch": session_branch,
                 }
             },
             messages=[message],
